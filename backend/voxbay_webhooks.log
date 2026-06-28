@@ -1,0 +1,177 @@
+=== WEBHOOK RECEIVED AT 2026-05-31 23:20:49 ===
+Method: POST
+Host: zaleshunter.com
+Matched Call ID: None
+Notes:
+Method: POST
+Host: zaleshunter.com
+Schema: public
+Tenant: public
+Payload keys: ['calluuid', 'callerNumber', 'AgentNumber', 'duration', 'status', 'recording_url']
+Extracted: uuid=TEST_VOXBAY_UUID_12345, agent=101, customer=1234567890
+Extracted: duration=125, status=Answered, recording=https://voxbay-recordings.s3.amazonaws.com/rec_file_9999.wav, event=None
+Cross-tenant search: 6 tenants (excluding 'public')
+Trying tenant: newtenant
+Recent logs in 48h: 0
+Trying tenant: acmetenant
+Recent logs in 48h: 0
+Trying tenant: alpha
+Recent logs in 48h: 0
+Trying tenant: newcompany
+Recent logs in 48h: 0
+Trying tenant: sidhutenant
+Recent logs in 48h: 0
+Trying tenant: testfirm
+Recent logs in 48h: 0
+FINAL: No match found across any tenant.
+Headers: {"HTTP_COOKIE": "", "SERVER_NAME": "testserver", "CONTENT_LENGTH": "212", "CONTENT_TYPE": "application/json", "HTTP_HOST": "zaleshunter.com"}
+Payload: {"calluuid": "TEST_VOXBAY_UUID_12345", "callerNumber": "1234567890", "AgentNumber": "101", "duration": "125", "status": "Answered", "recording_url": "https://voxbay-recordings.s3.amazonaws.com/rec_file_9999.wav"}
+============================================================
+
+=== WEBHOOK RECEIVED AT 2026-05-31 23:21:02 ===
+Method: POST
+Host: zaleshunter.com
+Matched Call ID: 2
+Notes:
+Method: POST
+Host: zaleshunter.com
+Schema: public
+Tenant: public
+Payload keys: ['calluuid', 'callerNumber', 'AgentNumber', 'duration', 'status', 'recording_url']
+Extracted: uuid=TEST_VOXBAY_UUID_12345, agent=101, customer=1234567890
+Extracted: duration=125, status=Answered, recording=https://voxbay-recordings.s3.amazonaws.com/rec_file_9999.wav, event=None
+Cross-tenant search: 6 tenants (excluding 'public')
+Trying tenant: newtenant
+Recent logs in 48h: 0
+Trying tenant: acmetenant
+Recent logs in 48h: 0
+Trying tenant: alpha
+Recent logs in 48h: 0
+Trying tenant: newcompany
+Recent logs in 48h: 0
+Trying tenant: sidhutenant
+Recent logs in 48h: 0
+Trying tenant: testfirm
+Recent logs in 48h: 1
+  Log id=2: outcome=initiated, user_ext=101, user_phone=917777777777, lead_phone=1234567890, created=2026-05-31 17:51:02.271953+00:00
+Customer filter '1234567890' (clean=1234567890): 1 matches
+MATCHED: CallLog id=2 outcome=initiated
+UPDATED CallLog id=2: {'outcome': 'completed', 'duration_seconds': 125, 'recording_url': 'https://voxbay-recordings.s3.amazonaws.com/rec_file_9999.wav'} (rows=1)
+MATCHED in tenant: testfirm
+Headers: {"HTTP_COOKIE": "", "SERVER_NAME": "testserver", "CONTENT_LENGTH": "212", "CONTENT_TYPE": "application/json", "HTTP_HOST": "zaleshunter.com"}
+Payload: {"calluuid": "TEST_VOXBAY_UUID_12345", "callerNumber": "1234567890", "AgentNumber": "101", "duration": "125", "status": "Answered", "recording_url": "https://voxbay-recordings.s3.amazonaws.com/rec_file_9999.wav"}
+============================================================
+
+=== WEBHOOK RECEIVED AT 2026-06-01 15:43:10 ===
+Method: POST
+Host: zaleshunter.com
+Matched Call ID: 2
+Notes:
+Method: POST
+Host: zaleshunter.com
+Schema: public
+Tenant: public
+Payload keys: ['calluuid', 'callerNumber', 'AgentNumber', 'duration', 'status', 'recording_url']
+Extracted: uuid=TEST_VOXBAY_UUID_12345, agent=101, customer=1234567890
+Extracted: duration=125, status=Answered, recording=https://voxbay-recordings.s3.amazonaws.com/rec_file_9999.wav, event=None
+Cross-tenant search: 6 tenants (excluding 'public')
+Trying tenant: newtenant
+Recent logs in 48h: 0
+Trying tenant: acmetenant
+Recent logs in 48h: 0
+Trying tenant: alpha
+Recent logs in 48h: 0
+Trying tenant: newcompany
+Recent logs in 48h: 0
+Trying tenant: sidhutenant
+Recent logs in 48h: 0
+Trying tenant: testfirm
+Recent logs in 48h: 1
+  Log id=2: outcome=initiated, user_ext=101, user_phone=917777777777, lead_phone=1234567890, created=2026-06-01 10:13:10.247719+00:00
+Customer filter '1234567890' (clean=1234567890): 1 matches
+MATCHED: CallLog id=2 outcome=initiated
+UPDATED CallLog id=2: {'outcome': 'connected', 'duration_seconds': 125, 'recording_url': 'https://voxbay-recordings.s3.amazonaws.com/rec_file_9999.wav'} (rows=1)
+MATCHED in tenant: testfirm
+Headers: {"HTTP_COOKIE": "", "SERVER_NAME": "testserver", "CONTENT_LENGTH": "212", "CONTENT_TYPE": "application/json", "HTTP_HOST": "zaleshunter.com"}
+Payload: {"calluuid": "TEST_VOXBAY_UUID_12345", "callerNumber": "1234567890", "AgentNumber": "101", "duration": "125", "status": "Answered", "recording_url": "https://voxbay-recordings.s3.amazonaws.com/rec_file_9999.wav"}
+============================================================
+
+=== WEBHOOK RECEIVED AT 2026-06-01 15:56:40 ===
+Method: POST
+Host: zaleshunter.com
+Matched Call ID: 2
+Notes:
+Method: POST
+Full Path: /api/calls/webhook/voxbay/
+Host: zaleshunter.com
+Schema: public
+Tenant: public
+Payload keys: ['calluuid', 'callerNumber', 'AgentNumber', 'duration', 'status', 'recording_url']
+Extracted: uuid=TEST_VOXBAY_UUID_12345, agent=101, customer=1234567890
+Extracted: duration=125, status=Answered, recording=https://voxbay-recordings.s3.amazonaws.com/rec_file_9999.wav, event=None
+Cross-tenant search: 6 tenants (excluding 'public')
+Trying tenant: newtenant
+Recent logs in 48h: 0
+Trying tenant: acmetenant
+Recent logs in 48h: 0
+Trying tenant: alpha
+Recent logs in 48h: 0
+Trying tenant: newcompany
+Recent logs in 48h: 0
+Trying tenant: sidhutenant
+Recent logs in 48h: 0
+Trying tenant: testfirm
+Recent logs in 48h: 1
+  Log id=2: outcome=initiated, user_ext=101, user_phone=917777777777, lead_phone=1234567890, created=2026-06-01 10:26:40.856257+00:00
+Customer filter '1234567890' (clean=1234567890): 1 matches
+MATCHED: CallLog id=2 outcome=initiated
+UPDATED CallLog id=2: {'outcome': 'connected', 'duration_seconds': 125, 'recording_url': 'https://voxbay-recordings.s3.amazonaws.com/rec_file_9999.wav'} (rows=1)
+MATCHED in tenant: testfirm
+Headers: {"HTTP_COOKIE": "", "SERVER_NAME": "testserver", "CONTENT_LENGTH": "212", "CONTENT_TYPE": "application/json", "HTTP_HOST": "zaleshunter.com"}
+Payload: {"calluuid": "TEST_VOXBAY_UUID_12345", "callerNumber": "1234567890", "AgentNumber": "101", "duration": "125", "status": "Answered", "recording_url": "https://voxbay-recordings.s3.amazonaws.com/rec_file_9999.wav"}
+============================================================
+
+=== WEBHOOK RECEIVED AT 2026-06-11 10:19:34 ===
+Method: POST
+Host: tenant.test.com
+Matched Call ID: 7
+Notes:
+Method: POST
+Full Path: /api/calls/webhook/voxbay/
+Host: tenant.test.com
+Schema: test
+Tenant: test
+Payload keys: ['calluuid', 'status', 'duration', 'recording_url', 'callerNumber', 'AgentNumber', 'did']
+Extracted: uuid=voxbay_uuid_inbound_123, agent=105, customer=8887776665, virtual=9900112233
+Extracted: duration=180, status=Answered, recording=rec_inbound.wav, event=None
+Recent logs in 48h: 0
+Cross-tenant search: 0 tenants (excluding 'test')
+FINAL: No match found across any tenant. Processing as Inbound Call...
+Inbound match by virtual number: test
+CREATED Inbound CallLog id=7 in schema test
+Headers: {"HTTP_COOKIE": "", "SERVER_NAME": "testserver", "CONTENT_LENGTH": "189", "CONTENT_TYPE": "application/json", "HTTP_HOST": "tenant.test.com"}
+Payload: {"calluuid": "voxbay_uuid_inbound_123", "status": "Answered", "duration": "180", "recording_url": "rec_inbound.wav", "callerNumber": "8887776665", "AgentNumber": "105", "did": "9900112233"}
+============================================================
+
+=== WEBHOOK RECEIVED AT 2026-06-11 11:24:37 ===
+Method: POST
+Host: tenant.test.com
+Matched Call ID: 7
+Notes:
+Method: POST
+Full Path: /api/calls/webhook/voxbay/
+Host: tenant.test.com
+Schema: test
+Tenant: test
+Payload keys: ['calluuid', 'status', 'duration', 'recording_url', 'callerNumber', 'AgentNumber', 'did']
+Extracted: uuid=voxbay_uuid_inbound_123, agent=105, customer=8887776665, virtual=9900112233
+Extracted: duration=180, status=Answered, recording=rec_inbound.wav, event=None
+Recent logs in 48h: 0
+Cross-tenant search: 0 tenants (excluding 'test')
+FINAL: No match found across any tenant. Processing as Inbound Call...
+Inbound match by virtual number: test
+CREATED Inbound CallLog id=7 in schema test
+Headers: {"HTTP_COOKIE": "", "SERVER_NAME": "testserver", "CONTENT_LENGTH": "189", "CONTENT_TYPE": "application/json", "HTTP_HOST": "tenant.test.com"}
+Payload: {"calluuid": "voxbay_uuid_inbound_123", "status": "Answered", "duration": "180", "recording_url": "rec_inbound.wav", "callerNumber": "8887776665", "AgentNumber": "105", "did": "9900112233"}
+============================================================
+

@@ -1,0 +1,108 @@
+=== EXOTEL WEBHOOK RECEIVED AT 2026-06-10 18:49:26 ===
+Matched Call ID: 3
+Matched Schema: test
+Notes:
+Method: POST
+Full Path: /api/calls/webhook/exotel/
+Host: tenant.test.com
+Payload keys: ['CallSid', 'Status', 'ConversationDuration', 'RecordingUrl']
+Extracted: CallSid=exotel_sid_888, Status=completed, Duration=150, Recording=https://example.com/recording.mp3, CustomField=None
+UPDATED CallLog id=3: {'outcome': 'connected', 'duration_seconds': 150, 'recording_url': 'https://example.com/recording.mp3'}
+Payload: {"CallSid": "exotel_sid_888", "Status": "completed", "ConversationDuration": "150", "RecordingUrl": "https://example.com/recording.mp3"}
+============================================================
+
+=== EXOTEL WEBHOOK RECEIVED AT 2026-06-10 18:49:56 ===
+Matched Call ID: 3
+Matched Schema: test
+Notes:
+Method: POST
+Full Path: /api/calls/webhook/exotel/
+Host: tenant.test.com
+Payload keys: ['CallSid', 'Status', 'ConversationDuration', 'RecordingUrl']
+Extracted: CallSid=exotel_sid_888, Status=completed, Duration=150, Recording=https://example.com/recording.mp3, CustomField=None
+UPDATED CallLog id=3: {'outcome': 'connected', 'duration_seconds': 150, 'recording_url': 'https://example.com/recording.mp3'}
+Payload: {"CallSid": "exotel_sid_888", "Status": "completed", "ConversationDuration": "150", "RecordingUrl": "https://example.com/recording.mp3"}
+============================================================
+
+=== EXOTEL WEBHOOK RECEIVED AT 2026-06-10 18:51:00 ===
+Matched Call ID: 4
+Matched Schema: test
+Notes:
+Method: POST
+Full Path: /api/calls/webhook/exotel/
+Host: tenant.test.com
+Payload keys: ['CallSid', 'Status', 'ConversationDuration', 'RecordingUrl']
+Extracted: CallSid=exotel_sid_888, Status=completed, Duration=150, Recording=https://example.com/recording.mp3, CustomField=None
+UPDATED CallLog id=4: {'outcome': 'connected', 'duration_seconds': 150, 'recording_url': 'https://example.com/recording.mp3'}
+Payload: {"CallSid": "exotel_sid_888", "Status": "completed", "ConversationDuration": "150", "RecordingUrl": "https://example.com/recording.mp3"}
+============================================================
+
+=== EXOTEL WEBHOOK RECEIVED AT 2026-06-11 09:16:55 ===
+Matched Call ID: 4
+Matched Schema: test
+Notes:
+Method: POST
+Full Path: /api/calls/webhook/exotel/
+Host: tenant.test.com
+Payload keys: ['CallSid', 'Status', 'ConversationDuration', 'RecordingUrl']
+Extracted: CallSid=exotel_sid_888, Status=completed, Duration=150, Recording=https://example.com/recording.mp3, CustomField=None
+UPDATED CallLog id=4: {'outcome': 'connected', 'duration_seconds': 150, 'recording_url': 'https://example.com/recording.mp3'}
+Payload: {"CallSid": "exotel_sid_888", "Status": "completed", "ConversationDuration": "150", "RecordingUrl": "https://example.com/recording.mp3"}
+============================================================
+
+=== EXOTEL WEBHOOK RECEIVED AT 2026-06-11 10:19:31 ===
+Matched Call ID: 4
+Matched Schema: test
+Notes:
+Method: POST
+Full Path: /api/calls/webhook/exotel/
+Host: tenant.test.com
+Payload keys: ['CallSid', 'Status', 'ConversationDuration', 'RecordingUrl', 'Direction', 'From', 'To', 'DialWhomNumber']
+Extracted: CallSid=exotel_sid_inbound_123, Status=completed, Duration=120, Recording=https://example.com/inbound.mp3, CustomField=None, direction=inbound
+No matched CallLog found. Attempting Inbound Call processing...
+Inbound match by Exotel ExoPhone: test
+CREATED Inbound Exotel CallLog id=4 in schema test
+Payload: {"CallSid": "exotel_sid_inbound_123", "Status": "completed", "ConversationDuration": "120", "RecordingUrl": "https://example.com/inbound.mp3", "Direction": "inbound", "From": "9876543210", "To": "+919988776655", "DialWhomNumber": "+919900000000"}
+============================================================
+
+=== EXOTEL WEBHOOK RECEIVED AT 2026-06-11 10:19:32 ===
+Matched Call ID: 5
+Matched Schema: test
+Notes:
+Method: POST
+Full Path: /api/calls/webhook/exotel/
+Host: tenant.test.com
+Payload keys: ['CallSid', 'Status', 'ConversationDuration', 'RecordingUrl']
+Extracted: CallSid=exotel_sid_888, Status=completed, Duration=150, Recording=https://example.com/recording.mp3, CustomField=None, direction=inbound
+UPDATED CallLog id=5: {'outcome': 'connected', 'duration_seconds': 150, 'recording_url': 'https://example.com/recording.mp3'}
+Payload: {"CallSid": "exotel_sid_888", "Status": "completed", "ConversationDuration": "150", "RecordingUrl": "https://example.com/recording.mp3"}
+============================================================
+
+=== EXOTEL WEBHOOK RECEIVED AT 2026-06-11 11:24:36 ===
+Matched Call ID: 4
+Matched Schema: test
+Notes:
+Method: POST
+Full Path: /api/calls/webhook/exotel/
+Host: tenant.test.com
+Payload keys: ['CallSid', 'Status', 'ConversationDuration', 'RecordingUrl', 'Direction', 'From', 'To', 'DialWhomNumber']
+Extracted: CallSid=exotel_sid_inbound_123, Status=completed, Duration=120, Recording=https://example.com/inbound.mp3, CustomField=None, direction=inbound
+No matched CallLog found. Attempting Inbound Call processing...
+Inbound match by Exotel ExoPhone: test
+CREATED Inbound Exotel CallLog id=4 in schema test
+Payload: {"CallSid": "exotel_sid_inbound_123", "Status": "completed", "ConversationDuration": "120", "RecordingUrl": "https://example.com/inbound.mp3", "Direction": "inbound", "From": "9876543210", "To": "+919988776655", "DialWhomNumber": "+919900000000"}
+============================================================
+
+=== EXOTEL WEBHOOK RECEIVED AT 2026-06-11 11:24:36 ===
+Matched Call ID: 5
+Matched Schema: test
+Notes:
+Method: POST
+Full Path: /api/calls/webhook/exotel/
+Host: tenant.test.com
+Payload keys: ['CallSid', 'Status', 'ConversationDuration', 'RecordingUrl']
+Extracted: CallSid=exotel_sid_888, Status=completed, Duration=150, Recording=https://example.com/recording.mp3, CustomField=None, direction=inbound
+UPDATED CallLog id=5: {'outcome': 'connected', 'duration_seconds': 150, 'recording_url': 'https://example.com/recording.mp3'}
+Payload: {"CallSid": "exotel_sid_888", "Status": "completed", "ConversationDuration": "150", "RecordingUrl": "https://example.com/recording.mp3"}
+============================================================
+

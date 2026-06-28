@@ -1,0 +1,58 @@
+[
+  {
+    "username": "sidhu",
+    "first_name": "",
+    "last_name": "",
+    "is_staff": true,
+    "is_manager": false,
+    "is_general_manager": false
+  },
+  {
+    "username": "admin@alpha.com",
+    "first_name": "Admin",
+    "last_name": "User",
+    "is_staff": true,
+    "is_manager": false,
+    "is_general_manager": false
+  },
+  {
+    "username": "agent2@alpha.com",
+    "first_name": "Agent 2",
+    "last_name": "Sales",
+    "is_staff": false,
+    "is_manager": false,
+    "is_general_manager": false
+  },
+  {
+    "username": "agent3@alpha.com",
+    "first_name": "Agent 3",
+    "last_name": "Sales",
+    "is_staff": false,
+    "is_manager": false,
+    "is_general_manager": false
+  },
+  {
+    "username": "admin",
+    "first_name": "",
+    "last_name": "",
+    "is_staff": true,
+    "is_manager": false,
+    "is_general_manager": false
+  },
+  {
+    "username": "testmanager",
+    "first_name": "Test",
+    "last_name": "Manager",
+    "is_staff": false,
+    "is_manager": true,
+    "is_general_manager": false
+  },
+  {
+    "username": "agent1@alpha.com",
+    "first_name": "Agent 1",
+    "last_name": "Sales",
+    "is_staff": false,
+    "is_manager": false,
+    "is_general_manager": false
+  }
+]
