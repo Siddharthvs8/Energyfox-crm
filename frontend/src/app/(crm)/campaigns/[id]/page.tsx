@@ -265,7 +265,7 @@ export default function CampaignDetailsPage({ params: paramsPromise }: { params:
                           </div>
                           <div className="flex items-center gap-4">
                             <div className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider border 
-                              ${lead.status === 'enrolled' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-white/5 text-slate-400 border-white/5'}`
+                              ${lead.status === 'converted' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-white/5 text-slate-400 border-white/5'}`
                             }>
                               {lead.status.replace('_', ' ')}
                             </div>

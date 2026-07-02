@@ -56,7 +56,7 @@ class WorkspaceTeamViewSet(viewsets.ModelViewSet):
         team = self.get_object()
         members = team.members.filter(is_active=True)
         team_leads = Lead.objects.filter(assigned_to__in=members)
-        won_leads = team_leads.filter(status='enrolled')
+        won_leads = team_leads.filter(status='converted')
         
         total_count = team_leads.count()
         enrolled_count = won_leads.count()
@@ -83,7 +83,7 @@ class WorkspaceTeamViewSet(viewsets.ModelViewSet):
         leaderboard = []
         for member in members:
             member_leads = Lead.objects.filter(assigned_to=member)
-            m_won = member_leads.filter(status='enrolled')
+            m_won = member_leads.filter(status='converted')
             leaderboard.append({
                 "id": member.id,
                 "name": f"{member.first_name} {member.last_name}".strip() or member.username,
@@ -193,6 +193,16 @@ class UserViewSet(viewsets.ModelViewSet):
         """List active accounts staff (for the accounts-assign picker)."""
         return Response(self._role_picker('accounts_staff'))
 
+    @action(detail=False, methods=['get'], url_path='purchase-staff')
+    def purchase_staff(self, request):
+        """List active purchase staff (for the purchase-assign picker)."""
+        return Response(self._role_picker('purchase_staff'))
+
+    @action(detail=False, methods=['get'], url_path='project-managers')
+    def project_managers(self, request):
+        """List active project managers (for the project-assign picker)."""
+        return Response(self._role_picker('project_manager'))
+
     def _role_picker(self, role):
         qs = User.objects.filter(is_active=True, role=role).order_by('first_name', 'last_name')
         return [
@@ -216,7 +226,7 @@ class UserViewSet(viewsets.ModelViewSet):
         if date_from and date_to:
             user_leads = user_leads.filter(created_at__date__gte=date_from, created_at__date__lte=date_to)
 
-        won_leads = user_leads.filter(status='enrolled')
+        won_leads = user_leads.filter(status='converted')
         
         total_count = user_leads.count()
         enrolled_count = won_leads.count()

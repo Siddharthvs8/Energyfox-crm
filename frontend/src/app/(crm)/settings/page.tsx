@@ -75,9 +75,7 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
     if (!val) return;
     
     const standardValues = [
-      "new","follow_up","positive","enrolled","not_interested","disqualified",
-      "prospect","interested_to_join","may_buy_later","demo_booked","demo_done",
-      "demo_rescheduled","demo_canceled","dnp","partially_paid"
+      "new","follow_up","positive","interested","not_interested","converted"
     ];
     if (standardValues.includes(val) || customStatuses.some(s => s.value === val)) {
       alert("This status already exists (either as a default or custom status).");

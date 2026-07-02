@@ -218,7 +218,7 @@ export default function DashboardPage({ params: paramsPromise }: { params: Promi
           icon={<svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 00-3-3.87" /><path d="M16 3.13a4 4 0 010 7.75" /></svg>}
         />
         <StatCard
-          label="Revenue" value={stats?.total_revenue || 0} prefix="₹" isCurrency sub="Enrolled deals"
+          label="Revenue" value={stats?.total_revenue || 0} prefix="₹" isCurrency sub="Converted deals"
           accent="#10b981"
           icon={<svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" viewBox="0 0 24 24"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" /></svg>}
         />
@@ -321,7 +321,7 @@ export default function DashboardPage({ params: paramsPromise }: { params: Promi
               <thead>
                 <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-widest bg-slate-50/50">
                   <th className="px-5 py-3.5">Member</th>
-                  <th className="px-5 py-3.5 text-right">Enrolled</th>
+                  <th className="px-5 py-3.5 text-right">Converted</th>
                   <th className="px-5 py-3.5 text-right">Revenue</th>
                   <th className="px-5 py-3.5 text-right">Pipeline</th>
                 </tr>
@@ -375,7 +375,7 @@ export default function DashboardPage({ params: paramsPromise }: { params: Promi
                     <svg width="14" height="14" fill="none" stroke="#10b981" strokeWidth="2" viewBox="0 0 24 24"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17" /><polyline points="16 7 22 7 22 13" /></svg>
                   </div>
                   <p className="text-xl font-bold text-emerald-600 mb-1">₹{team.won_value.toLocaleString("en-IN")}</p>
-                  <p className="text-xs text-slate-400 mb-3">{team.won_count} enrolled</p>
+                  <p className="text-xs text-slate-400 mb-3">{team.won_count} converted</p>
                   <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
                     <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${pct}%` }} />
                   </div>
@@ -416,7 +416,7 @@ export default function DashboardPage({ params: paramsPromise }: { params: Promi
                   {/* Summary */}
                   <div className="grid grid-cols-3 gap-3">
                     {[
-                      { label: "Enrolled Revenue", value: `₹${selectedUser.summary.won_value.toLocaleString("en-IN")}`, bg: "bg-emerald-50", text: "text-emerald-700" },
+                      { label: "Converted Revenue", value: `₹${selectedUser.summary.won_value.toLocaleString("en-IN")}`, bg: "bg-emerald-50", text: "text-emerald-700" },
                       { label: "Enroll Rate", value: `${selectedUser.summary.win_rate}%`,                            bg: "bg-indigo-50",  text: "text-indigo-700" },
                       { label: "Total Leads", value: selectedUser.summary.total_leads,                               bg: "bg-slate-50",   text: "text-slate-700" },
                     ].map(s => (
@@ -512,7 +512,7 @@ export default function DashboardPage({ params: paramsPromise }: { params: Promi
                   {/* Summary */}
                   <div className="grid grid-cols-3 gap-3">
                     {[
-                      { label: "Enrolled Revenue", value: `₹${selectedTeam.summary.won_value.toLocaleString("en-IN")}`, bg: "bg-emerald-50", text: "text-emerald-700" },
+                      { label: "Converted Revenue", value: `₹${selectedTeam.summary.won_value.toLocaleString("en-IN")}`, bg: "bg-emerald-50", text: "text-emerald-700" },
                       { label: "Enroll Rate", value: `${selectedTeam.summary.win_rate}%`,                            bg: "bg-indigo-50",  text: "text-indigo-700" },
                       { label: "Total Leads", value: selectedTeam.summary.total_leads,                               bg: "bg-slate-50",   text: "text-slate-700" },
                     ].map(s => (
@@ -534,7 +534,7 @@ export default function DashboardPage({ params: paramsPromise }: { params: Promi
                         <thead className="bg-slate-50">
                           <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
                             <th className="px-4 py-3">Member</th>
-                            <th className="px-4 py-3 text-right">Enrolled</th>
+                            <th className="px-4 py-3 text-right">Converted</th>
                             <th className="px-4 py-3 text-right">Revenue</th>
                             <th className="px-4 py-3 text-right">Pipeline</th>
                           </tr>

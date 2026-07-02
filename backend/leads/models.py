@@ -80,6 +80,28 @@ class Lead(models.Model):
         related_name='accounts_leads',
         help_text="Accounts staff verifying this lead's payment",
     )
+    # ── Purchase & Logistics handoff (after payment verification completes) ──
+    pushed_to_purchase = models.BooleanField(default=False, db_index=True)
+    pushed_to_purchase_at = models.DateTimeField(null=True, blank=True)
+    purchase_staff = models.ForeignKey(
+        'users.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='purchase_leads',
+        help_text="Purchase & logistics staff handling this lead's procurement",
+    )
+    # ── Project / installation handoff (after purchase & logistics completes) ──
+    pushed_to_project = models.BooleanField(default=False, db_index=True)
+    pushed_to_project_at = models.DateTimeField(null=True, blank=True)
+    project_manager = models.ForeignKey(
+        'users.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='project_leads',
+        help_text="Project manager handling this lead's installation",
+    )
     product = models.ForeignKey(
         Product,
         on_delete=models.SET_NULL,
@@ -94,25 +116,51 @@ class Lead(models.Model):
         ('new', 'New'),
         ('follow_up', 'Follow up'),
         ('positive', 'Positive'),
-        ('enrolled', 'Enrolled'),
+        ('interested', 'Interested'),
         ('not_interested', 'Not Interested'),
-        ('disqualified', 'Disqualified'),
-        ('prospect', 'Prospect'),
-        ('interested_to_join', 'Interested to Join'),
-        ('may_buy_later', 'MayBuyLater'),
-        ('demo_booked', 'Demo Booked'),
-        ('demo_done', 'Demo Done'),
-        ('demo_rescheduled', 'Demo Rescheduled'),
-        ('demo_canceled', 'Demo Canceled'),
-        ('dnp', 'DNP'),
-        ('partially_paid', 'Partially Paid'),
+        ('converted', 'Converted'),
     ]
     status = models.CharField(max_length=30, choices=status_choices, default='new', db_index=True)
     status_changed_at = models.DateTimeField(null=True, blank=True, db_index=True)
     invoice = models.FileField(upload_to='invoices/', null=True, blank=True)
-    
+
+    # ── Lost (a converted deal that fell through — customer skipped/backed out) ──
+    is_lost = models.BooleanField(default=False, db_index=True)
+    lost_at = models.DateTimeField(null=True, blank=True)
+    lost_reason = models.CharField(max_length=255, blank=True, default='')
+    lost_by = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='marked_lost_leads')
+
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    # Fulfilment pipeline stages (the module a lead is currently in), most-advanced
+    # first. Derived from the pushed_to_* handoff flags.
+    PIPELINE_STAGES = [
+        ('project', 'Project'),
+        ('purchase', 'Purchase & Logistics'),
+        ('accounts', 'Accounts'),
+        ('documentation', 'Documentation S1'),
+        ('site_visit', 'Site Visit'),
+        ('tele_caller', 'Tele Caller'),
+    ]
+    PIPELINE_STAGE_LABELS = dict(PIPELINE_STAGES)
+
+    @property
+    def pipeline_stage(self):
+        """The module/stage this lead is currently in (furthest reached)."""
+        if self.pushed_to_project:
+            return 'project'
+        if self.pushed_to_purchase:
+            return 'purchase'
+        if self.pushed_to_accounts:
+            return 'accounts'
+        if self.pushed_to_documentation:
+            return 'documentation'
+        if self.bde_id:
+            return 'site_visit'
+        return 'tele_caller'
 
     def __str__(self):
         return f"{self.first_name} {self.last_name}"
@@ -169,11 +217,28 @@ class SiteVisit(models.Model):
     load_enhancement = models.CharField(max_length=3, choices=YES_NO, blank=True, default='')
     email_linked_to_itr = models.CharField(max_length=254, blank=True, default='')
 
+    # ── Purchase order & KSEB feasibility (BDE, handled after push to documentation) ──
+    # Once the PO is signed, KSEB feasibility must be taken; if not, it's due 2 days
+    # after PO signing and the BDE gets a reminder notification. On completion the
+    # PO + feasibility dates reflect into the lead's accounts payment verification.
+    po_signed_date = models.DateField(null=True, blank=True, help_text="Date the purchase order was signed")
+    kseb_feasibility_taken = models.CharField(max_length=3, choices=YES_NO, blank=True, default='')
+    kseb_feasibility_date = models.DateField(null=True, blank=True, help_text="Date KSEB feasibility was taken")
+    kseb_feasibility_complete = models.BooleanField(default=False)
+
     # Document & photo uploads now live in the related SiteVisitDocument model
     # (multiple files per slot, keyed by doc_type).
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    @property
+    def kseb_feasibility_due_date(self):
+        """If the PO is signed, KSEB feasibility is due 2 days after signing."""
+        if self.po_signed_date:
+            from datetime import timedelta
+            return self.po_signed_date + timedelta(days=2)
+        return None
 
     def __str__(self):
         return f"Site visit — {self.lead}"
@@ -414,6 +479,14 @@ class PaymentVerification(models.Model):
         max_length=255, blank=True, default='',
         help_text="Authorised personnel who approved the discount")
 
+    # ── Registration fee (RF) tracking ──
+    # RF is due 30 days from the KSEB feasibility date; a reminder fires on day 29,
+    # and accounts can push the remittance task to the service department.
+    po_date = models.DateField(null=True, blank=True)
+    kseb_feasibility_date = models.DateField(null=True, blank=True)
+    rf_pushed_to_service = models.BooleanField(default=False)
+    rf_pushed_at = models.DateTimeField(null=True, blank=True)
+
     is_complete = models.BooleanField(default=False, db_index=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     completed_by = models.ForeignKey(
@@ -433,6 +506,14 @@ class PaymentVerification(models.Model):
         deal = self.lead.value or Decimal('0')
         return deal - (self.amount_received or Decimal('0')) - (self.discount_value or Decimal('0'))
 
+    @property
+    def rf_due_date(self):
+        """Registration fee is due 30 days from the KSEB feasibility date."""
+        if self.kseb_feasibility_date:
+            from datetime import timedelta
+            return self.kseb_feasibility_date + timedelta(days=30)
+        return None
+
     def missing_required_fields(self):
         """What's still needed before this can be marked verified/complete."""
         missing = []
@@ -444,3 +525,160 @@ class PaymentVerification(models.Model):
 
     def __str__(self):
         return f"Payment verification — {self.lead}"
+
+
+class BalancePayment(models.Model):
+    """A balance / installment payment collected against a lead after its initial
+    payment verification is complete, until the full deal value is received.
+
+    Each row is a ledger entry; the running total is added to the lead's
+    ``PaymentVerification.amount_received`` so the derived balance always reflects
+    what's still due. Once the balance reaches zero the lead is 'fully paid'."""
+    lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name='balance_payments')
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    payment_mode = models.CharField(max_length=10, choices=PaymentVerification.PAYMENT_MODES, blank=True, default='')
+    utr_details = models.CharField(max_length=255, blank=True, default='')
+    note = models.CharField(max_length=255, blank=True, default='')
+    recorded_by = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='recorded_balance_payments')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+
+    def __str__(self):
+        return f"Balance payment {self.amount} — {self.lead}"
+
+
+class PurchaseLogistics(models.Model):
+    """Purchase & logistics stage, filled by purchase staff once a lead's payment
+    is verified by the accounts team.
+
+    Tracks delivery of the mounting structure material and the BOM (bill of
+    materials), whether any item is still pending, and a free-text remark.
+    """
+    DELIVERY = [('delivered', 'Delivered'), ('not_delivered', 'Not Delivered')]
+    YES_NO = [('yes', 'Yes'), ('no', 'No')]
+
+    lead = models.OneToOneField(Lead, on_delete=models.CASCADE, related_name='purchase_logistics')
+    structure_material = models.CharField(max_length=15, choices=DELIVERY, blank=True, default='')
+    bom = models.CharField(max_length=15, choices=DELIVERY, blank=True, default='')
+    pending_item = models.CharField(max_length=3, choices=YES_NO, blank=True, default='')
+    remark = models.TextField(blank=True, default='')
+
+    is_complete = models.BooleanField(default=False, db_index=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    completed_by = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='completed_purchase_logistics')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def missing_required_fields(self):
+        """Structure material and BOM delivery status must be answered before
+        the purchase & logistics stage can be marked complete."""
+        missing = []
+        if not self.structure_material:
+            missing.append('structure_material')
+        if not self.bom:
+            missing.append('bom')
+        return missing
+
+    def __str__(self):
+        return f"Purchase & logistics — {self.lead}"
+
+
+class Project(models.Model):
+    """Installation project stage, handled by the project manager once a lead's
+    purchase & logistics is complete.
+
+    Tracks the structure-work and electrical-work dates, the site's pending
+    status, and the geotagged installation photos (see ProjectDocument).
+    """
+    lead = models.OneToOneField(Lead, on_delete=models.CASCADE, related_name='project')
+
+    # ── Structure work ──
+    structure_work_start_date = models.DateField(null=True, blank=True)
+    structure_work_completed_date = models.DateField(null=True, blank=True)
+    # ── Electrical work ──
+    electrical_work_start_date = models.DateField(null=True, blank=True)
+    electrical_work_completed_date = models.DateField(null=True, blank=True)
+    # ── Pending site ──
+    site_name = models.CharField(max_length=255, blank=True, default='')
+    pending_remark = models.TextField(blank=True, default='')
+
+    is_complete = models.BooleanField(default=False, db_index=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    completed_by = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='completed_projects')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    # Geotagged installation photo slots (ProjectDocument.doc_type), in display order.
+    PHOTO_SLOTS = [
+        ('panel_serial_numbers', 'Panel Serial Numbers'),
+        ('inverter_sn', 'Inverter SN'),
+        ('generation_meter', 'Generation Meter'),
+        ('plant_photo', 'Plant Photo'),
+        ('customer_with_inverter', 'Customer with Inverter'),
+        ('la', 'LA (Lightning Arrestor)'),
+    ]
+
+    def __str__(self):
+        return f"Project — {self.lead}"
+
+
+class ProjectDocument(models.Model):
+    """A single geotagged installation photo for a Project slot. ``doc_type`` is
+    one of Project.PHOTO_SLOTS; each slot can hold multiple files."""
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='documents')
+    doc_type = models.CharField(max_length=40, db_index=True)
+    file = models.FileField(upload_to='projects/photos/')
+    uploaded_by = models.ForeignKey('users.User', on_delete=models.SET_NULL, null=True, blank=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['uploaded_at', 'id']
+
+    def __str__(self):
+        return f"{self.doc_type} — {self.project_id}"
+
+
+class ServiceEntry(models.Model):
+    """A scheduled service entry, managed by the project manager. A standalone
+    list (not tied to a lead) — the customer is referenced by typed name/id."""
+    customer_name = models.CharField(max_length=255, blank=True, default='')
+    customer_id = models.CharField(max_length=120, blank=True, default='')
+    scheduled_date = models.DateField(null=True, blank=True)
+    assigned_to = models.CharField(max_length=255, blank=True, default='')
+    created_by = models.ForeignKey('users.User', on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='created_service_entries')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['scheduled_date', '-created_at']
+
+    def __str__(self):
+        return f"Service — {self.customer_name} ({self.scheduled_date})"
+
+
+class TeamStatsConfig(models.Model):
+    """Singleton config for the Team Stats module — just the manually-set team
+    lead names for the structure and electrical teams. The completion counts
+    themselves are derived from Project work dates."""
+    structure_team_lead = models.CharField(max_length=255, blank=True, default='')
+    electrical_team_lead = models.CharField(max_length=255, blank=True, default='')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    @classmethod
+    def get_solo(cls):
+        obj = cls.objects.first()
+        if obj is None:
+            obj = cls.objects.create()
+        return obj
+
+    def __str__(self):
+        return "Team stats config"

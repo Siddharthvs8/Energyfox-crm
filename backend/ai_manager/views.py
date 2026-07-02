@@ -246,7 +246,7 @@ class AIDashboardView(APIView):
             active_leads = Lead.objects.filter(
                 assigned_to=agent
             ).exclude(
-                status__in=['enrolled', 'not_interested', 'disqualified']
+                status__in=['converted', 'not_interested']
             ).count()
 
             total_leads = Lead.objects.filter(assigned_to=agent).count()
@@ -281,7 +281,7 @@ class AIDashboardView(APIView):
 
         # Actual enrollments this month
         enrolled_this_month = Lead.objects.filter(
-            status='enrolled',
+            status='converted',
             status_changed_at__year=year,
             status_changed_at__month=month
         )
@@ -334,7 +334,7 @@ class TeamPerformanceView(APIView):
             active_leads = Lead.objects.filter(
                 assigned_to=agent
             ).exclude(
-                status__in=['enrolled', 'not_interested', 'disqualified']
+                status__in=['converted', 'not_interested']
             ).count()
 
             total_leads = Lead.objects.filter(assigned_to=agent).count()
@@ -369,7 +369,7 @@ class TeamPerformanceView(APIView):
 
         # Actual enrollments this month for the team
         enrolled_this_month = Lead.objects.filter(
-            status='enrolled',
+            status='converted',
             status_changed_at__year=year,
             status_changed_at__month=month,
             assigned_to__in=agents
@@ -535,7 +535,7 @@ class MyPerformanceView(APIView):
         my_leads = Lead.objects.filter(assigned_to=user)
         total_leads = my_leads.count()
         active_leads = my_leads.exclude(
-            status__in=['enrolled', 'not_interested', 'disqualified']
+            status__in=['converted', 'not_interested']
         ).count()
 
         # Status breakdown
@@ -544,7 +544,7 @@ class MyPerformanceView(APIView):
 
         # Enrolled this month
         enrolled_this_month = my_leads.filter(
-            status='enrolled',
+            status='converted',
             status_changed_at__year=year,
             status_changed_at__month=month
         )
@@ -553,7 +553,7 @@ class MyPerformanceView(APIView):
 
         # Win rate
         total_decided = my_leads.filter(
-            status__in=['enrolled', 'not_interested', 'disqualified']
+            status__in=['converted', 'not_interested']
         ).count()
         win_rate = (enrolled_count / total_decided * 100) if total_decided > 0 else 0
 

@@ -16,7 +16,7 @@ from django.utils import timezone
 
 
 # Statuses that mean the lead is "closed" — never treated as inactive.
-_CLOSED_STATUSES = ['enrolled', 'not_interested', 'disqualified', 'partially_paid']
+_CLOSED_STATUSES = ['converted', 'not_interested']
 
 
 class Command(BaseCommand):

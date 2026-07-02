@@ -32,6 +32,8 @@ const ROLES = [
   { value: "documentation_staff", label: "Documentation Staff" },
   { value: "documentation_manager", label: "Documentation Manager" },
   { value: "accounts_staff", label: "Accounts Staff" },
+  { value: "purchase_staff", label: "Purchase Staff" },
+  { value: "project_manager", label: "Project Manager" },
   { value: "coo", label: "COO" },
   { value: "admin", label: "Admin" },
   { value: "superadmin", label: "Super Admin" },
@@ -45,6 +47,8 @@ const ROLE_COLORS: Record<string, { bg: string; text: string }> = {
   branch_manager: { bg: "bg-cyan-50", text: "text-cyan-700" },
   documentation_staff: { bg: "bg-emerald-50", text: "text-emerald-700" },
   accounts_staff: { bg: "bg-teal-50", text: "text-teal-700" },
+  purchase_staff: { bg: "bg-orange-50", text: "text-orange-700" },
+  project_manager: { bg: "bg-indigo-50", text: "text-indigo-700" },
   bde: { bg: "bg-slate-100", text: "text-slate-600" },
   tele_caller: { bg: "bg-slate-100", text: "text-slate-600" },
 };
@@ -200,7 +204,6 @@ function TeamPageInner() {
   );
 
   const isAdminOrGM = currentUser?.is_staff || currentUser?.is_general_manager;
-  const usagePercent = Math.min(100, (team.length / maxUsers) * 100);
 
   // Agent / manager view: surface the current user's team manager.
   const myTeam = workspaceTeams.find((t) => t.id === currentUser?.team);
@@ -274,24 +277,6 @@ function TeamPageInner() {
                   Contact
                 </a>
               )}
-            </div>
-          </div>
-        )}
-
-        {/* ── Seat Usage Bar ── */}
-        {activeTab === "members" && isAdminOrGM && (
-          <div className="bg-white border border-slate-100 rounded-2xl p-5 mb-6 shadow-sm">
-            <div className="flex items-center justify-between mb-3">
-              <div>
-                <h3 className="text-sm font-bold text-slate-800">Seat Usage</h3>
-                <p className="text-xs text-slate-400 mt-0.5">{team.length} of {maxUsers} seats used</p>
-              </div>
-              <span className={`text-xs font-bold px-3 py-1 rounded-full ${usagePercent >= 90 ? "bg-red-50 text-red-600" : usagePercent >= 70 ? "bg-amber-50 text-amber-600" : "bg-emerald-50 text-emerald-600"}`}>
-                {Math.round(usagePercent)}% used
-              </span>
-            </div>
-            <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
-              <div className={`h-full rounded-full transition-all ${usagePercent >= 90 ? "bg-red-500" : usagePercent >= 70 ? "bg-amber-500" : "bg-indigo-500"}`} style={{ width: `${usagePercent}%` }} />
             </div>
           </div>
         )}

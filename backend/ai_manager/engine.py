@@ -84,7 +84,7 @@ def _workload_balanced_assign(agents):
     from leads.models import Lead
     from django.db.models import Count, Q
 
-    terminal_statuses = ['enrolled', 'not_interested', 'disqualified']
+    terminal_statuses = ['converted', 'not_interested']
 
     agent_workloads = []
     for agent in agents:
@@ -139,7 +139,7 @@ def generate_daily_targets(monthly_target):
         yesterday = today - timedelta(days=1)
         actual_past_qs = Lead.objects.filter(
             assigned_to=monthly_target.agent,
-            status='enrolled',
+            status='converted',
             status_changed_at__year=year,
             status_changed_at__month=month,
             status_changed_at__date__lte=yesterday
@@ -198,7 +198,7 @@ def generate_daily_targets(monthly_target):
     
     historical_qs = Lead.objects.filter(
         assigned_to=agent,
-        status='enrolled',
+        status='converted',
         status_changed_at__gte=six_months_ago
     ).annotate(
         weekday=ExtractWeekDay('status_changed_at')
@@ -391,7 +391,7 @@ def check_daily_progress(agent, check_date=None):
     # Count leads enrolled today for this agent
     enrolled_today = Lead.objects.filter(
         assigned_to=agent,
-        status='enrolled',
+        status='converted',
         status_changed_at__date=check_date
     ).count()
 
@@ -399,7 +399,7 @@ def check_daily_progress(agent, check_date=None):
     from django.db.models import Sum
     revenue_today = Lead.objects.filter(
         assigned_to=agent,
-        status='enrolled',
+        status='converted',
         status_changed_at__date=check_date
     ).aggregate(total=Sum('value'))['total'] or 0
 
@@ -449,7 +449,7 @@ def check_monthly_progress(agent, month=None, year=None):
     # Enrolled this month
     enrolled = Lead.objects.filter(
         assigned_to=agent,
-        status='enrolled',
+        status='converted',
         status_changed_at__year=year,
         status_changed_at__month=month
     )

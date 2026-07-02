@@ -6,8 +6,8 @@ from django.http import HttpResponse
 import csv
 import io
 import logging
-from .models import Lead, IntegrationSettings, ActivityLog, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, LeadDocument, PaymentVerification
-from .serializers import LeadSerializer, IntegrationSettingsSerializer, LeadAttachmentSerializer, ProductSerializer, SiteVisitSerializer, DocumentationStage1Serializer, SiteVisitDocumentSerializer, DocumentationStage1DocumentSerializer, PaymentVerificationSerializer
+from .models import Lead, IntegrationSettings, ActivityLog, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, LeadDocument, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment
+from .serializers import LeadSerializer, IntegrationSettingsSerializer, LeadAttachmentSerializer, ProductSerializer, SiteVisitSerializer, DocumentationStage1Serializer, SiteVisitDocumentSerializer, DocumentationStage1DocumentSerializer, PaymentVerificationSerializer, PurchaseLogisticsSerializer, ProjectSerializer, ProjectDocumentSerializer, ServiceEntrySerializer, BalancePaymentSerializer
 from .document_kinds import SHARED_KIND_LABELS, kind_for
 from django.utils import timezone
 
@@ -15,12 +15,8 @@ logger = logging.getLogger(__name__)
 
 STATUS_LABELS = {
     'new': 'New', 'follow_up': 'Follow Up', 'positive': 'Positive',
-    'enrolled': 'Enrolled', 'not_interested': 'Not Interested',
-    'disqualified': 'Disqualified', 'prospect': 'Prospect',
-    'interested_to_join': 'Interested to Join', 'may_buy_later': 'May Buy Later',
-    'demo_booked': 'Demo Booked', 'demo_done': 'Demo Done',
-    'demo_rescheduled': 'Demo Rescheduled', 'demo_canceled': 'Demo Canceled',
-    'dnp': 'DNP',
+    'interested': 'Interested', 'not_interested': 'Not Interested',
+    'converted': 'Converted',
 }
 
 # SiteVisit file fields exposed to the documentation team, in display order.
@@ -35,6 +31,7 @@ SITE_VISIT_ATTACHMENTS = [
     ('building_certificate', 'Building Certificate'),
     ('loan_document', 'Loan Document'),
     ('itr_report', 'ITR Report'),
+    ('kseb_feasibility_receipt', 'KSEB Feasibility Receipt'),
     ('photo_meterbox', 'Meter Box'),
     ('photo_earthing_1', 'Earthing 1'),
     ('photo_earthing_2', 'Earthing 2'),
@@ -181,6 +178,68 @@ def auto_assign_accounts(lead):
     return assignee
 
 
+def _least_recently_assigned_purchase(candidates):
+    """Round-robin pick among purchase staff (least recently assigned goes next)."""
+    best, best_time = None, None
+    floor = timezone.datetime.min.replace(tzinfo=timezone.utc)
+    for u in candidates:
+        last = (Lead.objects.filter(purchase_staff=u)
+                .order_by('-pushed_to_purchase_at').first())
+        t = last.pushed_to_purchase_at if (last and last.pushed_to_purchase_at) else floor
+        if best is None or t < best_time:
+            best, best_time = u, t
+    return best
+
+
+def auto_assign_purchase(lead):
+    """On handoff to purchase & logistics, round-robin assign a purchase_staff
+    member: prefer the BDE's team's purchase staff, else any active purchase staff.
+    Respects an existing assignment. Returns the assignee or None."""
+    from users.models import User, ROLE_PURCHASE_STAFF
+    if lead.purchase_staff_id:
+        return None
+    team = lead.bde.team if (lead.bde and lead.bde.team_id) else None
+    candidates = list(team.members.filter(role=ROLE_PURCHASE_STAFF, is_active=True)) if team else []
+    if not candidates:
+        candidates = list(User.objects.filter(role=ROLE_PURCHASE_STAFF, is_active=True))
+    assignee = _least_recently_assigned_purchase(candidates) if candidates else None
+    if assignee:
+        lead.purchase_staff = assignee
+        lead.save(update_fields=['purchase_staff'])
+    return assignee
+
+
+def _least_recently_assigned_project(candidates):
+    """Round-robin pick among project managers (least recently assigned goes next)."""
+    best, best_time = None, None
+    floor = timezone.datetime.min.replace(tzinfo=timezone.utc)
+    for u in candidates:
+        last = (Lead.objects.filter(project_manager=u)
+                .order_by('-pushed_to_project_at').first())
+        t = last.pushed_to_project_at if (last and last.pushed_to_project_at) else floor
+        if best is None or t < best_time:
+            best, best_time = u, t
+    return best
+
+
+def auto_assign_project(lead):
+    """On handoff to the project stage, round-robin assign a project_manager:
+    prefer the BDE's team's project managers, else any active project manager.
+    Respects an existing assignment. Returns the assignee or None."""
+    from users.models import User, ROLE_PROJECT_MANAGER
+    if lead.project_manager_id:
+        return None
+    team = lead.bde.team if (lead.bde and lead.bde.team_id) else None
+    candidates = list(team.members.filter(role=ROLE_PROJECT_MANAGER, is_active=True)) if team else []
+    if not candidates:
+        candidates = list(User.objects.filter(role=ROLE_PROJECT_MANAGER, is_active=True))
+    assignee = _least_recently_assigned_project(candidates) if candidates else None
+    if assignee:
+        lead.project_manager = assignee
+        lead.save(update_fields=['project_manager'])
+    return assignee
+
+
 class LeadViewSet(viewsets.ModelViewSet):
     queryset = Lead.objects.all()
     serializer_class = LeadSerializer
@@ -201,18 +260,9 @@ class LeadViewSet(viewsets.ModelViewSet):
             {"value": "new", "label": "New", "bg": "bg-indigo-50", "text": "text-indigo-700", "dot": "bg-indigo-400", "color": "#6366f1"},
             {"value": "follow_up", "label": "Follow up", "bg": "bg-amber-50", "text": "text-amber-700", "dot": "bg-amber-400", "color": "#f59e0b"},
             {"value": "positive", "label": "Positive", "bg": "bg-cyan-50", "text": "text-cyan-700", "dot": "bg-cyan-500", "color": "#06b6d4"},
-            {"value": "enrolled", "label": "Enrolled", "bg": "bg-emerald-50", "text": "text-emerald-700", "dot": "bg-emerald-500", "color": "#10b981"},
+            {"value": "interested", "label": "Interested", "bg": "bg-lime-50", "text": "text-lime-700", "dot": "bg-lime-500", "color": "#84cc16"},
             {"value": "not_interested", "label": "Not Interested", "bg": "bg-rose-50", "text": "text-rose-700", "dot": "bg-rose-500", "color": "#f43f5e"},
-            {"value": "disqualified", "label": "Disqualified", "bg": "bg-red-50", "text": "text-red-700", "dot": "bg-red-500", "color": "#ef4444"},
-            {"value": "prospect", "label": "Prospect", "bg": "bg-violet-50", "text": "text-violet-700", "dot": "bg-violet-400", "color": "#8b5cf6"},
-            {"value": "interested_to_join", "label": "Interested to Join", "bg": "bg-lime-50", "text": "text-lime-700", "dot": "bg-lime-500", "color": "#84cc16"},
-            {"value": "may_buy_later", "label": "May Buy Later", "bg": "bg-orange-50", "text": "text-orange-700", "dot": "bg-orange-400", "color": "#f97316"},
-            {"value": "demo_booked", "label": "Demo Booked", "bg": "bg-sky-50", "text": "text-sky-700", "dot": "bg-sky-500", "color": "#0ea5e9"},
-            {"value": "demo_done", "label": "Demo Done", "bg": "bg-teal-50", "text": "text-teal-700", "dot": "bg-teal-500", "color": "#14b8a6"},
-            {"value": "demo_rescheduled", "label": "Demo Rescheduled", "bg": "bg-yellow-50", "text": "text-yellow-700", "dot": "bg-yellow-500", "color": "#eab308"},
-            {"value": "demo_canceled", "label": "Demo Canceled", "bg": "bg-pink-50", "text": "text-pink-700", "dot": "bg-pink-500", "color": "#ec4899"},
-            {"value": "dnp", "label": "DNP", "bg": "bg-slate-100", "text": "text-slate-600", "dot": "bg-slate-400", "color": "#94a3b8"},
-            {"value": "partially_paid", "label": "Partially Paid", "bg": "bg-fuchsia-50", "text": "text-fuchsia-700", "dot": "bg-fuchsia-500", "color": "#d946ef"},
+            {"value": "converted", "label": "Converted", "bg": "bg-emerald-50", "text": "text-emerald-700", "dot": "bg-emerald-500", "color": "#10b981"},
         ]
         
         custom_statuses = []
@@ -262,6 +312,187 @@ class LeadViewSet(viewsets.ModelViewSet):
         data = serializer.data
         data['deal_value'] = lead.value
         return Response(data)
+
+    @staticmethod
+    def _sync_feasibility_reminder(lead, sv):
+        """When the PO is signed but KSEB feasibility is not taken, ensure the BDE
+        has an open reminder notification (due 2 days after PO signing). Resolve it
+        once feasibility is taken."""
+        from ai_manager.models import Notification
+        bde = lead.bde
+        if not bde:
+            return
+        pending = bool(sv.po_signed_date) and sv.kseb_feasibility_taken == 'no'
+        existing = Notification.objects.filter(
+            user=bde, is_read=False,
+            extra_data__kseb_feasibility_lead=lead.id).first()
+        if pending and not existing:
+            due = sv.kseb_feasibility_due_date
+            name = f"{lead.first_name} {lead.last_name or ''}".strip()
+            Notification.objects.create(
+                user=bde,
+                title="KSEB Feasibility pending",
+                message=(f"Upload the KSEB feasibility receipt for {name}. "
+                         f"Due by {due.strftime('%d %b %Y') if due else '—'} "
+                         f"(2 days from PO signing)."),
+                notification_type='general',
+                extra_data={'kseb_feasibility_lead': lead.id},
+            )
+        elif not pending and existing:
+            existing.is_read = True
+            existing.save(update_fields=['is_read'])
+
+    # ── KSEB feasibility (BDE section for pushed-to-documentation leads) ──
+    def _feasibility_payload(self, lead, request):
+        from .access import can_edit_kseb_feasibility
+        sv = getattr(lead, 'site_visit', None)
+
+        def d(x):
+            return x.isoformat() if x else None
+
+        receipts = []
+        if sv:
+            receipts = SiteVisitDocumentSerializer(
+                sv.documents.filter(doc_type='kseb_feasibility_receipt'), many=True).data
+        return {
+            'id': lead.id,
+            'first_name': lead.first_name,
+            'last_name': lead.last_name,
+            'phone': lead.phone,
+            'location': lead.company,
+            'product_name': lead.product.name if lead.product else None,
+            'pushed_at': lead.pushed_to_documentation_at,
+            'po_signed_date': d(sv.po_signed_date) if sv else None,
+            'kseb_feasibility_taken': sv.kseb_feasibility_taken if sv else '',
+            'kseb_feasibility_date': d(sv.kseb_feasibility_date) if sv else None,
+            'kseb_feasibility_complete': bool(sv and sv.kseb_feasibility_complete),
+            'feasibility_due_date': d(sv.kseb_feasibility_due_date) if sv else None,
+            'receipts': receipts,
+            'can_edit': can_edit_kseb_feasibility(request.user, lead),
+        }
+
+    @action(detail=False, methods=['get'], url_path='bde-feasibility')
+    def bde_feasibility(self, request):
+        """BDE's pushed-to-documentation leads, for the KSEB feasibility task."""
+        user = request.user
+        if not user or not user.is_authenticated:
+            return Response({'error': 'Authentication required.'}, status=status.HTTP_401_UNAUTHORIZED)
+        qs = (Lead.objects.filter(pushed_to_documentation=True)
+              .select_related('product', 'bde', 'site_visit')
+              .prefetch_related('site_visit__documents')
+              .order_by('-pushed_to_documentation_at'))
+        if not (user.is_staff or getattr(user, 'is_general_manager', False)):
+            if getattr(user, 'branch_scoped', False) and user.branch_id:
+                qs = qs.filter(bde__branch_id=user.branch_id)
+            else:
+                qs = qs.filter(bde=user)
+        return Response([self._feasibility_payload(lead, request) for lead in qs])
+
+    @action(detail=True, methods=['get', 'patch'], url_path='kseb-feasibility')
+    def kseb_feasibility(self, request, pk=None):
+        """Get or update a lead's KSEB feasibility (PO date, taken, feasibility date)."""
+        from .access import can_edit_kseb_feasibility
+        lead = self.get_object()
+        sv, _ = SiteVisit.objects.get_or_create(lead=lead)
+        if request.method == 'GET':
+            return Response(self._feasibility_payload(lead, request))
+        if not can_edit_kseb_feasibility(request.user, lead):
+            return Response({'error': 'You do not have permission to edit this feasibility.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        if sv.kseb_feasibility_complete:
+            return Response({'error': 'KSEB feasibility is already completed and locked.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        for field in ('po_signed_date', 'kseb_feasibility_date'):
+            if field in request.data:
+                setattr(sv, field, request.data.get(field) or None)
+        if 'kseb_feasibility_taken' in request.data:
+            sv.kseb_feasibility_taken = request.data.get('kseb_feasibility_taken') or ''
+        sv.save()
+        sv.refresh_from_db()  # turn date strings into date objects for the payload/reminder
+        self._sync_feasibility_reminder(lead, sv)
+        return Response(self._feasibility_payload(lead, request))
+
+    @action(detail=True, methods=['post'], url_path='kseb-feasibility/documents')
+    def kseb_feasibility_add_document(self, request, pk=None):
+        """Upload the KSEB feasibility receipt photo/PDF."""
+        from .access import can_edit_kseb_feasibility
+        lead = self.get_object()
+        if not can_edit_kseb_feasibility(request.user, lead):
+            return Response({'error': 'You do not have permission to edit this feasibility.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        sv, _ = SiteVisit.objects.get_or_create(lead=lead)
+        if sv.kseb_feasibility_complete:
+            return Response({'error': 'KSEB feasibility is completed and locked.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        file = request.FILES.get('file')
+        if not file:
+            return Response({'error': 'file is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        doc = SiteVisitDocument.objects.create(
+            site_visit=sv, doc_type='kseb_feasibility_receipt', file=file,
+            uploaded_by=request.user if request.user.is_authenticated else None)
+        return Response(SiteVisitDocumentSerializer(doc).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['delete'], url_path='kseb-feasibility/documents/(?P<doc_id>[0-9]+)')
+    def kseb_feasibility_delete_document(self, request, pk=None, doc_id=None):
+        """Delete a KSEB feasibility receipt."""
+        from .access import can_edit_kseb_feasibility
+        lead = self.get_object()
+        if not can_edit_kseb_feasibility(request.user, lead):
+            return Response({'error': 'You do not have permission to edit this feasibility.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        try:
+            doc = SiteVisitDocument.objects.get(pk=doc_id, site_visit__lead=lead,
+                                                doc_type='kseb_feasibility_receipt')
+        except SiteVisitDocument.DoesNotExist:
+            return Response({'error': 'Receipt not found.'}, status=status.HTTP_404_NOT_FOUND)
+        doc.file.delete(save=False)
+        doc.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=['post'], url_path='complete-kseb-feasibility')
+    def complete_kseb_feasibility(self, request, pk=None):
+        """Complete the KSEB feasibility and reflect PO + feasibility dates into the
+        lead's accounts payment verification."""
+        from .access import can_edit_kseb_feasibility
+        lead = self.get_object()
+        if not can_edit_kseb_feasibility(request.user, lead):
+            return Response({'error': 'You do not have permission to complete this feasibility.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        sv, _ = SiteVisit.objects.get_or_create(lead=lead)
+        if sv.kseb_feasibility_complete:
+            return Response({'error': 'KSEB feasibility is already completed.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        missing = []
+        if not sv.po_signed_date:
+            missing.append('po_signed_date')
+        if sv.kseb_feasibility_taken != 'yes':
+            missing.append('kseb_feasibility_taken')
+        elif not sv.kseb_feasibility_date:
+            missing.append('kseb_feasibility_date')
+        if missing:
+            return Response({'error': 'Record the PO date and the KSEB feasibility (taken + date) first.',
+                             'missing': missing}, status=status.HTTP_400_BAD_REQUEST)
+        sv.kseb_feasibility_complete = True
+        sv.save(update_fields=['kseb_feasibility_complete', 'updated_at'])
+        self._sync_feasibility_reminder(lead, sv)  # resolves the reminder (taken == yes)
+        # Reflect PO + feasibility dates into the lead's accounts payment verification.
+        pv, _ = PaymentVerification.objects.get_or_create(lead=lead)
+        updates = []
+        if pv.po_date != sv.po_signed_date:
+            pv.po_date = sv.po_signed_date
+            updates.append('po_date')
+        if pv.kseb_feasibility_date != sv.kseb_feasibility_date:
+            pv.kseb_feasibility_date = sv.kseb_feasibility_date
+            updates.append('kseb_feasibility_date')
+        if updates:
+            updates.append('updated_at')
+            pv.save(update_fields=updates)
+        ActivityLog.objects.create(
+            activity_type='note_added',
+            description="KSEB feasibility completed by BDE; PO & feasibility dates sent to accounts.",
+            actor=request.user if request.user.is_authenticated else None,
+            lead=lead, extra={'auto_generated': True})
+        return Response(self._feasibility_payload(lead, request))
 
     @action(detail=True, methods=['post'], url_path='site-visit/documents')
     def site_visit_add_document(self, request, pk=None):
@@ -866,6 +1097,9 @@ class LeadViewSet(viewsets.ModelViewSet):
             'stage1_complete': bool(s1 and s1.is_complete),
             'payment_verification': PaymentVerificationSerializer(pv, context={'request': request}).data if pv else None,
             'payment_complete': bool(pv and pv.is_complete),
+            'balance_amount': pv.balance_amount if pv else None,
+            'fully_paid': bool(pv and pv.is_complete and pv.balance_amount <= 0),
+            'balance_payments': BalancePaymentSerializer(lead.balance_payments.all(), many=True).data,
             'can_edit_payment': can_edit_payment_verification(request.user, lead),
             'can_assign': can_assign_accounts(request.user),
             'can_reopen_payment': can_assign_accounts(request.user),
@@ -934,6 +1168,70 @@ class LeadViewSet(viewsets.ModelViewSet):
         serializer.save()
         return Response(serializer.data)
 
+    @staticmethod
+    def _sync_rf_reminder(lead, pv):
+        """When the KSEB feasibility date is set but the RF hasn't been pushed to
+        service, ensure the accounts staff has an open reminder (RF due 30 days from
+        feasibility; reminder intended for day 29). Resolve once the RF is pushed."""
+        from ai_manager.models import Notification
+        recipient = lead.accounts_staff
+        if not recipient:
+            return
+        pending = bool(pv.kseb_feasibility_date) and not pv.rf_pushed_to_service
+        existing = Notification.objects.filter(
+            user=recipient, is_read=False,
+            extra_data__rf_lead=lead.id).first()
+        if pending and not existing:
+            due = pv.rf_due_date
+            name = f"{lead.first_name} {lead.last_name or ''}".strip()
+            Notification.objects.create(
+                user=recipient,
+                title="Registration Fee (RF) due",
+                message=(f"RF for {name} is due by {due.strftime('%d %b %Y') if due else '—'} "
+                         f"(30 days from KSEB feasibility; remind on day 29). "
+                         f"Push to the service department to remit RF at the KSEB section."),
+                notification_type='general',
+                extra_data={'rf_lead': lead.id},
+            )
+        elif not pending and existing:
+            existing.is_read = True
+            existing.save(update_fields=['is_read'])
+
+    @action(detail=True, methods=['post'], url_path='push-rf-to-service')
+    def push_rf_to_service(self, request, pk=None):
+        """Push the RF remittance task to the service department (creates a service
+        entry to remit the registration fee at the KSEB section)."""
+        from .access import can_edit_payment_verification
+        lead = self.get_object()
+        if not can_edit_payment_verification(request.user, lead):
+            return Response({'error': 'You do not have permission to push the RF for this lead.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        pv, _ = PaymentVerification.objects.get_or_create(lead=lead)
+        if not pv.kseb_feasibility_date:
+            return Response({'error': 'Set the KSEB feasibility date first.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if pv.rf_pushed_to_service:
+            return Response({'error': 'RF has already been pushed to the service department.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        name = f"{lead.first_name} {lead.last_name or ''}".strip()
+        ServiceEntry.objects.create(
+            customer_name=name,
+            customer_id=str(lead.id),
+            scheduled_date=pv.rf_due_date,
+            assigned_to='Remit RF at KSEB section',
+            created_by=request.user if request.user.is_authenticated else None,
+        )
+        pv.rf_pushed_to_service = True
+        pv.rf_pushed_at = timezone.now()
+        pv.save(update_fields=['rf_pushed_to_service', 'rf_pushed_at', 'updated_at'])
+        self._sync_rf_reminder(lead, pv)  # resolves the open RF reminder
+        ActivityLog.objects.create(
+            activity_type='note_added',
+            description="RF (registration fee) pushed to the service department to remit at the KSEB section.",
+            actor=request.user if request.user.is_authenticated else None,
+            lead=lead, extra={'auto_generated': True})
+        return Response(self._completed_project_payload(lead, request))
+
     @action(detail=True, methods=['post'], url_path='complete-payment-verification')
     def complete_payment_verification(self, request, pk=None):
         """Mark a lead's payment verification complete (locks it)."""
@@ -963,6 +1261,24 @@ class LeadViewSet(viewsets.ModelViewSet):
             lead=lead,
             extra={'auto_generated': True},
         )
+        # Hand the lead off to purchase & logistics.
+        if not lead.pushed_to_purchase:
+            lead.pushed_to_purchase = True
+            lead.pushed_to_purchase_at = timezone.now()
+            lead.save(update_fields=['pushed_to_purchase', 'pushed_to_purchase_at'])
+            assignee = auto_assign_purchase(lead)
+            if assignee:
+                pname = f"{assignee.first_name} {assignee.last_name}".strip() or assignee.username
+                pdesc = f"Moved to purchase & logistics. Auto-assigned to {pname}."
+            else:
+                pdesc = "Moved to purchase & logistics."
+            ActivityLog.objects.create(
+                activity_type='note_added',
+                description=pdesc,
+                actor=request.user if request.user.is_authenticated else None,
+                lead=lead,
+                extra={'auto_generated': True},
+            )
         return Response(self._accounts_payload(lead, request))
 
     @action(detail=True, methods=['post'], url_path='reopen-payment-verification')
@@ -1002,6 +1318,700 @@ class LeadViewSet(viewsets.ModelViewSet):
                 return Response({'error': 'Accounts staff not found.'}, status=status.HTTP_404_NOT_FOUND)
         lead.save(update_fields=['accounts_staff'])
         return Response(self._accounts_payload(lead, request))
+
+    @action(detail=True, methods=['post'], url_path='mark-lost')
+    def mark_lost(self, request, pk=None):
+        """Mark a converted lead as lost (customer skipped / backed out of the deal)."""
+        from .access import can_mark_lead_lost
+        lead = self.get_object()
+        if not can_mark_lead_lost(request.user):
+            return Response({'error': 'You do not have permission to mark leads as lost.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        if lead.status != 'converted':
+            return Response({'error': 'Only converted leads can be marked lost.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if lead.is_lost:
+            return Response({'error': 'This lead is already marked lost.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        lead.is_lost = True
+        lead.lost_at = timezone.now()
+        lead.lost_reason = (request.data.get('reason') or '')[:255]
+        lead.lost_by = request.user if request.user.is_authenticated else None
+        lead.save(update_fields=['is_lost', 'lost_at', 'lost_reason', 'lost_by'])
+        actor = (f"{request.user.first_name} {request.user.last_name}".strip()
+                 or request.user.username) if request.user.is_authenticated else 'user'
+        reason = f" Reason: {lead.lost_reason}" if lead.lost_reason else ''
+        ActivityLog.objects.create(
+            activity_type='note_added',
+            description=f"Lead marked as lost by {actor}.{reason}",
+            actor=request.user if request.user.is_authenticated else None,
+            lead=lead, extra={'auto_generated': True})
+        return Response(self.get_serializer(lead).data)
+
+    @action(detail=True, methods=['post'], url_path='restore-lost')
+    def restore_lost(self, request, pk=None):
+        """Restore a lead that was previously marked lost."""
+        from .access import can_mark_lead_lost
+        lead = self.get_object()
+        if not can_mark_lead_lost(request.user):
+            return Response({'error': 'You do not have permission to restore leads.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        if not lead.is_lost:
+            return Response({'error': 'This lead is not marked lost.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        lead.is_lost = False
+        lead.lost_at = None
+        lead.lost_reason = ''
+        lead.lost_by = None
+        lead.save(update_fields=['is_lost', 'lost_at', 'lost_reason', 'lost_by'])
+        actor = (f"{request.user.first_name} {request.user.last_name}".strip()
+                 or request.user.username) if request.user.is_authenticated else 'user'
+        ActivityLog.objects.create(
+            activity_type='note_added',
+            description=f"Lead restored from lost by {actor}.",
+            actor=request.user if request.user.is_authenticated else None,
+            lead=lead, extra={'auto_generated': True})
+        return Response(self.get_serializer(lead).data)
+
+    # ── Payment collection buckets (partially / fully paid) ──
+    def _payment_bucket_item(self, lead, request):
+        pv = getattr(lead, 'payment_verification', None)
+
+        def name(u):
+            return (f"{u.first_name} {u.last_name}".strip() or u.username) if u else None
+
+        balance = pv.balance_amount if pv else None
+        return {
+            'id': lead.id,
+            'first_name': lead.first_name,
+            'last_name': lead.last_name,
+            'phone': lead.phone,
+            'location': lead.company,
+            'product_name': lead.product.name if lead.product else None,
+            'value': lead.value,
+            'accounts_staff_name': name(lead.accounts_staff),
+            'amount_received': pv.amount_received if pv else None,
+            'balance_amount': balance,
+            'fully_paid': bool(balance is not None and balance <= 0),
+            'verified_at': pv.completed_at if pv else None,
+        }
+
+    def _payment_bucket_qs(self, user):
+        """Verified-payment leads, annotated with the outstanding balance
+        (deal value − amount received − discount), scoped for plain accounts staff."""
+        from django.db.models import F, DecimalField, ExpressionWrapper
+        qs = (Lead.objects.filter(pushed_to_accounts=True, payment_verification__is_complete=True)
+              .select_related('product', 'accounts_staff', 'payment_verification')
+              .annotate(_balance=ExpressionWrapper(
+                  F('value') - F('payment_verification__amount_received') - F('payment_verification__discount_value'),
+                  output_field=DecimalField(max_digits=14, decimal_places=2)))
+              .order_by('-payment_verification__completed_at'))
+        if (not user.is_staff and not getattr(user, 'is_general_manager', False)
+                and getattr(user, 'role', '') == 'accounts_staff'):
+            qs = qs.filter(accounts_staff=user)
+        return qs
+
+    @action(detail=False, methods=['get'], url_path='accounts-partially-paid')
+    def accounts_partially_paid(self, request):
+        """Verified payments that still have a balance due."""
+        from .access import can_access_accounts
+        if not can_access_accounts(request.user):
+            return Response({'error': 'You do not have access to accounts.'}, status=status.HTTP_403_FORBIDDEN)
+        qs = self._payment_bucket_qs(request.user).filter(_balance__gt=0)
+        return Response([self._payment_bucket_item(lead, request) for lead in qs])
+
+    @action(detail=False, methods=['get'], url_path='accounts-fully-paid')
+    def accounts_fully_paid(self, request):
+        """Verified payments received in full (no balance due)."""
+        from .access import can_access_accounts
+        if not can_access_accounts(request.user):
+            return Response({'error': 'You do not have access to accounts.'}, status=status.HTTP_403_FORBIDDEN)
+        qs = self._payment_bucket_qs(request.user).filter(_balance__lte=0)
+        return Response([self._payment_bucket_item(lead, request) for lead in qs])
+
+    @action(detail=True, methods=['get', 'post'], url_path='balance-payments')
+    def balance_payments(self, request, pk=None):
+        """GET the balance-collection summary + ledger for a verified lead; POST a
+        new balance/installment payment (accounts staff), which reduces the balance
+        due — once it reaches zero the lead becomes fully paid."""
+        from decimal import Decimal, InvalidOperation
+        from .access import can_access_accounts, can_edit_payment_verification
+        lead = self.get_object()
+        if not can_access_accounts(request.user):
+            return Response({'error': 'You do not have access to accounts.'}, status=status.HTTP_403_FORBIDDEN)
+        if not lead.pushed_to_accounts:
+            return Response({'error': 'This lead has not been moved to accounts.'}, status=status.HTTP_404_NOT_FOUND)
+        pv = getattr(lead, 'payment_verification', None)
+        if not (pv and pv.is_complete):
+            return Response({'error': 'Payment must be verified before collecting a balance.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        def summary():
+            return {
+                'deal_value': pv.deal_value,
+                'amount_received': pv.amount_received,
+                'discount_value': pv.discount_value,
+                'balance_amount': pv.balance_amount,
+                'fully_paid': pv.balance_amount <= 0,
+                'can_collect': can_edit_payment_verification(request.user, lead),
+                'payments': BalancePaymentSerializer(lead.balance_payments.all(), many=True).data,
+            }
+
+        if request.method == 'GET':
+            return Response(summary())
+
+        if not can_edit_payment_verification(request.user, lead):
+            return Response({'error': 'You do not have permission to collect balance for this lead.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        if pv.balance_amount <= 0:
+            return Response({'error': 'This lead is already fully paid.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            amount = Decimal(str(request.data.get('amount')))
+        except (InvalidOperation, TypeError):
+            return Response({'error': 'Enter a valid payment amount.'}, status=status.HTTP_400_BAD_REQUEST)
+        if amount <= 0:
+            return Response({'error': 'Payment amount must be greater than zero.'}, status=status.HTTP_400_BAD_REQUEST)
+        # Never collect more than what's still due.
+        if amount > pv.balance_amount:
+            amount = pv.balance_amount
+        BalancePayment.objects.create(
+            lead=lead, amount=amount,
+            payment_mode=request.data.get('payment_mode', '') or '',
+            utr_details=request.data.get('utr_details', '') or '',
+            note=request.data.get('note', '') or '',
+            recorded_by=request.user if request.user.is_authenticated else None,
+        )
+        pv.amount_received = (pv.amount_received or 0) + amount
+        pv.save(update_fields=['amount_received', 'updated_at'])
+        actor = (f"{request.user.first_name} {request.user.last_name}".strip()
+                 or request.user.username) if request.user.is_authenticated else 'accounts'
+        ActivityLog.objects.create(
+            activity_type='note_added',
+            description=f"Balance payment of {amount} recorded by {actor}. Balance due: {pv.balance_amount}.",
+            actor=request.user if request.user.is_authenticated else None,
+            lead=lead, extra={'auto_generated': True})
+        return Response(summary())
+
+    # ── Completed projects (accounts RF stage) ──
+    def _completed_project_payload(self, lead, request):
+        """Accounts view of a lead whose installation is complete: customer info
+        plus the registration-fee (RF) status, ready to be remitted/pushed to
+        the service department."""
+        from .access import can_edit_payment_verification
+        pv = getattr(lead, 'payment_verification', None)
+        pr = getattr(lead, 'project', None)
+
+        def name(u):
+            return (f"{u.first_name} {u.last_name}".strip() or u.username) if u else None
+
+        return {
+            'id': lead.id,
+            'first_name': lead.first_name,
+            'last_name': lead.last_name,
+            'phone': lead.phone,
+            'email': lead.email,
+            'location': lead.company,
+            'installation_location': lead.installation_location,
+            'product_name': lead.product.name if lead.product else None,
+            'value': lead.value,
+            'status': lead.status,
+            'bde_name': name(lead.bde),
+            'accounts_staff': lead.accounts_staff_id,
+            'accounts_staff_name': name(lead.accounts_staff),
+            'project_manager_name': name(lead.project_manager),
+            'project_completed_at': pr.completed_at if pr else None,
+            'registration_fee': PaymentVerificationSerializer(pv, context={'request': request}).data if pv else None,
+            'rf_pushed': bool(pv and pv.rf_pushed_to_service),
+            'can_edit_rf': can_edit_payment_verification(request.user, lead),
+        }
+
+    @action(detail=False, methods=['get'], url_path='accounts-completed')
+    def accounts_completed(self, request):
+        """Completed-projects queue for accounts: leads whose installation is
+        complete, awaiting/tracking the registration-fee (RF) remittance."""
+        from .access import can_access_accounts
+        user = request.user
+        if not can_access_accounts(user):
+            return Response({'error': 'You do not have access to accounts.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        qs = (Lead.objects.filter(pushed_to_accounts=True, project__is_complete=True)
+              .select_related('product', 'bde', 'accounts_staff', 'project_manager',
+                              'payment_verification', 'project')
+              .order_by('-project__completed_at'))
+        # Plain accounts staff see only the leads assigned to them.
+        if (not user.is_staff and not getattr(user, 'is_general_manager', False)
+                and getattr(user, 'role', '') == 'accounts_staff'):
+            qs = qs.filter(accounts_staff=user)
+        return Response([self._completed_project_payload(lead, request) for lead in qs])
+
+    @action(detail=True, methods=['get'], url_path='accounts-completed-detail')
+    def accounts_completed_detail(self, request, pk=None):
+        """Full completed-project view for one lead (customer info + RF)."""
+        from .access import can_access_accounts
+        user = request.user
+        if not can_access_accounts(user):
+            return Response({'error': 'You do not have access to accounts.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        lead = self.get_object()
+        pr = getattr(lead, 'project', None)
+        if not (lead.pushed_to_accounts and pr and pr.is_complete):
+            return Response({'error': 'This lead is not a completed project.'},
+                            status=status.HTTP_404_NOT_FOUND)
+        if (not user.is_staff and not getattr(user, 'is_general_manager', False)
+                and getattr(user, 'role', '') == 'accounts_staff'
+                and lead.accounts_staff_id != user.id):
+            return Response({'error': 'This lead is not assigned to you.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        return Response(self._completed_project_payload(lead, request))
+
+    @action(detail=True, methods=['get', 'patch'], url_path='registration-fee')
+    def registration_fee(self, request, pk=None):
+        """Get or update a lead's registration-fee (RF) details (PO date & KSEB
+        feasibility date). Editable in the completed-project stage until the RF is
+        pushed to the service department — independent of the payment-verification
+        lock."""
+        from .access import can_access_accounts, can_edit_payment_verification
+        lead = self.get_object()
+        if not can_access_accounts(request.user):
+            return Response({'error': 'You do not have access to accounts.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        if not lead.pushed_to_accounts:
+            return Response({'error': 'This lead has not been moved to accounts.'},
+                            status=status.HTTP_404_NOT_FOUND)
+        pv, _ = PaymentVerification.objects.get_or_create(lead=lead)
+        if request.method == 'GET':
+            return Response(PaymentVerificationSerializer(pv, context={'request': request}).data)
+        if not can_edit_payment_verification(request.user, lead):
+            return Response({'error': 'You do not have permission to edit this registration fee.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        if pv.rf_pushed_to_service:
+            return Response({'error': 'RF has already been pushed to the service department and is locked.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        # Only the RF date fields are editable here (never the payment amounts).
+        data = {}
+        for f in ('po_date', 'kseb_feasibility_date'):
+            if f in request.data:
+                data[f] = request.data.get(f) or None
+        serializer = PaymentVerificationSerializer(pv, data=data, partial=True,
+                                                   context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        self._sync_rf_reminder(lead, pv)
+        return Response(serializer.data)
+
+    # ── Purchase & logistics ──
+    def _purchase_payload(self, lead, request):
+        from .access import can_assign_purchase, can_edit_purchase_logistics
+        pl = getattr(lead, 'purchase_logistics', None)
+        pv = getattr(lead, 'payment_verification', None)
+
+        def name(u):
+            return (f"{u.first_name} {u.last_name}".strip() or u.username) if u else None
+
+        return {
+            'id': lead.id,
+            'first_name': lead.first_name,
+            'last_name': lead.last_name,
+            'phone': lead.phone,
+            'email': lead.email,
+            'location': lead.company,
+            'installation_location': lead.installation_location,
+            'product_name': lead.product.name if lead.product else None,
+            'value': lead.value,
+            'status': lead.status,
+            'bde_name': name(lead.bde),
+            'accounts_staff_name': name(lead.accounts_staff),
+            'purchase_staff': lead.purchase_staff_id,
+            'purchase_staff_name': name(lead.purchase_staff),
+            'pushed_at': lead.pushed_to_purchase_at,
+            # Accounts (payment) data is included read-only so purchase staff can
+            # see both the accounts and the purchase & logistics data together.
+            'payment_verification': PaymentVerificationSerializer(pv, context={'request': request}).data if pv else None,
+            'payment_complete': bool(pv and pv.is_complete),
+            'purchase_logistics': PurchaseLogisticsSerializer(pl, context={'request': request}).data if pl else None,
+            'purchase_complete': bool(pl and pl.is_complete),
+            'can_edit_purchase': can_edit_purchase_logistics(request.user, lead),
+            'can_assign': can_assign_purchase(request.user),
+            'can_reopen_purchase': can_assign_purchase(request.user),
+        }
+
+    @action(detail=False, methods=['get'], url_path='purchase')
+    def purchase(self, request):
+        """Purchase & logistics queue: leads with a verified payment."""
+        from .access import can_access_purchase
+        user = request.user
+        if not can_access_purchase(user):
+            return Response({'error': 'You do not have access to purchase & logistics.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        qs = (Lead.objects.filter(pushed_to_purchase=True)
+              .select_related('product', 'bde', 'accounts_staff', 'purchase_staff',
+                              'payment_verification', 'purchase_logistics')
+              .order_by('-pushed_to_purchase_at'))
+        # Plain purchase staff see only the leads assigned to them.
+        if (not user.is_staff and not getattr(user, 'is_general_manager', False)
+                and getattr(user, 'role', '') == 'purchase_staff'):
+            qs = qs.filter(purchase_staff=user)
+        return Response([self._purchase_payload(lead, request) for lead in qs])
+
+    @action(detail=True, methods=['get'], url_path='purchase-detail')
+    def purchase_detail(self, request, pk=None):
+        """Full purchase view for one lead (customer + accounts data + purchase form)."""
+        from .access import can_access_purchase
+        user = request.user
+        if not can_access_purchase(user):
+            return Response({'error': 'You do not have access to purchase & logistics.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        lead = self.get_object()
+        if not lead.pushed_to_purchase:
+            return Response({'error': 'This lead has not been moved to purchase & logistics.'},
+                            status=status.HTTP_404_NOT_FOUND)
+        if (not user.is_staff and not getattr(user, 'is_general_manager', False)
+                and getattr(user, 'role', '') == 'purchase_staff'
+                and lead.purchase_staff_id != user.id):
+            return Response({'error': 'This lead is not assigned to you.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        return Response(self._purchase_payload(lead, request))
+
+    @action(detail=True, methods=['get', 'patch'], url_path='purchase-logistics')
+    def purchase_logistics(self, request, pk=None):
+        """Get or update a lead's purchase & logistics record."""
+        from .access import can_access_purchase, can_edit_purchase_logistics
+        lead = self.get_object()
+        if not can_access_purchase(request.user):
+            return Response({'error': 'You do not have access to purchase & logistics.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        if not lead.pushed_to_purchase:
+            return Response({'error': 'This lead has not been moved to purchase & logistics.'},
+                            status=status.HTTP_404_NOT_FOUND)
+        pl, _ = PurchaseLogistics.objects.get_or_create(lead=lead)
+        if request.method == 'GET':
+            return Response(PurchaseLogisticsSerializer(pl, context={'request': request}).data)
+        if not can_edit_purchase_logistics(request.user, lead):
+            return Response({'error': 'You do not have permission to edit this purchase & logistics.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        if pl.is_complete:
+            return Response({'error': 'Purchase & logistics is already completed and locked.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        serializer = PurchaseLogisticsSerializer(pl, data=request.data, partial=True,
+                                                 context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='complete-purchase-logistics')
+    def complete_purchase_logistics(self, request, pk=None):
+        """Mark a lead's purchase & logistics complete (locks it)."""
+        from .access import can_edit_purchase_logistics
+        lead = self.get_object()
+        if not can_edit_purchase_logistics(request.user, lead):
+            return Response({'error': 'You do not have permission to complete this purchase & logistics.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        pl, _ = PurchaseLogistics.objects.get_or_create(lead=lead)
+        if pl.is_complete:
+            return Response({'error': 'Purchase & logistics is already completed.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        missing = pl.missing_required_fields()
+        if missing:
+            return Response({'error': 'Set the structure material and BOM delivery status first.',
+                             'missing': missing}, status=status.HTTP_400_BAD_REQUEST)
+        pl.is_complete = True
+        pl.completed_at = timezone.now()
+        pl.completed_by = request.user if request.user.is_authenticated else None
+        pl.save(update_fields=['is_complete', 'completed_at', 'completed_by', 'updated_at'])
+        actor = (f"{request.user.first_name} {request.user.last_name}".strip()
+                 or request.user.username) if request.user.is_authenticated else 'purchase'
+        ActivityLog.objects.create(
+            activity_type='note_added',
+            description=f"Purchase & logistics completed by {actor}.",
+            actor=request.user if request.user.is_authenticated else None,
+            lead=lead,
+            extra={'auto_generated': True},
+        )
+        # Hand the lead off to the project (installation) stage.
+        if not lead.pushed_to_project:
+            lead.pushed_to_project = True
+            lead.pushed_to_project_at = timezone.now()
+            lead.save(update_fields=['pushed_to_project', 'pushed_to_project_at'])
+            assignee = auto_assign_project(lead)
+            if assignee:
+                prname = f"{assignee.first_name} {assignee.last_name}".strip() or assignee.username
+                prdesc = f"Moved to project / installation. Auto-assigned to {prname}."
+            else:
+                prdesc = "Moved to project / installation."
+            ActivityLog.objects.create(
+                activity_type='note_added',
+                description=prdesc,
+                actor=request.user if request.user.is_authenticated else None,
+                lead=lead,
+                extra={'auto_generated': True},
+            )
+        return Response(self._purchase_payload(lead, request))
+
+    @action(detail=True, methods=['post'], url_path='reopen-purchase-logistics')
+    def reopen_purchase_logistics(self, request, pk=None):
+        """Admin re-opens a completed purchase & logistics record for editing."""
+        from .access import can_assign_purchase
+        lead = self.get_object()
+        if not can_assign_purchase(request.user):
+            return Response({'error': 'Only purchase admins can reopen a completed record.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        pl = getattr(lead, 'purchase_logistics', None)
+        if not pl or not pl.is_complete:
+            return Response({'error': 'Purchase & logistics is not completed.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        pl.is_complete = False
+        pl.completed_at = None
+        pl.completed_by = None
+        pl.save(update_fields=['is_complete', 'completed_at', 'completed_by', 'updated_at'])
+        return Response(self._purchase_payload(lead, request))
+
+    @action(detail=True, methods=['post'], url_path='assign-purchase')
+    def assign_purchase(self, request, pk=None):
+        """Admin/GM assigns (or clears) the purchase staff handling this lead."""
+        from users.models import User
+        from .access import can_assign_purchase
+        lead = self.get_object()
+        if not can_assign_purchase(request.user):
+            return Response({'error': 'You do not have permission to assign purchase staff.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        staff_id = request.data.get('staff')
+        if not staff_id:
+            lead.purchase_staff = None
+        else:
+            try:
+                lead.purchase_staff = User.objects.get(pk=staff_id)
+            except User.DoesNotExist:
+                return Response({'error': 'Purchase staff not found.'}, status=status.HTTP_404_NOT_FOUND)
+        lead.save(update_fields=['purchase_staff'])
+        return Response(self._purchase_payload(lead, request))
+
+    # ── Project / installation ──
+    def _project_payload(self, lead, request):
+        from .access import can_assign_project, can_edit_project
+        pr = getattr(lead, 'project', None)
+
+        def name(u):
+            return (f"{u.first_name} {u.last_name}".strip() or u.username) if u else None
+
+        return {
+            'id': lead.id,
+            'first_name': lead.first_name,
+            'last_name': lead.last_name,
+            'phone': lead.phone,
+            'email': lead.email,
+            'location': lead.company,
+            'installation_location': lead.installation_location,
+            'product_name': lead.product.name if lead.product else None,
+            'value': lead.value,
+            'status': lead.status,
+            'bde_name': name(lead.bde),
+            'project_manager': lead.project_manager_id,
+            'project_manager_name': name(lead.project_manager),
+            'pushed_at': lead.pushed_to_project_at,
+            'project': ProjectSerializer(pr, context={'request': request}).data if pr else None,
+            'project_complete': bool(pr and pr.is_complete),
+            'can_edit_project': can_edit_project(request.user, lead),
+            'can_assign': can_assign_project(request.user),
+            'can_reopen_project': can_assign_project(request.user),
+        }
+
+    @action(detail=False, methods=['get'], url_path='project')
+    def project(self, request):
+        """Project / installation queue: leads with a completed purchase stage."""
+        from .access import can_access_project
+        user = request.user
+        if not can_access_project(user):
+            return Response({'error': 'You do not have access to projects.'}, status=status.HTTP_403_FORBIDDEN)
+        qs = (Lead.objects.filter(pushed_to_project=True)
+              .select_related('product', 'bde', 'project_manager', 'project')
+              .order_by('-pushed_to_project_at'))
+        if (not user.is_staff and not getattr(user, 'is_general_manager', False)
+                and getattr(user, 'role', '') == 'project_manager'):
+            qs = qs.filter(project_manager=user)
+        return Response([self._project_payload(lead, request) for lead in qs])
+
+    @action(detail=True, methods=['get'], url_path='project-detail')
+    def project_detail(self, request, pk=None):
+        """Full project view for one lead (customer + installation form)."""
+        from .access import can_access_project
+        user = request.user
+        if not can_access_project(user):
+            return Response({'error': 'You do not have access to projects.'}, status=status.HTTP_403_FORBIDDEN)
+        lead = self.get_object()
+        if not lead.pushed_to_project:
+            return Response({'error': 'This lead is not in the project stage.'}, status=status.HTTP_404_NOT_FOUND)
+        if (not user.is_staff and not getattr(user, 'is_general_manager', False)
+                and getattr(user, 'role', '') == 'project_manager'
+                and lead.project_manager_id != user.id):
+            return Response({'error': 'This lead is not assigned to you.'}, status=status.HTTP_403_FORBIDDEN)
+        return Response(self._project_payload(lead, request))
+
+    @action(detail=True, methods=['get', 'patch'], url_path='project-record')
+    def project_record(self, request, pk=None):
+        """Get or update a lead's project (installation) record."""
+        from .access import can_access_project, can_edit_project
+        lead = self.get_object()
+        if not can_access_project(request.user):
+            return Response({'error': 'You do not have access to projects.'}, status=status.HTTP_403_FORBIDDEN)
+        if not lead.pushed_to_project:
+            return Response({'error': 'This lead is not in the project stage.'}, status=status.HTTP_404_NOT_FOUND)
+        pr, _ = Project.objects.get_or_create(lead=lead)
+        if request.method == 'GET':
+            return Response(ProjectSerializer(pr, context={'request': request}).data)
+        if not can_edit_project(request.user, lead):
+            return Response({'error': 'You do not have permission to edit this project.'}, status=status.HTTP_403_FORBIDDEN)
+        if pr.is_complete:
+            return Response({'error': 'Project is already completed and locked.'}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = ProjectSerializer(pr, data=request.data, partial=True, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='project-record/documents')
+    def project_add_document(self, request, pk=None):
+        """Upload one geotagged installation photo to a project slot."""
+        from .access import can_edit_project
+        lead = self.get_object()
+        if not can_edit_project(request.user, lead):
+            return Response({'error': 'You do not have permission to edit this project.'}, status=status.HTTP_403_FORBIDDEN)
+        pr, _ = Project.objects.get_or_create(lead=lead)
+        if pr.is_complete:
+            return Response({'error': 'Project is completed and locked.'}, status=status.HTTP_400_BAD_REQUEST)
+        doc_type = request.data.get('doc_type')
+        file = request.FILES.get('file')
+        if not doc_type or not file:
+            return Response({'error': 'doc_type and file are required.'}, status=status.HTTP_400_BAD_REQUEST)
+        if doc_type not in {k for k, _ in Project.PHOTO_SLOTS}:
+            return Response({'error': 'Unknown photo type.'}, status=status.HTTP_400_BAD_REQUEST)
+        doc = ProjectDocument.objects.create(
+            project=pr, doc_type=doc_type, file=file,
+            uploaded_by=request.user if request.user.is_authenticated else None)
+        return Response(ProjectDocumentSerializer(doc).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['delete'], url_path='project-record/documents/(?P<doc_id>[0-9]+)')
+    def project_delete_document(self, request, pk=None, doc_id=None):
+        """Delete a single project installation photo."""
+        from .access import can_edit_project
+        lead = self.get_object()
+        if not can_edit_project(request.user, lead):
+            return Response({'error': 'You do not have permission to edit this project.'}, status=status.HTTP_403_FORBIDDEN)
+        try:
+            doc = ProjectDocument.objects.get(pk=doc_id, project__lead=lead)
+        except ProjectDocument.DoesNotExist:
+            return Response({'error': 'Photo not found.'}, status=status.HTTP_404_NOT_FOUND)
+        if doc.project.is_complete:
+            return Response({'error': 'Project is completed and locked.'}, status=status.HTTP_400_BAD_REQUEST)
+        doc.file.delete(save=False)
+        doc.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=['post'], url_path='complete-project')
+    def complete_project(self, request, pk=None):
+        """Mark a lead's project complete (locks it)."""
+        from .access import can_edit_project
+        lead = self.get_object()
+        if not can_edit_project(request.user, lead):
+            return Response({'error': 'You do not have permission to complete this project.'}, status=status.HTTP_403_FORBIDDEN)
+        pr, _ = Project.objects.get_or_create(lead=lead)
+        if pr.is_complete:
+            return Response({'error': 'Project is already completed.'}, status=status.HTTP_400_BAD_REQUEST)
+        pr.is_complete = True
+        pr.completed_at = timezone.now()
+        pr.completed_by = request.user if request.user.is_authenticated else None
+        pr.save(update_fields=['is_complete', 'completed_at', 'completed_by', 'updated_at'])
+        actor = (f"{request.user.first_name} {request.user.last_name}".strip()
+                 or request.user.username) if request.user.is_authenticated else 'project manager'
+        ActivityLog.objects.create(
+            activity_type='note_added',
+            description=f"Project / installation completed by {actor}.",
+            actor=request.user if request.user.is_authenticated else None,
+            lead=lead, extra={'auto_generated': True})
+        return Response(self._project_payload(lead, request))
+
+    @action(detail=True, methods=['post'], url_path='reopen-project')
+    def reopen_project(self, request, pk=None):
+        """Admin re-opens a completed project for editing."""
+        from .access import can_assign_project
+        lead = self.get_object()
+        if not can_assign_project(request.user):
+            return Response({'error': 'Only project admins can reopen a completed project.'}, status=status.HTTP_403_FORBIDDEN)
+        pr = getattr(lead, 'project', None)
+        if not pr or not pr.is_complete:
+            return Response({'error': 'Project is not completed.'}, status=status.HTTP_400_BAD_REQUEST)
+        pr.is_complete = False
+        pr.completed_at = None
+        pr.completed_by = None
+        pr.save(update_fields=['is_complete', 'completed_at', 'completed_by', 'updated_at'])
+        return Response(self._project_payload(lead, request))
+
+    @action(detail=True, methods=['post'], url_path='assign-project')
+    def assign_project(self, request, pk=None):
+        """Admin/GM assigns (or clears) the project manager handling this lead."""
+        from users.models import User
+        from .access import can_assign_project
+        lead = self.get_object()
+        if not can_assign_project(request.user):
+            return Response({'error': 'You do not have permission to assign a project manager.'}, status=status.HTTP_403_FORBIDDEN)
+        pm_id = request.data.get('staff')
+        if not pm_id:
+            lead.project_manager = None
+        else:
+            try:
+                lead.project_manager = User.objects.get(pk=pm_id)
+            except User.DoesNotExist:
+                return Response({'error': 'Project manager not found.'}, status=status.HTTP_404_NOT_FOUND)
+        lead.save(update_fields=['project_manager'])
+        return Response(self._project_payload(lead, request))
+
+    @action(detail=False, methods=['get', 'patch'], url_path='team-stats')
+    def team_stats(self, request):
+        """Structure/electrical team stats, derived from project work-completion
+        dates, plus the manually-set team lead names. PATCH updates the leads."""
+        import datetime
+        from .access import can_access_project, can_assign_project
+        if not can_access_project(request.user):
+            return Response({'error': 'You do not have access to team stats.'}, status=status.HTTP_403_FORBIDDEN)
+        cfg = TeamStatsConfig.get_solo()
+        if request.method == 'PATCH':
+            for f in ('structure_team_lead', 'electrical_team_lead'):
+                if f in request.data:
+                    setattr(cfg, f, request.data.get(f) or '')
+            cfg.save()
+
+        today = timezone.localdate()
+        seq = []
+        for i in range(5, -1, -1):
+            mm, yy = today.month - i, today.year
+            while mm <= 0:
+                mm += 12
+                yy -= 1
+            seq.append((yy, mm))
+
+        def series_for(field):
+            out = []
+            for (yy, mm) in seq:
+                count = Lead.objects.filter(**{
+                    'project__%s__year' % field: yy,
+                    'project__%s__month' % field: mm,
+                }).count()
+                out.append({'label': datetime.date(yy, mm, 1).strftime('%b'), 'count': count})
+            return out
+
+        structure_series = series_for('structure_work_completed_date')
+        electrical_series = series_for('electrical_work_completed_date')
+        return Response({
+            'structure': {
+                'team_lead': cfg.structure_team_lead,
+                'this_month': structure_series[-1]['count'],
+                'series': structure_series,
+            },
+            'electrical': {
+                'team_lead': cfg.electrical_team_lead,
+                'this_month': electrical_series[-1]['count'],
+                'series': electrical_series,
+            },
+            'can_edit': can_access_project(request.user),
+        })
 
     def get_queryset(self):
         user = self.request.user
@@ -1045,6 +2055,21 @@ class LeadViewSet(viewsets.ModelViewSet):
                 queryset = queryset.filter(product__isnull=True)
             else:
                 queryset = queryset.filter(product_id=product_id)
+
+        # Filter by fulfilment pipeline stage (the module a lead is currently in).
+        # Mirrors Lead.pipeline_stage: each stage excludes any further-advanced flag.
+        stage = self.request.query_params.get('stage')
+        if stage:
+            stage_filters = {
+                'project': {'pushed_to_project': True},
+                'purchase': {'pushed_to_purchase': True, 'pushed_to_project': False},
+                'accounts': {'pushed_to_accounts': True, 'pushed_to_purchase': False},
+                'documentation': {'pushed_to_documentation': True, 'pushed_to_accounts': False},
+                'site_visit': {'bde__isnull': False, 'pushed_to_documentation': False},
+                'tele_caller': {'bde__isnull': True},
+            }.get(stage)
+            if stage_filters:
+                queryset = queryset.filter(**stage_filters)
 
         # Filter by campaign
         campaign_id = self.request.query_params.get('campaign')
@@ -1606,7 +2631,7 @@ class DashboardStatsView(APIView):
         total_value = base_qs.aggregate(total=Sum('value'))['total'] or 0
         
         # Revenue Generated (Enrolled & Partially Paid Leads)
-        won_qs = base_qs.filter(status__in=['enrolled', 'partially_paid'])
+        won_qs = base_qs.filter(status__in=['converted'])
         total_revenue = won_qs.aggregate(total=Sum('value'))['total'] or 0
         
         # Team/Member Performance (Only for Admin/Manager)
@@ -1632,8 +2657,8 @@ class DashboardStatsView(APIView):
             users_with_stats = users_to_check.annotate(
                 calc_leads_count=Count('assigned_leads'),
                 calc_pipeline_value=Sum('assigned_leads__value'),
-                calc_won_count=Count('assigned_leads', filter=Q(assigned_leads__status__in=['enrolled', 'partially_paid'])),
-                calc_won_value=Sum('assigned_leads__value', filter=Q(assigned_leads__status__in=['enrolled', 'partially_paid']))
+                calc_won_count=Count('assigned_leads', filter=Q(assigned_leads__status__in=['converted'])),
+                calc_won_value=Sum('assigned_leads__value', filter=Q(assigned_leads__status__in=['converted']))
             )
             for u in users_with_stats:
                 performance_stats.append({
@@ -1650,8 +2675,8 @@ class DashboardStatsView(APIView):
             teams_with_stats = teams_to_check.annotate(
                 calc_leads_count=Count('members__assigned_leads'),
                 calc_pipeline_value=Sum('members__assigned_leads__value'),
-                calc_won_count=Count('members__assigned_leads', filter=Q(members__assigned_leads__status__in=['enrolled', 'partially_paid'])),
-                calc_won_value=Sum('members__assigned_leads__value', filter=Q(members__assigned_leads__status__in=['enrolled', 'partially_paid']))
+                calc_won_count=Count('members__assigned_leads', filter=Q(members__assigned_leads__status__in=['converted'])),
+                calc_won_value=Sum('members__assigned_leads__value', filter=Q(members__assigned_leads__status__in=['converted']))
             )
             for t in teams_with_stats:
                 team_stats.append({
@@ -1733,7 +2758,7 @@ class LeaderboardView(APIView):
         today = timezone.localdate()
         
         # Build the filter for "won" leads
-        won_filter = Q(assigned_leads__status__in=['enrolled', 'partially_paid'])
+        won_filter = Q(assigned_leads__status__in=['converted'])
         
         if period == 'daily':
             won_filter &= (
@@ -1802,7 +2827,7 @@ class ConvertedAnalyticsView(APIView):
             base_qs = Lead.objects.filter(assigned_to=user)
 
         # Base QS for converted leads
-        won_qs = base_qs.filter(status__in=['enrolled', 'partially_paid'])
+        won_qs = base_qs.filter(status__in=['converted'])
 
         # Aggregate everything in a single DB query
         agg = won_qs.aggregate(
@@ -1835,6 +2860,36 @@ class ConvertedAnalyticsView(APIView):
             "avg_conversion_days": time_to_convert_days,
             "top_sources": sources
         })
+
+class ServiceEntryViewSet(viewsets.ModelViewSet):
+    """Service module — a standalone list of scheduled service entries, managed by
+    the project manager (and admins/general managers)."""
+    serializer_class = ServiceEntrySerializer
+    permission_classes = [permissions.IsAuthenticated]
+    queryset = ServiceEntry.objects.all()
+
+    def _guard(self):
+        from .access import can_access_project
+        if not can_access_project(self.request.user):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied('You do not have access to the service module.')
+
+    def get_queryset(self):
+        self._guard()
+        return ServiceEntry.objects.all()
+
+    def perform_create(self, serializer):
+        self._guard()
+        serializer.save(created_by=self.request.user if self.request.user.is_authenticated else None)
+
+    def perform_update(self, serializer):
+        self._guard()
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        self._guard()
+        instance.delete()
+
 
 class IntegrationSettingsViewSet(viewsets.ModelViewSet):
     """

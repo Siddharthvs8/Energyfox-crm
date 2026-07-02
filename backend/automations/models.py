@@ -15,7 +15,7 @@ class AutomationRule(models.Model):
     `actions` JSON schema:
         [
             {"type": "assign_lead", "params": {"user_id": 3}},
-            {"type": "change_status", "params": {"status": "prospect"}},
+            {"type": "change_status", "params": {"status": "positive"}},
             {"type": "create_task", "params": {"title": "Follow up", "priority": "high", "due_days": 2}},
             {"type": "add_to_campaign", "params": {"campaign_id": 1}},
             {"type": "send_webhook", "params": {"url": "https://hooks.slack.com/...", "method": "POST"}},

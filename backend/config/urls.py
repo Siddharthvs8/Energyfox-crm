@@ -12,7 +12,7 @@ from leads.views import LeadViewSet
 from leads.webhooks import meta_leads_webhook
 from tasks.views import TaskViewSet
 from users.views import UserViewSet, SubscriptionStatusView, WorkspaceTeamViewSet, TenantSettingsView, BranchViewSet
-from leads.views import LeadViewSet, IntegrationSettingsViewSet, DashboardStatsView, LeaderboardView, ConvertedAnalyticsView, ProductViewSet
+from leads.views import LeadViewSet, IntegrationSettingsViewSet, DashboardStatsView, LeaderboardView, ConvertedAnalyticsView, ProductViewSet, ServiceEntryViewSet
 from inventory.views import VendorViewSet, PurchaseOrderViewSet, QuoteViewSet, SalesOrderViewSet
 
 router = DefaultRouter()
@@ -23,6 +23,7 @@ router.register(r'teams', WorkspaceTeamViewSet, basename='teams')
 router.register(r'branches', BranchViewSet, basename='branches')
 router.register(r'integration-settings', IntegrationSettingsViewSet, basename='integration-settings')
 router.register(r'products', ProductViewSet, basename='products')
+router.register(r'service-entries', ServiceEntryViewSet, basename='service-entries')
 router.register(r'vendors', VendorViewSet, basename='vendors')
 router.register(r'purchase-orders', PurchaseOrderViewSet, basename='purchase-orders')
 router.register(r'quotes', QuoteViewSet, basename='quotes')

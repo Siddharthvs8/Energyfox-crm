@@ -319,16 +319,15 @@ export default function LeadDetailPage({
     };
 
     try {
-      if (['enrolled', 'partially_paid'].includes(payload.status)) {
-        if (!invoiceFile && !lead.invoice) {
-          alert("An invoice attachment is required when changing status to " + (statusMeta[payload.status]?.label || payload.status));
-          return;
-        }
+      // A lead can only be marked Converted after a BDE has been assigned.
+      if (payload.status === 'converted' && lead.status !== 'converted' && !lead.bde) {
+        alert("Assign a BDE to this lead before marking it Converted.");
+        return;
       }
 
       let res;
       const url = `${getApiBase(APP_SLUG)}/api/leads/${params.id}/`;
-      if (['enrolled', 'partially_paid'].includes(payload.status) && invoiceFile) {
+      if (payload.status === 'converted' && invoiceFile) {
         const fd = new FormData();
         Object.keys(payload).forEach(k => {
           if ((payload as any)[k] !== null && (payload as any)[k] !== undefined) {
@@ -977,10 +976,10 @@ export default function LeadDetailPage({
                 <p className="text-xs text-slate-400 mb-1">Lead Score</p>
                 <div className="flex items-center gap-3">
                   <div className="progress-bar flex-1">
-                    <div className="progress-bar-fill bg-gradient-to-r from-indigo-500 to-cyan-400" style={{ width: lead.status === "enrolled" ? "100%" : lead.status === "positive" ? "75%" : lead.status === "follow_up" ? "50%" : lead.status === "new" ? "25%" : "10%" }} />
+                    <div className="progress-bar-fill bg-gradient-to-r from-indigo-500 to-cyan-400" style={{ width: lead.status === "converted" ? "100%" : lead.status === "positive" ? "75%" : lead.status === "follow_up" ? "50%" : lead.status === "new" ? "25%" : "10%" }} />
                   </div>
                   <span className="text-sm font-semibold text-slate-700">
-                    {lead.status === "enrolled" ? "100" : lead.status === "positive" ? "75" : lead.status === "follow_up" ? "50" : lead.status === "new" ? "25" : "10"}
+                    {lead.status === "converted" ? "100" : lead.status === "positive" ? "75" : lead.status === "follow_up" ? "50" : lead.status === "new" ? "25" : "10"}
                   </span>
                 </div>
               </div>
@@ -1050,7 +1049,7 @@ export default function LeadDetailPage({
                     <div className="flex-1 min-w-0 pr-2">
                       <p className="text-xs font-bold text-fuchsia-900 truncate">Official Invoice</p>
                       <p className="text-[10px] text-fuchsia-600 flex items-center gap-1">
-                        <span>Required for Enrolled Status</span>
+                        <span>Invoice on file</span>
                       </p>
                     </div>
                   </a>
@@ -1283,13 +1282,13 @@ export default function LeadDetailPage({
                 </div>
               </div>
 
-              {(form.status === 'enrolled' || form.status === 'partially_paid') && (
+              {(form.status === 'converted') && (
                 <div className="bg-fuchsia-50/50 border border-fuchsia-100 rounded-xl p-4 space-y-4">
                   <div>
                     <label className="block text-[11px] font-bold text-fuchsia-700 uppercase tracking-wide mb-1.5">
-                      Invoice File <span className="text-red-400 normal-case">*</span>
+                      Invoice File <span className="text-fuchsia-400 normal-case font-normal">(optional)</span>
                     </label>
-                    <p className="text-xs text-fuchsia-600/80 mb-3">An invoice is required for this status.</p>
+                    <p className="text-xs text-fuchsia-600/80 mb-3">Optionally attach an invoice for this converted lead.</p>
                     <input
                       type="file"
                       ref={invoiceFileRef}

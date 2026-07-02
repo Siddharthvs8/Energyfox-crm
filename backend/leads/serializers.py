@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Lead, IntegrationSettings, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, PaymentVerification
+from .models import Lead, IntegrationSettings, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment
 from .document_kinds import SLOT_TO_KIND, SITE_VISIT_SHARED_SLOTS, DOC_STAGE1_SHARED_SLOTS, shared_doc_entries
 
 from users.serializers import UserSerializer
@@ -57,6 +57,7 @@ class SiteVisitDocumentSerializer(serializers.ModelSerializer):
 
 class SiteVisitSerializer(serializers.ModelSerializer):
     documents = serializers.SerializerMethodField()
+    kseb_feasibility_due_date = serializers.SerializerMethodField()
 
     class Meta:
         model = SiteVisit
@@ -65,6 +66,10 @@ class SiteVisitSerializer(serializers.ModelSerializer):
 
     def get_documents(self, obj):
         return _merge_documents(obj, SITE_VISIT_SHARED_SLOTS)
+
+    def get_kseb_feasibility_due_date(self, obj):
+        d = obj.kseb_feasibility_due_date
+        return d.isoformat() if d else None
 
     def validate_rcc_roof_types(self, value):
         allowed = {'flat', 'slope', 'tiled', 'non_linear'}
@@ -107,12 +112,18 @@ class PaymentVerificationSerializer(serializers.ModelSerializer):
     completed_by_name = serializers.SerializerMethodField()
     deal_value = serializers.SerializerMethodField()
     balance_amount = serializers.SerializerMethodField()
+    rf_due_date = serializers.SerializerMethodField()
 
     class Meta:
         model = PaymentVerification
         fields = '__all__'
-        # Completion is driven only by the dedicated complete-* action, never a plain PATCH.
-        read_only_fields = ['lead', 'created_at', 'updated_at', 'is_complete', 'completed_at', 'completed_by']
+        # Completion + RF push are driven by dedicated actions, never a plain PATCH.
+        read_only_fields = ['lead', 'created_at', 'updated_at', 'is_complete', 'completed_at',
+                            'completed_by', 'rf_pushed_to_service', 'rf_pushed_at']
+
+    def get_rf_due_date(self, obj):
+        d = obj.rf_due_date
+        return d.isoformat() if d else None
 
     def get_completed_by_name(self, obj):
         if obj.completed_by:
@@ -125,6 +136,72 @@ class PaymentVerificationSerializer(serializers.ModelSerializer):
 
     def get_balance_amount(self, obj):
         return obj.balance_amount
+
+
+class BalancePaymentSerializer(serializers.ModelSerializer):
+    recorded_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = BalancePayment
+        fields = ['id', 'amount', 'payment_mode', 'utr_details', 'note', 'recorded_by_name', 'created_at']
+
+    def get_recorded_by_name(self, obj):
+        if obj.recorded_by:
+            u = obj.recorded_by
+            return f"{u.first_name} {u.last_name}".strip() or u.username
+        return None
+
+
+class PurchaseLogisticsSerializer(serializers.ModelSerializer):
+    completed_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PurchaseLogistics
+        fields = '__all__'
+        read_only_fields = ['lead', 'created_at', 'updated_at', 'is_complete', 'completed_at', 'completed_by']
+
+    def get_completed_by_name(self, obj):
+        if obj.completed_by:
+            u = obj.completed_by
+            return f"{u.first_name} {u.last_name}".strip() or u.username
+        return None
+
+
+class ProjectDocumentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProjectDocument
+        fields = ['id', 'doc_type', 'file', 'uploaded_at']
+
+
+class ProjectSerializer(serializers.ModelSerializer):
+    completed_by_name = serializers.SerializerMethodField()
+    documents = ProjectDocumentSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Project
+        fields = '__all__'
+        read_only_fields = ['lead', 'created_at', 'updated_at', 'is_complete', 'completed_at', 'completed_by']
+
+    def get_completed_by_name(self, obj):
+        if obj.completed_by:
+            u = obj.completed_by
+            return f"{u.first_name} {u.last_name}".strip() or u.username
+        return None
+
+
+class ServiceEntrySerializer(serializers.ModelSerializer):
+    created_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ServiceEntry
+        fields = '__all__'
+        read_only_fields = ['created_by', 'created_at', 'updated_at']
+
+    def get_created_by_name(self, obj):
+        if obj.created_by:
+            u = obj.created_by
+            return f"{u.first_name} {u.last_name}".strip() or u.username
+        return None
 
 class LeadSerializer(serializers.ModelSerializer):
     assigned_to_details = UserSerializer(source='assigned_to', read_only=True)
@@ -140,11 +217,51 @@ class LeadSerializer(serializers.ModelSerializer):
     can_assign_documentation = serializers.SerializerMethodField()
     site_visit_complete = serializers.SerializerMethodField()
     documentation_staff_name = serializers.SerializerMethodField()
+    pipeline_stage = serializers.CharField(read_only=True)
+    pipeline_stage_label = serializers.SerializerMethodField()
+    deal_classification = serializers.SerializerMethodField()
+    lost_by_name = serializers.SerializerMethodField()
+    can_mark_lost = serializers.SerializerMethodField()
     status = serializers.CharField(required=False)
 
     class Meta:
         model = Lead
         fields = '__all__'
+
+    def get_pipeline_stage_label(self, obj):
+        return Lead.PIPELINE_STAGE_LABELS.get(obj.pipeline_stage, obj.pipeline_stage)
+
+    def get_deal_classification(self, obj):
+        """Fulfilment/payment milestone for a converted lead, shown on the
+        Converted Leads board. 'lost' (deal fell through) overrides everything;
+        otherwise payment verification outranks the earlier documentation hand-off:
+          - 'lost'           — converted deal the customer skipped / backed out of
+          - 'fully_paid'     — payment verified with no balance remaining
+          - 'partially_paid' — payment verified but a balance is still due
+          - 'closed_deal'    — site visit done & pushed to documentation
+          - None             — converted but not yet past documentation
+        """
+        if obj.status != 'converted':
+            return None
+        if obj.is_lost:
+            return 'lost'
+        pv = getattr(obj, 'payment_verification', None)
+        if pv and pv.is_complete:
+            balance = pv.balance_amount or 0
+            return 'fully_paid' if balance <= 0 else 'partially_paid'
+        if obj.pushed_to_documentation:
+            return 'closed_deal'
+        return None
+
+    def get_lost_by_name(self, obj):
+        if obj.lost_by:
+            u = obj.lost_by
+            return f"{u.first_name} {u.last_name}".strip() or u.username
+        return None
+
+    def get_can_mark_lost(self, obj):
+        from .access import can_mark_lead_lost
+        return can_mark_lead_lost(self._request_user())
 
     def get_meta_integration_name(self, obj):
         return obj.meta_integration.name if obj.meta_integration else None
@@ -238,11 +355,17 @@ class LeadSerializer(serializers.ModelSerializer):
         return obj.campaigns_set.values('id', 'name', 'status')
 
     def validate(self, data):
-        status = data.get('status', self.instance.status if self.instance else None)
-        if status in ['enrolled', 'partially_paid']:
-            invoice = data.get('invoice')
-            if not invoice and (not self.instance or not self.instance.invoice):
-                raise serializers.ValidationError({"invoice": "An invoice attachment is required when changing status to Enrolled or Partially Paid."})
+        new_status = data.get('status', self.instance.status if self.instance else None)
+        # A lead may only be moved to Converted once a BDE has been assigned
+        # (the tele-caller hands it to a BDE first). Only gate the transition
+        # into Converted, so editing an already-converted lead isn't blocked.
+        if new_status == 'converted':
+            was_converted = bool(self.instance and self.instance.status == 'converted')
+            if not was_converted:
+                bde = data.get('bde', getattr(self.instance, 'bde', None) if self.instance else None)
+                if not bde:
+                    raise serializers.ValidationError(
+                        {"status": "Assign a BDE to this lead before marking it Converted."})
         return data
 
 class IntegrationSettingsSerializer(serializers.ModelSerializer):

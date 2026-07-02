@@ -3,18 +3,9 @@ export const DEFAULT_STATUS_META: Record<string, { label: string; bg: string; te
   new:                { label: "New",               bg: "bg-indigo-50",  text: "text-indigo-700",  dot: "bg-indigo-400",  hex: "#6366f1" },
   follow_up:          { label: "Follow up",         bg: "bg-amber-50",   text: "text-amber-700",   dot: "bg-amber-400",   hex: "#f59e0b" },
   positive:           { label: "Positive",          bg: "bg-cyan-50",    text: "text-cyan-700",    dot: "bg-cyan-500",    hex: "#06b6d4" },
-  enrolled:           { label: "Enrolled",          bg: "bg-emerald-50", text: "text-emerald-700", dot: "bg-emerald-500", hex: "#10b981" },
+  interested:         { label: "Interested",        bg: "bg-lime-50",    text: "text-lime-700",    dot: "bg-lime-500",    hex: "#84cc16" },
   not_interested:     { label: "Not Interested",    bg: "bg-rose-50",    text: "text-rose-700",    dot: "bg-rose-500",    hex: "#f43f5e" },
-  disqualified:       { label: "Disqualified",      bg: "bg-red-50",     text: "text-red-700",     dot: "bg-red-500",     hex: "#ef4444" },
-  prospect:           { label: "Prospect",          bg: "bg-violet-50",  text: "text-violet-700",  dot: "bg-violet-400",  hex: "#8b5cf6" },
-  interested_to_join: { label: "Interested to Join",bg: "bg-lime-50",    text: "text-lime-700",    dot: "bg-lime-500",    hex: "#84cc16" },
-  may_buy_later:      { label: "May Buy Later",     bg: "bg-orange-50",  text: "text-orange-700",  dot: "bg-orange-400",  hex: "#f97316" },
-  demo_booked:        { label: "Demo Booked",       bg: "bg-sky-50",     text: "text-sky-700",     dot: "bg-sky-500",     hex: "#0ea5e9" },
-  demo_done:          { label: "Demo Done",         bg: "bg-teal-50",    text: "text-teal-700",    dot: "bg-teal-500",    hex: "#14b8a6" },
-  demo_rescheduled:   { label: "Demo Rescheduled",  bg: "bg-yellow-50",  text: "text-yellow-700",  dot: "bg-yellow-500",  hex: "#eab308" },
-  demo_canceled:      { label: "Demo Canceled",     bg: "bg-pink-50",    text: "text-pink-700",    dot: "bg-pink-500",    hex: "#ec4899" },
-  dnp:                { label: "DNP",               bg: "bg-slate-100",  text: "text-slate-600",   dot: "bg-slate-400",   hex: "#94a3b8" },
-  partially_paid:     { label: "Partially Paid",    bg: "bg-fuchsia-50", text: "text-fuchsia-700", dot: "bg-fuchsia-500", hex: "#d946ef" },
+  converted:          { label: "Converted",         bg: "bg-emerald-50", text: "text-emerald-700", dot: "bg-emerald-500", hex: "#10b981" },
 };
 
 // Rotating palette for custom statuses (Tailwind classes + hex)

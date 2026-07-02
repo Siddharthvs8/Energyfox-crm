@@ -91,7 +91,7 @@ AUTOMATION_TEMPLATES = [
             'trigger_event': 'call_logged',
             'condition_logic': 'any',
             'conditions': [
-                {'field': 'status', 'operator': 'not_equals', 'value': 'enrolled'},
+                {'field': 'status', 'operator': 'not_equals', 'value': 'converted'},
             ],
             'actions': [
                 {'type': 'wait', 'params': {'amount': 1, 'unit': 'days'}},
@@ -268,9 +268,7 @@ class AutomationRuleViewSet(viewsets.ModelViewSet):
             'condition_fields': [
                 {'value': 'source', 'label': 'Source', 'type': 'text'},
                 {'value': 'status', 'label': 'Status', 'type': 'select', 'options': [
-                    'new', 'follow_up', 'positive', 'enrolled', 'not_interested',
-                    'disqualified', 'prospect', 'interested_to_join', 'may_buy_later',
-                    'demo_booked', 'demo_done', 'demo_rescheduled', 'demo_canceled', 'dnp',
+                    'new', 'follow_up', 'positive', 'interested', 'not_interested', 'converted',
                 ]},
                 {'value': 'value', 'label': 'Deal Value', 'type': 'number'},
                 {'value': 'first_name', 'label': 'First Name', 'type': 'text'},

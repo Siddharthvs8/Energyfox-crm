@@ -3,6 +3,7 @@ import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
 import { useLeadStatuses } from "@/hooks/useLeadStatuses";
 import { FALLBACK_STATUS_META, getLatestNote } from "@/lib/lead-statuses";
+import { STAGE_META, STAGE_OPTIONS, StageTag } from "@/lib/pipeline-stages";
 
 import React, { useState, useEffect, useRef, Suspense } from "react";
 import Link from "next/link";
@@ -181,6 +182,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   const [campaignsList, setCampaignsList]   = useState<{id: number, name: string}[]>([]);
   const [productsList, setProductsList]     = useState<{id: number, name: string, default_price: string}[]>([]);
   const [productFilter, setProductFilter]   = useState("all");
+  const [stageFilter,   setStageFilter]     = useState("all");
   const [createdType,    setCreatedType]    = useState("all");
   const [createdParam,   setCreatedParam]   = useState("2");
   const [createdFrom,    setCreatedFrom]    = useState("");
@@ -244,7 +246,6 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
 
   // Pending tasks to create when saving a lead
   const [pendingTasks,   setPendingTasks]   = useState<PendingTask[]>([]);
-  const [invoicePrompt, setInvoicePrompt] = useState<{ leadId: number, status: string } | null>(null);
   const [invoiceFile, setInvoiceFile] = useState<File | null>(null);
   const invoiceFileRef = useRef<HTMLInputElement>(null);
   const blankPendingTask: Omit<PendingTask, "_key"> = { title: "", priority: "medium", due_date: "", due_time: "", assignee_id: "" };
@@ -271,7 +272,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   const canAssign = currentUser?.is_staff || currentUser?.is_general_manager || currentUser?.is_manager;
 
   useEffect(() => { fetchLeads(); fetchTeam(); fetchCampaigns(); fetchProducts(); }, [
-    domain, statusFilter, sourceFilter, assigneeFilter, campaignFilter, productFilter, search,
+    domain, statusFilter, sourceFilter, assigneeFilter, campaignFilter, productFilter, stageFilter, search,
     createdType, createdParam, createdFrom, createdTo,
     modType, modParam, modFrom, modTo,
     valueMin, valueMax, companyFilter,
@@ -380,6 +381,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
     if (assigneeFilter !== "all") q.append("assigned_to", assigneeFilter);
     if (campaignFilter !== "all") q.append("campaign",    campaignFilter);
     if (productFilter  !== "all") q.append("product",     productFilter);
+    if (stageFilter    !== "all") q.append("stage",       stageFilter);
     if (search)                   q.append("search", search);
     if (valueMin)                 q.append("value_min", valueMin);
     if (valueMax)                 q.append("value_max", valueMax);
@@ -522,46 +524,21 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   };
 
   const updateStatus = async (id: number, status: string) => {
-    if (status === 'enrolled' || status === 'partially_paid') {
+    // A lead can only be marked Converted after the tele-caller has assigned a BDE.
+    if (status === 'converted') {
       const lead = leads.find(l => l.id === id);
-      if (!lead?.invoice) {
-        setInvoiceFile(null);
-        setInvoicePrompt({ leadId: id, status });
+      if (lead && !lead.bde) {
+        alert("Assign a BDE to this lead before marking it Converted.");
         return;
       }
     }
     const token = localStorage.getItem(`${domain}_access`);
     const r = await fetch(`${getApiBase(domain)}/api/leads/${id}/`, { method: "PATCH", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ status }) });
     if (!r.ok) {
-        const err = await r.json();
-        alert(err.invoice?.[0] || "Failed to update status");
+        const err = await r.json().catch(() => ({}));
+        alert(err.status?.[0] || err.detail || "Failed to update status");
     }
     fetchLeads();
-  };
-
-  const submitStatusWithInvoice = async () => {
-    if (!invoicePrompt) return;
-    if (!invoiceFile) {
-      alert("Please upload an invoice to change status to " + (statusMeta[invoicePrompt.status]?.label || invoicePrompt.status));
-      return;
-    }
-    const token = localStorage.getItem(`${domain}_access`);
-    const fd = new FormData();
-    fd.append("status", invoicePrompt.status);
-    fd.append("invoice", invoiceFile);
-    const r = await fetch(`${getApiBase(domain)}/api/leads/${invoicePrompt.leadId}/`, {
-      method: "PATCH",
-      headers: { Authorization: `Bearer ${token}` },
-      body: fd
-    });
-    if (r.ok) {
-      setInvoicePrompt(null);
-      setInvoiceFile(null);
-      fetchLeads();
-    } else {
-      const e = await r.json();
-      alert(e.invoice?.[0] || e.error || "Failed to update status");
-    }
   };
 
   const deleteLead = async (id: number) => {
@@ -589,15 +566,8 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
     const method = editingLead ? "PATCH" : "POST";
     const url    = editingLead ? `${getApiBase(domain)}/api/leads/${editingLead.id}/` : `${getApiBase(domain)}/api/leads/`;
     try {
-      if (['enrolled', 'partially_paid'].includes(payload.status)) {
-        if (!invoiceFile && (!editingLead || !editingLead.invoice)) {
-          alert("An invoice attachment is required when changing status to " + (statusMeta[payload.status]?.label || payload.status));
-          return;
-        }
-      }
-      
       let r;
-      if (['enrolled', 'partially_paid'].includes(payload.status) && invoiceFile) {
+      if (payload.status === 'converted' && invoiceFile) {
         const fd = new FormData();
         Object.keys(payload).forEach(k => {
           if ((payload as any)[k] !== null) fd.append(k, (payload as any)[k]);
@@ -935,6 +905,15 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
               className="dropdown-premium w-full">
               <option value="all">All Products</option>
               {productsList.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
+
+          {/* Stage filter */}
+          <div className="flex-shrink-0 w-full sm:w-[160px]">
+            <select value={stageFilter} onChange={e => setStageFilter(e.target.value)}
+              className="dropdown-premium w-full">
+              <option value="all">All Stages</option>
+              {STAGE_OPTIONS.map(s => <option key={s} value={s}>{STAGE_META[s].label}</option>)}
             </select>
           </div>
 
@@ -1281,6 +1260,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                             <div className="min-w-0">
                               <p className="text-[13px] font-semibold text-slate-800 leading-tight">{lead.first_name} {lead.last_name}</p>
                               <p className="text-[11px] text-slate-400 truncate max-w-[180px]">{lead.email || lead.phone || "—"}</p>
+                              <div className="mt-1"><StageTag stage={lead.pipeline_stage} /></div>
                               {lead.next_task && <TaskTag task={lead.next_task} />}
                             </div>
                           </div>
@@ -1516,13 +1496,13 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                 </div>
               </div>
               
-              {(form.status === 'enrolled' || form.status === 'partially_paid') && (
+              {(form.status === 'converted') && (
                 <div className="bg-fuchsia-50/50 border border-fuchsia-100 rounded-xl p-4 space-y-4">
                   <div>
                     <label className="block text-[11px] font-bold text-fuchsia-700 uppercase tracking-wide mb-1.5">
-                      Invoice File <span className="text-red-400 normal-case">*</span>
+                      Invoice File <span className="text-fuchsia-400 normal-case font-normal">(optional)</span>
                     </label>
-                    <p className="text-xs text-fuchsia-600/80 mb-3">An invoice is required for this status.</p>
+                    <p className="text-xs text-fuchsia-600/80 mb-3">Optionally attach an invoice for this converted lead.</p>
                     <input
                       type="file"
                       ref={invoiceFileRef}
@@ -2021,7 +2001,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                           <div className="w-7 h-7 rounded-lg bg-white border border-fuchsia-200 flex items-center justify-center text-sm flex-shrink-0 shadow-sm">💰</div>
                           <div className="flex-1 min-w-0">
                             <p className="text-[11px] font-semibold text-fuchsia-900 truncate">Official Invoice</p>
-                            <p className="text-[10px] text-fuchsia-600">Required for Enrolled Status</p>
+                            <p className="text-[10px] text-fuchsia-600">Required for Converted Status</p>
                           </div>
                           {/* Download */}
                           <a
@@ -2228,10 +2208,10 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                   <option value="">-- No Change --</option>
                   <option value="new">New</option>
                   <option value="follow_up">Follow Up</option>
-                  <option value="demo_booked">Demo Booked</option>
-                  <option value="demo_done">Demo Done</option>
-                  <option value="enrolled">Enrolled</option>
-                  <option value="disqualified">Disqualified</option>
+                  <option value="positive">Positive</option>
+                  <option value="interested">Interested</option>
+                  <option value="not_interested">Not Interested</option>
+                  <option value="converted">Converted</option>
                 </select>
               </div>
               <div>
@@ -2281,47 +2261,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
         </div>
       )}
 
-      {/* -- Invoice Prompt Modal -- */}
-      {invoicePrompt && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
-          onClick={() => { setInvoicePrompt(null); setInvoiceFile(null); }}>
-          <div className="bg-white w-full max-w-md mx-4 rounded-2xl shadow-2xl overflow-hidden"
-            onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 bg-fuchsia-50/50">
-              <div>
-                <h2 className="text-[15px] font-bold text-fuchsia-800">Invoice Required</h2>
-                <p className="text-xs text-fuchsia-600/80 mt-0.5">Upload the invoice for this lead.</p>
-              </div>
-              <button onClick={() => { setInvoicePrompt(null); setInvoiceFile(null); }}
-                className="w-8 h-8 flex items-center justify-center rounded-xl bg-fuchsia-100 text-fuchsia-600 hover:bg-fuchsia-200 transition-all">
-                <I.X />
-              </button>
-            </div>
-            <div className="p-5 space-y-5">
-              {/* Invoice Upload */}
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Invoice File</label>
-                <input
-                  type="file"
-                  ref={invoiceFileRef}
-                  onChange={e => setInvoiceFile(e.target.files?.[0] || null)}
-                  className="block w-full text-sm text-fuchsia-600 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-fuchsia-100 file:text-fuchsia-700 hover:file:bg-fuchsia-200 transition cursor-pointer"
-                />
-              </div>
-            </div>
-            <div className="px-5 py-4 border-t border-slate-100 flex gap-3">
-              <button onClick={() => { setInvoicePrompt(null); setInvoiceFile(null); }}
-                className="flex-1 py-2.5 border border-slate-200 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-all">
-                Cancel
-              </button>
-              <button onClick={submitStatusWithInvoice}
-                className="flex-1 py-2.5 bg-fuchsia-600 text-white rounded-xl text-sm font-semibold hover:bg-fuchsia-700 transition-all shadow-sm shadow-fuchsia-200">
-                Submit
-              </button>
-            </div>
-          </div>
-        </div>
-      )}      {/* File Preview Modal */}
+      {/* File Preview Modal */}
       {previewFile && (
         <div className="fixed inset-0 z-[100] flex flex-col bg-black/90 backdrop-blur-md transition-all" onClick={() => setPreviewFile(null)}>
           <div className="flex items-center justify-between px-6 py-4 bg-gradient-to-b from-black/50 to-transparent">

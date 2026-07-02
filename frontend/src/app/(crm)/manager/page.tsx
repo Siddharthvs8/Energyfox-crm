@@ -920,7 +920,7 @@ export default function ManagerPage({ params: paramsPromise }: { params: Promise
                           </div>
                         </div>
                         <div className="flex gap-4 text-xs text-slate-500">
-                          <span>🎯 {agent.monthly_progress?.actual_leads || 0} enrolled</span>
+                          <span>🎯 {agent.monthly_progress?.actual_leads || 0} converted</span>
                           <span>📂 {agent.total_leads} leads</span>
                         </div>
                       </button>
@@ -969,7 +969,7 @@ export default function ManagerPage({ params: paramsPromise }: { params: Promise
                           <div className="flex gap-3">
                             <div className="text-center">
                               <p className="text-2xl font-black text-slate-800">{agentReport.summary?.won_count || 0}</p>
-                              <p className="text-xs text-slate-400">Enrolled</p>
+                              <p className="text-xs text-slate-400">Converted</p>
                             </div>
                             <div className="text-center">
                               <p className="text-2xl font-black text-slate-800">{agentReport.summary?.total_leads || 0}</p>

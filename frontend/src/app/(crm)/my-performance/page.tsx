@@ -97,7 +97,7 @@ const STATUS_COLORS: Record<string, { bg: string; text: string; dot: string }> =
   site_visit_scheduled: { bg: "bg-purple-50", text: "text-purple-700", dot: "bg-purple-500" },
   site_visit_done: { bg: "bg-violet-50", text: "text-violet-700", dot: "bg-violet-500" },
   proposal_sent: { bg: "bg-indigo-50", text: "text-indigo-700", dot: "bg-indigo-500" },
-  enrolled: { bg: "bg-emerald-50", text: "text-emerald-700", dot: "bg-emerald-500" },
+  converted: { bg: "bg-emerald-50", text: "text-emerald-700", dot: "bg-emerald-500" },
   not_interested: { bg: "bg-slate-100", text: "text-slate-500", dot: "bg-slate-400" },
   disqualified: { bg: "bg-red-50", text: "text-red-600", dot: "bg-red-400" },
 };

@@ -245,6 +245,14 @@ export default function DashboardLayout({
           if (d.role === "accounts_staff" && window.location.pathname === "/") {
             router.replace("/accounts");
           }
+          // Purchase staff land on the purchase & logistics queue.
+          if (d.role === "purchase_staff" && window.location.pathname === "/") {
+            router.replace("/purchase");
+          }
+          // Project manager lands on the project queue.
+          if (d.role === "project_manager" && window.location.pathname === "/") {
+            router.replace("/project");
+          }
         })
         .catch(() => {});
     }
@@ -341,7 +349,16 @@ export default function DashboardLayout({
     { href: `/team`,          label: "Team",            Icon: Nav.Team },
     { href: `/documentation`, label: "Documentation",   Icon: Nav.Quote, docFeature: true },
     { href: `/documentation-status`, label: "Documentation", Icon: Nav.Quote, docTracker: true },
+    { href: `/feasibility`,   label: "KSEB Feasibility", Icon: Nav.Tasks, feasibilityFeature: true },
     { href: `/accounts`,      label: "Accounts",        Icon: Nav.Billing, accountsFeature: true },
+    { href: `/accounts/partially-paid`, label: "Partially Paid", Icon: Nav.MyPerformance, paymentBucketFeature: true },
+    { href: `/accounts/fully-paid`, label: "Fully Paid",   Icon: Nav.Trophy, paymentBucketFeature: true },
+    { href: `/accounts/completed`, label: "Completed Projects", Icon: Nav.Tasks, completedProjectsFeature: true },
+    { href: `/purchase`,      label: "Purchase & Logistics", Icon: Nav.Inventory, purchaseFeature: true },
+    { href: `/accounts`,      label: "Accounts",        Icon: Nav.Billing, purchaseAccountsView: true },
+    { href: `/project`,       label: "Project",         Icon: Nav.PurchaseOrder, pmFeature: true },
+    { href: `/service`,       label: "Service",         Icon: Nav.Tasks, pmFeature: true },
+    { href: `/team-stats`,    label: "Team Stats",      Icon: Nav.Leaderboard, pmFeature: true },
     { href: `/settings`,      label: "Settings",        Icon: Nav.Settings, adminOnly: true },
   ];
 
@@ -349,6 +366,10 @@ export default function DashboardLayout({
   const isDocOnly = ["documentation_staff", "documentation_manager"].includes(currentUser?.role);
   // Accounts staff get a focused view — only the Accounts page.
   const isAccountsOnly = currentUser?.role === "accounts_staff";
+  // Purchase staff get a focused view — only the Purchase & Logistics page.
+  const isPurchaseOnly = currentUser?.role === "purchase_staff";
+  // Project manager gets a focused view — Project, Service and Team Stats.
+  const isPmOnly = currentUser?.role === "project_manager";
 
   // Manager features visible to manager, general manager, and admin
   const navItems = allNavItems.filter(item => {
@@ -356,7 +377,17 @@ export default function DashboardLayout({
       return !!item.docFeature;
     }
     if (isAccountsOnly) {
-      return !!item.accountsFeature;
+      return !!item.accountsFeature || !!item.completedProjectsFeature || !!item.paymentBucketFeature;
+    }
+    if (isPurchaseOnly) {
+      // Purchase staff see their own module plus a read-only Accounts view under it.
+      return !!item.purchaseFeature || !!item.purchaseAccountsView;
+    }
+    if (isPmOnly) {
+      return !!item.pmFeature;
+    }
+    if (item.purchaseAccountsView) {
+      return false;  // purchase-staff-only duplicate; everyone else uses the real Accounts item
     }
     if (item.docFeature) {
       return false;  // the work queue is for the documentation team only
@@ -365,8 +396,29 @@ export default function DashboardLayout({
       // Accounts queue — accounts staff (above) plus admins / general managers who oversee them.
       return currentUser?.is_staff || currentUser?.is_general_manager;
     }
+    if (item.completedProjectsFeature) {
+      // Completed-projects (RF) queue — accounts staff (above) plus admins / general managers.
+      return currentUser?.is_staff || currentUser?.is_general_manager;
+    }
+    if (item.paymentBucketFeature) {
+      // Partially / Fully paid buckets — accounts staff (above) plus admins / general managers.
+      return currentUser?.is_staff || currentUser?.is_general_manager;
+    }
+    if (item.purchaseFeature) {
+      // Purchase & logistics queue — purchase staff (above) plus admins / general managers.
+      return currentUser?.is_staff || currentUser?.is_general_manager;
+    }
+    if (item.pmFeature) {
+      // Project / Service / Team Stats — project manager (above) plus admins / general managers.
+      return currentUser?.is_staff || currentUser?.is_general_manager;
+    }
     if (item.docTracker) {
       return true;   // read-only documentation tracker — everyone except the doc team
+    }
+    if (item.feasibilityFeature) {
+      // BDE's KSEB feasibility task list — BDEs plus their managers / admins.
+      return currentUser?.role === "bde" || currentUser?.is_staff
+        || currentUser?.is_general_manager || currentUser?.is_manager;
     }
     if (item.strictAdminOnly) {
       return currentUser?.is_staff;
@@ -381,7 +433,8 @@ export default function DashboardLayout({
       return currentUser?.is_manager && !currentUser?.is_staff && !currentUser?.is_general_manager;
     }
     if (item.hideForManager) {
-      return !(currentUser?.is_manager && !currentUser?.is_staff && !currentUser?.is_general_manager);
+      // Hidden for branch managers and admins (they use Team/Manager views instead).
+      return !((currentUser?.is_manager && !currentUser?.is_general_manager) || currentUser?.is_staff);
     }
     if (item.agentOnly) {
       // Show AI Meeting only for non-staff, non-manager, non-GM agents
@@ -500,7 +553,14 @@ export default function DashboardLayout({
                 </div>
               );
             }
-            const active = isActive(item.href, item.exact);
+            // The Accounts item must not light up on its nested sub-module routes
+            // (Completed Projects / Partially Paid / Fully Paid have their own items).
+            const isAccountsSubRoute = pathname.startsWith("/accounts/completed")
+              || pathname.startsWith("/accounts/partially-paid")
+              || pathname.startsWith("/accounts/fully-paid");
+            const active = item.href === "/accounts" && isAccountsSubRoute
+              ? false
+              : isActive(item.href, item.exact);
             return (
               <Link
                 key={item.href}

@@ -40,6 +40,8 @@ ROLE_SALES_MANAGER = 'sales_manager'
 ROLE_DOC_MANAGER = 'documentation_manager'
 ROLE_DOC_STAFF = 'documentation_staff'
 ROLE_ACCOUNTS_STAFF = 'accounts_staff'
+ROLE_PURCHASE_STAFF = 'purchase_staff'
+ROLE_PROJECT_MANAGER = 'project_manager'
 ROLE_BRANCH_MANAGER = 'branch_manager'
 ROLE_BDE = 'bde'
 ROLE_TELE_CALLER = 'tele_caller'
@@ -52,6 +54,8 @@ ROLE_CHOICES = [
     (ROLE_DOC_MANAGER, 'Documentation Manager'),
     (ROLE_DOC_STAFF, 'Documentation Staff'),
     (ROLE_ACCOUNTS_STAFF, 'Accounts Staff'),
+    (ROLE_PURCHASE_STAFF, 'Purchase Staff'),
+    (ROLE_PROJECT_MANAGER, 'Project Manager'),
     (ROLE_BRANCH_MANAGER, 'Branch Manager'),
     (ROLE_BDE, 'BDE'),
     (ROLE_TELE_CALLER, 'Tele Caller'),
@@ -66,6 +70,8 @@ ROLE_BOOL_MAP = {
     ROLE_DOC_MANAGER:    (False, False, True,  False),
     ROLE_DOC_STAFF:      (False, False, False, False),
     ROLE_ACCOUNTS_STAFF: (False, False, False, False),
+    ROLE_PURCHASE_STAFF: (False, False, False, False),
+    ROLE_PROJECT_MANAGER: (False, False, False, False),
     ROLE_BRANCH_MANAGER: (False, False, False, True),
     ROLE_BDE:            (False, False, False, False),
     ROLE_TELE_CALLER:    (False, False, False, False),
@@ -113,7 +119,7 @@ class User(AbstractUser):
     # ── Capability helpers (read-only; used by data-visibility + serializer output) ──
     @property
     def sees_all_leads(self):
-        return self.is_staff or self.is_general_manager or self.role in (ROLE_DOC_STAFF, ROLE_ACCOUNTS_STAFF)
+        return self.is_staff or self.is_general_manager or self.role in (ROLE_DOC_STAFF, ROLE_ACCOUNTS_STAFF, ROLE_PURCHASE_STAFF, ROLE_PROJECT_MANAGER)
 
     @property
     def branch_scoped(self):

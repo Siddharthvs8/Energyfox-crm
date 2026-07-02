@@ -6,6 +6,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import PaymentVerificationSection from "./PaymentVerificationSection";
+import BalancePaymentSection from "./BalancePaymentSection";
 
 type AccountsDetail = {
   id: number;
@@ -142,6 +143,15 @@ export default function AccountsDetailPage({ params: paramsPromise }: { params: 
         dealValue={data.value}
         onChanged={load}
       />
+
+      {/* Balance collection (partially / fully paid) — once payment is verified */}
+      {data.payment_complete && (
+        <BalancePaymentSection
+          leadId={data.id}
+          canEdit={data.can_edit_payment}
+          onChanged={load}
+        />
+      )}
     </div>
   );
 }

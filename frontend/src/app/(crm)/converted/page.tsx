@@ -3,6 +3,7 @@ import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
 import { useLeadStatuses } from "@/hooks/useLeadStatuses";
 import { FALLBACK_STATUS_META } from "@/lib/lead-statuses";
+import { StageTag } from "@/lib/pipeline-stages";
 
 import React, { useState, useEffect, use, useRef } from "react";
 import { formatCurrency, getSourceLabel } from "@/lib/mock-data";
@@ -33,6 +34,19 @@ function StatusPill({ status, statusMeta }: { status: string; statusMeta: Record
       {m.label}
     </span>
   );
+}
+
+// ─── Deal classification (fulfilment / payment milestone) ───────────────────────
+const DEAL_CLASS_META: Record<string, { label: string; cls: string }> = {
+  closed_deal:    { label: "Closed Deal",    cls: "bg-indigo-50 text-indigo-700 border-indigo-100" },
+  partially_paid: { label: "Partially Paid", cls: "bg-amber-50 text-amber-700 border-amber-100" },
+  fully_paid:     { label: "Fully Paid",     cls: "bg-emerald-50 text-emerald-700 border-emerald-100" },
+  lost:           { label: "Lost",           cls: "bg-rose-50 text-rose-700 border-rose-100" },
+};
+function DealClassBadge({ value }: { value?: string | null }) {
+  const m = value ? DEAL_CLASS_META[value] : null;
+  if (!m) return null;
+  return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border ${m.cls}`}>{m.label}</span>;
 }
 
 // ─── Timeline event config ────────────────────────────────────────────────────
@@ -69,6 +83,11 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
   const [metrics,   setMetrics]   = useState<any>(null);
   const [leads,     setLeads]     = useState<any[]>([]);
   const [search,    setSearch]    = useState("");
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  // ── Filters (combinable)
+  const [stageFilter,      setStageFilter]      = useState("");  // '', 'converted', 'closed_deal', 'partially_paid', 'fully_paid'
+  const [telecallerFilter, setTelecallerFilter] = useState("");  // assigned_to id
+  const [bdeFilter,        setBdeFilter]        = useState("");  // bde id
 
   // ── Drawer state
   const [selected,         setSelected]         = useState<any>(null);
@@ -94,13 +113,15 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
     const token = localStorage.getItem(`${domain}_access`);
     if (!token) return;
     try {
-      const [mRes, lRes] = await Promise.all([
+      const [mRes, lRes, uRes] = await Promise.all([
         fetch(`${getApiBase(domain)}/api/converted-analytics/`, { headers: { Authorization: `Bearer ${token}` } }),
-        fetch(`${getApiBase(domain)}/api/leads/?status=enrolled,partially_paid`, { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`${getApiBase(domain)}/api/leads/?status=converted`, { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`${getApiBase(domain)}/api/users/me/`, { headers: { Authorization: `Bearer ${token}` } }),
       ]);
       if (mRes.ok) setMetrics(await mRes.json());
       else setMetrics({ total_conversions: 0, total_revenue: 0, avg_conversion_days: 0, top_sources: [] });
       if (lRes.ok) { const d = await lRes.json(); setLeads(Array.isArray(d) ? d : d.results || []); }
+      if (uRes.ok) setCurrentUser(await uRes.json());
     } catch (e) { console.error(e); }
     finally { setLoading(false); }
   };
@@ -163,9 +184,27 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
   // ── Derived
   const data = metrics || { total_conversions: 0, total_revenue: 0, avg_conversion_days: 0, top_sources: [] };
   const maxSrc = data.top_sources.length > 0 ? Math.max(...data.top_sources.map((s: any) => s.count)) : 1;
+  const isManagerOrAdmin = !!(currentUser?.is_staff || currentUser?.is_general_manager || currentUser?.is_manager);
+
+  // Assignee filter options, derived from the converted leads actually present.
+  const uniqueBy = (items: [string, string][]) => Array.from(new Map(items).entries());
+  const telecallerOptions = uniqueBy(leads.filter(l => l.assigned_to).map(l => [String(l.assigned_to), l.assigned_to_name || `#${l.assigned_to}`] as [string, string]));
+  const bdeOptions        = uniqueBy(leads.filter(l => l.bde).map(l => [String(l.bde), l.bde_name || `#${l.bde}`] as [string, string]));
+
+  const stageMatch = (l: any) => {
+    if (!stageFilter) return true;
+    if (stageFilter === "converted") return !l.deal_classification;  // converted, no further milestone
+    return l.deal_classification === stageFilter;
+  };
   const filtered = leads.filter(l =>
-    !search || `${l.first_name} ${l.last_name} ${l.email} ${l.phone} ${l.company}`.toLowerCase().includes(search.toLowerCase())
+    (!search || `${l.first_name} ${l.last_name} ${l.email} ${l.phone} ${l.company}`.toLowerCase().includes(search.toLowerCase()))
+    && stageMatch(l)
+    && (!telecallerFilter || String(l.assigned_to) === telecallerFilter)
+    && (!bdeFilter || String(l.bde) === bdeFilter)
   );
+
+  const activeFilterCount = (stageFilter ? 1 : 0) + (telecallerFilter ? 1 : 0) + (bdeFilter ? 1 : 0);
+  const clearFilters = () => { setStageFilter(""); setTelecallerFilter(""); setBdeFilter(""); };
 
   const daysInPipeline = (lead: any) => {
     const created   = new Date(lead.created_at);
@@ -174,11 +213,38 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
     return Math.max(0, Math.round((converted.getTime() - created.getTime()) / 86400000));
   };
 
+  const markLost = async (lead: any) => {
+    const reason = window.prompt(
+      `Mark "${lead.first_name} ${lead.last_name || ""}" as lost?\nOptional reason (customer skipped / backed out, other issue…):`,
+      ""
+    );
+    if (reason === null) return; // cancelled
+    const token = localStorage.getItem(`${domain}_access`);
+    const r = await fetch(`${getApiBase(domain)}/api/leads/${lead.id}/mark-lost/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ reason }),
+    });
+    if (r.ok) fetchData();
+    else { const e = await r.json().catch(() => ({})); alert(e.error || "Could not mark this lead as lost."); }
+  };
+
+  const restoreLost = async (lead: any) => {
+    if (!window.confirm(`Restore "${lead.first_name} ${lead.last_name || ""}" from lost?`)) return;
+    const token = localStorage.getItem(`${domain}_access`);
+    const r = await fetch(`${getApiBase(domain)}/api/leads/${lead.id}/restore-lost/`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (r.ok) fetchData();
+    else { const e = await r.json().catch(() => ({})); alert(e.error || "Could not restore this lead."); }
+  };
+
   const exportCSV = async () => {
     const token = localStorage.getItem(`${domain}_access`);
     if (!token) return;
     try {
-      const r = await fetch(`${getApiBase(domain)}/api/leads/export_csv/?status=enrolled,partially_paid`, {
+      const r = await fetch(`${getApiBase(domain)}/api/leads/export_csv/?status=converted`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (!r.ok) throw new Error("Failed to export");
@@ -218,7 +284,7 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
             </div>
             <div>
               <h1 className="text-[17px] font-black text-slate-900 leading-none">Converted Leads</h1>
-              <p className="text-[11px] text-slate-400 mt-0.5">{leads.length} enrolled clients</p>
+              <p className="text-[11px] text-slate-400 mt-0.5">{leads.length} converted clients</p>
             </div>
           </div>
           {/* Search */}
@@ -284,11 +350,53 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
           </div>
         )}
 
+        {/* ─── Filters (combinable) ──────────────────────────────────────── */}
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-[0_4px_20px_rgb(0,0,0,0.04)] p-4 mb-5 flex flex-wrap items-end gap-4">
+          <div className="min-w-[160px]">
+            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">Stage</label>
+            <select value={stageFilter} onChange={e => setStageFilter(e.target.value)}
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all">
+              <option value="">All stages</option>
+              <option value="converted">Converted</option>
+              <option value="closed_deal">Closed Deal</option>
+              <option value="partially_paid">Partially Paid</option>
+              <option value="fully_paid">Fully Paid</option>
+              <option value="lost">Lost</option>
+            </select>
+          </div>
+          {isManagerOrAdmin && (
+            <div className="min-w-[160px]">
+              <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">Tele Caller</label>
+              <select value={telecallerFilter} onChange={e => setTelecallerFilter(e.target.value)}
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all">
+                <option value="">All tele callers</option>
+                {telecallerOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+              </select>
+            </div>
+          )}
+          {isManagerOrAdmin && (
+            <div className="min-w-[160px]">
+              <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">BDE</label>
+              <select value={bdeFilter} onChange={e => setBdeFilter(e.target.value)}
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all">
+                <option value="">All BDEs</option>
+                {bdeOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+              </select>
+            </div>
+          )}
+          {activeFilterCount > 0 && (
+            <button onClick={clearFilters}
+              className="ml-auto px-4 py-2 text-sm font-bold text-slate-500 hover:text-slate-700 bg-slate-50 hover:bg-slate-100 rounded-xl transition-colors">
+              Clear filters ({activeFilterCount})
+            </button>
+          )}
+        </div>
+
         {/* ─── Client Table ──────────────────────────────────────────────── */}
         <div className="bg-white rounded-2xl border border-slate-100 shadow-[0_4px_20px_rgb(0,0,0,0.04)] overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
             <div>
-              <h2 className="text-[15px] font-black text-slate-800">Enrolled Clients</h2>
+              <h2 className="text-[15px] font-black text-slate-800">Converted Clients</h2>
               <p className="text-[11px] text-slate-400 mt-0.5">Click a row to view full profile & history</p>
             </div>
             <span className="bg-emerald-100 text-emerald-700 text-[10px] font-black px-2.5 py-1 rounded-full">{filtered.length} records</span>
@@ -297,7 +405,7 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
             <table className="w-full text-left min-w-[780px]">
               <thead>
                 <tr className="bg-slate-50">
-                  {["Client", "Enrolled On", "Velocity", "Deal Value", "Source", "Assigned To", ""].map(h => (
+                  {["Client", "Converted On", "Velocity", "Deal Value", "Source", "Assigned To", ""].map(h => (
                     <th key={h} className="px-5 py-3.5 text-[10px] font-black text-slate-400 uppercase tracking-widest">{h}</th>
                   ))}
                 </tr>
@@ -306,8 +414,8 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
                 {filtered.length === 0 && (
                   <tr><td colSpan={7} className="py-20 text-center">
                     <div className="w-14 h-14 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4 text-slate-300"><I.Trophy /></div>
-                    <p className="text-base font-black text-slate-600">No enrolled clients found</p>
-                    <p className="text-sm text-slate-400 mt-1">Leads marked 'Enrolled' will appear here</p>
+                    <p className="text-base font-black text-slate-600">No converted clients found</p>
+                    <p className="text-sm text-slate-400 mt-1">Leads marked 'Converted' will appear here</p>
                   </td></tr>
                 )}
                 {filtered.map(lead => (
@@ -324,6 +432,7 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
                         <div>
                           <p className="text-[13px] font-bold text-slate-800 group-hover:text-emerald-700 transition-colors">{lead.first_name} {lead.last_name}</p>
                           <p className="text-[11px] text-slate-400">{lead.email || lead.phone || "—"}</p>
+                          <div className="mt-1 flex items-center gap-1.5"><StageTag stage={lead.pipeline_stage} /><DealClassBadge value={lead.deal_classification} /></div>
                         </div>
                       </div>
                     </td>
@@ -333,7 +442,7 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
                           ? new Date(lead.status_changed_at).toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' })
                           : new Date(lead.created_at).toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' })}
                       </p>
-                      <span className="text-[10px] font-bold text-emerald-500">✓ Enrolled</span>
+                      <span className="text-[10px] font-bold text-emerald-500">✓ Converted</span>
                     </td>
                     <td className="px-5 py-4">
                       <span className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-600 bg-slate-100 px-2.5 py-1 rounded-lg">
@@ -373,6 +482,17 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
                           className="flex items-center gap-1 px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold text-[10px] rounded-lg transition-colors">
                           <I.Mail /> Welcome
                         </button>
+                        {lead.can_mark_lost && (lead.deal_classification === 'lost' ? (
+                          <button onClick={e => { e.stopPropagation(); restoreLost(lead); }}
+                            className="flex items-center gap-1 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold text-[10px] rounded-lg transition-colors">
+                            Restore
+                          </button>
+                        ) : (
+                          <button onClick={e => { e.stopPropagation(); markLost(lead); }}
+                            className="flex items-center gap-1 px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-[10px] rounded-lg transition-colors">
+                            <I.X /> Mark Lost
+                          </button>
+                        ))}
                       </div>
                     </td>
                   </tr>
@@ -410,7 +530,7 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
                     <p className="text-sm text-emerald-100 mt-0.5">{selected.company || selected.email || selected.phone || "No contact info"}</p>
                     <div className="flex items-center gap-2 mt-2">
                       <span className="inline-flex items-center gap-1 bg-white/20 text-white text-[10px] font-bold px-2.5 py-1 rounded-full">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-300" />Enrolled
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-300" />Converted
                       </span>
                       <span className="text-[10px] text-emerald-200 font-semibold">{formatCurrency(selected.value)}</span>
                     </div>
@@ -490,7 +610,7 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
                     <div className="space-y-2">
                       {[
                         { label: "Created", val: selected.created_at },
-                        { label: "Enrolled", val: selected.status_changed_at || selected.created_at },
+                        { label: "Converted", val: selected.status_changed_at || selected.created_at },
                         { label: "Last Updated", val: selected.updated_at },
                       ].map(({ label, val }) => {
                         const d = new Date(val);
@@ -710,7 +830,7 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
                               <div className="w-10 h-10 rounded-lg bg-fuchsia-200 flex items-center justify-center text-xl">💰</div>
                               <div>
                                 <p className="text-[12px] font-bold text-fuchsia-900 group-hover:text-fuchsia-800 transition-colors">Official Invoice</p>
-                                <p className="text-[10px] text-fuchsia-600 font-semibold mt-0.5">Required for Enrolled Status</p>
+                                <p className="text-[10px] text-fuchsia-600 font-semibold mt-0.5">Required for Converted Status</p>
                               </div>
                             </div>
                             <button onClick={(e) => { e.stopPropagation(); window.open(selected.invoice, '_blank'); }}

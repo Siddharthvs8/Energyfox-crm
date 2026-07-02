@@ -203,7 +203,7 @@ function PdfMultiField({ docType, label }: { docType: string; label: string }) {
             onDragOver={e => { if (disabled) return; e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = "copy"; setDragActive(true); }}
             onDragLeave={e => { if (disabled) return; e.preventDefault(); e.stopPropagation(); setDragActive(false); }}
             onDrop={e => { if (disabled) return; e.preventDefault(); e.stopPropagation(); setDragActive(false); addImages(e.dataTransfer.files); }}
-            className={`rounded-lg border-2 border-dashed px-3 py-4 text-center text-[11px] transition-colors ${disabled ? "border-slate-200 text-slate-300" : dragActive ? "border-indigo-400 bg-indigo-50 text-indigo-600" : "border-slate-300 text-slate-500"}`}
+            className={`rounded-lg border-2 border-dashed px-3 py-4 min-h-[180px] flex flex-col items-center justify-center text-center text-[11px] transition-colors ${disabled ? "border-slate-200 text-slate-300" : dragActive ? "border-indigo-400 bg-indigo-50 text-indigo-600" : "border-slate-300 text-slate-500"}`}
           >
             <label className={disabled ? "cursor-default" : "cursor-pointer text-indigo-600 font-semibold"}>
               Drag &amp; drop images or <span className="underline">browse</span>
