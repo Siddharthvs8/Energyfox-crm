@@ -6,8 +6,8 @@ from django.http import HttpResponse
 import csv
 import io
 import logging
-from .models import Lead, IntegrationSettings, ActivityLog, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, LeadDocument, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment
-from .serializers import LeadSerializer, IntegrationSettingsSerializer, LeadAttachmentSerializer, ProductSerializer, SiteVisitSerializer, DocumentationStage1Serializer, SiteVisitDocumentSerializer, DocumentationStage1DocumentSerializer, PaymentVerificationSerializer, PurchaseLogisticsSerializer, ProjectSerializer, ProjectDocumentSerializer, ServiceEntrySerializer, BalancePaymentSerializer
+from .models import Lead, IntegrationSettings, ActivityLog, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, LeadDocument, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, Warranty, WarrantyDocument
+from .serializers import LeadSerializer, IntegrationSettingsSerializer, LeadAttachmentSerializer, ProductSerializer, SiteVisitSerializer, DocumentationStage1Serializer, SiteVisitDocumentSerializer, DocumentationStage1DocumentSerializer, PaymentVerificationSerializer, PurchaseLogisticsSerializer, ProjectSerializer, ProjectDocumentSerializer, ServiceEntrySerializer, BalancePaymentSerializer, DocumentationStage2Serializer, DocumentationStage2DocumentSerializer, LiasoningServiceSerializer, WarrantySerializer, WarrantyDocumentSerializer
 from .document_kinds import SHARED_KIND_LABELS, kind_for
 from django.utils import timezone
 
@@ -1232,6 +1232,28 @@ class LeadViewSet(viewsets.ModelViewSet):
             lead=lead, extra={'auto_generated': True})
         return Response(self._completed_project_payload(lead, request))
 
+    def _push_to_purchase(self, lead, request):
+        """Hand the lead off to purchase & logistics (idempotent). Triggered once
+        the customer has fully paid."""
+        if lead.pushed_to_purchase:
+            return
+        lead.pushed_to_purchase = True
+        lead.pushed_to_purchase_at = timezone.now()
+        lead.save(update_fields=['pushed_to_purchase', 'pushed_to_purchase_at'])
+        assignee = auto_assign_purchase(lead)
+        if assignee:
+            pname = f"{assignee.first_name} {assignee.last_name}".strip() or assignee.username
+            pdesc = f"Fully paid — moved to purchase & logistics. Auto-assigned to {pname}."
+        else:
+            pdesc = "Fully paid — moved to purchase & logistics."
+        ActivityLog.objects.create(
+            activity_type='note_added',
+            description=pdesc,
+            actor=request.user if request.user.is_authenticated else None,
+            lead=lead,
+            extra={'auto_generated': True},
+        )
+
     @action(detail=True, methods=['post'], url_path='complete-payment-verification')
     def complete_payment_verification(self, request, pk=None):
         """Mark a lead's payment verification complete (locks it)."""
@@ -1261,24 +1283,10 @@ class LeadViewSet(viewsets.ModelViewSet):
             lead=lead,
             extra={'auto_generated': True},
         )
-        # Hand the lead off to purchase & logistics.
-        if not lead.pushed_to_purchase:
-            lead.pushed_to_purchase = True
-            lead.pushed_to_purchase_at = timezone.now()
-            lead.save(update_fields=['pushed_to_purchase', 'pushed_to_purchase_at'])
-            assignee = auto_assign_purchase(lead)
-            if assignee:
-                pname = f"{assignee.first_name} {assignee.last_name}".strip() or assignee.username
-                pdesc = f"Moved to purchase & logistics. Auto-assigned to {pname}."
-            else:
-                pdesc = "Moved to purchase & logistics."
-            ActivityLog.objects.create(
-                activity_type='note_added',
-                description=pdesc,
-                actor=request.user if request.user.is_authenticated else None,
-                lead=lead,
-                extra={'auto_generated': True},
-            )
+        # Hand off to purchase & logistics only once the payment is fully received.
+        # (Partially-paid customers wait in accounts until the balance is cleared.)
+        if pv.balance_amount <= 0:
+            self._push_to_purchase(lead, request)
         return Response(self._accounts_payload(lead, request))
 
     @action(detail=True, methods=['post'], url_path='reopen-payment-verification')
@@ -1490,6 +1498,9 @@ class LeadViewSet(viewsets.ModelViewSet):
             description=f"Balance payment of {amount} recorded by {actor}. Balance due: {pv.balance_amount}.",
             actor=request.user if request.user.is_authenticated else None,
             lead=lead, extra={'auto_generated': True})
+        # Once the balance is cleared, the fully-paid customer moves to purchase & logistics.
+        if pv.balance_amount <= 0:
+            self._push_to_purchase(lead, request)
         return Response(summary())
 
     # ── Completed projects (accounts RF stage) ──
@@ -1926,6 +1937,32 @@ class LeadViewSet(viewsets.ModelViewSet):
             description=f"Project / installation completed by {actor}.",
             actor=request.user if request.user.is_authenticated else None,
             lead=lead, extra={'auto_generated': True})
+        # Fan out in parallel: Documentation Stage 2 and Liasoning & Service both
+        # receive the lead the moment the installation project is complete.
+        fanout = []
+        now = timezone.now()
+        if not lead.pushed_to_doc_stage2:
+            lead.pushed_to_doc_stage2 = True
+            lead.pushed_to_doc_stage2_at = now
+            fanout += ['pushed_to_doc_stage2', 'pushed_to_doc_stage2_at']
+            DocumentationStage2.objects.get_or_create(lead=lead)
+        if not lead.pushed_to_liasoning:
+            lead.pushed_to_liasoning = True
+            lead.pushed_to_liasoning_at = now
+            fanout += ['pushed_to_liasoning', 'pushed_to_liasoning_at']
+            LiasoningService.objects.get_or_create(lead=lead)
+        if not lead.pushed_to_warranty:
+            lead.pushed_to_warranty = True
+            lead.pushed_to_warranty_at = now
+            fanout += ['pushed_to_warranty', 'pushed_to_warranty_at']
+            Warranty.objects.get_or_create(lead=lead)
+        if fanout:
+            lead.save(update_fields=fanout)
+            ActivityLog.objects.create(
+                activity_type='note_added',
+                description="Moved to Documentation Stage 2, Warranty and Liasoning & Service.",
+                actor=request.user if request.user.is_authenticated else None,
+                lead=lead, extra={'auto_generated': True})
         return Response(self._project_payload(lead, request))
 
     @action(detail=True, methods=['post'], url_path='reopen-project')
@@ -1962,6 +1999,336 @@ class LeadViewSet(viewsets.ModelViewSet):
                 return Response({'error': 'Project manager not found.'}, status=status.HTTP_404_NOT_FOUND)
         lead.save(update_fields=['project_manager'])
         return Response(self._project_payload(lead, request))
+
+    # ── Documentation Stage 2 (post-installation documentation queue) ──
+    def _doc_stage2_payload(self, lead, request):
+        from .access import can_access_doc_stage2
+        rec = getattr(lead, 'documentation_stage2', None)
+
+        def name(u):
+            return (f"{u.first_name} {u.last_name}".strip() or u.username) if u else None
+
+        return {
+            'id': lead.id,
+            'first_name': lead.first_name,
+            'last_name': lead.last_name,
+            'phone': lead.phone,
+            'email': lead.email,
+            'location': lead.company,
+            'installation_location': lead.installation_location,
+            'product_name': lead.product.name if lead.product else None,
+            'value': lead.value,
+            'status': lead.status,
+            'bde_name': name(lead.bde),
+            'documentation_staff_name': name(lead.documentation_staff),
+            'pushed_at': lead.pushed_to_doc_stage2_at,
+            'record': DocumentationStage2Serializer(rec, context={'request': request}).data if rec else None,
+            'is_complete': bool(rec and rec.is_complete),
+            'can_edit': can_access_doc_stage2(request.user),
+        }
+
+    @action(detail=False, methods=['get'], url_path='documentation-stage2')
+    def documentation_stage2(self, request):
+        """Documentation Stage 2 queue: leads whose installation project is complete."""
+        from .access import can_access_doc_stage2
+        if not can_access_doc_stage2(request.user):
+            return Response({'error': 'You do not have access to documentation.'}, status=status.HTTP_403_FORBIDDEN)
+        qs = (Lead.objects.filter(pushed_to_doc_stage2=True)
+              .select_related('product', 'bde', 'documentation_staff', 'documentation_stage2')
+              .order_by('-pushed_to_doc_stage2_at'))
+        return Response([self._doc_stage2_payload(lead, request) for lead in qs])
+
+    @action(detail=True, methods=['get'], url_path='documentation-stage2-detail')
+    def documentation_stage2_detail(self, request, pk=None):
+        """Full Documentation Stage 2 view for one lead."""
+        from .access import can_access_doc_stage2
+        if not can_access_doc_stage2(request.user):
+            return Response({'error': 'You do not have access to documentation.'}, status=status.HTTP_403_FORBIDDEN)
+        lead = self.get_object()
+        if not lead.pushed_to_doc_stage2:
+            return Response({'error': 'This lead is not in Documentation Stage 2.'}, status=status.HTTP_404_NOT_FOUND)
+        DocumentationStage2.objects.get_or_create(lead=lead)
+        return Response(self._doc_stage2_payload(lead, request))
+
+    @action(detail=True, methods=['post'], url_path='complete-documentation-stage2')
+    def complete_documentation_stage2(self, request, pk=None):
+        """Mark Documentation Stage 2 complete for a lead."""
+        from .access import can_access_doc_stage2
+        if not can_access_doc_stage2(request.user):
+            return Response({'error': 'You do not have permission to complete Documentation Stage 2.'}, status=status.HTTP_403_FORBIDDEN)
+        lead = self.get_object()
+        if not lead.pushed_to_doc_stage2:
+            return Response({'error': 'This lead is not in Documentation Stage 2.'}, status=status.HTTP_404_NOT_FOUND)
+        rec, _ = DocumentationStage2.objects.get_or_create(lead=lead)
+        if rec.is_complete:
+            return Response({'error': 'Documentation Stage 2 is already completed.'}, status=status.HTTP_400_BAD_REQUEST)
+        rec.is_complete = True
+        rec.completed_at = timezone.now()
+        rec.completed_by = request.user if request.user.is_authenticated else None
+        rec.save(update_fields=['is_complete', 'completed_at', 'completed_by', 'updated_at'])
+        ActivityLog.objects.create(
+            activity_type='note_added', description="Documentation Stage 2 completed.",
+            actor=request.user if request.user.is_authenticated else None,
+            lead=lead, extra={'auto_generated': True})
+        return Response(self._doc_stage2_payload(lead, request))
+
+    @action(detail=True, methods=['get', 'patch'], url_path='documentation-stage2-record')
+    def documentation_stage2_record(self, request, pk=None):
+        """Get or update a lead's Documentation Stage 2 record (Annexure 3 status,
+        MNRE / discom approval, warranty)."""
+        from .access import can_access_doc_stage2
+        lead = self.get_object()
+        if not can_access_doc_stage2(request.user):
+            return Response({'error': 'You do not have access to documentation.'}, status=status.HTTP_403_FORBIDDEN)
+        if not lead.pushed_to_doc_stage2:
+            return Response({'error': 'This lead is not in Documentation Stage 2.'}, status=status.HTTP_404_NOT_FOUND)
+        rec, _ = DocumentationStage2.objects.get_or_create(lead=lead)
+        if request.method == 'GET':
+            return Response(DocumentationStage2Serializer(rec, context={'request': request}).data)
+        if rec.is_complete:
+            return Response({'error': 'Documentation Stage 2 is already completed and locked.'}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = DocumentationStage2Serializer(rec, data=request.data, partial=True, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='documentation-stage2/documents')
+    def doc_stage2_add_document(self, request, pk=None):
+        """Upload one file to a Documentation Stage 2 slot (e.g. Annexure 3)."""
+        from .access import can_access_doc_stage2
+        lead = self.get_object()
+        if not can_access_doc_stage2(request.user):
+            return Response({'error': 'You do not have access to documentation.'}, status=status.HTTP_403_FORBIDDEN)
+        rec, _ = DocumentationStage2.objects.get_or_create(lead=lead)
+        if rec.is_complete:
+            return Response({'error': 'Documentation Stage 2 is completed and locked.'}, status=status.HTTP_400_BAD_REQUEST)
+        doc_type = request.data.get('doc_type')
+        file = request.FILES.get('file')
+        if not doc_type or not file:
+            return Response({'error': 'doc_type and file are required.'}, status=status.HTTP_400_BAD_REQUEST)
+        if doc_type not in {k for k, _ in DocumentationStage2.DOC_SLOTS}:
+            return Response({'error': 'Unknown document type.'}, status=status.HTTP_400_BAD_REQUEST)
+        doc = DocumentationStage2Document.objects.create(
+            stage2=rec, doc_type=doc_type, file=file,
+            uploaded_by=request.user if request.user.is_authenticated else None)
+        return Response(DocumentationStage2DocumentSerializer(doc).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['delete'], url_path='documentation-stage2/documents/(?P<doc_id>[0-9]+)')
+    def doc_stage2_delete_document(self, request, pk=None, doc_id=None):
+        """Delete a single Documentation Stage 2 document."""
+        from .access import can_access_doc_stage2
+        lead = self.get_object()
+        if not can_access_doc_stage2(request.user):
+            return Response({'error': 'You do not have access to documentation.'}, status=status.HTTP_403_FORBIDDEN)
+        try:
+            doc = DocumentationStage2Document.objects.get(pk=doc_id, stage2__lead=lead)
+        except DocumentationStage2Document.DoesNotExist:
+            return Response({'error': 'Document not found.'}, status=status.HTTP_404_NOT_FOUND)
+        if doc.stage2.is_complete:
+            return Response({'error': 'Documentation Stage 2 is completed and locked.'}, status=status.HTTP_400_BAD_REQUEST)
+        doc.file.delete(save=False)
+        doc.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    # ── Warranty (post-installation documentation module) ──
+    def _warranty_payload(self, lead, request):
+        from .access import can_access_warranty
+        rec = getattr(lead, 'warranty', None)
+
+        def name(u):
+            return (f"{u.first_name} {u.last_name}".strip() or u.username) if u else None
+
+        return {
+            'id': lead.id,
+            'first_name': lead.first_name,
+            'last_name': lead.last_name,
+            'phone': lead.phone,
+            'email': lead.email,
+            'location': lead.company,
+            'installation_location': lead.installation_location,
+            'product_name': lead.product.name if lead.product else None,
+            'value': lead.value,
+            'status': lead.status,
+            'bde_name': name(lead.bde),
+            'documentation_staff_name': name(lead.documentation_staff),
+            'pushed_at': lead.pushed_to_warranty_at,
+            'record': WarrantySerializer(rec, context={'request': request}).data if rec else None,
+            'is_complete': bool(rec and rec.is_complete),
+            'can_edit': can_access_warranty(request.user),
+        }
+
+    @action(detail=False, methods=['get'], url_path='warranty')
+    def warranty(self, request):
+        """Warranty queue: leads whose installation project is complete."""
+        from .access import can_access_warranty
+        if not can_access_warranty(request.user):
+            return Response({'error': 'You do not have access to warranty.'}, status=status.HTTP_403_FORBIDDEN)
+        qs = (Lead.objects.filter(pushed_to_warranty=True)
+              .select_related('product', 'bde', 'documentation_staff', 'warranty')
+              .order_by('-pushed_to_warranty_at'))
+        return Response([self._warranty_payload(lead, request) for lead in qs])
+
+    @action(detail=True, methods=['get'], url_path='warranty-detail')
+    def warranty_detail(self, request, pk=None):
+        """Full warranty view for one lead."""
+        from .access import can_access_warranty
+        if not can_access_warranty(request.user):
+            return Response({'error': 'You do not have access to warranty.'}, status=status.HTTP_403_FORBIDDEN)
+        lead = self.get_object()
+        if not lead.pushed_to_warranty:
+            return Response({'error': 'This lead is not in the warranty stage.'}, status=status.HTTP_404_NOT_FOUND)
+        Warranty.objects.get_or_create(lead=lead)
+        return Response(self._warranty_payload(lead, request))
+
+    @action(detail=True, methods=['get', 'patch'], url_path='warranty-record')
+    def warranty_record(self, request, pk=None):
+        """Get or update a lead's warranty record (sent flag, remark)."""
+        from .access import can_access_warranty
+        lead = self.get_object()
+        if not can_access_warranty(request.user):
+            return Response({'error': 'You do not have access to warranty.'}, status=status.HTTP_403_FORBIDDEN)
+        if not lead.pushed_to_warranty:
+            return Response({'error': 'This lead is not in the warranty stage.'}, status=status.HTTP_404_NOT_FOUND)
+        rec, _ = Warranty.objects.get_or_create(lead=lead)
+        if request.method == 'GET':
+            return Response(WarrantySerializer(rec, context={'request': request}).data)
+        if rec.is_complete:
+            return Response({'error': 'Warranty is already completed and locked.'}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = WarrantySerializer(rec, data=request.data, partial=True, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='warranty/documents')
+    def warranty_add_document(self, request, pk=None):
+        """Upload one warranty document."""
+        from .access import can_access_warranty
+        lead = self.get_object()
+        if not can_access_warranty(request.user):
+            return Response({'error': 'You do not have access to warranty.'}, status=status.HTTP_403_FORBIDDEN)
+        rec, _ = Warranty.objects.get_or_create(lead=lead)
+        if rec.is_complete:
+            return Response({'error': 'Warranty is completed and locked.'}, status=status.HTTP_400_BAD_REQUEST)
+        doc_type = request.data.get('doc_type')
+        file = request.FILES.get('file')
+        if not doc_type or not file:
+            return Response({'error': 'doc_type and file are required.'}, status=status.HTTP_400_BAD_REQUEST)
+        if doc_type not in {k for k, _ in Warranty.DOC_SLOTS}:
+            return Response({'error': 'Unknown document type.'}, status=status.HTTP_400_BAD_REQUEST)
+        doc = WarrantyDocument.objects.create(
+            warranty=rec, doc_type=doc_type, file=file,
+            uploaded_by=request.user if request.user.is_authenticated else None)
+        return Response(WarrantyDocumentSerializer(doc).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['delete'], url_path='warranty/documents/(?P<doc_id>[0-9]+)')
+    def warranty_delete_document(self, request, pk=None, doc_id=None):
+        """Delete a single warranty document."""
+        from .access import can_access_warranty
+        lead = self.get_object()
+        if not can_access_warranty(request.user):
+            return Response({'error': 'You do not have access to warranty.'}, status=status.HTTP_403_FORBIDDEN)
+        try:
+            doc = WarrantyDocument.objects.get(pk=doc_id, warranty__lead=lead)
+        except WarrantyDocument.DoesNotExist:
+            return Response({'error': 'Document not found.'}, status=status.HTTP_404_NOT_FOUND)
+        if doc.warranty.is_complete:
+            return Response({'error': 'Warranty is completed and locked.'}, status=status.HTTP_400_BAD_REQUEST)
+        doc.file.delete(save=False)
+        doc.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=['post'], url_path='complete-warranty')
+    def complete_warranty(self, request, pk=None):
+        """Mark warranty complete for a lead."""
+        from .access import can_access_warranty
+        if not can_access_warranty(request.user):
+            return Response({'error': 'You do not have permission to complete warranty.'}, status=status.HTTP_403_FORBIDDEN)
+        lead = self.get_object()
+        if not lead.pushed_to_warranty:
+            return Response({'error': 'This lead is not in the warranty stage.'}, status=status.HTTP_404_NOT_FOUND)
+        rec, _ = Warranty.objects.get_or_create(lead=lead)
+        if rec.is_complete:
+            return Response({'error': 'Warranty is already completed.'}, status=status.HTTP_400_BAD_REQUEST)
+        rec.is_complete = True
+        rec.completed_at = timezone.now()
+        rec.completed_by = request.user if request.user.is_authenticated else None
+        rec.save(update_fields=['is_complete', 'completed_at', 'completed_by', 'updated_at'])
+        ActivityLog.objects.create(
+            activity_type='note_added', description="Warranty completed.",
+            actor=request.user if request.user.is_authenticated else None,
+            lead=lead, extra={'auto_generated': True})
+        return Response(self._warranty_payload(lead, request))
+
+    # ── Liasoning & Service (post-installation; handled by the liasoning officer) ──
+    def _liasoning_payload(self, lead, request):
+        from .access import can_access_liasoning
+        rec = getattr(lead, 'liasoning_service', None)
+
+        def name(u):
+            return (f"{u.first_name} {u.last_name}".strip() or u.username) if u else None
+
+        return {
+            'id': lead.id,
+            'first_name': lead.first_name,
+            'last_name': lead.last_name,
+            'phone': lead.phone,
+            'email': lead.email,
+            'location': lead.company,
+            'installation_location': lead.installation_location,
+            'product_name': lead.product.name if lead.product else None,
+            'value': lead.value,
+            'status': lead.status,
+            'bde_name': name(lead.bde),
+            'pushed_at': lead.pushed_to_liasoning_at,
+            'record': LiasoningServiceSerializer(rec, context={'request': request}).data if rec else None,
+            'is_complete': bool(rec and rec.is_complete),
+            'can_edit': can_access_liasoning(request.user),
+        }
+
+    @action(detail=False, methods=['get'], url_path='liasoning')
+    def liasoning(self, request):
+        """Liasoning & Service queue: leads whose installation project is complete."""
+        from .access import can_access_liasoning
+        if not can_access_liasoning(request.user):
+            return Response({'error': 'You do not have access to liasoning & service.'}, status=status.HTTP_403_FORBIDDEN)
+        qs = (Lead.objects.filter(pushed_to_liasoning=True)
+              .select_related('product', 'bde', 'liasoning_service')
+              .order_by('-pushed_to_liasoning_at'))
+        return Response([self._liasoning_payload(lead, request) for lead in qs])
+
+    @action(detail=True, methods=['get'], url_path='liasoning-detail')
+    def liasoning_detail(self, request, pk=None):
+        """Full Liasoning & Service view for one lead."""
+        from .access import can_access_liasoning
+        if not can_access_liasoning(request.user):
+            return Response({'error': 'You do not have access to liasoning & service.'}, status=status.HTTP_403_FORBIDDEN)
+        lead = self.get_object()
+        if not lead.pushed_to_liasoning:
+            return Response({'error': 'This lead is not in liasoning & service.'}, status=status.HTTP_404_NOT_FOUND)
+        LiasoningService.objects.get_or_create(lead=lead)
+        return Response(self._liasoning_payload(lead, request))
+
+    @action(detail=True, methods=['post'], url_path='complete-liasoning')
+    def complete_liasoning(self, request, pk=None):
+        """Mark Liasoning & Service complete for a lead."""
+        from .access import can_access_liasoning
+        if not can_access_liasoning(request.user):
+            return Response({'error': 'You do not have permission to complete liasoning & service.'}, status=status.HTTP_403_FORBIDDEN)
+        lead = self.get_object()
+        if not lead.pushed_to_liasoning:
+            return Response({'error': 'This lead is not in liasoning & service.'}, status=status.HTTP_404_NOT_FOUND)
+        rec, _ = LiasoningService.objects.get_or_create(lead=lead)
+        if rec.is_complete:
+            return Response({'error': 'Liasoning & Service is already completed.'}, status=status.HTTP_400_BAD_REQUEST)
+        rec.is_complete = True
+        rec.completed_at = timezone.now()
+        rec.completed_by = request.user if request.user.is_authenticated else None
+        rec.save(update_fields=['is_complete', 'completed_at', 'completed_by', 'updated_at'])
+        ActivityLog.objects.create(
+            activity_type='note_added', description="Liasoning & Service completed.",
+            actor=request.user if request.user.is_authenticated else None,
+            lead=lead, extra={'auto_generated': True})
+        return Response(self._liasoning_payload(lead, request))
 
     @action(detail=False, methods=['get', 'patch'], url_path='team-stats')
     def team_stats(self, request):

@@ -96,6 +96,33 @@ def can_mark_lead_lost(user):
             or getattr(user, 'is_manager', False) or getattr(user, 'role', '') == 'bde')
 
 
+def can_access_doc_stage2(user):
+    """Who can open Documentation Stage 2: the documentation team plus admins /
+    general managers (same audience as Documentation Stage 1)."""
+    if not user or not user.is_authenticated:
+        return False
+    return (user.is_staff or getattr(user, 'is_general_manager', False)
+            or getattr(user, 'role', '') in DOCUMENTATION_ROLES)
+
+
+def can_access_liasoning(user):
+    """Who can open the Liasoning & Service module: the liasoning officer plus
+    admins / general managers who oversee them."""
+    if not user or not user.is_authenticated:
+        return False
+    return (user.is_staff or getattr(user, 'is_general_manager', False)
+            or getattr(user, 'role', '') == 'liasoning_officer')
+
+
+def can_access_warranty(user):
+    """Who can open the Warranty module: the documentation team plus admins /
+    general managers (it lives under documentation)."""
+    if not user or not user.is_authenticated:
+        return False
+    return (user.is_staff or getattr(user, 'is_general_manager', False)
+            or getattr(user, 'role', '') in DOCUMENTATION_ROLES)
+
+
 def can_access_accounts(user):
     """Who can open the Accounts view (the payment-verification queue): accounts
     staff and admins / general managers (who can edit), plus purchase staff who

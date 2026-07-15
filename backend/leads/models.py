@@ -102,6 +102,15 @@ class Lead(models.Model):
         related_name='project_leads',
         help_text="Project manager handling this lead's installation",
     )
+    # ── Post-installation fan-out (set in parallel when the project completes) ──
+    # Documentation Stage 2 (documentation team) and the Liasoning & Service module
+    # (liasoning officer) both receive the lead at the same time.
+    pushed_to_doc_stage2 = models.BooleanField(default=False, db_index=True)
+    pushed_to_doc_stage2_at = models.DateTimeField(null=True, blank=True)
+    pushed_to_liasoning = models.BooleanField(default=False, db_index=True)
+    pushed_to_liasoning_at = models.DateTimeField(null=True, blank=True)
+    pushed_to_warranty = models.BooleanField(default=False, db_index=True)
+    pushed_to_warranty_at = models.DateTimeField(null=True, blank=True)
     product = models.ForeignKey(
         Product,
         on_delete=models.SET_NULL,
@@ -644,6 +653,128 @@ class ProjectDocument(models.Model):
 
     def __str__(self):
         return f"{self.doc_type} — {self.project_id}"
+
+
+class DocumentationStage2(models.Model):
+    """Documentation Stage 2 — a separate documentation queue the lead enters (in
+    parallel with Liasoning & Service) once its installation project is complete.
+
+    Three tasks:
+      1. Completion docs / Annexure 3 — the set of documents given to KSEB,
+         prepared right after the project uploads the installation photos.
+      2. MNRE Stage 2 — the pmsuryaghar portal; the discom approval decides the
+         next step (approved → subsidy request; not approved → route to the
+         liasoning officer at the concerned section).
+      3. Warranty — sent to the customer via mail & WhatsApp.
+    """
+    MNRE_PORTAL_URL = 'https://consumer.pmsuryaghar.gov.in/consumer/#/login'
+    DISCOM_CHOICES = [('pending', 'Pending'), ('yes', 'Approved'), ('no', 'Not Approved')]
+
+    lead = models.OneToOneField(Lead, on_delete=models.CASCADE, related_name='documentation_stage2')
+
+    # ── 1. Completion docs / Annexure 3 (documents uploaded via DocumentationStage2Document) ──
+    annexure3_completed = models.BooleanField(default=False)
+    annexure3_remark = models.CharField(max_length=255, blank=True, default='')
+
+    # ── 2. MNRE Stage 2 (discom approval) ──
+    discom_approval = models.CharField(max_length=10, choices=DISCOM_CHOICES, blank=True, default='pending')
+    subsidy_requested = models.BooleanField(default=False)   # when discom approved
+    sent_to_liasoning = models.BooleanField(default=False)   # when not approved → concerned section
+    mnre_remark = models.CharField(max_length=255, blank=True, default='')
+
+    is_complete = models.BooleanField(default=False, db_index=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    completed_by = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='completed_doc_stage2')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    # Document slots (DocumentationStage2Document.doc_type), in display order.
+    DOC_SLOTS = [
+        ('annexure3', 'Annexure 3 (KSEB completion docs)'),
+    ]
+
+    def __str__(self):
+        return f"Documentation Stage 2 — {self.lead}"
+
+
+class Warranty(models.Model):
+    """Warranty — a standalone documentation module the lead enters (in parallel
+    with Documentation Stage 2 & Liasoning) once its installation project is
+    complete. The warranty is sent to the customer via WhatsApp / email, and the
+    warranty document(s) are attached here."""
+    lead = models.OneToOneField(Lead, on_delete=models.CASCADE, related_name='warranty')
+
+    sent = models.BooleanField(default=False)   # sent to customer (WhatsApp / email)
+    remark = models.CharField(max_length=255, blank=True, default='')
+
+    is_complete = models.BooleanField(default=False, db_index=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    completed_by = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='completed_warranties')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    DOC_SLOTS = [
+        ('warranty', 'Warranty Document'),
+    ]
+
+    def __str__(self):
+        return f"Warranty — {self.lead}"
+
+
+class WarrantyDocument(models.Model):
+    """A single uploaded warranty document. Each slot can hold multiple files."""
+    warranty = models.ForeignKey(Warranty, on_delete=models.CASCADE, related_name='documents')
+    doc_type = models.CharField(max_length=40, db_index=True)
+    file = models.FileField(upload_to='warranty/')
+    uploaded_by = models.ForeignKey('users.User', on_delete=models.SET_NULL, null=True, blank=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['uploaded_at', 'id']
+
+    def __str__(self):
+        return f"{self.doc_type} — {self.warranty_id}"
+
+
+class DocumentationStage2Document(models.Model):
+    """A single uploaded file for a Documentation Stage 2 slot (e.g. 'annexure3').
+    Each slot can hold multiple files."""
+    stage2 = models.ForeignKey(DocumentationStage2, on_delete=models.CASCADE, related_name='documents')
+    doc_type = models.CharField(max_length=40, db_index=True)
+    file = models.FileField(upload_to='documentation/stage2/')
+    uploaded_by = models.ForeignKey('users.User', on_delete=models.SET_NULL, null=True, blank=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['uploaded_at', 'id']
+
+    def __str__(self):
+        return f"{self.doc_type} — {self.stage2_id}"
+
+
+class LiasoningService(models.Model):
+    """Liasoning & Service — a combined module handled by the liasoning officer.
+    The lead enters it (in parallel with Documentation Stage 2) once its
+    installation project is complete.
+
+    Completion-only plumbing for now; the detailed fields will be added once
+    specified."""
+    lead = models.OneToOneField(Lead, on_delete=models.CASCADE, related_name='liasoning_service')
+
+    is_complete = models.BooleanField(default=False, db_index=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    completed_by = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='completed_liasoning_service')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Liasoning & Service — {self.lead}"
 
 
 class ServiceEntry(models.Model):

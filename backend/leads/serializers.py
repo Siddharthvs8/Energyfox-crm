@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Lead, IntegrationSettings, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment
+from .models import Lead, IntegrationSettings, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, Warranty, WarrantyDocument
 from .document_kinds import SLOT_TO_KIND, SITE_VISIT_SHARED_SLOTS, DOC_STAGE1_SHARED_SLOTS, shared_doc_entries
 
 from users.serializers import UserSerializer
@@ -136,6 +136,69 @@ class PaymentVerificationSerializer(serializers.ModelSerializer):
 
     def get_balance_amount(self, obj):
         return obj.balance_amount
+
+
+class DocumentationStage2DocumentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DocumentationStage2Document
+        fields = ['id', 'doc_type', 'file', 'uploaded_at']
+
+
+class WarrantyDocumentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WarrantyDocument
+        fields = ['id', 'doc_type', 'file', 'uploaded_at']
+
+
+class WarrantySerializer(serializers.ModelSerializer):
+    completed_by_name = serializers.SerializerMethodField()
+    documents = WarrantyDocumentSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Warranty
+        fields = '__all__'
+        read_only_fields = ['lead', 'created_at', 'updated_at', 'is_complete', 'completed_at', 'completed_by']
+
+    def get_completed_by_name(self, obj):
+        if obj.completed_by:
+            u = obj.completed_by
+            return f"{u.first_name} {u.last_name}".strip() or u.username
+        return None
+
+
+class DocumentationStage2Serializer(serializers.ModelSerializer):
+    completed_by_name = serializers.SerializerMethodField()
+    documents = DocumentationStage2DocumentSerializer(many=True, read_only=True)
+    mnre_portal_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DocumentationStage2
+        fields = '__all__'
+        read_only_fields = ['lead', 'created_at', 'updated_at', 'is_complete', 'completed_at', 'completed_by']
+
+    def get_completed_by_name(self, obj):
+        if obj.completed_by:
+            u = obj.completed_by
+            return f"{u.first_name} {u.last_name}".strip() or u.username
+        return None
+
+    def get_mnre_portal_url(self, obj):
+        return DocumentationStage2.MNRE_PORTAL_URL
+
+
+class LiasoningServiceSerializer(serializers.ModelSerializer):
+    completed_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = LiasoningService
+        fields = '__all__'
+        read_only_fields = ['lead', 'created_at', 'updated_at', 'is_complete', 'completed_at', 'completed_by']
+
+    def get_completed_by_name(self, obj):
+        if obj.completed_by:
+            u = obj.completed_by
+            return f"{u.first_name} {u.last_name}".strip() or u.username
+        return None
 
 
 class BalancePaymentSerializer(serializers.ModelSerializer):

@@ -69,7 +69,7 @@ export default function DocumentationPage() {
   return (
     <div className="p-6 lg:p-8 max-w-[1200px]">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-slate-900">Documentation</h1>
+        <h1 className="text-2xl font-bold text-slate-900">Documentation Stage 1</h1>
         <p className="text-sm text-slate-500 mt-1">Customers pushed for documentation. Open one to preview and download their attachments.</p>
       </div>
 

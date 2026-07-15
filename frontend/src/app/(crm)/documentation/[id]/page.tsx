@@ -110,7 +110,7 @@ export default function DocumentationDetailPage({ params: paramsPromise }: { par
   if (loading) return <div className="flex items-center justify-center min-h-[60vh]"><div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" /></div>;
   if (error || !data) return (
     <div className="p-6 lg:p-8 max-w-[900px]">
-      <Link href="/documentation" className="text-sm text-indigo-600 hover:underline">← Back to Documentation</Link>
+      <Link href="/documentation" className="text-sm text-indigo-600 hover:underline">← Back to Documentation Stage 1</Link>
       <p className="mt-6 text-sm text-rose-600">{error || "Not found."}</p>
     </div>
   );
@@ -122,7 +122,7 @@ export default function DocumentationDetailPage({ params: paramsPromise }: { par
 
   return (
     <div className="p-6 lg:p-8 max-w-[1100px]">
-      <Link href="/documentation" className="text-sm text-indigo-600 hover:underline">← Back to Documentation</Link>
+      <Link href="/documentation" className="text-sm text-indigo-600 hover:underline">← Back to Documentation Stage 1</Link>
 
       {/* Header */}
       <div className="mt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">

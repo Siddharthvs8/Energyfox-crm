@@ -487,7 +487,14 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
 
       {/* For MNRE — always shown, mandatory */}
       <div className={cardCls}>
-        <SectionTitle>For MNRE <span className="text-rose-500 normal-case">(mandatory)</span></SectionTitle>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <SectionTitle>For MNRE <span className="text-rose-500 normal-case">(mandatory)</span></SectionTitle>
+          <a href="https://consumer.pmsuryaghar.gov.in/consumer/#/login" target="_blank" rel="noreferrer"
+            className="inline-flex items-center gap-1.5 px-4 py-2 mb-3 bg-indigo-600 text-white rounded-xl text-xs font-semibold hover:bg-indigo-700 transition shadow-sm">
+            MNRE Portal
+            <svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></svg>
+          </a>
+        </div>
         <div className={gridCls}>
           <KycGroup fields={MNRE_KYC} />
           {MNRE_FILES.map(([k, lbl]) => <MultiFileField key={k} docType={k} label={lbl} />)}

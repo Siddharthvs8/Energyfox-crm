@@ -253,6 +253,10 @@ export default function DashboardLayout({
           if (d.role === "project_manager" && window.location.pathname === "/") {
             router.replace("/project");
           }
+          // Liasoning officer lands on the Liasoning & Service queue.
+          if (d.role === "liasoning_officer" && window.location.pathname === "/") {
+            router.replace("/liasoning");
+          }
         })
         .catch(() => {});
     }
@@ -347,7 +351,9 @@ export default function DashboardLayout({
     { href: `/automations`,   label: "Automations",    Icon: Nav.Automation, adminOnly: true },
     { href: `/meta`,          label: "Meta Integration",Icon: Nav.Meta, strictAdminOnly: true },
     { href: `/team`,          label: "Team",            Icon: Nav.Team },
-    { href: `/documentation`, label: "Documentation",   Icon: Nav.Quote, docFeature: true },
+    { href: `/documentation`, label: "Documentation Stage 1", Icon: Nav.Quote, docFeature: true },
+    { href: `/documentation-stage2`, label: "Documentation Stage 2", Icon: Nav.Quote, docStage2Feature: true },
+    { href: `/warranty`,      label: "Warranty",         Icon: Nav.Quote, warrantyFeature: true },
     { href: `/documentation-status`, label: "Documentation", Icon: Nav.Quote, docTracker: true },
     { href: `/feasibility`,   label: "KSEB Feasibility", Icon: Nav.Tasks, feasibilityFeature: true },
     { href: `/accounts`,      label: "Accounts",        Icon: Nav.Billing, accountsFeature: true },
@@ -359,6 +365,7 @@ export default function DashboardLayout({
     { href: `/project`,       label: "Project",         Icon: Nav.PurchaseOrder, pmFeature: true },
     { href: `/service`,       label: "Service",         Icon: Nav.Tasks, pmFeature: true },
     { href: `/team-stats`,    label: "Team Stats",      Icon: Nav.Leaderboard, pmFeature: true },
+    { href: `/liasoning`,     label: "Liasoning & Service", Icon: Nav.Tasks, liasoningFeature: true },
     { href: `/settings`,      label: "Settings",        Icon: Nav.Settings, adminOnly: true },
   ];
 
@@ -370,11 +377,16 @@ export default function DashboardLayout({
   const isPurchaseOnly = currentUser?.role === "purchase_staff";
   // Project manager gets a focused view — Project, Service and Team Stats.
   const isPmOnly = currentUser?.role === "project_manager";
+  // Liasoning officer gets a focused view — only the Liasoning & Service module.
+  const isLiasoningOnly = currentUser?.role === "liasoning_officer";
 
   // Manager features visible to manager, general manager, and admin
   const navItems = allNavItems.filter(item => {
     if (isDocOnly) {
-      return !!item.docFeature;
+      return !!item.docFeature || !!item.docStage2Feature || !!item.warrantyFeature;
+    }
+    if (isLiasoningOnly) {
+      return !!item.liasoningFeature;
     }
     if (isAccountsOnly) {
       return !!item.accountsFeature || !!item.completedProjectsFeature || !!item.paymentBucketFeature;
@@ -391,6 +403,18 @@ export default function DashboardLayout({
     }
     if (item.docFeature) {
       return false;  // the work queue is for the documentation team only
+    }
+    if (item.docStage2Feature) {
+      // Documentation Stage 2 — the documentation team (above) plus admins / general managers.
+      return currentUser?.is_staff || currentUser?.is_general_manager;
+    }
+    if (item.warrantyFeature) {
+      // Warranty — the documentation team (above) plus admins / general managers.
+      return currentUser?.is_staff || currentUser?.is_general_manager;
+    }
+    if (item.liasoningFeature) {
+      // Liasoning & Service — the liasoning officer (above) plus admins / general managers.
+      return currentUser?.is_staff || currentUser?.is_general_manager;
     }
     if (item.accountsFeature) {
       // Accounts queue — accounts staff (above) plus admins / general managers who oversee them.
@@ -443,8 +467,10 @@ export default function DashboardLayout({
     return true;
   });
 
+  // Match on whole path segments so a sibling route like /documentation-stage2
+  // doesn't also light up /documentation (which is only a string prefix).
   const isActive = (href: string, exact?: boolean) =>
-    exact ? pathname === href || pathname === `/` : pathname.startsWith(href);
+    exact ? pathname === href || pathname === `/` : (pathname === href || pathname.startsWith(href + "/"));
 
   // ── Inventory module (grouped, collapsible) ──
   const inventoryItems = [

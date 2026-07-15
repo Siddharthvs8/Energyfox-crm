@@ -34,6 +34,7 @@ const ROLES = [
   { value: "accounts_staff", label: "Accounts Staff" },
   { value: "purchase_staff", label: "Purchase Staff" },
   { value: "project_manager", label: "Project Manager" },
+  { value: "liasoning_officer", label: "Liasoning Officer" },
   { value: "coo", label: "COO" },
   { value: "admin", label: "Admin" },
   { value: "superadmin", label: "Super Admin" },
@@ -49,6 +50,7 @@ const ROLE_COLORS: Record<string, { bg: string; text: string }> = {
   accounts_staff: { bg: "bg-teal-50", text: "text-teal-700" },
   purchase_staff: { bg: "bg-orange-50", text: "text-orange-700" },
   project_manager: { bg: "bg-indigo-50", text: "text-indigo-700" },
+  liasoning_officer: { bg: "bg-purple-50", text: "text-purple-700" },
   bde: { bg: "bg-slate-100", text: "text-slate-600" },
   tele_caller: { bg: "bg-slate-100", text: "text-slate-600" },
 };
