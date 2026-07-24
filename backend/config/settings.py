@@ -123,6 +123,25 @@ MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# ─── Media on S3 (durable uploads for AWS) ─────────────────────────────────────
+# On AWS, uploaded documents must not live on the instance's disk — replacing the
+# instance would lose them. When AWS_STORAGE_BUCKET_NAME is set, media is stored
+# on S3 (django-storages); otherwise it stays on the local filesystem for dev.
+AWS_STORAGE_BUCKET_NAME = os.environ.get('AWS_STORAGE_BUCKET_NAME', '')
+if AWS_STORAGE_BUCKET_NAME:
+    AWS_S3_REGION_NAME = os.environ.get('AWS_S3_REGION_NAME', 'ap-south-1')
+    # Credentials are best supplied via an EC2 instance role (no keys in env);
+    # these are only read if you deliberately set them.
+    AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID', '') or None
+    AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY', '') or None
+    AWS_S3_CUSTOM_DOMAIN = os.environ.get('AWS_S3_CUSTOM_DOMAIN', '')  # e.g. a CloudFront domain
+    AWS_QUERYSTRING_AUTH = os.environ.get('AWS_QUERYSTRING_AUTH', 'False').lower() in ('true', '1', 'yes')
+    AWS_S3_FILE_OVERWRITE = False
+    AWS_DEFAULT_ACL = None
+    STORAGES['default'] = {'BACKEND': 'storages.backends.s3.S3Storage'}
+    if AWS_S3_CUSTOM_DOMAIN:
+        MEDIA_URL = f'https://{AWS_S3_CUSTOM_DOMAIN}/'
+
 # ─── CORS ───────────────────────────────────────────────────────────────────────
 CORS_ALLOW_ALL_ORIGINS = DEBUG  # Only in development
 
@@ -208,6 +227,9 @@ if not DEBUG:
     SECURE_HSTS_SECONDS = 31536000
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
+    # Redirect http→https at the app. Leave off (default) when the ALB / nginx
+    # already does the redirect, to avoid health-check loops on :80.
+    SECURE_SSL_REDIRECT = os.environ.get('SECURE_SSL_REDIRECT', 'False').lower() in ('true', '1', 'yes')
 
 # ─── Logging ────────────────────────────────────────────────────────────────────
 LOGGING = {

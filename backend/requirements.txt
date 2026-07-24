@@ -8,3 +8,7 @@ google-generativeai>=0.3.0
 gunicorn>=21.2.0
 whitenoise>=6.5.0
 Pillow>=10.0.0
+requests>=2.31
+# Durable media storage on S3 (only used when AWS_STORAGE_BUCKET_NAME is set).
+django-storages>=1.14
+boto3>=1.34

@@ -101,4 +101,12 @@ class Command(BaseCommand):
         except Exception:
             pass
 
+        # 5) Trim high-volume log tables so they don't grow unbounded and slow
+        #    the DB. Automation logs are pure telemetry — keep the last 90 days.
+        try:
+            from automations.models import AutomationLog
+            AutomationLog.objects.filter(created_at__lte=now - timedelta(days=90)).delete()
+        except Exception:
+            pass
+
         return resumed, inactive_fired, wa_sent

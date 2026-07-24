@@ -4,11 +4,17 @@ set -e
 echo "Collecting static files..."
 python manage.py collectstatic --noinput 2>/dev/null || true
 
-echo "Applying database schemas and migrations..."
-# Using migrate_schemas because django-tenants is used
-python manage.py migrate_schemas --shared
-python manage.py migrate_schemas
+echo "Applying database migrations..."
+# Single-tenant install (django-tenants was removed) — plain migrate.
+python manage.py migrate --noinput
 
-echo "Starting Gunicorn server for High Performance..."
-# 4 workers and 4 threads per worker is a solid baseline for I/O bound Django apps
-exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 4 --threads 4 --timeout 120 --access-logfile - --error-logfile -
+echo "Starting Gunicorn..."
+# Sized for ~50 concurrent users on a t3.medium: (2 x vCPU) + 1 workers, a few
+# threads each for I/O-bound Django. Tune WEB_CONCURRENCY / GUNICORN_THREADS via env.
+exec gunicorn config.wsgi:application \
+  --bind 0.0.0.0:8000 \
+  --workers "${WEB_CONCURRENCY:-5}" \
+  --threads "${GUNICORN_THREADS:-4}" \
+  --timeout 120 \
+  --max-requests 1000 --max-requests-jitter 100 \
+  --access-logfile - --error-logfile -

@@ -160,8 +160,32 @@ class Lead(models.Model):
         'users.User', on_delete=models.SET_NULL, null=True, blank=True,
         related_name='trashed_leads')
 
+    # ── Archive — terminal, old leads (lost / not interested / fully completed)
+    #    are moved out of the hot working set so the active lists and dashboards
+    #    stay fast as history accumulates. Archived leads are never deleted; they
+    #    are viewable via the Archived filter. Auto-archived by the
+    #    `archive_old_leads` command; see Lead.ARCHIVE_AFTER_MONTHS. ──
+    ARCHIVE_AFTER_MONTHS = 3
+    is_archived = models.BooleanField(default=False, db_index=True)
+    archived_at = models.DateTimeField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        # Composite indexes for the hot query paths — the active leads list
+        # (exclude trashed/archived, order by created) and the per-owner and
+        # per-status filters. Keeps new-data queries fast as the table grows.
+        indexes = [
+            models.Index(fields=['is_trashed', 'is_archived', '-created_at'],
+                         name='lead_active_recent_idx'),
+            models.Index(fields=['is_archived', 'status', '-created_at'],
+                         name='lead_status_recent_idx'),
+            models.Index(fields=['assigned_to', 'is_archived'],
+                         name='lead_owner_active_idx'),
+            models.Index(fields=['bde', 'is_archived'],
+                         name='lead_bde_active_idx'),
+        ]
 
     # Fulfilment pipeline stages (the module a lead is currently in), most-advanced
     # first. Derived from the pushed_to_* handoff flags.

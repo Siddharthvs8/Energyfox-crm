@@ -206,6 +206,9 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   const [noActivityDays,    setNoActivityDays]    = useState("");
   const [sortField,         setSortField]         = useState("created_at");
   const [sortOrder,         setSortOrder]         = useState<"asc" | "desc">("desc");
+  // Archived (old, terminal) leads live out of the active list; toggle to view.
+  const [showArchived, setShowArchived] = useState(false);
+  const [archivedCount, setArchivedCount] = useState(0);
   const [showModal,      setShowModal]      = useState(false);
   const [editingLead,    setEditingLead]    = useState<any>(null);
   const [teamMembers,    setTeamMembers]    = useState<{ id: number; name: string }[]>([]);
@@ -278,7 +281,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
     valueMin, valueMax, companyFilter,
     statusChangeFrom, statusChangeTo, statusChangeType, statusChangeParam, statusChangeFromD, statusChangeToD,
     activityType, hasActivityDays, noActivityDays, page,
-    sortField, sortOrder
+    sortField, sortOrder, showArchived
   ]);
 
   const fetchTeam = async () => {
@@ -401,6 +404,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
     if (sortField) {
       q.append("ordering", `${sortOrder === "desc" ? "-" : ""}${sortField}`);
     }
+    if (showArchived) q.append("archived", "true");
     q.append("page", page.toString());
     return q;
   };
@@ -557,6 +561,24 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   const [showTrash, setShowTrash] = useState(false);
   const [trashRows, setTrashRows] = useState<TrashRow[]>([]);
   const [trashLoading, setTrashLoading] = useState(false);
+
+  const loadArchiveStats = async () => {
+    try {
+      const token = localStorage.getItem(`${domain}_access`);
+      const r = await fetch(`${getApiBase(domain)}/api/leads/archive-stats/`, { headers: { Authorization: `Bearer ${token}` } });
+      if (r.ok) { const d = await r.json(); setArchivedCount(d.archived || 0); }
+    } catch {}
+  };
+  useEffect(() => { loadArchiveStats(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const archiveLead = async (id: number, archive: boolean) => {
+    const token = localStorage.getItem(`${domain}_access`);
+    const r = await fetch(`${getApiBase(domain)}/api/leads/${id}/${archive ? "archive" : "unarchive"}/`, {
+      method: "POST", headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); alert(e.error || "Could not update the archive."); return; }
+    fetchLeads(); loadArchiveStats();
+  };
 
   const loadTrash = async () => {
     setTrashLoading(true);
@@ -883,6 +905,14 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                   <I.Upload /> <span className="hidden md:inline">{isUploading ? "Uploading…" : "Import"}</span>
                 </button>
               </div>
+
+              <button onClick={() => { setShowArchived(v => !v); setPage(1); }}
+                title="Old, terminal leads kept out of the active list"
+                className={`flex items-center gap-1.5 px-4 py-2 border rounded-xl text-sm font-semibold active:scale-[0.97] transition-all shadow-sm ${showArchived ? "bg-indigo-600 border-indigo-600 text-white" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"}`}>
+                <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><polyline points="21 8 21 21 3 21 3 8" /><rect x="1" y="3" width="22" height="5" /><line x1="10" y1="12" x2="14" y2="12" /></svg>
+                <span className="hidden sm:inline">{showArchived ? "Viewing Archived" : "Archived"}</span>
+                {archivedCount > 0 && !showArchived && <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-slate-200 text-slate-600 text-[10px] font-bold flex items-center justify-center">{archivedCount > 99 ? "99+" : archivedCount}</span>}
+              </button>
 
               <button onClick={openTrash}
                 title="Trashed leads — kept for 7 days, then deleted forever"
@@ -1391,11 +1421,22 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                               title="Edit">
                               <I.Edit />
                             </button>
+                            <button onClick={(e) => { e.stopPropagation(); archiveLead(lead.id, !showArchived); }}
+                              className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-all"
+                              title={showArchived ? "Restore from archive" : "Archive (keep, but hide from active list)"}>
+                              {showArchived ? (
+                                <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><polyline points="3 3 3 8 8 8" /></svg>
+                              ) : (
+                                <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><polyline points="21 8 21 21 3 21 3 8" /><rect x="1" y="3" width="22" height="5" /><line x1="10" y1="12" x2="14" y2="12" /></svg>
+                              )}
+                            </button>
+                            {!showArchived && (
                             <button onClick={(e) => { e.stopPropagation(); deleteLead(lead.id); }}
                               className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all"
                               title="Move to Trash">
                               <I.Trash />
                             </button>
+                            )}
                           </div>
                         </td>
                       </tr>

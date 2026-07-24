@@ -1482,7 +1482,7 @@ class LeadViewSet(viewsets.ModelViewSet):
         # is only non-zero for people who actually own leads.
         record('leads',
                Lead.objects.filter(Q(assigned_to=user) | Q(bde=user))
-                   .filter(is_trashed=False)
+                   .filter(is_trashed=False, is_archived=False)
                    .exclude(status__in=['not_interested'])
                    .distinct(),
                None)
@@ -3060,6 +3060,14 @@ class LeadViewSet(viewsets.ModelViewSet):
         # Trashed leads live only in the Trash view (and are purged after 7 days).
         queryset = queryset.filter(is_trashed=False)
 
+        # Archived (old, terminal) leads are out of the hot working set by
+        # default — pass ?archived=true to view them, ?archived=all for both.
+        archived_param = (self.request.query_params.get('archived') or '').lower()
+        if archived_param in ('true', '1', 'yes', 'only'):
+            queryset = queryset.filter(is_archived=True)
+        elif archived_param != 'all':
+            queryset = queryset.filter(is_archived=False)
+
         # Filter by "Assigned to Me"
         assigned_to_me = self.request.query_params.get('assigned_to_me')
         if assigned_to_me == 'true' or assigned_to_me == '1':
@@ -3570,6 +3578,39 @@ class LeadViewSet(viewsets.ModelViewSet):
             return Response({'error': 'Lead not found in Trash.'}, status=status.HTTP_404_NOT_FOUND)
         lead.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    # ── Archive (old, terminal leads kept out of the hot working set) ──
+    @action(detail=True, methods=['post'], url_path='archive')
+    def archive_lead(self, request, pk=None):
+        """Move a lead to the archive (kept, but out of the active lists)."""
+        lead = self.get_object()
+        if lead.is_archived:
+            return Response({'error': 'This lead is already archived.'}, status=status.HTTP_400_BAD_REQUEST)
+        lead.is_archived = True
+        lead.archived_at = timezone.now()
+        lead.save(update_fields=['is_archived', 'archived_at'])
+        return Response({'message': 'Lead archived.'})
+
+    @action(detail=True, methods=['post'], url_path='unarchive')
+    def unarchive_lead(self, request, pk=None):
+        """Restore a lead from the archive back into the active lists."""
+        lead = Lead.objects.filter(pk=pk, is_archived=True).first()
+        if lead is None:
+            return Response({'error': 'Lead not found in the archive.'}, status=status.HTTP_404_NOT_FOUND)
+        lead.is_archived = False
+        lead.archived_at = None
+        lead.save(update_fields=['is_archived', 'archived_at'])
+        return Response({'message': 'Lead restored from archive.'})
+
+    @action(detail=False, methods=['get'], url_path='archive-stats')
+    def archive_stats(self, request):
+        """How many leads are archived vs active (for the Leads page toggle)."""
+        base = Lead.objects.filter(is_trashed=False)
+        return Response({
+            'archived': base.filter(is_archived=True).count(),
+            'active': base.filter(is_archived=False).count(),
+            'archive_after_months': Lead.ARCHIVE_AFTER_MONTHS,
+        })
 
     @action(detail=False, methods=['post'])
     def bulk_assign(self, request):
