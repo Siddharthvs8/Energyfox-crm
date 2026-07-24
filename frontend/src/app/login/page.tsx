@@ -51,36 +51,20 @@ export default function LoginPage() {
 
         <div className="relative z-10 text-center max-w-sm">
           {/* Logo */}
-          <div className="flex items-center justify-center gap-3 mb-12">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center shadow-lg shadow-indigo-500/30">
-              <svg width="20" height="20" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24">
-                <path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" />
-                <path d="M22 21v-2a4 4 0 00-3-3.87" /><path d="M16 3.13a4 4 0 010 7.75" />
-              </svg>
+          <div className="flex flex-col items-center gap-3 mb-12">
+            <img src="/energyfox-mark.png" alt="Energyfox" className="w-16 h-16 object-contain" />
+            <div className="text-center">
+              <span className="block text-white font-bold text-2xl tracking-tight">Energyfox</span>
+              <span className="block text-slate-400 text-xs tracking-[0.2em] uppercase mt-0.5">Consultants Pvt Ltd</span>
             </div>
-            <span className="text-white font-bold text-xl tracking-tight">ZalesHunter</span>
           </div>
 
           <h2 className="text-3xl font-bold text-white mb-4 leading-tight">
             Your team's deals,<br />in one place.
           </h2>
-          <p className="text-slate-400 text-sm leading-relaxed mb-12">
+          <p className="text-slate-400 text-sm leading-relaxed">
             Track leads, manage tasks, and close more deals with your team — all from a single workspace.
           </p>
-
-          {/* Stats */}
-          <div className="grid grid-cols-3 gap-4">
-            {[
-              { value: "2k+", label: "Teams" },
-              { value: "98%", label: "Uptime" },
-              { value: "50k+", label: "Leads tracked" },
-            ].map(s => (
-              <div key={s.label} className="bg-white/5 rounded-2xl p-4 border border-white/10">
-                <div className="text-2xl font-bold text-white">{s.value}</div>
-                <div className="text-[11px] text-slate-500 mt-0.5">{s.label}</div>
-              </div>
-            ))}
-          </div>
         </div>
       </div>
 
@@ -88,13 +72,8 @@ export default function LoginPage() {
       <div className="flex-1 flex items-center justify-center px-6 py-12">
         <div className="w-full max-w-md">
           {/* Mobile logo */}
-          <div className="flex items-center gap-2 mb-10 lg:hidden">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center">
-              <svg width="16" height="16" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" viewBox="0 0 24 24">
-                <path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" />
-              </svg>
-            </div>
-            <span className="font-bold text-slate-900">ZalesHunter</span>
+          <div className="mb-10 lg:hidden">
+            <img src="/energyfox-logo.png" alt="Energyfox Consultants Pvt Ltd" className="h-9 object-contain" />
           </div>
 
           <div className="mb-8">
@@ -179,7 +158,7 @@ export default function LoginPage() {
           </form>
 
           <p className="text-center text-xs text-slate-400 mt-8">
-            Secured by ZalesHunter Enterprise &middot; All rights reserved
+            Secured by EnergyFox CRM &middot; All rights reserved
           </p>
         </div>
       </div>

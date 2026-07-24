@@ -6,12 +6,22 @@ from django.http import HttpResponse
 import csv
 import io
 import logging
-from .models import Lead, IntegrationSettings, ActivityLog, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, LeadDocument, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, Warranty, WarrantyDocument
-from .serializers import LeadSerializer, IntegrationSettingsSerializer, LeadAttachmentSerializer, ProductSerializer, SiteVisitSerializer, DocumentationStage1Serializer, SiteVisitDocumentSerializer, DocumentationStage1DocumentSerializer, PaymentVerificationSerializer, PurchaseLogisticsSerializer, ProjectSerializer, ProjectDocumentSerializer, ServiceEntrySerializer, BalancePaymentSerializer, DocumentationStage2Serializer, DocumentationStage2DocumentSerializer, LiasoningServiceSerializer, WarrantySerializer, WarrantyDocumentSerializer
+from .models import Lead, IntegrationSettings, ActivityLog, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, LeadDocument, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, Warranty, WarrantyDocument, EmergencyService, PeriodicMaintenance, MaintenanceVisit, ModuleSeen, ReceiptVoucher
+from .serializers import LeadSerializer, IntegrationSettingsSerializer, LeadAttachmentSerializer, ProductSerializer, SiteVisitSerializer, DocumentationStage1Serializer, SiteVisitDocumentSerializer, DocumentationStage1DocumentSerializer, PaymentVerificationSerializer, PurchaseLogisticsSerializer, ProjectSerializer, ProjectDocumentSerializer, ServiceEntrySerializer, BalancePaymentSerializer, DocumentationStage2Serializer, DocumentationStage2DocumentSerializer, LiasoningServiceSerializer, WarrantySerializer, WarrantyDocumentSerializer, EmergencyServiceSerializer, PeriodicMaintenanceSerializer, MaintenanceVisitSerializer, ReceiptVoucherSerializer
 from .document_kinds import SHARED_KIND_LABELS, kind_for
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
+
+
+def fire_automation(event, obj, context=None):
+    """Fire an automation trigger without ever breaking the calling view."""
+    try:
+        from automations.engine import fire_trigger
+        fire_trigger(event, obj, context or {})
+    except Exception as e:
+        logger.exception(f"Automation fire_trigger({event}) failed on {obj.__class__.__name__} #{obj.pk}: {e}")
+
 
 STATUS_LABELS = {
     'new': 'New', 'follow_up': 'Follow Up', 'positive': 'Positive',
@@ -31,6 +41,7 @@ SITE_VISIT_ATTACHMENTS = [
     ('building_certificate', 'Building Certificate'),
     ('loan_document', 'Loan Document'),
     ('itr_report', 'ITR Report'),
+    ('purchase_order', 'Purchase Order'),
     ('kseb_feasibility_receipt', 'KSEB Feasibility Receipt'),
     ('photo_meterbox', 'Meter Box'),
     ('photo_earthing_1', 'Earthing 1'),
@@ -48,10 +59,11 @@ DOC_STAGE1_ATTACHMENTS = [
     ('nc_landtax', 'Land Tax'), ('nc_customer_photo', 'Customer Photo'),
     ('nc_aadhaar', 'Aadhaar'), ('nc_kseb_bill', 'KSEB Bill'),
     ('le_aadhaar', 'Aadhaar'),
+    ('le_test_cum_completion_report', 'Test cum Completion Report'), ('le_sketch', 'Sketch'),
     ('mnre_aadhaar', 'Aadhaar'), ('mnre_pan', 'PAN'), ('mnre_passbook', 'Passbook'),
     ('mnre_purchase_order', 'Purchase Order'), ('mnre_kseb_bill', 'KSEB Bill'),
     ('loan_aadhaar', 'Aadhaar'), ('loan_pan', 'PAN'), ('loan_passbook', 'Passbook'),
-    ('loan_land_tax', 'Land Tax'), ('loan_passbook_copy', 'Passbook Copy'), ('loan_itr', 'ITR'),
+    ('loan_land_tax', 'Land Tax'), ('loan_itr', 'ITR'),
     ('loan_agreement_purchase_order', 'Agreement / Purchase Order'),
 ]
 
@@ -578,6 +590,7 @@ class LeadViewSet(viewsets.ModelViewSet):
         lead.pushed_to_documentation = True
         lead.pushed_to_documentation_at = timezone.now()
         lead.save(update_fields=['pushed_to_documentation', 'pushed_to_documentation_at'])
+        fire_automation('pushed_to_documentation', lead)
         ActivityLog.objects.create(
             activity_type='note_added',
             description="Pushed to documentation",
@@ -1162,6 +1175,11 @@ class LeadViewSet(viewsets.ModelViewSet):
         if pv.is_complete:
             return Response({'error': 'Payment verification is already completed and locked.'},
                             status=status.HTTP_400_BAD_REQUEST)
+        # Payment mode is mandatory — a saved verification must always say how the
+        # money came in (and carry the reference for non-cash modes).
+        if 'payment_mode' in request.data and not (request.data.get('payment_mode') or '').strip():
+            return Response({'error': 'Select a payment mode — it is required.'},
+                            status=status.HTTP_400_BAD_REQUEST)
         serializer = PaymentVerificationSerializer(pv, data=request.data, partial=True,
                                                    context={'request': request})
         serializer.is_valid(raise_exception=True)
@@ -1253,6 +1271,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             lead=lead,
             extra={'auto_generated': True},
         )
+        fire_automation('payment_fully_paid', lead)
 
     @action(detail=True, methods=['post'], url_path='complete-payment-verification')
     def complete_payment_verification(self, request, pk=None):
@@ -1283,10 +1302,18 @@ class LeadViewSet(viewsets.ModelViewSet):
             lead=lead,
             extra={'auto_generated': True},
         )
+        # Auto-generate the money receipt for the amount collected at verification.
+        from .receipts import issue_receipt
+        issue_receipt(lead, pv.amount_received, on_account_of=pv.on_account_of,
+                      payment_mode=pv.get_payment_mode_display() if pv.payment_mode else '',
+                      is_initial=True,
+                      created_by=request.user if request.user.is_authenticated else None)
         # Hand off to purchase & logistics only once the payment is fully received.
         # (Partially-paid customers wait in accounts until the balance is cleared.)
         if pv.balance_amount <= 0:
             self._push_to_purchase(lead, request)
+        else:
+            fire_automation('payment_partially_paid', lead, {'balance_amount': float(pv.balance_amount)})
         return Response(self._accounts_payload(lead, request))
 
     @action(detail=True, methods=['post'], url_path='reopen-payment-verification')
@@ -1346,6 +1373,7 @@ class LeadViewSet(viewsets.ModelViewSet):
         lead.lost_reason = (request.data.get('reason') or '')[:255]
         lead.lost_by = request.user if request.user.is_authenticated else None
         lead.save(update_fields=['is_lost', 'lost_at', 'lost_reason', 'lost_by'])
+        fire_automation('lead_lost', lead, {'reason': lead.lost_reason})
         actor = (f"{request.user.first_name} {request.user.last_name}".strip()
                  or request.user.username) if request.user.is_authenticated else 'user'
         reason = f" Reason: {lead.lost_reason}" if lead.lost_reason else ''
@@ -1403,6 +1431,126 @@ class LeadViewSet(viewsets.ModelViewSet):
             'fully_paid': bool(balance is not None and balance <= 0),
             'verified_at': pv.completed_at if pv else None,
         }
+
+    @action(detail=False, methods=['get'], url_path='module-counts')
+    def module_counts(self, request):
+        """Per-module count of work still waiting on the current user.
+
+        Drives the sidebar badges (and the "new work" popup, which compares
+        successive readings). Every count uses the same visibility rules as the
+        module's own queue, so staff only ever count what they can actually see;
+        a module the user can't open is simply absent from the response.
+        """
+        from datetime import timedelta
+        from django.db.models import Q
+        from .access import (can_access_documentation, can_access_doc_stage2, can_access_warranty,
+                             can_access_accounts, can_access_purchase, can_access_project,
+                             can_access_liasoning)
+        user = request.user
+        counts = {}
+        # Of those, the ones assigned to this user by name — the client shows a
+        # modal for these ("assigned to you") and a quieter toast for the rest.
+        assigned = {}
+        # Customers this user has already opened, per module — those no longer
+        # count towards the badge.
+        seen = {}
+        for module, lead_id in ModuleSeen.objects.filter(user=user).values_list('module', 'lead_id'):
+            seen.setdefault(module, set()).add(lead_id)
+
+        def mine(qs, role, field):
+            """Restrict a queue to the user's own assignments, like its view does."""
+            if (not user.is_staff and not getattr(user, 'is_general_manager', False)
+                    and getattr(user, 'role', '') == role):
+                return qs.filter(**{field: user})
+            return qs
+
+        def unseen(qs, module):
+            """Drop the customers this user has already looked at in this module."""
+            ids = seen.get(module)
+            return qs.exclude(id__in=ids) if ids else qs
+
+        def record(module, qs, assignee_field=None):
+            """Store the unseen count, plus how many are assigned to this user."""
+            qs = unseen(qs, module)
+            counts[module] = qs.count()
+            if assignee_field:
+                assigned[module] = qs.filter(**{assignee_field: user}).count()
+            return counts[module]
+
+        # Leads personally owned by this user — the tele caller they're assigned
+        # to, or the BDE handling the site visit. Everyone gets the key, but it
+        # is only non-zero for people who actually own leads.
+        record('leads',
+               Lead.objects.filter(Q(assigned_to=user) | Q(bde=user))
+                   .filter(is_trashed=False)
+                   .exclude(status__in=['not_interested'])
+                   .distinct(),
+               None)
+        # Every lead in that count is by definition assigned to them.
+        assigned['leads'] = counts['leads']
+
+        if can_access_documentation(user):
+            qs = Lead.objects.filter(pushed_to_documentation=True).exclude(documentation_stage1__is_complete=True)
+            record('documentation', mine(qs, 'documentation_staff', 'documentation_staff'), 'documentation_staff')
+
+        if can_access_doc_stage2(user):
+            qs = Lead.objects.filter(pushed_to_doc_stage2=True).exclude(documentation_stage2__is_complete=True)
+            record('documentation-stage2', mine(qs, 'documentation_staff', 'doc_stage2_staff'), 'doc_stage2_staff')
+
+            cutoff = timezone.now() - timedelta(days=7)
+            counts['discom-followup'] = (Lead.objects.filter(pushed_to_doc_stage2=True)
+                                         .exclude(documentation_stage2__discom_approval='yes')
+                                         .filter(Q(documentation_stage2__discom_approval='no')
+                                                 | Q(pushed_to_doc_stage2_at__lte=cutoff)
+                                                 | Q(pushed_to_doc_stage2_at__isnull=True))
+                                         )
+            counts['discom-followup'] = unseen(counts['discom-followup'], 'discom-followup').count()
+
+        if can_access_warranty(user):
+            counts['warranty'] = unseen(Lead.objects.filter(pushed_to_warranty=True)
+                                        .exclude(warranty__is_complete=True), 'warranty').count()
+
+        if can_access_accounts(user):
+            qs = Lead.objects.filter(pushed_to_accounts=True).exclude(payment_verification__is_complete=True)
+            record('accounts', mine(qs, 'accounts_staff', 'accounts_staff'), 'accounts_staff')
+            bucket = self._payment_bucket_qs(user)
+            counts['accounts/partially-paid'] = unseen(bucket.filter(_balance__gt=0), 'accounts/partially-paid').count()
+            counts['accounts/fully-paid'] = unseen(bucket.filter(_balance__lte=0), 'accounts/fully-paid').count()
+            # Completed projects still waiting for the RF push to service.
+            counts['accounts/completed'] = unseen(Lead.objects.filter(project__is_complete=True)
+                                                 .exclude(payment_verification__rf_pushed_to_service=True), 'accounts/completed').count()
+
+        if can_access_purchase(user):
+            qs = Lead.objects.filter(pushed_to_purchase=True).exclude(purchase_logistics__is_complete=True)
+            record('purchase', mine(qs, 'purchase_staff', 'purchase_staff'), 'purchase_staff')
+
+        if can_access_project(user):
+            qs = Lead.objects.filter(pushed_to_project=True).exclude(project__is_complete=True)
+            record('project', mine(qs, 'project_manager', 'project_manager'), 'project_manager')
+
+        if can_access_liasoning(user):
+            counts['liasoning'] = unseen(Lead.objects.filter(pushed_to_liasoning=True)
+                                         .exclude(liasoning_service__is_complete=True), 'liasoning').count()
+            # Maintenance visits that are due / overdue and not yet filled in.
+            counts['periodic-maintenance'] = MaintenanceVisit.objects.filter(
+                is_complete=False, due_date__lte=timezone.localdate()).count()
+
+        return Response({'counts': counts, 'assigned': assigned})
+
+    @action(detail=True, methods=['post'], url_path='seen')
+    def mark_module_seen(self, request, pk=None):
+        """Record that the user opened this customer in a module, so it stops
+        counting towards that module's sidebar badge."""
+        modules = request.data.get('modules') or ([request.data.get('module')] if request.data.get('module') else [])
+        modules = [str(m).strip() for m in modules if str(m or '').strip()]
+        if not modules:
+            return Response({'error': 'module is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not request.user.is_authenticated:
+            return Response({'error': 'Authentication required.'}, status=status.HTTP_403_FORBIDDEN)
+        lead = self.get_object()
+        for module in modules[:8]:      # a page maps to a couple of modules at most
+            ModuleSeen.objects.update_or_create(user=request.user, module=module[:40], lead=lead)
+        return Response({'seen': modules})
 
     def _payment_bucket_qs(self, user):
         """Verified-payment leads, annotated with the outstanding balance
@@ -1479,16 +1627,28 @@ class LeadViewSet(viewsets.ModelViewSet):
             return Response({'error': 'Enter a valid payment amount.'}, status=status.HTTP_400_BAD_REQUEST)
         if amount <= 0:
             return Response({'error': 'Payment amount must be greater than zero.'}, status=status.HTTP_400_BAD_REQUEST)
+        # Payment mode is mandatory — every recorded payment says how it came in.
+        payment_mode = (request.data.get('payment_mode') or '').strip()
+        if not payment_mode:
+            return Response({'error': 'Select a payment mode — it is required.'},
+                            status=status.HTTP_400_BAD_REQUEST)
         # Never collect more than what's still due.
         if amount > pv.balance_amount:
             amount = pv.balance_amount
-        BalancePayment.objects.create(
+        bp = BalancePayment.objects.create(
             lead=lead, amount=amount,
-            payment_mode=request.data.get('payment_mode', '') or '',
+            payment_mode=payment_mode,
             utr_details=request.data.get('utr_details', '') or '',
+            on_account_of=request.data.get('on_account_of', '') or '',
             note=request.data.get('note', '') or '',
             recorded_by=request.user if request.user.is_authenticated else None,
         )
+        # Auto-generate the money receipt for this balance payment.
+        from .receipts import issue_receipt
+        issue_receipt(lead, amount, on_account_of=bp.on_account_of,
+                      payment_mode=dict(PaymentVerification.PAYMENT_MODES).get(payment_mode, payment_mode),
+                      balance_payment=bp,
+                      created_by=request.user if request.user.is_authenticated else None)
         pv.amount_received = (pv.amount_received or 0) + amount
         pv.save(update_fields=['amount_received', 'updated_at'])
         actor = (f"{request.user.first_name} {request.user.last_name}".strip()
@@ -1502,6 +1662,41 @@ class LeadViewSet(viewsets.ModelViewSet):
         if pv.balance_amount <= 0:
             self._push_to_purchase(lead, request)
         return Response(summary())
+
+    @action(detail=True, methods=['get'], url_path='receipts')
+    def receipts(self, request, pk=None):
+        """Money receipts issued for a lead, plus the fixed company / bank details
+        printed on them (so the client can render the voucher PDF)."""
+        from .access import can_access_accounts
+        lead = self.get_object()
+        if not can_access_accounts(request.user):
+            return Response({'error': 'You do not have access to accounts.'}, status=status.HTTP_403_FORBIDDEN)
+        from organization.utils import get_org_settings
+        org = get_org_settings()
+
+        def url(f):
+            if not f:
+                return None
+            return request.build_absolute_uri(f.url) if request else f.url
+
+        return Response({
+            'receipts': ReceiptVoucherSerializer(lead.receipt_vouchers.all(), many=True).data,
+            'org': {
+                'company_name': org.warranty_company_name,
+                'cin': org.warranty_cin,
+                'gst': org.warranty_gst,
+                'signature': url(org.warranty_signature),
+                'seal': url(org.warranty_seal),
+                'bank_name': org.receipt_bank_name,
+                'bank_account': org.receipt_bank_account,
+                'bank_ifsc': org.receipt_bank_ifsc,
+                'bank_branch': org.receipt_bank_branch,
+                'address': org.receipt_address,
+                'phone': org.receipt_phone,
+                'website': org.receipt_website,
+                'email': org.receipt_email,
+            },
+        })
 
     # ── Completed projects (accounts RF stage) ──
     def _completed_project_payload(self, lead, request):
@@ -1963,6 +2158,7 @@ class LeadViewSet(viewsets.ModelViewSet):
                 description="Moved to Documentation Stage 2, Warranty and Liasoning & Service.",
                 actor=request.user if request.user.is_authenticated else None,
                 lead=lead, extra={'auto_generated': True})
+        fire_automation('project_completed', lead)
         return Response(self._project_payload(lead, request))
 
     @action(detail=True, methods=['post'], url_path='reopen-project')
@@ -2002,7 +2198,7 @@ class LeadViewSet(viewsets.ModelViewSet):
 
     # ── Documentation Stage 2 (post-installation documentation queue) ──
     def _doc_stage2_payload(self, lead, request):
-        from .access import can_access_doc_stage2
+        from .access import can_access_doc_stage2, can_reopen_documentation, can_assign_documentation
         rec = getattr(lead, 'documentation_stage2', None)
 
         def name(u):
@@ -2025,6 +2221,11 @@ class LeadViewSet(viewsets.ModelViewSet):
             'record': DocumentationStage2Serializer(rec, context={'request': request}).data if rec else None,
             'is_complete': bool(rec and rec.is_complete),
             'can_edit': can_access_doc_stage2(request.user),
+            'can_reopen': can_reopen_documentation(request.user),
+            # Stage 2 has its own assignee, set by the documentation manager.
+            'doc_stage2_staff': lead.doc_stage2_staff_id,
+            'doc_stage2_staff_name': name(lead.doc_stage2_staff),
+            'can_assign': can_assign_documentation(request.user),
         }
 
     @action(detail=False, methods=['get'], url_path='documentation-stage2')
@@ -2033,10 +2234,55 @@ class LeadViewSet(viewsets.ModelViewSet):
         from .access import can_access_doc_stage2
         if not can_access_doc_stage2(request.user):
             return Response({'error': 'You do not have access to documentation.'}, status=status.HTTP_403_FORBIDDEN)
+        user = request.user
         qs = (Lead.objects.filter(pushed_to_doc_stage2=True)
-              .select_related('product', 'bde', 'documentation_staff', 'documentation_stage2')
+              .select_related('product', 'bde', 'doc_stage2_staff', 'documentation_stage2')
               .order_by('-pushed_to_doc_stage2_at'))
+        # Documentation staff see only what the manager assigned them; managers
+        # and admins see the whole queue.
+        if (not user.is_staff and not getattr(user, 'is_general_manager', False)
+                and getattr(user, 'role', '') == 'documentation_staff'):
+            qs = qs.filter(doc_stage2_staff=user)
         return Response([self._doc_stage2_payload(lead, request) for lead in qs])
+
+    @action(detail=True, methods=['post'], url_path='assign-doc-stage2')
+    def assign_doc_stage2(self, request, pk=None):
+        """Documentation manager assigns Stage 2 to a documentation staff member."""
+        from users.models import User
+        from .access import can_assign_documentation
+        lead = self.get_object()
+        if not can_assign_documentation(request.user):
+            return Response({'error': 'Only documentation managers can assign documentation staff.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        if not lead.pushed_to_doc_stage2:
+            return Response({'error': 'This lead is not in Documentation Stage 2.'},
+                            status=status.HTTP_404_NOT_FOUND)
+        staff_id = request.data.get('staff')
+        if not staff_id:
+            lead.doc_stage2_staff = None
+        else:
+            try:
+                lead.doc_stage2_staff = User.objects.get(pk=staff_id)
+            except User.DoesNotExist:
+                return Response({'error': 'Staff not found.'}, status=status.HTTP_404_NOT_FOUND)
+        lead.save(update_fields=['doc_stage2_staff'])
+        if lead.doc_stage2_staff:
+            who = (f"{lead.doc_stage2_staff.first_name} {lead.doc_stage2_staff.last_name}".strip()
+                   or lead.doc_stage2_staff.username)
+            ActivityLog.objects.create(
+                activity_type='note_added',
+                description=f"Documentation Stage 2 assigned to: {who}",
+                actor=request.user if request.user.is_authenticated else None,
+                lead=lead, extra={'auto_generated': True})
+        return Response(self._doc_stage2_payload(lead, request))
+
+    @staticmethod
+    def _doc_stage2_not_mine(user, lead):
+        """Documentation staff may only work the Stage 2 leads assigned to them
+        by the manager. Managers / admins are never restricted."""
+        return (not user.is_staff and not getattr(user, 'is_general_manager', False)
+                and getattr(user, 'role', '') == 'documentation_staff'
+                and lead.doc_stage2_staff_id != user.id)
 
     @action(detail=True, methods=['get'], url_path='documentation-stage2-detail')
     def documentation_stage2_detail(self, request, pk=None):
@@ -2047,6 +2293,8 @@ class LeadViewSet(viewsets.ModelViewSet):
         lead = self.get_object()
         if not lead.pushed_to_doc_stage2:
             return Response({'error': 'This lead is not in Documentation Stage 2.'}, status=status.HTTP_404_NOT_FOUND)
+        if self._doc_stage2_not_mine(request.user, lead):
+            return Response({'error': 'This lead is not assigned to you.'}, status=status.HTTP_403_FORBIDDEN)
         DocumentationStage2.objects.get_or_create(lead=lead)
         return Response(self._doc_stage2_payload(lead, request))
 
@@ -2070,7 +2318,87 @@ class LeadViewSet(viewsets.ModelViewSet):
             activity_type='note_added', description="Documentation Stage 2 completed.",
             actor=request.user if request.user.is_authenticated else None,
             lead=lead, extra={'auto_generated': True})
+        fire_automation('doc_stage2_completed', lead)
         return Response(self._doc_stage2_payload(lead, request))
+
+    @action(detail=True, methods=['post'], url_path='reopen-documentation-stage2')
+    def reopen_documentation_stage2(self, request, pk=None):
+        """Unlock a completed Documentation Stage 2 so it can be edited again.
+        Documentation managers and admins / general managers only."""
+        from .access import can_reopen_documentation
+        if not can_reopen_documentation(request.user):
+            return Response({'error': 'Only documentation managers and admins can reopen a completed stage.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        lead = self.get_object()
+        rec = getattr(lead, 'documentation_stage2', None)
+        if not rec or not rec.is_complete:
+            return Response({'error': 'Documentation Stage 2 is not completed.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        rec.is_complete = False
+        rec.completed_at = None
+        rec.completed_by = None
+        rec.save(update_fields=['is_complete', 'completed_at', 'completed_by', 'updated_at'])
+        actor = (f"{request.user.first_name} {request.user.last_name}".strip()
+                 or request.user.username) if request.user.is_authenticated else 'a manager'
+        ActivityLog.objects.create(
+            activity_type='note_added',
+            description=f"Documentation Stage 2 reopened for editing by {actor}.",
+            actor=request.user if request.user.is_authenticated else None,
+            lead=lead, extra={'auto_generated': True})
+        return Response(self._doc_stage2_payload(lead, request))
+
+    def _doc_stage2_prefill(self, lead):
+        """Pre-fill values for the completion-doc forms, pulled from what the CRM
+        already knows about the customer (lead info, site visit, Stage 1, project).
+        Saved form values always win over these on the frontend."""
+        sv = getattr(lead, 'site_visit', None)
+        s1 = getattr(lead, 'documentation_stage1', None)
+        pr = getattr(lead, 'project', None)
+        name = f"{lead.first_name} {lead.last_name or ''}".strip()
+        address = lead.installation_location or lead.company or ''
+        # Capacity chain: documentation's own value, else the BDE's site visit.
+        capacity = ((s1.mnre_plant_capacity if s1 else '')
+                    or (sv.plant_capacity if sv else '')
+                    or (sv.feasible_capacity if sv else '') or '')
+        completed = pr.completed_at.strftime('%d/%m/%Y') if (pr and pr.completed_at) else ''
+        product = (lead.product.name if lead.product else '') or ''
+        return {
+            'completion_letterhead': {
+                'name_of_consumer': name,
+                'consumer_number': (sv.consumer_number if sv else '') or '',
+                'kseb_section': (sv.kseb_section if sv else '') or '',
+                'capacity': capacity,
+                'connection_type': (sv.connection_type if sv else '') or '',
+                'date_of_completion': completed,
+            },
+            'customer_details': {
+                'electrical_section': (sv.kseb_section if sv else '') or '',
+                'consumer_no': (sv.consumer_number if sv else '') or '',
+                'tariff': 'LT-1',
+                'connected_load': (sv.connected_load if sv else '') or '',
+                'solar_plant_owner': name,
+                'address': address,
+                'email': lead.email or '',
+                'contact_phone': lead.phone or '',
+                'plant_type': 'Hybrid' if 'hybrid' in product.lower() else 'OnGrid',
+                'total_capacity': capacity,
+                # Checklist rows 6–14 — the standard answers, editable per customer.
+                'hybrid_scheme_confirms': 'NA',
+                'completion_certificate_submitted': 'Yes',
+                'energization_approval_obtained': 'Not Applicable',
+                'energization_approval_details': '',
+                'dc_isolator_provided': 'Yes',
+                'visual_isolator_provided': 'Yes',
+                'wiring_completed': 'Yes',
+                'earthing_provided': 'Yes',
+                'protection_functions_equipped': 'Yes',
+            },
+            'inverter_panel_details': {
+                'customer_name': name,
+                'customer_contact_no': lead.phone or '',
+                'customer_address': address,
+            },
+        }
 
     @action(detail=True, methods=['get', 'patch'], url_path='documentation-stage2-record')
     def documentation_stage2_record(self, request, pk=None):
@@ -2082,12 +2410,21 @@ class LeadViewSet(viewsets.ModelViewSet):
             return Response({'error': 'You do not have access to documentation.'}, status=status.HTTP_403_FORBIDDEN)
         if not lead.pushed_to_doc_stage2:
             return Response({'error': 'This lead is not in Documentation Stage 2.'}, status=status.HTTP_404_NOT_FOUND)
+        if self._doc_stage2_not_mine(request.user, lead):
+            return Response({'error': 'This lead is not assigned to you.'}, status=status.HTTP_403_FORBIDDEN)
         rec, _ = DocumentationStage2.objects.get_or_create(lead=lead)
         if request.method == 'GET':
-            return Response(DocumentationStage2Serializer(rec, context={'request': request}).data)
+            from .access import can_reopen_documentation
+            data = DocumentationStage2Serializer(rec, context={'request': request}).data
+            data['prefill'] = self._doc_stage2_prefill(lead)
+            data['can_reopen'] = can_reopen_documentation(request.user)
+            return Response(data)
         if rec.is_complete:
             return Response({'error': 'Documentation Stage 2 is already completed and locked.'}, status=status.HTTP_400_BAD_REQUEST)
-        serializer = DocumentationStage2Serializer(rec, data=request.data, partial=True, context={'request': request})
+        # Discom approval is owned by Liasoning (auto-fetched via write-through) —
+        # it cannot be edited from Documentation Stage 2.
+        data = {k: v for k, v in request.data.items() if k != 'discom_approval'}
+        serializer = DocumentationStage2Serializer(rec, data=data, partial=True, context={'request': request})
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
@@ -2130,7 +2467,66 @@ class LeadViewSet(viewsets.ModelViewSet):
         doc.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+    @action(detail=False, methods=['get'], url_path='discom-followup')
+    def discom_followup(self, request):
+        """Discom Follow-up queue: Documentation Stage 2 customers whose discom
+        approval needs chasing — explicitly not approved, or still pending for
+        more than 7 days. The liasoning officer is sent to the concerned section
+        from here; once liasoning marks the approval as approved the customer
+        leaves this list."""
+        from datetime import timedelta
+        from django.db.models import Q
+        from .access import can_access_doc_stage2
+        if not can_access_doc_stage2(request.user):
+            return Response({'error': 'You do not have access to documentation.'}, status=status.HTTP_403_FORBIDDEN)
+        cutoff = timezone.now() - timedelta(days=7)
+        qs = (Lead.objects.filter(pushed_to_doc_stage2=True)
+              .exclude(documentation_stage2__discom_approval='yes')
+              # 'no' enters immediately; 'pending' only after 7 days in Stage 2.
+              .filter(Q(documentation_stage2__discom_approval='no')
+                      | Q(pushed_to_doc_stage2_at__lte=cutoff)
+                      | Q(pushed_to_doc_stage2_at__isnull=True))
+              .select_related('documentation_stage2')
+              .order_by('-pushed_to_doc_stage2_at'))
+        rows = []
+        for lead in qs:
+            rec = getattr(lead, 'documentation_stage2', None)
+            rows.append({
+                'id': lead.id,
+                'first_name': lead.first_name,
+                'last_name': lead.last_name,
+                'phone': lead.phone,
+                'location': lead.company,
+                'installation_location': lead.installation_location,
+                'discom_approval': rec.discom_approval if rec else 'pending',
+                'sent_to_liasoning': bool(rec and rec.sent_to_liasoning),
+                'is_complete': bool(rec and rec.is_complete),
+                'pushed_at': lead.pushed_to_doc_stage2_at,
+                'days_pending': (timezone.now() - lead.pushed_to_doc_stage2_at).days if lead.pushed_to_doc_stage2_at else None,
+            })
+        return Response(rows)
+
     # ── Warranty (post-installation documentation module) ──
+    def _push_to_warranty(self, lead, request=None):
+        """Hand the customer over to the Warranty module (idempotent).
+
+        Normally happens in the fan-out when the project completes; also called
+        when liasoning records the discom approval, so approved customers reach
+        warranty even if they finished installation before that fan-out existed.
+        """
+        if lead.pushed_to_warranty:
+            return False
+        lead.pushed_to_warranty = True
+        lead.pushed_to_warranty_at = timezone.now()
+        lead.save(update_fields=['pushed_to_warranty', 'pushed_to_warranty_at'])
+        Warranty.objects.get_or_create(lead=lead)
+        ActivityLog.objects.create(
+            activity_type='note_added',
+            description="Discom approved — moved to warranty.",
+            actor=request.user if (request and request.user.is_authenticated) else None,
+            lead=lead, extra={'auto_generated': True})
+        return True
+
     def _warranty_payload(self, lead, request):
         from .access import can_access_warranty
         rec = getattr(lead, 'warranty', None)
@@ -2155,6 +2551,53 @@ class LeadViewSet(viewsets.ModelViewSet):
             'record': WarrantySerializer(rec, context={'request': request}).data if rec else None,
             'is_complete': bool(rec and rec.is_complete),
             'can_edit': can_access_warranty(request.user),
+        }
+
+    def _warranty_prefill(self, lead):
+        """Pre-fill for the warranty certificate form, pulled from the customer's
+        history (lead, site visit, Stage 1, project, Doc Stage 2 inverter/panel
+        form). Saved form values always win over these on the frontend."""
+        sv = getattr(lead, 'site_visit', None)
+        s1 = getattr(lead, 'documentation_stage1', None)
+        s2 = getattr(lead, 'documentation_stage2', None)
+        pr = getattr(lead, 'project', None)
+        ip = (s2.inverter_panel_details if s2 else {}) or {}
+        product = (lead.product.name if lead.product else '') or ''
+        return {
+            'customer_name': f"{lead.first_name} {lead.last_name or ''}".strip(),
+            'system_type': 'Hybrid' if 'hybrid' in product.lower() else 'OnGrid',
+            'capacity_kw': ((s1.mnre_plant_capacity if s1 else '')
+                            or (sv.plant_capacity if sv else '')
+                            or (sv.feasible_capacity if sv else '') or ''),
+            'panel_make': str(ip.get('panel_make') or ''),
+            'inverter_make': str(ip.get('inverter_make') or ''),
+            'installation_date': pr.completed_at.strftime('%d/%m/%Y') if (pr and pr.completed_at) else '',
+            'site_address': lead.installation_location or lead.company or '',
+        }
+
+    def _warranty_org(self, request):
+        """Fixed details printed on the warranty certificate — company identity,
+        director sign-off, default warranty years, signature & seal — maintained
+        in the Settings module (organization.OrgSettings), not entered per lead."""
+        from organization.utils import get_org_settings
+        org = get_org_settings()
+
+        def url(f):
+            if not f:
+                return None
+            return request.build_absolute_uri(f.url) if request else f.url
+
+        return {
+            'company_name': org.warranty_company_name,
+            'cin': org.warranty_cin,
+            'gst': org.warranty_gst,
+            'director_name': org.warranty_director_name,
+            'director_designation': org.warranty_director_designation,
+            'panel_years': org.warranty_panel_years,
+            'inverter_years': org.warranty_inverter_years,
+            'service_years': org.warranty_service_years,
+            'signature': url(org.warranty_signature),
+            'seal': url(org.warranty_seal),
         }
 
     @action(detail=False, methods=['get'], url_path='warranty')
@@ -2191,7 +2634,10 @@ class LeadViewSet(viewsets.ModelViewSet):
             return Response({'error': 'This lead is not in the warranty stage.'}, status=status.HTTP_404_NOT_FOUND)
         rec, _ = Warranty.objects.get_or_create(lead=lead)
         if request.method == 'GET':
-            return Response(WarrantySerializer(rec, context={'request': request}).data)
+            data = WarrantySerializer(rec, context={'request': request}).data
+            data['prefill'] = self._warranty_prefill(lead)
+            data['org'] = self._warranty_org(request)
+            return Response(data)
         if rec.is_complete:
             return Response({'error': 'Warranty is already completed and locked.'}, status=status.HTTP_400_BAD_REQUEST)
         serializer = WarrantySerializer(rec, data=request.data, partial=True, context={'request': request})
@@ -2257,6 +2703,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             activity_type='note_added', description="Warranty completed.",
             actor=request.user if request.user.is_authenticated else None,
             lead=lead, extra={'auto_generated': True})
+        fire_automation('warranty_completed', lead)
         return Response(self._warranty_payload(lead, request))
 
     # ── Liasoning & Service (post-installation; handled by the liasoning officer) ──
@@ -2308,6 +2755,62 @@ class LeadViewSet(viewsets.ModelViewSet):
         LiasoningService.objects.get_or_create(lead=lead)
         return Response(self._liasoning_payload(lead, request))
 
+    @action(detail=True, methods=['get', 'patch'], url_path='liasoning-record')
+    def liasoning_record(self, request, pk=None):
+        """Get or update a lead's liasoning record (Feasibility & Annexure 3 stages).
+
+        The Annexure 3 status, remark and discom approval write through to the
+        lead's Documentation Stage 2 — its Annexure section is 'fetched from
+        liasoning' (the liasoning officer is the one at the KSEB section)."""
+        from .access import can_access_liasoning
+        lead = self.get_object()
+        if not can_access_liasoning(request.user):
+            return Response({'error': 'You do not have access to liasoning & service.'}, status=status.HTTP_403_FORBIDDEN)
+        if not lead.pushed_to_liasoning:
+            return Response({'error': 'This lead is not in liasoning & service.'}, status=status.HTTP_404_NOT_FOUND)
+        rec, _ = LiasoningService.objects.get_or_create(lead=lead)
+        if request.method == 'GET':
+            return Response(LiasoningServiceSerializer(rec, context={'request': request}).data)
+        if rec.is_complete:
+            return Response({'error': 'Liasoning & Service is already completed and locked.'}, status=status.HTTP_400_BAD_REQUEST)
+        # Annexure 3 only opens after the feasibility stage is completed.
+        annex_keys = {'annexure3_completed', 'annexure3_remark', 'discom_approval'} & set(request.data.keys())
+        if annex_keys and not request.data.get('feasibility_completed', rec.feasibility_completed):
+            return Response({'error': 'Complete the feasibility stage first — Annexure 3 opens after feasibility.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        old_discom = rec.discom_approval
+        serializer = LiasoningServiceSerializer(rec, data=request.data, partial=True, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        # These fields belong to liasoning — Documentation Stage 2 only displays
+        # them — so they sync through even when Stage 2 has been completed and
+        # locked. Otherwise a later KSEB approval would never reach the record.
+        synced = {'annexure3_completed', 'annexure3_remark', 'discom_approval'} & set(request.data.keys())
+        if synced:
+            s2, _ = DocumentationStage2.objects.get_or_create(lead=lead)
+            update = []
+            if 'annexure3_completed' in synced:
+                s2.annexure3_completed = rec.annexure3_completed
+                update.append('annexure3_completed')
+            if 'annexure3_remark' in synced:
+                s2.annexure3_remark = rec.annexure3_remark
+                update.append('annexure3_remark')
+            if 'discom_approval' in synced:
+                s2.discom_approval = rec.discom_approval
+                update.append('discom_approval')
+            s2.save(update_fields=update + ['updated_at'])
+        # Approval clears the customer for the warranty hand-over. Checked on the
+        # current state (not just the transition) and idempotent, so a customer
+        # approved before this rule existed still gets moved on the next save.
+        if rec.discom_approval == 'yes':
+            self._push_to_warranty(lead, request)
+        if rec.discom_approval != old_discom:
+            if rec.discom_approval == 'yes':
+                fire_automation('discom_approved', lead)
+            elif rec.discom_approval == 'no':
+                fire_automation('discom_not_approved', lead)
+        return Response(LiasoningServiceSerializer(rec, context={'request': request}).data)
+
     @action(detail=True, methods=['post'], url_path='complete-liasoning')
     def complete_liasoning(self, request, pk=None):
         """Mark Liasoning & Service complete for a lead."""
@@ -2328,7 +2831,162 @@ class LeadViewSet(viewsets.ModelViewSet):
             activity_type='note_added', description="Liasoning & Service completed.",
             actor=request.user if request.user.is_authenticated else None,
             lead=lead, extra={'auto_generated': True})
+        fire_automation('liasoning_completed', lead)
         return Response(self._liasoning_payload(lead, request))
+
+    # ── Periodic maintenance (5 years, 6-month tenure gap) ──
+    @staticmethod
+    def _add_months(d, months):
+        import calendar
+        from datetime import date as _date
+        y = d.year + (d.month - 1 + months) // 12
+        m = (d.month - 1 + months) % 12 + 1
+        return _date(y, m, min(d.day, calendar.monthrange(y, m)[1]))
+
+    def _pm_detail(self, lead, request):
+        from .access import can_access_liasoning
+        plan = getattr(lead, 'periodic_maintenance', None)
+
+        def name(u):
+            return (f"{u.first_name} {u.last_name}".strip() or u.username) if u else None
+
+        return {
+            'id': lead.id,
+            'first_name': lead.first_name,
+            'last_name': lead.last_name,
+            'phone': lead.phone,
+            'email': lead.email,
+            'location': lead.company,
+            'installation_location': lead.installation_location,
+            'product_name': lead.product.name if lead.product else None,
+            'bde_name': name(lead.bde),
+            'plan': PeriodicMaintenanceSerializer(plan, context={'request': request}).data if plan else None,
+            'can_edit': can_access_liasoning(request.user),
+        }
+
+    @action(detail=False, methods=['get'], url_path='periodic-maintenance')
+    def periodic_maintenance(self, request):
+        """Scheduled customer list, plus installed customers not yet scheduled."""
+        from .access import can_access_liasoning
+        if not can_access_liasoning(request.user):
+            return Response({'error': 'You do not have access to periodic maintenance.'}, status=status.HTTP_403_FORBIDDEN)
+        qs = (Lead.objects.filter(pushed_to_liasoning=True)
+              .select_related('periodic_maintenance')
+              .prefetch_related('periodic_maintenance__visits')
+              .order_by('-pushed_to_liasoning_at'))
+        scheduled, eligible = [], []
+        for lead in qs:
+            plan = getattr(lead, 'periodic_maintenance', None)
+            base = {'id': lead.id, 'first_name': lead.first_name, 'last_name': lead.last_name,
+                    'phone': lead.phone, 'location': lead.company}
+            if plan:
+                visits = list(plan.visits.all())
+                done = sum(1 for v in visits if v.is_complete)
+                nxt = next((v for v in visits if not v.is_complete), None)
+                scheduled.append({**base,
+                                  'start_date': plan.start_date,
+                                  'done_count': done,
+                                  'total_visits': len(visits),
+                                  'next_due': nxt.due_date if nxt else None,
+                                  'next_sequence': nxt.sequence if nxt else None})
+            else:
+                eligible.append(base)
+        return Response({'scheduled': scheduled, 'eligible': eligible})
+
+    @action(detail=True, methods=['post'], url_path='schedule-maintenance')
+    def schedule_maintenance(self, request, pk=None):
+        """Put a customer on the periodic maintenance schedule: 5 years of visits,
+        one every 6 months, starting from the given start date."""
+        from datetime import date as _date
+        from .access import can_access_liasoning
+        lead = self.get_object()
+        if not can_access_liasoning(request.user):
+            return Response({'error': 'You do not have access to periodic maintenance.'}, status=status.HTTP_403_FORBIDDEN)
+        if not lead.pushed_to_liasoning:
+            return Response({'error': 'This customer is not in liasoning & service yet.'}, status=status.HTTP_404_NOT_FOUND)
+        if getattr(lead, 'periodic_maintenance', None):
+            return Response({'error': 'This customer is already scheduled.'}, status=status.HTTP_400_BAD_REQUEST)
+        raw = (request.data.get('start_date') or '').strip()
+        try:
+            start = _date.fromisoformat(raw) if raw else timezone.localdate()
+        except ValueError:
+            return Response({'error': 'Enter a valid start date (YYYY-MM-DD).'}, status=status.HTTP_400_BAD_REQUEST)
+        plan = PeriodicMaintenance.objects.create(
+            lead=lead, start_date=start,
+            created_by=request.user if request.user.is_authenticated else None)
+        for i in range(1, PeriodicMaintenance.VISIT_COUNT + 1):
+            MaintenanceVisit.objects.create(
+                plan=plan, sequence=i,
+                due_date=self._add_months(start, PeriodicMaintenance.GAP_MONTHS * i))
+        ActivityLog.objects.create(
+            activity_type='note_added',
+            description=f"Scheduled for periodic maintenance: {PeriodicMaintenance.VISIT_COUNT} visits every "
+                        f"{PeriodicMaintenance.GAP_MONTHS} months from {start.strftime('%d/%m/%Y')}.",
+            actor=request.user if request.user.is_authenticated else None,
+            lead=lead, extra={'auto_generated': True})
+        fire_automation('maintenance_scheduled', lead, {'start_date': start.isoformat()})
+        return Response(self._pm_detail(lead, request))
+
+    @action(detail=True, methods=['get'], url_path='maintenance-detail')
+    def maintenance_detail(self, request, pk=None):
+        """Full maintenance view for one customer (plan + all visits)."""
+        from .access import can_access_liasoning
+        if not can_access_liasoning(request.user):
+            return Response({'error': 'You do not have access to periodic maintenance.'}, status=status.HTTP_403_FORBIDDEN)
+        lead = self.get_object()
+        if not getattr(lead, 'periodic_maintenance', None):
+            return Response({'error': 'This customer is not scheduled for maintenance.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(self._pm_detail(lead, request))
+
+    @action(detail=True, methods=['patch'], url_path='maintenance-visits/(?P<visit_id>[0-9]+)')
+    def maintenance_visit_update(self, request, pk=None, visit_id=None):
+        """Update one maintenance visit's readings; toggling ``is_complete`` stamps
+        who completed it and when."""
+        from .access import can_access_liasoning
+        lead = self.get_object()
+        if not can_access_liasoning(request.user):
+            return Response({'error': 'You do not have access to periodic maintenance.'}, status=status.HTTP_403_FORBIDDEN)
+        try:
+            visit = MaintenanceVisit.objects.get(pk=visit_id, plan__lead=lead)
+        except MaintenanceVisit.DoesNotExist:
+            return Response({'error': 'Visit not found.'}, status=status.HTTP_404_NOT_FOUND)
+        was_complete = visit.is_complete
+        serializer = MaintenanceVisitSerializer(visit, data=request.data, partial=True, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        if visit.is_complete and not was_complete:
+            visit.completed_at = timezone.now()
+            visit.completed_by = request.user if request.user.is_authenticated else None
+            visit.save(update_fields=['completed_at', 'completed_by', 'updated_at'])
+        elif was_complete and not visit.is_complete:
+            visit.completed_at = None
+            visit.completed_by = None
+            visit.save(update_fields=['completed_at', 'completed_by', 'updated_at'])
+        return Response(MaintenanceVisitSerializer(visit, context={'request': request}).data)
+
+    @action(detail=True, methods=['post'], url_path='maintenance-visits/(?P<visit_id>[0-9]+)/photos')
+    def maintenance_visit_photo(self, request, pk=None, visit_id=None):
+        """Upload the panel-wash photo for a visit; ``slot`` is 'before' or 'after'
+        (re-uploading replaces the previous photo)."""
+        from .access import can_access_liasoning
+        lead = self.get_object()
+        if not can_access_liasoning(request.user):
+            return Response({'error': 'You do not have access to periodic maintenance.'}, status=status.HTTP_403_FORBIDDEN)
+        try:
+            visit = MaintenanceVisit.objects.get(pk=visit_id, plan__lead=lead)
+        except MaintenanceVisit.DoesNotExist:
+            return Response({'error': 'Visit not found.'}, status=status.HTTP_404_NOT_FOUND)
+        slot = request.data.get('slot')
+        file = request.FILES.get('file')
+        if slot not in ('before', 'after') or not file:
+            return Response({'error': "slot ('before'/'after') and file are required."}, status=status.HTTP_400_BAD_REQUEST)
+        field = 'panel_before' if slot == 'before' else 'panel_after'
+        old = getattr(visit, field)
+        if old:
+            old.delete(save=False)
+        setattr(visit, field, file)
+        visit.save(update_fields=[field, 'updated_at'])
+        return Response(MaintenanceVisitSerializer(visit, context={'request': request}).data)
 
     @action(detail=False, methods=['get', 'patch'], url_path='team-stats')
     def team_stats(self, request):
@@ -2387,18 +3045,21 @@ class LeadViewSet(viewsets.ModelViewSet):
             # superadmin / admin / coo / sales & documentation managers / documentation staff
             queryset = base.all().order_by('-created_at')
         elif user.branch_scoped:
-            # Branch manager: leads of users in their branch (+ their own + unassigned)
+            # Branch manager: everything their branch works on — leads owned by
+            # branch staff, handled by a branch BDE, plus their own + unassigned.
             from django.db.models import Q
-            queryset = base.filter(
-                Q(assigned_to=user) |
-                Q(assigned_to__isnull=True) |
-                Q(assigned_to__branch=user.branch)
-            ).distinct().order_by('-created_at')
+            scope = Q(assigned_to=user) | Q(bde=user) | Q(assigned_to__isnull=True)
+            if user.branch_id:
+                scope |= Q(assigned_to__branch_id=user.branch_id) | Q(bde__branch_id=user.branch_id)
+            queryset = base.filter(scope).distinct().order_by('-created_at')
         else:
             # Tele caller: leads assigned to them. BDE: leads handed off to them as BDE.
             from django.db.models import Q
             queryset = base.filter(Q(assigned_to=user) | Q(bde=user)).distinct().order_by('-created_at')
-        
+
+        # Trashed leads live only in the Trash view (and are purged after 7 days).
+        queryset = queryset.filter(is_trashed=False)
+
         # Filter by "Assigned to Me"
         assigned_to_me = self.request.query_params.get('assigned_to_me')
         if assigned_to_me == 'true' or assigned_to_me == '1':
@@ -2669,6 +3330,8 @@ class LeadViewSet(viewsets.ModelViewSet):
                     'old_status': old_status,
                     'new_status': instance.status,
                 })
+                if instance.status == 'converted':
+                    fire_trigger('lead_converted', instance, {'old_status': old_status})
             fire_trigger('lead_updated', instance)
         except Exception as e:
             logger.exception(f"Automation fire_trigger failed on lead #{instance.pk}: {e}")
@@ -2820,19 +3483,93 @@ class LeadViewSet(viewsets.ModelViewSet):
             
         return response
 
+    # ── Trash (soft delete; auto-purged after Lead.TRASH_RETENTION_DAYS) ──
+
+    def destroy(self, request, *args, **kwargs):
+        """Deleting a lead moves it to Trash instead of removing it. It can be
+        restored from the Trash view for 7 days, after which it is purged."""
+        lead = self.get_object()
+        lead.is_trashed = True
+        lead.trashed_at = timezone.now()
+        lead.trashed_by = request.user if request.user.is_authenticated else None
+        lead.save(update_fields=['is_trashed', 'trashed_at', 'trashed_by'])
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     @action(detail=False, methods=['post'])
     def bulk_delete(self, request):
-        """Deletes multiple leads at once."""
+        """Moves multiple leads to Trash at once."""
         ids = request.data.get('ids', [])
         if not ids:
             return Response({'error': 'No lead IDs provided'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Only allow deleting from the user's accessible set
+
+        # Only allow trashing from the user's accessible set
         queryset = self.get_queryset().filter(id__in=ids)
-        count = queryset.count()
-        queryset.delete()
-        
-        return Response({'message': f'Successfully deleted {count} leads.'})
+        count = queryset.update(
+            is_trashed=True, trashed_at=timezone.now(),
+            trashed_by=request.user if request.user.is_authenticated else None)
+
+        return Response({'message': f'Moved {count} leads to Trash.'})
+
+    @staticmethod
+    def _purge_expired_trash():
+        """Permanently delete anything trashed more than the retention ago."""
+        from datetime import timedelta
+        cutoff = timezone.now() - timedelta(days=Lead.TRASH_RETENTION_DAYS)
+        Lead.objects.filter(is_trashed=True, trashed_at__lte=cutoff).delete()
+
+    def _trash_scope(self):
+        """Trashed leads the current user may see — mirrors the normal role scope."""
+        from django.db.models import Q
+        user = self.request.user
+        qs = Lead.objects.filter(is_trashed=True).select_related('assigned_to', 'trashed_by')
+        if user.sees_all_leads:
+            return qs
+        if getattr(user, 'branch_scoped', False):
+            return qs.filter(Q(assigned_to=user) | Q(assigned_to__isnull=True)
+                             | Q(assigned_to__branch=user.branch)).distinct()
+        return qs.filter(Q(assigned_to=user) | Q(bde=user)).distinct()
+
+    @action(detail=False, methods=['get'], url_path='trash')
+    def trash(self, request):
+        """The Trash: soft-deleted leads with their days left before purge."""
+        self._purge_expired_trash()
+        rows = []
+        for lead in self._trash_scope().order_by('-trashed_at'):
+            days_gone = (timezone.now() - lead.trashed_at).days if lead.trashed_at else 0
+            trasher = lead.trashed_by
+            rows.append({
+                'id': lead.id,
+                'first_name': lead.first_name,
+                'last_name': lead.last_name,
+                'phone': lead.phone,
+                'email': lead.email,
+                'status': lead.status,
+                'trashed_at': lead.trashed_at,
+                'trashed_by_name': (f"{trasher.first_name} {trasher.last_name}".strip() or trasher.username) if trasher else None,
+                'days_left': max(0, Lead.TRASH_RETENTION_DAYS - days_gone),
+            })
+        return Response({'retention_days': Lead.TRASH_RETENTION_DAYS, 'leads': rows})
+
+    @action(detail=True, methods=['post'], url_path='restore-trash')
+    def restore_trash(self, request, pk=None):
+        """Bring a lead back from the Trash."""
+        lead = self._trash_scope().filter(pk=pk).first()
+        if lead is None:
+            return Response({'error': 'Lead not found in Trash.'}, status=status.HTTP_404_NOT_FOUND)
+        lead.is_trashed = False
+        lead.trashed_at = None
+        lead.trashed_by = None
+        lead.save(update_fields=['is_trashed', 'trashed_at', 'trashed_by'])
+        return Response({'message': 'Lead restored.'})
+
+    @action(detail=True, methods=['delete'], url_path='purge')
+    def purge_trash(self, request, pk=None):
+        """Permanently delete one trashed lead right now (skips the 7-day wait)."""
+        lead = self._trash_scope().filter(pk=pk).first()
+        if lead is None:
+            return Response({'error': 'Lead not found in Trash.'}, status=status.HTTP_404_NOT_FOUND)
+        lead.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=False, methods=['post'])
     def bulk_assign(self, request):
@@ -2973,19 +3710,14 @@ class DashboardStatsView(APIView):
         if user.is_staff or user.is_general_manager:
             base_qs = Lead.objects.all()
         elif user.is_manager:
-            from users.models import WorkspaceTeam
-            managed_teams = WorkspaceTeam.objects.filter(manager=user)
-            team_members_ids = []
-            for team in managed_teams:
-                team_members_ids.extend(team.members.values_list('id', flat=True))
-            
+            # Teams they head + (branch managers) everyone in their branch.
             base_qs = Lead.objects.filter(
-                Q(assigned_to=user) | 
-                Q(assigned_to__isnull=True) | 
-                Q(assigned_to__id__in=team_members_ids)
+                Q(assigned_to__id__in=user.managed_user_ids()) | Q(assigned_to__isnull=True)
             ).distinct()
         else:
             base_qs = Lead.objects.filter(assigned_to=user)
+
+        base_qs = base_qs.filter(is_trashed=False)
         
         total_leads = base_qs.count()
         new_today = base_qs.filter(created_at__date=today).count()
@@ -3012,11 +3744,9 @@ class DashboardStatsView(APIView):
                 users_to_check = WorkspaceUser.objects.filter(is_active=True)
                 teams_to_check = WorkspaceTeam.objects.all()
             else:
-                managed_teams = WorkspaceTeam.objects.filter(manager=user)
-                team_members_ids = []
-                for team in managed_teams:
-                    team_members_ids.extend(team.members.values_list('id', flat=True))
-                users_to_check = WorkspaceUser.objects.filter(Q(id=user.id) | Q(id__in=team_members_ids)).distinct()
+                users_to_check = (WorkspaceUser.objects
+                                  .filter(id__in=user.managed_user_ids(), is_active=True)
+                                  .distinct())
                 # Managers can see all teams for comparison as requested
                 teams_to_check = WorkspaceTeam.objects.all()
             
@@ -3179,16 +3909,9 @@ class ConvertedAnalyticsView(APIView):
             base_qs = Lead.objects.all()
         elif user.is_manager:
             from django.db.models import Q
-            from users.models import WorkspaceTeam
-            managed_teams = WorkspaceTeam.objects.filter(manager=user)
-            team_members_ids = []
-            for team in managed_teams:
-                team_members_ids.extend(team.members.values_list('id', flat=True))
-            
+            # Teams they head + (branch managers) everyone in their branch.
             base_qs = Lead.objects.filter(
-                Q(assigned_to=user) | 
-                Q(assigned_to__isnull=True) | 
-                Q(assigned_to__id__in=team_members_ids)
+                Q(assigned_to__id__in=user.managed_user_ids()) | Q(assigned_to__isnull=True)
             ).distinct()
         else:
             base_qs = Lead.objects.filter(assigned_to=user)
@@ -3244,6 +3967,36 @@ class ServiceEntryViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         self._guard()
         return ServiceEntry.objects.all()
+
+    def perform_create(self, serializer):
+        self._guard()
+        serializer.save(created_by=self.request.user if self.request.user.is_authenticated else None)
+
+    def perform_update(self, serializer):
+        self._guard()
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        self._guard()
+        instance.delete()
+
+
+class EmergencyServiceViewSet(viewsets.ModelViewSet):
+    """Emergency Service module — urgent service visits with on-site electrical
+    readings, managed by the liasoning officer (and admins/general managers)."""
+    serializer_class = EmergencyServiceSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    queryset = EmergencyService.objects.all()
+
+    def _guard(self):
+        from .access import can_access_liasoning
+        if not can_access_liasoning(self.request.user):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied('You do not have access to the emergency service module.')
+
+    def get_queryset(self):
+        self._guard()
+        return EmergencyService.objects.all()
 
     def perform_create(self, serializer):
         self._guard()

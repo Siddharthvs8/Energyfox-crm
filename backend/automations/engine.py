@@ -697,7 +697,7 @@ def _action_send_email(params, obj, context) -> str:
     from django.core.mail import send_mail
     from_email = (getattr(settings, 'DEFAULT_FROM_EMAIL', None)
                   or getattr(settings, 'EMAIL_HOST_USER', None)
-                  or 'no-reply@zaleshunter.com')
+                  or 'no-reply@energyfox.in')
     send_mail(subject, body, from_email, [to], fail_silently=False)
     return f"Email sent to {to}"
 

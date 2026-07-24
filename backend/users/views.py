@@ -9,9 +9,12 @@ from .serializers import UserSerializer, WorkspaceTeamSerializer, BranchSerializ
 
 
 class BranchViewSet(viewsets.ModelViewSet):
-    """Manage branches. Admin/superadmin only."""
+    """Manage branches (the admin Branches module). Admin/superadmin only."""
     serializer_class = BranchSerializer
-    queryset = Branch.objects.all().order_by('name')
+    queryset = (Branch.objects.all()
+                .select_related('manager')
+                .prefetch_related('members')
+                .order_by('name'))
 
     def get_permissions(self):
         # Anyone authenticated can list branches (needed by the user form);
@@ -20,16 +23,117 @@ class BranchViewSet(viewsets.ModelViewSet):
             return [permissions.IsAuthenticated()]
         return [IsAdminOnly()]
 
+    def destroy(self, request, *args, **kwargs):
+        """Refuse to delete a branch that still has staff — their branch would be
+        silently cleared. Move them to another branch first (or deactivate this one)."""
+        from rest_framework import status as http_status
+        branch = self.get_object()
+        count = branch.members.count()
+        if count:
+            return Response(
+                {'error': f'{count} team member(s) still belong to this branch. '
+                          f'Move them to another branch first, or deactivate this branch instead.'},
+                status=http_status.HTTP_400_BAD_REQUEST)
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=True, methods=['post'], url_path='toggle-active')
+    def toggle_active(self, request, pk=None):
+        """Activate / deactivate a branch without deleting it."""
+        branch = self.get_object()
+        branch.is_active = not branch.is_active
+        branch.save(update_fields=['is_active', 'updated_at'])
+        return Response(self.get_serializer(branch).data)
+
+    @action(detail=False, methods=['get'], url_path='performance')
+    def performance(self, request):
+        """Per-branch performance for the Branches module.
+
+        Cohort report: every figure describes the leads a branch *received* in
+        the selected period, so the counts and the conversion rate always refer
+        to the same set of leads. `period` = this_month | last_30 | this_year | all.
+        """
+        from datetime import timedelta
+        from decimal import Decimal
+        from django.db.models import Count, Q, Sum
+        from django.utils import timezone
+        from leads.models import Lead
+
+        period = request.query_params.get('period', 'this_month')
+        now = timezone.now()
+        if period == 'last_30':
+            start, label = now - timedelta(days=30), 'Last 30 days'
+        elif period == 'this_year':
+            start, label = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0), 'This year'
+        elif period == 'all':
+            start, label = None, 'All time'
+        else:
+            period = 'this_month'
+            start, label = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0), 'This month'
+
+        rows = []
+        for branch in self.get_queryset():
+            qs = Lead.objects.filter(assigned_to__branch=branch, is_trashed=False)
+            if start is not None:
+                qs = qs.filter(created_at__gte=start)
+
+            agg = qs.aggregate(
+                leads=Count('id'),
+                converted=Count('id', filter=Q(status='converted', is_lost=False)),
+                lost=Count('id', filter=Q(is_lost=True)),
+                closed_deals=Count('id', filter=Q(pushed_to_documentation=True)),
+                completed=Count('id', filter=Q(project__is_complete=True)),
+                deal_value=Sum('value', filter=Q(status='converted', is_lost=False)),
+                collected=Sum('payment_verification__amount_received'),
+                discounts=Sum('payment_verification__discount_value'),
+            )
+            leads = agg['leads'] or 0
+            converted = agg['converted'] or 0
+            deal_value = agg['deal_value'] or Decimal('0')
+            collected = agg['collected'] or Decimal('0')
+            discounts = agg['discounts'] or Decimal('0')
+            rows.append({
+                'id': branch.id,
+                'name': branch.name,
+                'code': branch.code,
+                'manager_name': (f"{branch.manager.first_name} {branch.manager.last_name}".strip()
+                                 or branch.manager.username) if branch.manager else None,
+                'is_active': branch.is_active,
+                'staff': branch.members.count(),
+                'leads': leads,
+                'converted': converted,
+                'conversion_rate': round(converted * 100.0 / leads, 1) if leads else 0.0,
+                'closed_deals': agg['closed_deals'] or 0,
+                'completed_projects': agg['completed'] or 0,
+                'lost': agg['lost'] or 0,
+                'deal_value': float(deal_value),
+                'collected': float(collected),
+                'balance_due': float(max(deal_value - collected - discounts, Decimal('0'))),
+            })
+
+        rows.sort(key=lambda r: (-r['collected'], -r['converted'], r['name']))
+        totals = {k: sum(r[k] for r in rows) for k in
+                  ['staff', 'leads', 'converted', 'closed_deals', 'completed_projects',
+                   'lost', 'deal_value', 'collected', 'balance_due']}
+        totals['conversion_rate'] = round(totals['converted'] * 100.0 / totals['leads'], 1) if totals['leads'] else 0.0
+
+        return Response({'period': period, 'period_label': label, 'branches': rows, 'totals': totals})
+
 class WorkspaceTeamViewSet(viewsets.ModelViewSet):
     serializer_class = WorkspaceTeamSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        from django.db.models import Q
         qs = WorkspaceTeam.objects.all().prefetch_related('members').order_by('name')
         user = self.request.user
         # Admin and GM see all teams; others see only their own team
         if not (user.is_staff or user.is_general_manager):
-            if user.team_id:
+            if user.branch_scoped and user.branch_id:
+                # Branch manager: teams they head, their own, and any team with
+                # staff from their branch.
+                qs = qs.filter(Q(manager=user) | Q(id=user.team_id)
+                               | Q(members__branch_id=user.branch_id)).distinct()
+            elif user.team_id:
                 qs = qs.filter(id=user.team_id)
             else:
                 qs = qs.none()
@@ -327,6 +431,16 @@ class TenantSettingsView(APIView):
             "whatsapp_access_token": masked_whatsapp_token,
             "custom_lead_statuses": org.custom_lead_statuses or [],
             "theme": org.theme,
+            "warranty_company_name": org.warranty_company_name,
+            "warranty_cin": org.warranty_cin,
+            "warranty_gst": org.warranty_gst,
+            "warranty_director_name": org.warranty_director_name,
+            "warranty_director_designation": org.warranty_director_designation,
+            "warranty_panel_years": org.warranty_panel_years,
+            "warranty_inverter_years": org.warranty_inverter_years,
+            "warranty_service_years": org.warranty_service_years,
+            "warranty_signature": org.warranty_signature.url if org.warranty_signature else None,
+            "warranty_seal": org.warranty_seal.url if org.warranty_seal else None,
         })
 
     def patch(self, request):
@@ -427,6 +541,18 @@ class TenantSettingsView(APIView):
                             })
             tenant.custom_lead_statuses = cleaned_statuses
 
+        # Warranty certificate settings (fixed details printed on the generated document).
+        for f in ['warranty_company_name', 'warranty_cin', 'warranty_gst',
+                  'warranty_director_name', 'warranty_director_designation',
+                  'warranty_panel_years', 'warranty_inverter_years', 'warranty_service_years']:
+            v = request.data.get(f)
+            if v is not None:
+                setattr(tenant, f, v)
+        if request.FILES.get('warranty_signature'):
+            tenant.warranty_signature = request.FILES['warranty_signature']
+        if request.FILES.get('warranty_seal'):
+            tenant.warranty_seal = request.FILES['warranty_seal']
+
         tenant.save()
 
         masked_voxbay_upin = ''
@@ -464,5 +590,15 @@ class TenantSettingsView(APIView):
             "whatsapp_verify_token": tenant.whatsapp_verify_token,
             "whatsapp_access_token": masked_whatsapp_token,
             "custom_lead_statuses": tenant.custom_lead_statuses or [],
+            "warranty_company_name": tenant.warranty_company_name,
+            "warranty_cin": tenant.warranty_cin,
+            "warranty_gst": tenant.warranty_gst,
+            "warranty_director_name": tenant.warranty_director_name,
+            "warranty_director_designation": tenant.warranty_director_designation,
+            "warranty_panel_years": tenant.warranty_panel_years,
+            "warranty_inverter_years": tenant.warranty_inverter_years,
+            "warranty_service_years": tenant.warranty_service_years,
+            "warranty_signature": tenant.warranty_signature.url if tenant.warranty_signature else None,
+            "warranty_seal": tenant.warranty_seal.url if tenant.warranty_seal else None,
         })
 

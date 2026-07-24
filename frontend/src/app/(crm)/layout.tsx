@@ -2,7 +2,7 @@
 import { APP_SLUG } from "@/lib/config";
 import { applyTheme } from "@/lib/themes";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { getApiBase } from "@/lib/mock-data";
@@ -172,6 +172,24 @@ const Nav = {
   ),
 };
 
+// Module key (from /api/leads/module-counts/) -> the name used in the "new work"
+// popup. The keys match each module's route, so the badge maps by href.
+const MODULE_LABELS: Record<string, string> = {
+  "leads": "Leads",
+  "documentation": "Documentation Stage 1",
+  "documentation-stage2": "Documentation Stage 2",
+  "discom-followup": "Discom Follow-up",
+  "warranty": "Warranty",
+  "accounts": "Accounts",
+  "accounts/partially-paid": "Partially Paid",
+  "accounts/fully-paid": "Fully Paid",
+  "accounts/completed": "Completed Projects",
+  "purchase": "Purchase & Logistics",
+  "project": "Project",
+  "liasoning": "Liasoning",
+  "periodic-maintenance": "Periodic Maintenance",
+};
+
 export default function DashboardLayout({
   children,
 }: {
@@ -316,6 +334,94 @@ export default function DashboardLayout({
     return () => clearInterval(interval);
   }, [fetchNotifications]);
 
+  // ── Per-module work counts (sidebar badges + "new work" popup) ──
+  // The badge shows how many items in that module are still waiting on this
+  // user; when a count grows between polls, that's new work arriving for them.
+  const [moduleCounts, setModuleCounts] = useState<Record<string, number>>({});
+  const prevCountsRef = useRef<Record<string, number> | null>(null);
+  const prevAssignedRef = useRef<Record<string, number> | null>(null);
+  // Work newly assigned to this user by name — shown as a centre-screen modal.
+  const [assignAlert, setAssignAlert] = useState<{ key: string; added: number } | null>(null);
+
+  const fetchModuleCounts = useCallback(async () => {
+    const tk = localStorage.getItem(`${domain}_access`);
+    if (!tk) return;
+    try {
+      const r = await fetch(`${getApiBase(domain)}/api/leads/module-counts/`, {
+        headers: { Authorization: `Bearer ${tk}` },
+      });
+      if (!r.ok) return;
+      const data = await r.json();
+      const next: Record<string, number> = data.counts || {};
+      const nextAssigned: Record<string, number> = data.assigned || {};
+      const prev = prevCountsRef.current;
+      const prevAssigned = prevAssignedRef.current;
+
+      if (prev) {
+        // Anything newly assigned to this user personally gets the modal…
+        const newlyAssigned = prevAssigned
+          ? Object.entries(nextAssigned)
+              .filter(([k, v]) => v > (prevAssigned[k] ?? 0))
+              .map(([k, v]) => ({ key: k, added: v - (prevAssigned[k] ?? 0) }))
+          : [];
+        // One modal at a time, however many customers it covers — a bulk
+        // assignment of 50 leads is a single "50 new customers" popup, not 50.
+        if (newlyAssigned.length) setAssignAlert(newlyAssigned[0]);
+
+        // …everything else that grew is a quieter corner toast (including any
+        // further assigned modules beyond the one in the modal).
+        const modalKeys = new Set(newlyAssigned.slice(0, 1).map(g => g.key));
+        const grown = Object.entries(next)
+          .filter(([k, v]) => v > (prev[k] ?? 0) && !modalKeys.has(k))
+          .map(([k, v]) => ({ key: k, added: v - (prev[k] ?? 0) }));
+        if (grown.length) {
+          setToasts(t => [...t, ...grown.map(g => ({
+            id: `${Date.now()}-${g.key}`,
+            message: `${g.added} new ${g.added === 1 ? "item" : "items"} in ${MODULE_LABELS[g.key] || g.key}`,
+            href: `/${g.key}`,
+          }))]);
+        }
+      }
+      prevCountsRef.current = next;
+      prevAssignedRef.current = nextAssigned;
+      setModuleCounts(next);
+    } catch { /* keep the previous badges */ }
+  }, [domain]);
+
+  useEffect(() => {
+    fetchModuleCounts();
+    const interval = setInterval(fetchModuleCounts, 60000);
+    return () => clearInterval(interval);
+  }, [fetchModuleCounts]);
+
+  // Opening a customer inside a module marks it seen, so it stops counting
+  // towards that module's badge; then refresh the badges.
+  useEffect(() => {
+    const tk = localStorage.getItem(`${domain}_access`);
+    if (!tk) return;
+    // Detail routes look like /module/<id> or /accounts/partially-paid/<id>.
+    const m = pathname.match(/^\/(.+)\/(\d+)$/);
+    const moduleKey = m?.[1];
+    const leadId = m?.[2];
+    const markSeen = async () => {
+      if (moduleKey && leadId && MODULE_LABELS[moduleKey]) {
+        // The accounts detail page is shared by its three queues.
+        const modules = moduleKey === "accounts"
+          ? ["accounts", "accounts/partially-paid", "accounts/fully-paid", "accounts/completed"]
+          : [moduleKey];
+        try {
+          await fetch(`${getApiBase(domain)}/api/leads/${leadId}/seen/`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${tk}` },
+            body: JSON.stringify({ modules }),
+          });
+        } catch { /* the badge just stays until the next visit */ }
+      }
+      fetchModuleCounts();
+    };
+    markSeen();
+  }, [pathname]); // eslint-disable-line react-hooks/exhaustive-deps
+
 
 
   // Auto-dismiss toasts
@@ -351,9 +457,11 @@ export default function DashboardLayout({
     { href: `/automations`,   label: "Automations",    Icon: Nav.Automation, adminOnly: true },
     { href: `/meta`,          label: "Meta Integration",Icon: Nav.Meta, strictAdminOnly: true },
     { href: `/team`,          label: "Team",            Icon: Nav.Team },
+    { href: `/branches`,      label: "Branches",        Icon: Nav.Admin, adminOnly: true },
     { href: `/documentation`, label: "Documentation Stage 1", Icon: Nav.Quote, docFeature: true },
     { href: `/documentation-stage2`, label: "Documentation Stage 2", Icon: Nav.Quote, docStage2Feature: true },
     { href: `/warranty`,      label: "Warranty",         Icon: Nav.Quote, warrantyFeature: true },
+    { href: `/discom-followup`, label: "Discom Follow-up", Icon: Nav.Alert, docStage2Feature: true },
     { href: `/documentation-status`, label: "Documentation", Icon: Nav.Quote, docTracker: true },
     { href: `/feasibility`,   label: "KSEB Feasibility", Icon: Nav.Tasks, feasibilityFeature: true },
     { href: `/accounts`,      label: "Accounts",        Icon: Nav.Billing, accountsFeature: true },
@@ -365,7 +473,9 @@ export default function DashboardLayout({
     { href: `/project`,       label: "Project",         Icon: Nav.PurchaseOrder, pmFeature: true },
     { href: `/service`,       label: "Service",         Icon: Nav.Tasks, pmFeature: true },
     { href: `/team-stats`,    label: "Team Stats",      Icon: Nav.Leaderboard, pmFeature: true },
-    { href: `/liasoning`,     label: "Liasoning & Service", Icon: Nav.Tasks, liasoningFeature: true },
+    { href: `/liasoning`,     label: "Liasoning",        Icon: Nav.Tasks, liasoningFeature: true },
+    { href: `/periodic-maintenance`, label: "Periodic Maintenance", Icon: Nav.Settings, liasoningFeature: true },
+    { href: `/emergency-service`, label: "Emergency Service", Icon: Nav.Alert, liasoningFeature: true },
     { href: `/settings`,      label: "Settings",        Icon: Nav.Settings, adminOnly: true },
   ];
 
@@ -507,17 +617,11 @@ export default function DashboardLayout({
       <aside className={`accent-transition w-60 bg-[#0f1629] flex flex-col fixed inset-y-0 left-0 z-50 transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${sidebarOpen ? "translate-x-0" : "-translate-x-full"} lg:translate-x-0`}>
         {/* Logo */}
         <div className="h-16 flex items-center justify-between px-5 border-b border-white/5 flex-shrink-0">
-          <div className="flex items-center gap-3">
-            {subscription?.logo ? (
-              <img src={`${getApiBase(domain)}${subscription.logo}`} alt="Logo" className="w-8 h-8 rounded-xl object-cover shadow-lg shadow-black/20 flex-shrink-0" />
-            ) : (
-              <div className="w-8 h-8 rounded-xl bg-accent-gradient flex items-center justify-center shadow-lg shadow-accent flex-shrink-0">
-                <svg width="16" height="16" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" viewBox="0 0 24 24">
-                  <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" />
-                  <path d="M23 21v-2a4 4 0 00-3-3.87" /><path d="M16 3.13a4 4 0 010 7.75" />
-                </svg>
-              </div>
-            )}
+          <div className="flex items-center gap-3 min-w-0">
+            {/* The square Energyfox mark reads cleanly on the dark sidebar; a wide
+                lockup would either crop or shrink to a sliver here, so the mark is
+                always used and the workspace name sits beside it as text. */}
+            <img src="/energyfox-mark.png" alt="Energyfox" className="w-9 h-9 object-contain flex-shrink-0" />
             <div className="overflow-hidden">
               <div className="text-white font-semibold text-sm capitalize truncate leading-tight">{subscription?.name || domain}</div>
               <div className="text-[10px] text-slate-500 leading-tight">Workspace</div>
@@ -603,7 +707,17 @@ export default function DashboardLayout({
                   <item.Icon />
                 </span>
                 <span className="truncate">{item.label}</span>
-                {active && <span className="ml-auto w-1.5 h-1.5 bg-white/60 rounded-full flex-shrink-0 animate-pulse" />}
+                {/* Items in this module still waiting on the user. */}
+                {(() => {
+                  const n = moduleCounts[item.href.replace(/^\//, "")] || 0;
+                  if (!n) return active ? <span className="ml-auto w-1.5 h-1.5 bg-white/60 rounded-full flex-shrink-0 animate-pulse" /> : null;
+                  return (
+                    <span title={`${n} waiting`}
+                      className={`ml-auto min-w-[20px] h-5 px-1.5 rounded-full text-[10px] font-bold flex items-center justify-center flex-shrink-0 ${active ? "bg-white/25 text-white" : "bg-rose-500 text-white"}`}>
+                      {n > 99 ? "99+" : n}
+                    </span>
+                  );
+                })()}
               </Link>
             );
           })}
@@ -662,15 +776,7 @@ export default function DashboardLayout({
             <Nav.Menu />
           </button>
           <div className="flex items-center gap-2">
-            {subscription?.logo ? (
-              <img src={`${getApiBase(domain)}${subscription.logo}`} alt="Logo" className="w-7 h-7 rounded-lg object-cover shadow" />
-            ) : (
-              <div className={`w-7 h-7 rounded-lg bg-gradient-to-br ${color} flex items-center justify-center shadow`}>
-                <svg width="13" height="13" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" viewBox="0 0 24 24">
-                  <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" />
-                </svg>
-              </div>
-            )}
+            <img src="/energyfox-mark.png" alt="Energyfox" className="w-7 h-7 object-contain" />
             <span className="text-sm font-bold text-slate-900 capitalize">{subscription?.name || domain}</span>
           </div>
           <Link href={`/team?edit=me`}>
@@ -691,7 +797,14 @@ export default function DashboardLayout({
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-[13px] font-bold leading-tight">{t.message}</p>
-                <p className="text-[11px] text-slate-400 mt-0.5">Just now</p>
+                {t.href ? (
+                  <Link href={t.href} onClick={() => setToasts(prev => prev.filter(x => x.id !== t.id))}
+                    className="text-[11px] text-indigo-300 hover:text-indigo-200 mt-0.5 inline-block">
+                    Open module →
+                  </Link>
+                ) : (
+                  <p className="text-[11px] text-slate-400 mt-0.5">Just now</p>
+                )}
               </div>
               <button onClick={() => setToasts(prev => prev.filter(x => x.id !== t.id))} className="text-slate-500 hover:text-white transition-colors flex-shrink-0 p-1">
                 <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" /></svg>
@@ -772,6 +885,38 @@ export default function DashboardLayout({
       )}
 
       {/* Global Popup Alert Modal */}
+      {/* New work assigned to this user by name — same treatment as the AI
+          Manager popups so it can't be missed. */}
+      {assignAlert && (
+        <div className="popup-overlay">
+          <div className="popup-backdrop" onClick={() => setAssignAlert(null)} />
+          <div className="popup-card max-w-lg">
+            <div className="h-40 bg-gradient-to-br from-amber-400 via-orange-500 to-rose-500 w-full flex items-center justify-center text-white relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-bl-full" />
+              <div className="absolute bottom-0 left-0 w-24 h-24 bg-black/10 rounded-tr-full" />
+              <div className="relative scale-[2.2]"><Nav.Quote /></div>
+            </div>
+            <div className="px-10 pb-10 pt-8 text-center flex flex-col items-center">
+              <h2 className="text-2xl font-black text-slate-800 mb-3 tracking-tight">New work assigned to you</h2>
+              <p className="text-slate-500 text-base mb-8 leading-relaxed">
+                <b className="text-slate-700">{assignAlert.added}</b> new {assignAlert.added === 1 ? "customer has" : "customers have"} been
+                assigned to you in <b className="text-slate-700">{MODULE_LABELS[assignAlert.key] || assignAlert.key}</b>.
+              </p>
+              <div className="flex gap-3 w-full max-w-sm">
+                <button onClick={() => setAssignAlert(null)}
+                  className="flex-1 py-3.5 bg-slate-100 text-slate-600 text-base font-bold rounded-2xl hover:bg-slate-200 transition-all active:scale-[0.98]">
+                  Later
+                </button>
+                <button onClick={() => { const k = assignAlert.key; setAssignAlert(null); router.push(`/${k}`); }}
+                  className="flex-1 py-3.5 bg-gradient-to-br from-amber-500 to-orange-600 text-white text-base font-black rounded-2xl hover:from-amber-600 hover:to-orange-700 transition-all shadow-lg shadow-amber-200 hover:-translate-y-0.5 active:translate-y-0">
+                  Open
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {activePopup && (
         <div className="popup-overlay">
           {/* Backdrop with animation */}

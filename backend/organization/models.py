@@ -56,6 +56,32 @@ class OrgSettings(models.Model):
     # ── Custom Lead Statuses ──
     custom_lead_statuses = models.JSONField(default=list, blank=True)
 
+    # ── Warranty certificate (fixed details printed on the generated document) ──
+    # These are not entered per customer — the warranty form only takes the
+    # customer/system details; everything below comes from here.
+    warranty_company_name = models.CharField(max_length=120, blank=True, default='Energyfox Consultants Pvt. Ltd.')
+    warranty_cin = models.CharField(max_length=40, blank=True, default='U35105KL2023PTC084535')
+    warranty_gst = models.CharField(max_length=40, blank=True, default='32AAHCE8716F1ZR')
+    warranty_director_name = models.CharField(max_length=80, blank=True, default='AKASH AG')
+    warranty_director_designation = models.CharField(max_length=80, blank=True, default='Director')
+    warranty_panel_years = models.CharField(max_length=10, blank=True, default='30')
+    warranty_inverter_years = models.CharField(max_length=10, blank=True, default='12')
+    warranty_service_years = models.CharField(max_length=10, blank=True, default='5')
+    warranty_signature = models.ImageField(upload_to='org/', null=True, blank=True)
+    warranty_seal = models.ImageField(upload_to='org/', null=True, blank=True)
+
+    # ── Money-receipt voucher (company + bank details printed on receipts) ──
+    receipt_address = models.CharField(
+        max_length=255, blank=True,
+        default='4th Floor, TC Number 15/4257/2, Malankara Avenue, Pattom, Thiruvananthapuram')
+    receipt_phone = models.CharField(max_length=40, blank=True, default='9526 396 823')
+    receipt_website = models.CharField(max_length=80, blank=True, default='energyfox.in')
+    receipt_email = models.CharField(max_length=80, blank=True, default='info@energyfox.in')
+    receipt_bank_name = models.CharField(max_length=80, blank=True, default='SBI')
+    receipt_bank_account = models.CharField(max_length=40, blank=True, default='44600460447')
+    receipt_bank_ifsc = models.CharField(max_length=20, blank=True, default='SBIN0071176')
+    receipt_bank_branch = models.CharField(max_length=80, blank=True, default='PULIYARAKONAM')
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

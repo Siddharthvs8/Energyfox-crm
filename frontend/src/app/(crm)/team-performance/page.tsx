@@ -184,9 +184,12 @@ export default function TeamPerformancePage({ params: paramsPromise }: { params:
         api(`/api/users/`),
         api(`/api/ai-manager/monthly-targets/?month=${month}&year=${year}`),
       ]);
+      // /api/users/ and the target list are paginated for larger workspaces —
+      // unwrap `results` so the arrays below never get an object.
+      const asArray = (d: any) => (Array.isArray(d) ? d : d?.results || []);
       if (dashR.ok) setDashboard(await dashR.json());
-      if (usersR.ok) setUsers(await usersR.json());
-      if (targetsR.ok) setExistingTargets(await targetsR.json());
+      if (usersR.ok) setUsers(asArray(await usersR.json()));
+      if (targetsR.ok) setExistingTargets(asArray(await targetsR.json()));
     } catch (e) { console.error(e); }
     setLoading(false);
   }, [api, month, year]);
@@ -278,7 +281,7 @@ export default function TeamPerformancePage({ params: paramsPromise }: { params:
     const dStrStart = `${year}-${String(month).padStart(2, '0')}-01`;
     const dStrEnd = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
     const r = await api(`/api/ai-manager/daily-targets/?agent=${agentId}&date_from=${dStrStart}&date_to=${dStrEnd}`);
-    if (r.ok) setDailyTargets(await r.json());
+    if (r.ok) { const d = await r.json(); setDailyTargets(Array.isArray(d) ? d : d?.results || []); }
   };
 
   const updateDailyTarget = async (id: number, target_leads: string, target_amount: string) => {
@@ -291,7 +294,7 @@ export default function TeamPerformancePage({ params: paramsPromise }: { params:
       const dStrStart = `${year}-${String(month).padStart(2, '0')}-01`;
       const dStrEnd = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
       const r = await api(`/api/ai-manager/daily-targets/?agent=${selectedAgentId}&date_from=${dStrStart}&date_to=${dStrEnd}`);
-      if (r.ok) setDailyTargets(await r.json());
+      if (r.ok) { const d = await r.json(); setDailyTargets(Array.isArray(d) ? d : d?.results || []); }
     }
     fetchDashboard();
   };

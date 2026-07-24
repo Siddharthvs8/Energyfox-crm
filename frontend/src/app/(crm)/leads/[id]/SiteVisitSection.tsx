@@ -2,17 +2,22 @@
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
 import { kindForSlot } from "@/lib/docKinds";
-import { useEffect, useState, createContext, useContext } from "react";
+import PdfDropField from "@/components/PdfDropField";
+import React, { useEffect, useState, createContext, useContext } from "react";
 
 // Scalar (text/choice) fields — saved via a JSON PATCH.
 const TEXT_KEYS = [
   "roof_type", "connection_type", "connected_load", "consumer_number", "phase",
-  "building_height", "panel_to_inverter_distance", "earthing", "kseb_section",
-  "feasible_capacity", "transformer_feasibility", "neutral_link", "roof_access",
+  "building_height", "panel_to_inverter_distance", "kseb_section",
+  "feasible_capacity", "plant_capacity", "transformer_feasibility", "neutral_link", "roof_access",
   "parapet_height", "structure_type", "custom_structure_height", "cable_panel_to_dc_db",
-  "cable_inverter_to_ac_db", "earthing_cable_length", "earthing_surface", "anchoring_allowed",
-  "name_change", "loan", "load_enhancement", "email_linked_to_itr",
+  "cable_inverter_to_ac_db", "earthing_cable_length", "lightning_conductor_length",
+  "earthing_surface", "anchoring_allowed",
+  "name_change", "loan", "loan_amount", "load_enhancement", "email_linked_to_itr",
 ] as const;
+
+// An ITR report is only required for loans above this amount.
+const ITR_REQUIRED_ABOVE = 200000;
 
 type TextKey = typeof TEXT_KEYS[number];
 type Form = Record<TextKey, string> & { rcc_roof_types: string[] };
@@ -97,6 +102,38 @@ function YesNo({ k, label }: { k: TextKey; label: string }) {
 // One document/photo slot — lists every file uploaded for this doc_type (each with a
 // delete control) and lets the BDE add more (multiple files allowed). Uploads/deletes
 // happen immediately via the SiteVisitDocument endpoints.
+/* The uploaded-file list for a slot, shared by the plain and PDF slot renderers. */
+function SVDocList({ docType }: { docType: string }) {
+  const { documents, canEdit, apiBase, deleteDoc } = useSV();
+  const mine = documents.filter(d => d.doc_type === docType);
+  if (!mine.length) return null;
+  return (
+    <ul className="mb-2 space-y-1">
+      {mine.map(d => {
+        const href = d.file.startsWith("http") ? d.file : `${apiBase}${d.file}`;
+        const name = decodeURIComponent(d.file.split("/").pop() || "file");
+        return (
+          <li key={d.id} className="flex items-center gap-2 text-[11px]">
+            <a href={href} target="_blank" rel="noreferrer" className="font-semibold text-emerald-600 hover:underline truncate max-w-[150px]" title={name}>{name}</a>
+            {canEdit && <button type="button" onClick={() => deleteDoc(d)} title="Delete file" className="font-bold text-rose-500 hover:text-rose-700">✕</button>}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/* PDF slot — attach PDFs/files directly, or drop images to generate one PDF. */
+function PdfMultiField({ docType, label }: { docType: string; label: string }) {
+  const { canEdit, addDocs, uploadingType } = useSV();
+  return (
+    <PdfDropField docType={docType} label={label} disabled={!canEdit}
+      busy={uploadingType === docType} addFiles={addDocs}>
+      <SVDocList docType={docType} />
+    </PdfDropField>
+  );
+}
+
 function MultiFileField({ docType, label }: { docType: string; label: string }) {
   const { documents, canEdit, apiBase, addDocs, deleteDoc, uploadingType } = useSV();
   const mine = documents.filter(d => d.doc_type === docType);
@@ -236,6 +273,10 @@ export default function SiteVisitSection({ leadId, canEdit = true, onSaved }: { 
   // Field state shared with the module-level renderers via context (see SVCtx above).
   const ctx: SVCtx = { form, set, canEdit, documents, addDocs, deleteDoc, uploadingType, apiBase };
 
+  // ITR is only asked for above ₹2 lakh. Ignore any currency symbols/commas typed in.
+  const loanAmountValue = parseFloat((form.loan_amount || "").replace(/[^0-9.]/g, ""));
+  const loanNeedsItr = Number.isFinite(loanAmountValue) && loanAmountValue > ITR_REQUIRED_ABOVE;
+
   return (
     <div className="mt-6 bg-white rounded-2xl border border-slate-200/70 shadow-sm">
       <div className="px-6 py-4 border-b border-slate-100">
@@ -287,9 +328,9 @@ export default function SiteVisitSection({ leadId, canEdit = true, onSaved }: { 
           <Select k="phase" label="Phase" options={[{ value: "1ph", label: "1 Phase" }, { value: "3ph", label: "3 Phase" }]} />
           <Text k="building_height" label="Building Height" />
           <Text k="panel_to_inverter_distance" label="Solar Panel to Inverter Distance" />
-          <Text k="earthing" label="Earthing" />
           <Text k="kseb_section" label="KSEB Section" />
           <Text k="feasible_capacity" label="Feasible Capacity" />
+          <Text k="plant_capacity" label="Plant Capacity" placeholder="e.g. 5 kW" />
           <YesNo k="transformer_feasibility" label="Transformer Feasibility" />
           <YesNo k="neutral_link" label="Neutral Link" />
 
@@ -306,6 +347,7 @@ export default function SiteVisitSection({ leadId, canEdit = true, onSaved }: { 
           <Text k="cable_panel_to_dc_db" label="Panel to DC DB" />
           <Text k="cable_inverter_to_ac_db" label="Inverter to AC DB" />
           <Text k="earthing_cable_length" label="Earthing Cable Length" />
+          <Text k="lightning_conductor_length" label="Lightning Conductor Length" />
 
           {/* Earthing */}
           <SectionTitle>Earthing</SectionTitle>
@@ -339,11 +381,33 @@ export default function SiteVisitSection({ leadId, canEdit = true, onSaved }: { 
           {form.loan === "yes" && (
             <>
               <SectionTitle>Loan Documents</SectionTitle>
+              <Text k="loan_amount" label="Required Loan Amount (₹)" placeholder="e.g. 250000" />
               <Text k="email_linked_to_itr" label="Email linked to Passbook" placeholder="email@example.com" />
-              <MultiFileField docType="itr_report" label="ITR Report" />
-              <MultiFileField docType="loan_document" label="Loan Document" />
+              {/* Already captured above / in Electrical & Supply — shown here so the
+                  loan paperwork is complete in one place. Same underlying data. */}
+              <MultiFileField docType="kseb_bill_file" label="KSEB Bill" />
+              <Text k="kseb_section" label="KSEB Section" />
+              {loanNeedsItr ? (
+                <MultiFileField docType="itr_report" label="ITR Report" />
+              ) : (
+                <div className="sm:col-span-2 lg:col-span-3">
+                  <p className="text-[11px] text-slate-400">
+                    An ITR report is required only for loans above ₹{ITR_REQUIRED_ABOVE.toLocaleString("en-IN")}.
+                  </p>
+                </div>
+              )}
             </>
           )}
+
+          {/* Purchase order — captured once here; Documentation Stage 1 inherits it
+              into its For MNRE and For Loan slots. */}
+          <SectionTitle>Purchase Order</SectionTitle>
+          <div className="sm:col-span-2 lg:col-span-3">
+            <p className="text-[11px] text-slate-400 -mt-2 mb-2">
+              Uploaded once here — it appears automatically under Documentation Stage 1&apos;s For MNRE and For Loan sections.
+            </p>
+          </div>
+          <PdfMultiField docType="purchase_order" label="Purchase Order" />
 
           {/* Site visit photos */}
           <SectionTitle>Site Visit Photos</SectionTitle>

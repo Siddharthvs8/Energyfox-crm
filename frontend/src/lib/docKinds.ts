@@ -33,6 +33,11 @@ export const SLOT_TO_KIND: Record<string, string> = {
   loan_passbook: "passbook",
   loan_land_tax: "land_tax",
   loan_itr: "itr",
+  // Purchase order — uploaded once on the BDE site visit, inherited by the
+  // Documentation Stage 1 MNRE and Loan slots.
+  purchase_order: "purchase_order",
+  mnre_purchase_order: "purchase_order",
+  loan_agreement_purchase_order: "purchase_order",
 };
 
 /** Canonical shared kind for a slot doc_type, or undefined if it's stage-local. */

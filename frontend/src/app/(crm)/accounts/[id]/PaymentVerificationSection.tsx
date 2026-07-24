@@ -1,6 +1,7 @@
 "use client";
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase, formatCurrency } from "@/lib/mock-data";
+import { downloadLeadReceipt } from "@/lib/receipt-pdf";
 import React, { useCallback, useEffect, useState } from "react";
 
 const PAYMENT_MODES = [
@@ -32,6 +33,7 @@ export default function PaymentVerificationSection({ leadId, canEdit, canReopen,
   const [discountValue, setDiscountValue] = useState("");
   const [paymentMode, setPaymentMode] = useState("");
   const [utrDetails, setUtrDetails] = useState("");
+  const [onAccountOf, setOnAccountOf] = useState("");
   const [discountGivenBy, setDiscountGivenBy] = useState("");
   const [isComplete, setIsComplete] = useState(false);
   const [completedByName, setCompletedByName] = useState<string | null>(null);
@@ -46,6 +48,7 @@ export default function PaymentVerificationSection({ leadId, canEdit, canReopen,
     setDiscountValue(d.discount_value != null ? String(d.discount_value) : "");
     setPaymentMode(d.payment_mode || "");
     setUtrDetails(d.utr_details || "");
+    setOnAccountOf(d.on_account_of || "");
     setDiscountGivenBy(d.discount_given_by || "");
     setIsComplete(!!d.is_complete);
     setCompletedByName(d.completed_by_name ?? null);
@@ -77,6 +80,7 @@ export default function PaymentVerificationSection({ leadId, canEdit, canReopen,
         discount_value: toNum(discountValue),
         payment_mode: paymentMode,
         utr_details: needsUtr ? utrDetails : "",
+        on_account_of: onAccountOf,
         discount_given_by: discountGivenBy,
       }),
     });
@@ -85,6 +89,9 @@ export default function PaymentVerificationSection({ leadId, canEdit, canReopen,
   };
 
   const save = async () => {
+    // Payment mode is mandatory, so a record can't be saved without it.
+    if (!paymentMode) { alert("Select a payment mode — it is required."); return; }
+    if (needsUtr && !utrDetails.trim()) { alert(`Enter the UTR / transaction details for ${paymentMode} payments.`); return; }
     setSaving(true);
     try {
       const latest = await saveScalars();
@@ -144,10 +151,15 @@ export default function PaymentVerificationSection({ leadId, canEdit, canReopen,
           <p className="text-xs text-slate-400 mt-0.5">Filled by the assigned accounts staff.</p>
         </div>
         {isComplete ? (
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-lg text-xs font-semibold">
               ✓ Verified{completedByName ? ` by ${completedByName}` : ""}{completedAt ? ` · ${new Date(completedAt).toLocaleDateString("en-IN")}` : ""}
             </span>
+            <button onClick={() => downloadLeadReceipt(leadId, { initial: true })}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-semibold hover:bg-indigo-700 transition">
+              <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+              Download Receipt
+            </button>
             {canReopen && (
               <button onClick={reopen} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-300 text-slate-700 rounded-lg text-xs font-semibold hover:bg-slate-50 transition">
                 Reopen for editing
@@ -181,21 +193,33 @@ export default function PaymentVerificationSection({ leadId, canEdit, canReopen,
           </div>
 
           <div>
-            <label className={labelCls}>Payment Mode</label>
-            <select value={paymentMode} disabled={readOnly} onChange={e => change(setPaymentMode)(e.target.value)} className={inputCls}>
+            <label className={labelCls}>Payment Mode <span className="text-rose-500 normal-case">*</span></label>
+            <select value={paymentMode} disabled={readOnly}
+              onChange={e => change(setPaymentMode)(e.target.value)}
+              className={`${inputCls} ${!paymentMode && !readOnly ? "border-rose-300 bg-rose-50/40" : ""}`}>
               <option value="">—</option>
               {PAYMENT_MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
             </select>
+            {!paymentMode && !readOnly && <p className="text-[11px] text-rose-500 mt-1">Required.</p>}
           </div>
 
           {/* UTR / transaction reference — only for non-cash modes */}
           {needsUtr && (
             <div>
-              <label className={labelCls}>UTR / Transaction Details</label>
+              <label className={labelCls}>UTR / Transaction Details <span className="text-rose-500 normal-case">*</span></label>
               <input value={utrDetails} disabled={readOnly} onChange={e => change(setUtrDetails)(e.target.value)}
-                placeholder="Transaction / reference no." className={inputCls} />
+                placeholder="Transaction / reference no."
+                className={`${inputCls} ${!utrDetails.trim() && !readOnly ? "border-rose-300 bg-rose-50/40" : ""}`} />
+              {!utrDetails.trim() && !readOnly && <p className="text-[11px] text-rose-500 mt-1">Required for {paymentMode} payments.</p>}
             </div>
           )}
+
+          <div>
+            <label className={labelCls}>On Account of</label>
+            <input value={onAccountOf} disabled={readOnly} onChange={e => change(setOnAccountOf)(e.target.value)}
+              placeholder="e.g. 10 kW Margin Money" className={inputCls} />
+            <p className="text-[10px] text-slate-400 mt-1">Printed on the receipt.</p>
+          </div>
 
           <div>
             <label className={labelCls}>Discount Given By</label>
@@ -215,8 +239,9 @@ export default function PaymentVerificationSection({ leadId, canEdit, canReopen,
 
       {canEdit && !isComplete && (
         <div className="flex flex-wrap items-center gap-3">
-          <button onClick={save} disabled={saving || completing}
-            className="px-5 py-2.5 bg-slate-800 text-white rounded-xl text-sm font-semibold hover:bg-slate-900 disabled:opacity-50 transition">
+          <button onClick={save} disabled={saving || completing || !ready}
+            title={!ready ? "Select a payment mode (and UTR for non-cash) first" : ""}
+            className="px-5 py-2.5 bg-slate-800 text-white rounded-xl text-sm font-semibold hover:bg-slate-900 disabled:opacity-50 disabled:cursor-not-allowed transition">
             {saving ? "Saving…" : saved ? "Saved ✓" : "Save"}
           </button>
           <button onClick={complete} disabled={completing || saving || !ready} title={!ready ? "Select a payment mode (and UTR for non-cash) first" : ""}

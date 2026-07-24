@@ -19,16 +19,98 @@ def _digits(s):
 
 
 def _find_lead_by_number(number):
-    """Lenient match: compare the last 10 digits of the number to lead phones."""
+    """Match an inbound number to a lead without scanning the whole table.
+
+    Fast path: the stored phone literally ends with the same 10 digits.
+    Fallback: narrow to a small candidate set sharing the last 4 digits, then
+    verify digit-by-digit (handles stored formatting like '+91 99888-77665').
+    Newest lead wins when several match.
+    """
     from leads.models import Lead
     d = _digits(number)
     if not d:
         return None
     tail = d[-10:]
-    for lead in Lead.objects.exclude(phone__isnull=True).exclude(phone='').only('id', 'phone', 'first_name', 'last_name'):
+    base = (Lead.objects.exclude(phone__isnull=True).exclude(phone='')
+            .only('id', 'phone', 'first_name', 'last_name')
+            .order_by('-created_at'))
+    lead = base.filter(phone__endswith=tail).first()
+    if lead:
+        return lead
+    for lead in base.filter(phone__contains=tail[-4:])[:200]:
         if _digits(lead.phone).endswith(tail):
             return lead
     return None
+
+
+# Cloud API delivery receipts, in progression order — never downgrade a message
+# (a late 'delivered' receipt arriving after 'read' is ignored).
+_STATUS_RANK = {'pending': 0, 'sent': 1, 'delivered': 2, 'read': 3, 'failed': 4}
+
+
+def _apply_status_receipt(st):
+    """Update an outbound message from a webhook `statuses` entry (sent →
+    delivered / read / failed, with the failure reason captured)."""
+    mid = st.get('id') or ''
+    new = (st.get('status') or '').lower()
+    if not mid or new not in ('delivered', 'read', 'failed'):
+        return
+    m = WhatsAppMessage.objects.filter(provider_message_id=mid, direction='out').first()
+    if m is None:
+        return
+    if new != 'failed' and _STATUS_RANK.get(new, 0) <= _STATUS_RANK.get(m.status, 0):
+        return
+    m.status = new
+    if new == 'failed':
+        errs = st.get('errors') or []
+        if errs:
+            e0 = errs[0] or {}
+            m.error = str(e0.get('title') or e0.get('message') or e0)[:500]
+    m.save(update_fields=['status', 'error'])
+
+
+def _handle_inbound_message(msg):
+    """Log one inbound message on its lead and fire the automation trigger.
+    Idempotent: Meta retries webhook deliveries, so a message id we have
+    already logged is skipped (no duplicate rows, no double-fired rules)."""
+    mid = msg.get('id', '')
+    if mid and WhatsAppMessage.objects.filter(provider_message_id=mid, direction='in').exists():
+        return
+    from_number = msg.get('from', '')
+    mtype = msg.get('type', 'text')
+    text = ''
+    if mtype == 'text':
+        text = (msg.get('text') or {}).get('body', '')
+    elif mtype == 'button':
+        text = (msg.get('button') or {}).get('text', '')
+    elif mtype == 'interactive':
+        inter = msg.get('interactive') or {}
+        text = ((inter.get('button_reply') or inter.get('list_reply') or {}).get('title', '')) or f'[{mtype}]'
+    else:
+        text = f'[{mtype} message]'
+
+    lead = _find_lead_by_number(from_number)
+    WhatsAppMessage.objects.create(
+        lead=lead, to_number=from_number, direction='in',
+        kind='text', text=text, status='received',
+        provider_message_id=mid,
+    )
+    if lead is not None:
+        try:
+            from leads.models import ActivityLog
+            ActivityLog.objects.create(
+                activity_type='note_added',
+                description=f"WhatsApp from {lead.first_name}: {text[:200]}",
+                lead=lead,
+                extra={'channel': 'whatsapp', 'from': from_number},
+            )
+        except Exception:
+            pass
+        try:
+            from automations.engine import fire_trigger
+            fire_trigger('whatsapp_received', lead, context={'text': text, 'from': from_number})
+        except Exception:
+            pass
 
 
 @csrf_exempt
@@ -55,45 +137,21 @@ def whatsapp_webhook(request):
         except Exception:
             return JsonResponse({'status': 'bad json'}, status=400)
 
+        # One bad message must never 500 the whole webhook — Meta would retry the
+        # batch (duplicating work) and eventually disable the subscription.
         for entry in body.get('entry', []) or []:
             for change in entry.get('changes', []) or []:
                 value = change.get('value', {}) or {}
+                for st in value.get('statuses', []) or []:
+                    try:
+                        _apply_status_receipt(st)
+                    except Exception:
+                        pass
                 for msg in value.get('messages', []) or []:
-                    from_number = msg.get('from', '')
-                    mtype = msg.get('type', 'text')
-                    text = ''
-                    if mtype == 'text':
-                        text = (msg.get('text') or {}).get('body', '')
-                    elif mtype == 'button':
-                        text = (msg.get('button') or {}).get('text', '')
-                    elif mtype == 'interactive':
-                        inter = msg.get('interactive') or {}
-                        text = ((inter.get('button_reply') or inter.get('list_reply') or {}).get('title', '')) or f'[{mtype}]'
-                    else:
-                        text = f'[{mtype} message]'
-
-                    lead = _find_lead_by_number(from_number)
-                    WhatsAppMessage.objects.create(
-                        lead=lead, to_number=from_number, direction='in',
-                        kind='text', text=text, status='received',
-                        provider_message_id=msg.get('id', ''),
-                    )
-                    if lead is not None:
-                        try:
-                            from leads.models import ActivityLog
-                            ActivityLog.objects.create(
-                                activity_type='note_added',
-                                description=f"WhatsApp from {lead.first_name}: {text[:200]}",
-                                lead=lead,
-                                extra={'channel': 'whatsapp', 'from': from_number},
-                            )
-                        except Exception:
-                            pass
-                        try:
-                            from automations.engine import fire_trigger
-                            fire_trigger('whatsapp_received', lead, context={'text': text, 'from': from_number})
-                        except Exception:
-                            pass
+                    try:
+                        _handle_inbound_message(msg)
+                    except Exception:
+                        pass
         return JsonResponse({'status': 'ok'})
 
     return HttpResponse(status=405)

@@ -26,16 +26,9 @@ class TaskViewSet(viewsets.ModelViewSet):
             queryset = Task.objects.all().order_by('-created_at')
         elif user.is_manager:
             from django.db.models import Q
-            from users.models import WorkspaceTeam
-            managed_teams = WorkspaceTeam.objects.filter(manager=user)
-            team_members_ids = []
-            for team in managed_teams:
-                team_members_ids.extend(team.members.values_list('id', flat=True))
-            
+            # Teams they head + (branch managers) everyone in their branch.
             queryset = Task.objects.filter(
-                Q(assignee=user) | 
-                Q(assignee__isnull=True) | 
-                Q(assignee__id__in=team_members_ids)
+                Q(assignee__id__in=user.managed_user_ids()) | Q(assignee__isnull=True)
             ).distinct().order_by('-created_at')
         else:
             queryset = Task.objects.filter(assignee=user).order_by('-created_at')

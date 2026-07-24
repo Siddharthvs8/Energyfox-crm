@@ -17,8 +17,21 @@ const STATUS_ICONS: Record<string, string> = {
 
 const TRIGGER_LABELS: Record<string, string> = {
   lead_created: "Lead Created", lead_status_changed: "Lead Status Changed",
-  lead_updated: "Lead Updated", task_created: "Task Created",
+  lead_updated: "Lead Updated", lead_converted: "Lead Converted",
+  lead_lost: "Deal Marked Lost", lead_inactive: "Lead Inactive",
+  pushed_to_documentation: "Closed Deal (Pushed to Documentation)",
+  payment_partially_paid: "Payment Verified — Partially Paid",
+  payment_fully_paid: "Payment Fully Paid (moves to Purchase)",
+  project_completed: "Project Completed",
+  doc_stage2_completed: "Documentation Stage 2 Completed",
+  warranty_completed: "Warranty Completed",
+  liasoning_completed: "Liasoning & Service Completed",
+  discom_approved: "Discom Approval — Approved",
+  discom_not_approved: "Discom Approval — Not Approved",
+  maintenance_scheduled: "Periodic Maintenance Scheduled",
+  task_created: "Task Created",
   task_completed: "Task Completed", campaign_lead_added: "Lead Added to Campaign",
+  call_logged: "Call Logged", whatsapp_received: "WhatsApp Reply Received",
 };
 
 const ACTION_LABELS: Record<string, string> = {

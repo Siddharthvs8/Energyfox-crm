@@ -105,6 +105,16 @@ def can_access_doc_stage2(user):
             or getattr(user, 'role', '') in DOCUMENTATION_ROLES)
 
 
+def can_reopen_documentation(user):
+    """Who may unlock a completed documentation stage so it can be edited again:
+    documentation managers and admins / general managers. Ordinary documentation
+    staff can complete a stage but not reopen it."""
+    if not user or not user.is_authenticated:
+        return False
+    return (user.is_staff or getattr(user, 'is_general_manager', False)
+            or getattr(user, 'role', '') == 'documentation_manager')
+
+
 def can_access_liasoning(user):
     """Who can open the Liasoning & Service module: the liasoning officer plus
     admins / general managers who oversee them."""

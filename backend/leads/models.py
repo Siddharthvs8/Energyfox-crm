@@ -107,6 +107,16 @@ class Lead(models.Model):
     # (liasoning officer) both receive the lead at the same time.
     pushed_to_doc_stage2 = models.BooleanField(default=False, db_index=True)
     pushed_to_doc_stage2_at = models.DateTimeField(null=True, blank=True)
+    # Stage 2 lands with the documentation manager, who assigns it to a staff
+    # member — separately from Stage 1, so the two stages can be split up.
+    doc_stage2_staff = models.ForeignKey(
+        'users.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='doc_stage2_leads',
+        help_text="Documentation staff handling this lead's Stage 2 paperwork",
+    )
     pushed_to_liasoning = models.BooleanField(default=False, db_index=True)
     pushed_to_liasoning_at = models.DateTimeField(null=True, blank=True)
     pushed_to_warranty = models.BooleanField(default=False, db_index=True)
@@ -140,6 +150,15 @@ class Lead(models.Model):
     lost_by = models.ForeignKey(
         'users.User', on_delete=models.SET_NULL, null=True, blank=True,
         related_name='marked_lost_leads')
+
+    # ── Trash (soft delete) — deleting a lead moves it here; anything trashed
+    #    longer than TRASH_RETENTION_DAYS is purged permanently. ──
+    TRASH_RETENTION_DAYS = 7
+    is_trashed = models.BooleanField(default=False, db_index=True)
+    trashed_at = models.DateTimeField(null=True, blank=True)
+    trashed_by = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='trashed_leads')
 
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -202,6 +221,9 @@ class SiteVisit(models.Model):
     kseb_bill = models.CharField(max_length=120, blank=True, default='')
     kseb_section = models.CharField(max_length=120, blank=True, default='')
     feasible_capacity = models.CharField(max_length=120, blank=True, default='')
+    # Capacity of the plant to be installed. Flows on to Documentation Stage 1's
+    # MNRE plant capacity and from there into the generated documents.
+    plant_capacity = models.CharField(max_length=120, blank=True, default='')
     transformer_feasibility = models.CharField(max_length=3, choices=YES_NO, blank=True, default='')
     neutral_link = models.CharField(max_length=3, choices=YES_NO, blank=True, default='')
 
@@ -215,6 +237,7 @@ class SiteVisit(models.Model):
     cable_panel_to_dc_db = models.CharField(max_length=60, blank=True, default='')
     cable_inverter_to_ac_db = models.CharField(max_length=60, blank=True, default='')
     earthing_cable_length = models.CharField(max_length=60, blank=True, default='')
+    lightning_conductor_length = models.CharField(max_length=60, blank=True, default='')
 
     # ── Earthing / anchoring ──
     earthing_surface = models.CharField(max_length=120, blank=True, default='')
@@ -223,6 +246,8 @@ class SiteVisit(models.Model):
     # ── Customer documents (yes/no flags + uploads) ──
     name_change = models.CharField(max_length=3, choices=YES_NO, blank=True, default='')
     loan = models.CharField(max_length=3, choices=YES_NO, blank=True, default='')
+    # Loan amount the customer needs. Above ₹2 lakh an ITR report is required.
+    loan_amount = models.CharField(max_length=60, blank=True, default='')
     load_enhancement = models.CharField(max_length=3, choices=YES_NO, blank=True, default='')
     email_linked_to_itr = models.CharField(max_length=254, blank=True, default='')
 
@@ -390,9 +415,18 @@ class DocumentationStage1(models.Model):
     # Document uploads live in the related DocumentationStage1Document model
     # (multiple files per slot, keyed by doc_type). Only the non-file inputs stay here.
 
-    # ── Loan Enhancement checkboxes (visible when site_visit.loan == 'yes') ──
+    # ── Loan Enhancement checkboxes (superseded by the file slots of the same
+    #    name; kept so historical records keep their answers) ──
     le_test_cum_completion_report = models.BooleanField(default=False)
     le_sketch = models.BooleanField(default=False)
+
+    # ── Section sign-off ──
+    # The Name Change and Load Enhancement sections are completed first; the
+    # MNRE / Loan sections only open once the applicable ones are signed off.
+    name_change_completed = models.BooleanField(default=False)
+    name_change_completed_at = models.DateTimeField(null=True, blank=True)
+    load_enhancement_completed = models.BooleanField(default=False)
+    load_enhancement_completed_at = models.DateTimeField(null=True, blank=True)
 
     # ── For MNRE (always shown, mandatory) ──
     mnre_plant_capacity = models.CharField(max_length=120, blank=True, default='')
@@ -484,6 +518,9 @@ class PaymentVerification(models.Model):
     discount_value = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     payment_mode = models.CharField(max_length=10, choices=PAYMENT_MODES, blank=True, default='')
     utr_details = models.CharField(max_length=255, blank=True, default='')
+    on_account_of = models.CharField(
+        max_length=255, blank=True, default='',
+        help_text="What the payment is for — printed on the receipt (e.g. '10 kW Margin Money')")
     discount_given_by = models.CharField(
         max_length=255, blank=True, default='',
         help_text="Authorised personnel who approved the discount")
@@ -547,6 +584,9 @@ class BalancePayment(models.Model):
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     payment_mode = models.CharField(max_length=10, choices=PaymentVerification.PAYMENT_MODES, blank=True, default='')
     utr_details = models.CharField(max_length=255, blank=True, default='')
+    on_account_of = models.CharField(
+        max_length=255, blank=True, default='',
+        help_text="What the payment is for — printed on the receipt")
     note = models.CharField(max_length=255, blank=True, default='')
     recorded_by = models.ForeignKey(
         'users.User', on_delete=models.SET_NULL, null=True, blank=True,
@@ -675,6 +715,10 @@ class DocumentationStage2(models.Model):
     # ── 1. Completion docs / Annexure 3 (documents uploaded via DocumentationStage2Document) ──
     annexure3_completed = models.BooleanField(default=False)
     annexure3_remark = models.CharField(max_length=255, blank=True, default='')
+    # Completion-doc forms, each filled via a pop-up under the Annexure 3 section.
+    completion_letterhead = models.JSONField(default=dict, blank=True)
+    customer_details = models.JSONField(default=dict, blank=True)
+    inverter_panel_details = models.JSONField(default=dict, blank=True)
 
     # ── 2. MNRE Stage 2 (discom approval) ──
     discom_approval = models.CharField(max_length=10, choices=DISCOM_CHOICES, blank=True, default='pending')
@@ -708,6 +752,12 @@ class Warranty(models.Model):
 
     sent = models.BooleanField(default=False)   # sent to customer (WhatsApp / email)
     remark = models.CharField(max_length=255, blank=True, default='')
+
+    # Warranty certificate form (customer/system details filled per lead; the
+    # fixed company details come from organization.OrgSettings). Keys: system_type,
+    # capacity_kw, customer_name, panel_make, inverter_make, panel_warranty_years,
+    # inverter_warranty_years, installation_date, site_address.
+    form_data = models.JSONField(default=dict, blank=True)
 
     is_complete = models.BooleanField(default=False, db_index=True)
     completed_at = models.DateTimeField(null=True, blank=True)
@@ -761,9 +811,24 @@ class LiasoningService(models.Model):
     The lead enters it (in parallel with Documentation Stage 2) once its
     installation project is complete.
 
-    Completion-only plumbing for now; the detailed fields will be added once
-    specified."""
+    The Liasoning sub-module tracks two stages per customer:
+      1. Feasibility — completed/not + remarks.
+      2. Annexure 3 (completion doc submission at KSEB) — completed/not, remarks
+         and the discom approval. These write through to Documentation Stage 2,
+         whose Annexure 3 status is "fetched from liasoning".
+    """
+    DISCOM_CHOICES = [('pending', 'Pending'), ('yes', 'Approved'), ('no', 'Not Approved')]
+
     lead = models.OneToOneField(Lead, on_delete=models.CASCADE, related_name='liasoning_service')
+
+    # ── Stage 1: Feasibility ──
+    feasibility_completed = models.BooleanField(default=False)
+    feasibility_remark = models.CharField(max_length=255, blank=True, default='')
+
+    # ── Stage 2: Annexure 3 (completion doc submission) ──
+    annexure3_completed = models.BooleanField(default=False)
+    annexure3_remark = models.CharField(max_length=255, blank=True, default='')
+    discom_approval = models.CharField(max_length=10, choices=DISCOM_CHOICES, blank=True, default='pending')
 
     is_complete = models.BooleanField(default=False, db_index=True)
     completed_at = models.DateTimeField(null=True, blank=True)
@@ -796,6 +861,86 @@ class ServiceEntry(models.Model):
         return f"Service — {self.customer_name} ({self.scheduled_date})"
 
 
+class PeriodicMaintenance(models.Model):
+    """Periodic maintenance plan for a customer — scheduled once their subsidy is
+    redeemed / work completed: 5 years of visits with a tenure gap of 6 months
+    (10 scheduled visits)."""
+    VISIT_COUNT = 10
+    GAP_MONTHS = 6
+
+    lead = models.OneToOneField(Lead, on_delete=models.CASCADE, related_name='periodic_maintenance')
+    start_date = models.DateField()
+    created_by = models.ForeignKey('users.User', on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='created_maintenance_plans')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Periodic maintenance — {self.lead}"
+
+
+class MaintenanceVisit(models.Model):
+    """A single scheduled maintenance visit with the on-site readings and the
+    panel-wash before/after photos."""
+    plan = models.ForeignKey(PeriodicMaintenance, on_delete=models.CASCADE, related_name='visits')
+    sequence = models.PositiveIntegerField()
+    due_date = models.DateField()
+
+    # ── Readings / checks ──
+    dc_voltage = models.CharField(max_length=60, blank=True, default='')
+    structure_damage = models.CharField(max_length=255, blank=True, default='',
+                                        help_text="Structure damage, deformity or rust")
+    inverter_cleaned = models.BooleanField(default=False)
+    ac_ne_voltage = models.CharField(max_length=60, blank=True, default='')   # N-E
+    ac_pn_voltage = models.CharField(max_length=60, blank=True, default='')   # P-N
+    ac_pe_voltage = models.CharField(max_length=60, blank=True, default='')   # P-E
+    monthly_production = models.CharField(max_length=60, blank=True, default='')
+    error_codes = models.CharField(max_length=255, blank=True, default='')
+
+    # ── Photos: panel washed before and after ──
+    panel_before = models.FileField(upload_to='maintenance/photos/', null=True, blank=True)
+    panel_after = models.FileField(upload_to='maintenance/photos/', null=True, blank=True)
+
+    is_complete = models.BooleanField(default=False)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    completed_by = models.ForeignKey('users.User', on_delete=models.SET_NULL, null=True, blank=True,
+                                     related_name='completed_maintenance_visits')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['sequence']
+
+    def __str__(self):
+        return f"Visit {self.sequence} — {self.plan.lead}"
+
+
+class EmergencyService(models.Model):
+    """Emergency Service — urgent service visits logged by the liasoning officer.
+    Each entry records the service done plus the electrical readings taken on
+    site: DC voltage, inverter error codes, the AC voltages (N-E / P-N / P-E)
+    and the plant's monthly production."""
+    customer_name = models.CharField(max_length=255, blank=True, default='')
+    service = models.TextField(blank=True, default='')
+    remarks = models.CharField(max_length=255, blank=True, default='')
+    dc_voltage = models.CharField(max_length=60, blank=True, default='')
+    error_codes = models.CharField(max_length=255, blank=True, default='')
+    # ── AC voltage readings ──
+    ac_ne_voltage = models.CharField(max_length=60, blank=True, default='')   # N-E
+    ac_pn_voltage = models.CharField(max_length=60, blank=True, default='')   # P-N
+    ac_pe_voltage = models.CharField(max_length=60, blank=True, default='')   # P-E
+    monthly_production = models.CharField(max_length=60, blank=True, default='')
+
+    created_by = models.ForeignKey('users.User', on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='created_emergency_services')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Emergency service — {self.customer_name}"
+
+
 class TeamStatsConfig(models.Model):
     """Singleton config for the Team Stats module — just the manually-set team
     lead names for the structure and electrical teams. The completion counts
@@ -813,3 +958,64 @@ class TeamStatsConfig(models.Model):
 
     def __str__(self):
         return "Team stats config"
+
+
+class ReceiptVoucher(models.Model):
+    """An auto-generated money receipt for a payment collected by accounts.
+
+    One voucher per payment: the initial amount received (at payment
+    verification) and each later balance payment each get their own. The number
+    is sequential per financial year — ER/<fy>/<seq>, e.g. ER/26-27/073. Snapshot
+    fields (name/address/amount in words) are stored so a reprinted receipt never
+    changes even if the lead is later edited.
+    """
+    lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name='receipt_vouchers')
+    # Optional link to the balance payment that produced it (the initial receipt
+    # has none — it belongs to the payment verification).
+    balance_payment = models.OneToOneField(
+        BalancePayment, on_delete=models.CASCADE, null=True, blank=True, related_name='receipt')
+    is_initial = models.BooleanField(default=False, help_text="Receipt for the first (verification) payment")
+
+    number = models.CharField(max_length=40, unique=True, db_index=True)   # ER/26-27/073
+    fy = models.CharField(max_length=10, db_index=True)                     # 26-27
+    seq = models.IntegerField()
+
+    date = models.DateField()
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    amount_in_words = models.CharField(max_length=255, blank=True, default='')
+    on_account_of = models.CharField(max_length=255, blank=True, default='')
+    payment_mode = models.CharField(max_length=20, blank=True, default='')
+
+    received_from = models.CharField(max_length=255, blank=True, default='')   # snapshot
+    address = models.TextField(blank=True, default='')                         # snapshot
+
+    created_by = models.ForeignKey('users.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        unique_together = [('fy', 'seq')]
+
+    def __str__(self):
+        return f"{self.number} — {self.received_from} ({self.amount})"
+
+
+class ModuleSeen(models.Model):
+    """Which customers a user has already opened in a given module.
+
+    Drives the sidebar badges: a module's count is the work still waiting on the
+    user *that they haven't looked at yet*, so opening a customer clears it from
+    the indicator. One row per (user, module, lead); `seen_at` is refreshed on
+    every visit.
+    """
+    user = models.ForeignKey('users.User', on_delete=models.CASCADE, related_name='module_views')
+    module = models.CharField(max_length=40, db_index=True)   # e.g. 'documentation-stage2'
+    lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name='module_views')
+    seen_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [('user', 'module', 'lead')]
+        indexes = [models.Index(fields=['user', 'module'])]
+
+    def __str__(self):
+        return f"{self.user_id} saw lead {self.lead_id} in {self.module}"

@@ -197,15 +197,18 @@ export default function AIManagerPage({ params: paramsPromise }: { params: Promi
         api(`/api/ai-manager/meeting-config/`),
         api(`/api/ai-manager/meeting-sessions/`),
       ]);
+      // These list endpoints paginate for larger workspaces — unwrap `results`
+      // so the state stays an array.
+      const asArray = (d: any) => (Array.isArray(d) ? d : d?.results || []);
       if (dashR.ok) setDashboard(await dashR.json());
-      if (usersR.ok) setUsers(await usersR.json());
-      if (targetsR.ok) setExistingTargets(await targetsR.json());
+      if (usersR.ok) setUsers(asArray(await usersR.json()));
+      if (targetsR.ok) setExistingTargets(asArray(await targetsR.json()));
       if (meetConfigR.ok) {
         const mc = await meetConfigR.json();
         setMeetingConfig(mc);
         setMeetingConfigForm(mc);
       }
-      if (sessionsR.ok) setAiMeetingSessions(await sessionsR.json());
+      if (sessionsR.ok) setAiMeetingSessions(asArray(await sessionsR.json()));
     } catch (e) { console.error(e); }
     setLoading(false);
   }, [api, month, year]);
@@ -281,7 +284,7 @@ export default function AIManagerPage({ params: paramsPromise }: { params: Promi
     const dStrStart = `${year}-${String(month).padStart(2, '0')}-01`;
     const dStrEnd = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
     const r = await api(`/api/ai-manager/daily-targets/?agent=${agentId}&date_from=${dStrStart}&date_to=${dStrEnd}`);
-    if (r.ok) setDailyTargets(await r.json());
+    if (r.ok) { const d = await r.json(); setDailyTargets(Array.isArray(d) ? d : d?.results || []); }
   };
 
   const updateDailyTarget = async (id: number, target_leads: string, target_amount: string) => {
@@ -294,7 +297,7 @@ export default function AIManagerPage({ params: paramsPromise }: { params: Promi
       const dStrStart = `${year}-${String(month).padStart(2, '0')}-01`;
       const dStrEnd = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
       const r = await api(`/api/ai-manager/daily-targets/?agent=${selectedAgentId}&date_from=${dStrStart}&date_to=${dStrEnd}`);
-      if (r.ok) setDailyTargets(await r.json());
+      if (r.ok) { const d = await r.json(); setDailyTargets(Array.isArray(d) ? d : d?.results || []); }
     }
     fetchDashboard();
   };

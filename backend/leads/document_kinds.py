@@ -6,9 +6,8 @@ site visit and Documentation Stage 1. There is a single underlying file, so
 viewing / changing / deleting it from any stage affects everyone (e.g. a wrong
 Aadhaar uploaded by the BDE can be corrected by documentation staff later).
 
-Slots **not** listed here stay stage-local (site-visit photos, the generated
-purchase-order/agreement PDFs, the loan passbook *copy*) — they keep their own
-per-stage storage.
+Slots **not** listed here stay stage-local (the site-visit photos) — they keep
+their own per-stage storage.
 
 This module is plain constants/helpers (no Django models) so it is safe to import
 from migrations as well as views/serializers.
@@ -26,6 +25,7 @@ SHARED_KIND_LABELS = {
     'customer_photo': 'Customer Photo',
     'itr': 'ITR',
     'loan_document': 'Loan Document',
+    'purchase_order': 'Purchase Order',
 }
 
 # Every stage slot doc_type -> its canonical kind. Slots absent here are
@@ -42,6 +42,7 @@ SLOT_TO_KIND = {
     'customer_passport_photo': 'customer_photo',
     'itr_report': 'itr',
     'loan_document': 'loan_document',
+    'purchase_order': 'purchase_order',
     # ── Documentation Stage 1 (DocumentationStage1Document doc_types) ──
     'nc_aadhaar': 'aadhaar',
     'nc_kseb_bill': 'kseb_bill',
@@ -59,8 +60,11 @@ SLOT_TO_KIND = {
     'loan_passbook': 'passbook',
     'loan_land_tax': 'land_tax',
     'loan_itr': 'itr',
-    # Stage-local (deliberately NOT shared): mnre_purchase_order,
-    # loan_agreement_purchase_order, loan_passbook_copy, all photo_*.
+    # The purchase order is uploaded once by the BDE on the site visit and
+    # inherited by the MNRE and Loan slots that need it.
+    'mnre_purchase_order': 'purchase_order',
+    'loan_agreement_purchase_order': 'purchase_order',
+    # Stage-local (deliberately NOT shared): all photo_* site-visit photos.
 }
 
 # Shared slots per stage, in the order they should appear. Used to project the
@@ -69,13 +73,14 @@ SLOT_TO_KIND = {
 SITE_VISIT_SHARED_SLOTS = [
     'aadhaar_card', 'pan_card', 'passbook', 'kseb_bill_file', 'land_tax',
     'ownership_certificate', 'building_certificate', 'customer_passport_photo',
-    'itr_report', 'loan_document',
+    'itr_report', 'loan_document', 'purchase_order',
 ]
 DOC_STAGE1_SHARED_SLOTS = [
     'nc_aadhaar', 'nc_kseb_bill', 'nc_landtax', 'nc_ownership',
     'nc_building_certificate', 'nc_customer_photo', 'le_aadhaar',
-    'mnre_aadhaar', 'mnre_pan', 'mnre_passbook', 'mnre_kseb_bill',
-    'loan_aadhaar', 'loan_pan', 'loan_passbook', 'loan_land_tax', 'loan_itr',
+    'mnre_aadhaar', 'mnre_pan', 'mnre_passbook', 'mnre_kseb_bill', 'mnre_purchase_order',
+    'loan_aadhaar', 'loan_pan', 'loan_passbook',
+    'loan_land_tax', 'loan_itr', 'loan_agreement_purchase_order',
 ]
 
 

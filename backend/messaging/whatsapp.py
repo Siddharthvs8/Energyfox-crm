@@ -8,6 +8,10 @@ from organization.utils import get_org_settings
 
 GRAPH_BASE = 'https://graph.facebook.com/v20.0'
 
+# One session for all sends — reuses the TLS connection, which matters when the
+# queue flusher pushes hundreds of bulk messages in a row.
+_session = requests.Session()
+
 
 def _creds():
     org = get_org_settings()
@@ -28,7 +32,7 @@ def _post(payload: dict) -> str:
     pid, token = _creds()
     if not (pid and token):
         raise ValueError('WhatsApp is not configured for this workspace')
-    resp = requests.post(
+    resp = _session.post(
         f'{GRAPH_BASE}/{pid}/messages',
         json=payload,
         headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},

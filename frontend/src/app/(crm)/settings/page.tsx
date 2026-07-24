@@ -40,6 +40,16 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
     whatsapp_business_account_id: "",
     whatsapp_verify_token: "",
     theme: "indigo",
+    warranty_company_name: "",
+    warranty_cin: "",
+    warranty_gst: "",
+    warranty_director_name: "",
+    warranty_director_designation: "",
+    warranty_panel_years: "",
+    warranty_inverter_years: "",
+    warranty_service_years: "",
+    warranty_signature: "",
+    warranty_seal: "",
   });
 
   const [isSuperAdmin, setIsSuperAdmin] = useState(false);
@@ -49,6 +59,11 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
   const [previewLogo, setPreviewLogo] = useState("");
   const [invoiceFile, setInvoiceFile] = useState<File | null>(null);
   const [invoiceFileName, setInvoiceFileName] = useState("");
+
+  const [sigFile, setSigFile] = useState<File | null>(null);
+  const [previewSig, setPreviewSig] = useState("");
+  const [sealFile, setSealFile] = useState<File | null>(null);
+  const [previewSeal, setPreviewSeal] = useState("");
 
   const [customStatuses, setCustomStatuses] = useState<{ value: string; label: string; bg?: string; text?: string; dot?: string; color?: string }[]>([]);
   const [newStatusLabel, setNewStatusLabel] = useState("");
@@ -123,6 +138,8 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
         if (data.custom_lead_statuses) {
           setCustomStatuses(data.custom_lead_statuses);
         }
+        if (data.warranty_signature) setPreviewSig(`${getApiBase(domain)}${data.warranty_signature}`);
+        if (data.warranty_seal) setPreviewSeal(`${getApiBase(domain)}${data.warranty_seal}`);
       } else if (res.status === 403) {
         setError("You do not have permission to access tenant settings.");
       }
@@ -214,6 +231,16 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
     }
     formData.append("custom_lead_statuses", JSON.stringify(customStatuses));
     formData.append("theme", tenantData.theme || "indigo");
+    formData.append("warranty_company_name", tenantData.warranty_company_name || "");
+    formData.append("warranty_cin", tenantData.warranty_cin || "");
+    formData.append("warranty_gst", tenantData.warranty_gst || "");
+    formData.append("warranty_director_name", tenantData.warranty_director_name || "");
+    formData.append("warranty_director_designation", tenantData.warranty_director_designation || "");
+    formData.append("warranty_panel_years", tenantData.warranty_panel_years || "");
+    formData.append("warranty_inverter_years", tenantData.warranty_inverter_years || "");
+    formData.append("warranty_service_years", tenantData.warranty_service_years || "");
+    if (sigFile) formData.append("warranty_signature", sigFile);
+    if (sealFile) formData.append("warranty_seal", sealFile);
 
     try {
       const res = await fetch(`${getApiBase(domain)}/api/org-settings/`, {
@@ -255,6 +282,10 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
         }
         setLogoFile(null);
         setInvoiceFile(null);
+        if (data.warranty_signature) setPreviewSig(`${getApiBase(domain)}${data.warranty_signature}`);
+        if (data.warranty_seal) setPreviewSeal(`${getApiBase(domain)}${data.warranty_seal}`);
+        setSigFile(null);
+        setSealFile(null);
 
         // Save target popup config
         try {
@@ -701,6 +732,105 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
                 ) : (
                   <p className="text-xs text-slate-400 italic mt-2">No custom lead statuses added yet.</p>
                 )}
+              </div>
+            </div>
+
+            <div className="pt-6 border-t border-slate-100">
+              <h3 className="text-lg font-bold text-slate-900 mb-2">Warranty Document</h3>
+              <p className="text-sm text-slate-500 mb-6">Fixed details printed on the generated warranty certificate — company identity, director sign-off, default warranty years, signature &amp; seal. These are not entered per customer.</p>
+
+              <div className="grid sm:grid-cols-2 gap-4">
+                <div className="sm:col-span-2">
+                  <label className="block text-sm font-semibold text-slate-700 mb-2">Company Name (on certificate)</label>
+                  <input type="text" value={tenantData.warranty_company_name}
+                    onChange={(e) => setTenantData({ ...tenantData, warranty_company_name: e.target.value })}
+                    placeholder="Energyfox Consultants Pvt. Ltd."
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-2">CIN</label>
+                  <input type="text" value={tenantData.warranty_cin}
+                    onChange={(e) => setTenantData({ ...tenantData, warranty_cin: e.target.value })}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-2">GST</label>
+                  <input type="text" value={tenantData.warranty_gst}
+                    onChange={(e) => setTenantData({ ...tenantData, warranty_gst: e.target.value })}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-2">Director Name</label>
+                  <input type="text" value={tenantData.warranty_director_name}
+                    onChange={(e) => setTenantData({ ...tenantData, warranty_director_name: e.target.value })}
+                    placeholder="AKASH AG"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-2">Designation</label>
+                  <input type="text" value={tenantData.warranty_director_designation}
+                    onChange={(e) => setTenantData({ ...tenantData, warranty_director_designation: e.target.value })}
+                    placeholder="Director"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-2">Solar Panels Warranty (Years)</label>
+                  <input type="text" value={tenantData.warranty_panel_years}
+                    onChange={(e) => setTenantData({ ...tenantData, warranty_panel_years: e.target.value })}
+                    placeholder="30"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-2">Inverter Warranty (Years)</label>
+                  <input type="text" value={tenantData.warranty_inverter_years}
+                    onChange={(e) => setTenantData({ ...tenantData, warranty_inverter_years: e.target.value })}
+                    placeholder="12"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-2">Service Warranty (Years)</label>
+                  <input type="text" value={tenantData.warranty_service_years}
+                    onChange={(e) => setTenantData({ ...tenantData, warranty_service_years: e.target.value })}
+                    placeholder="5"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-2">Signature</label>
+                  <div className="flex items-center gap-4">
+                    <div className="w-24 h-16 rounded-xl bg-slate-100 border-2 border-dashed border-slate-300 flex items-center justify-center overflow-hidden flex-shrink-0">
+                      {previewSig ? <img src={previewSig} alt="Signature" className="w-full h-full object-contain" />
+                        : <span className="text-[10px] text-slate-400">No signature</span>}
+                    </div>
+                    <input type="file" accept="image/*"
+                      onChange={(e) => {
+                        if (e.target.files && e.target.files.length > 0) {
+                          const file = e.target.files[0];
+                          setSigFile(file);
+                          setPreviewSig(URL.createObjectURL(file));
+                        }
+                      }}
+                      className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition cursor-pointer" />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-2">Company Seal</label>
+                  <div className="flex items-center gap-4">
+                    <div className="w-16 h-16 rounded-xl bg-slate-100 border-2 border-dashed border-slate-300 flex items-center justify-center overflow-hidden flex-shrink-0">
+                      {previewSeal ? <img src={previewSeal} alt="Seal" className="w-full h-full object-contain" />
+                        : <span className="text-[10px] text-slate-400">No seal</span>}
+                    </div>
+                    <input type="file" accept="image/*"
+                      onChange={(e) => {
+                        if (e.target.files && e.target.files.length > 0) {
+                          const file = e.target.files[0];
+                          setSealFile(file);
+                          setPreviewSeal(URL.createObjectURL(file));
+                        }
+                      }}
+                      className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition cursor-pointer" />
+                  </div>
+                </div>
+                <p className="sm:col-span-2 text-xs text-slate-400">Transparent PNG works best for the signature and seal. They are embedded in every generated warranty certificate.</p>
               </div>
             </div>
           </div>

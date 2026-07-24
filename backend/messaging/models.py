@@ -6,10 +6,12 @@ class WhatsAppMessage(models.Model):
     DIRECTION = [('out', 'Outbound'), ('in', 'Inbound')]
     KIND = [('text', 'Text'), ('template', 'Template')]
     STATUS = [
-        ('pending', 'Pending'),   # queued (bulk) — not yet sent
+        ('pending', 'Pending'),     # queued (bulk) — not yet sent
         ('sent', 'Sent'),
+        ('delivered', 'Delivered'),  # webhook delivery receipt
+        ('read', 'Read'),            # webhook read receipt
         ('failed', 'Failed'),
-        ('received', 'Received'),  # inbound
+        ('received', 'Received'),   # inbound
     ]
 
     lead = models.ForeignKey('leads.Lead', on_delete=models.SET_NULL, null=True, blank=True, related_name='whatsapp_messages')

@@ -3,9 +3,19 @@ from django.db import models
 
 
 class Branch(models.Model):
-    """A physical/operational branch. Branch managers see only their branch's data."""
+    """A physical/operational branch, managed from the Branches module.
+    Branch managers see only their own branch's data."""
     name = models.CharField(max_length=150)
     code = models.CharField(max_length=30, blank=True, default='')
+
+    # Office details
+    manager = models.ForeignKey(
+        'User', on_delete=models.SET_NULL, null=True, blank=True, related_name='managed_branches')
+    location = models.CharField(max_length=200, blank=True, default='')
+    address = models.TextField(blank=True, default='')
+    phone = models.CharField(max_length=20, blank=True, default='')
+    email = models.EmailField(blank=True, default='')
+
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -127,3 +137,21 @@ class User(AbstractUser):
     @property
     def branch_scoped(self):
         return self.role == ROLE_BRANCH_MANAGER
+
+    def managed_user_ids(self):
+        """Ids of the people this manager oversees — members of the teams they
+        head, everyone in their branch (branch managers), and themselves.
+
+        Returns ``None`` for admins / general managers, who oversee everyone.
+        Use it wherever a view scopes data to "this manager's people" so branch
+        managers get their whole branch, not only formal WorkspaceTeams.
+        """
+        if self.is_staff or self.is_general_manager:
+            return None
+        ids = {self.id}
+        for team in self.managed_teams.all():
+            ids.update(team.members.values_list('id', flat=True))
+        if self.branch_scoped and self.branch_id:
+            ids.update(
+                User.objects.filter(branch_id=self.branch_id).values_list('id', flat=True))
+        return ids

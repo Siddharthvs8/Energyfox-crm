@@ -10,11 +10,15 @@ Setup in Meta Business Suite:
 3. Subscribe to 'leadgen' events
 """
 import json
+import logging
+
 from django.http import JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from leads.meta_integration import MetaGraphClient, create_lead_from_meta_payload
 from leads.models import IntegrationSettings
+
+logger = logging.getLogger(__name__)
 
 def _resolve_integration(page_id):
     """Find the Meta integration for an incoming webhook entry, by Facebook Page ID.
@@ -94,4 +98,8 @@ def meta_leads_webhook(request):
         except json.JSONDecodeError:
             return JsonResponse({"error": "Invalid JSON"}, status=400)
         except Exception as e:
-            return JsonResponse({"error": str(e)}, status=500)
+            # Always acknowledge with 200 — repeated non-2xx responses make Meta
+            # retry the same events (duplicating work) and eventually disable
+            # the webhook subscription. The failure is logged for us instead.
+            logger.exception("Meta leads webhook processing failed")
+            return JsonResponse({"status": "error", "error": str(e)})

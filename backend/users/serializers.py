@@ -4,11 +4,35 @@ from .models import User, WorkspaceTeam, Branch
 
 class BranchSerializer(serializers.ModelSerializer):
     member_count = serializers.IntegerField(source='members.count', read_only=True)
+    manager_name = serializers.SerializerMethodField()
+    lead_count = serializers.SerializerMethodField()
+    members = serializers.SerializerMethodField()
 
     class Meta:
         model = Branch
-        fields = ['id', 'name', 'code', 'is_active', 'member_count', 'created_at']
+        fields = ['id', 'name', 'code', 'manager', 'manager_name', 'location', 'address',
+                  'phone', 'email', 'is_active', 'member_count', 'lead_count', 'members',
+                  'created_at']
         read_only_fields = ['created_at']
+
+    def get_manager_name(self, obj):
+        u = obj.manager
+        if not u:
+            return None
+        return f"{u.first_name} {u.last_name}".strip() or u.username
+
+    def get_lead_count(self, obj):
+        """Leads owned by this branch's staff (excludes trashed)."""
+        from leads.models import Lead
+        return Lead.objects.filter(assigned_to__branch=obj, is_trashed=False).count()
+
+    def get_members(self, obj):
+        return [{
+            'id': u.id,
+            'name': f"{u.first_name} {u.last_name}".strip() or u.username,
+            'role': u.role,
+            'role_label': u.get_role_display(),
+        } for u in obj.members.all().order_by('first_name', 'username')]
 
 
 class UserSerializer(serializers.ModelSerializer):

@@ -44,16 +44,12 @@ class MetaAPIError(Exception):
 class MetaGraphClient:
     def __init__(self, access_token: str):
         self.access_token = access_token
+        # Campaign id → name, so an import of N leads from one campaign costs
+        # one Graph API call instead of N.
+        self._campaign_name_cache: dict[str, str] = {}
 
-    def get(self, path: str, params: dict[str, Any] | None = None, token: str | None = None) -> dict[str, Any]:
-        clean_path = path.lstrip("/")
-        query = {"access_token": token or self.access_token}
-        if params:
-            query.update({k: v for k, v in params.items() if v not in (None, "")})
-
-        url = f"{META_API_BASE}/{clean_path}?{urllib.parse.urlencode(query)}"
+    def _fetch_url(self, url: str) -> dict[str, Any]:
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
-
         try:
             with urllib.request.urlopen(req, timeout=20) as response:
                 return json.loads(response.read().decode("utf-8"))
@@ -76,6 +72,13 @@ class MetaGraphClient:
         except Exception as exc:
             raise MetaAPIError(str(exc)) from exc
 
+    def get(self, path: str, params: dict[str, Any] | None = None, token: str | None = None) -> dict[str, Any]:
+        clean_path = path.lstrip("/")
+        query = {"access_token": token or self.access_token}
+        if params:
+            query.update({k: v for k, v in params.items() if v not in (None, "")})
+        return self._fetch_url(f"{META_API_BASE}/{clean_path}?{urllib.parse.urlencode(query)}")
+
     def get_all_pages(self, path: str, params: dict[str, Any] | None = None, token: str | None = None) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         data = self.get(path, params=params, token=token)
@@ -83,29 +86,7 @@ class MetaGraphClient:
 
         next_url = data.get("paging", {}).get("next")
         while next_url:
-            try:
-                req = urllib.request.Request(next_url, headers={"Accept": "application/json"})
-                with urllib.request.urlopen(req, timeout=20) as response:
-                    data = json.loads(response.read().decode("utf-8"))
-            except urllib.error.HTTPError as exc:
-                body = exc.read().decode("utf-8", errors="replace")
-                try:
-                    meta_error = json.loads(body).get("error", {})
-                    message = meta_error.get("message") or body
-                    code = meta_error.get("code")
-                    subcode = meta_error.get("error_subcode")
-                    details = f"Meta API Error {exc.code}: {message}"
-                    if code:
-                        details += f" (code {code}"
-                        if subcode:
-                            details += f", subcode {subcode}"
-                        details += ")"
-                except json.JSONDecodeError:
-                    details = f"Meta API Error {exc.code}: {body or exc.reason}"
-                raise MetaAPIError(details) from exc
-            except Exception as exc:
-                raise MetaAPIError(str(exc)) from exc
-
+            data = self._fetch_url(next_url)
             results.extend(data.get("data", []))
             next_url = data.get("paging", {}).get("next")
 
@@ -174,12 +155,19 @@ def find_meta_campaign(meta_campaign_id: str, meta_campaign_name: str) -> Campai
 def fetch_campaign_name(client: MetaGraphClient, campaign_id: str) -> str:
     if not campaign_id:
         return ""
+    cache = getattr(client, "_campaign_name_cache", None)
+    if cache is not None and campaign_id in cache:
+        return cache[campaign_id]
     try:
         campaign_data = client.get(campaign_id, params={"fields": "name"})
-        return campaign_data.get("name", "")
+        name = campaign_data.get("name", "")
     except MetaAPIError:
         logger.exception("Failed to fetch Meta campaign %s", campaign_id)
-        return ""
+        # Cache the miss too — one failing campaign must not cost a Graph call per lead.
+        name = ""
+    if cache is not None:
+        cache[campaign_id] = name
+    return name
 
 
 def create_lead_from_meta_payload(
@@ -187,12 +175,14 @@ def create_lead_from_meta_payload(
     client: MetaGraphClient | None = None,
     actor=None,
     integration: "IntegrationSettings | None" = None,
+    skip_duplicate_check: bool = False,
 ) -> tuple[Lead | None, bool]:
     meta_lead_id = str(lead_payload.get("id") or lead_payload.get("leadgen_id") or "").strip()
     if not meta_lead_id:
         return None, False
 
-    if Lead.objects.filter(meta_lead_id=meta_lead_id).exists():
+    # Bulk imports pre-check duplicates in one query and pass skip_duplicate_check.
+    if not skip_duplicate_check and Lead.objects.filter(meta_lead_id=meta_lead_id).exists():
         return None, True
 
     graph_data = lead_payload
@@ -302,14 +292,30 @@ def import_meta_leads(settings_obj: IntegrationSettings, actor=None, page_id: st
         else:
             leads = _discover_leads_from_token(client, lead_fields, limit)
 
+        # One query for the whole batch instead of an exists() per payload —
+        # re-imports are almost entirely duplicates, so this is the hot path.
+        payload_ids = {str(p.get("id") or p.get("leadgen_id") or "").strip() for p in leads}
+        payload_ids.discard("")
+        existing_ids = set(
+            Lead.objects.filter(meta_lead_id__in=payload_ids).values_list("meta_lead_id", flat=True)
+        )
+
         for lead_payload in leads:
+            meta_lead_id = str(lead_payload.get("id") or lead_payload.get("leadgen_id") or "").strip()
+            if meta_lead_id and meta_lead_id in existing_ids:
+                result.skipped += 1
+                continue
             try:
-                lead, duplicate = create_lead_from_meta_payload(lead_payload, client=client, actor=actor, integration=settings_obj)
+                lead, duplicate = create_lead_from_meta_payload(
+                    lead_payload, client=client, actor=actor, integration=settings_obj,
+                    skip_duplicate_check=True)
                 if duplicate:
                     result.skipped += 1
                     continue
                 if lead:
                     result.imported += 1
+                    if meta_lead_id:
+                        existing_ids.add(meta_lead_id)  # same lead twice in one batch
                     campaign_key = lead.meta_campaign_name or lead.meta_campaign_id or "Uncategorized"
                     result.campaigns[campaign_key] = result.campaigns.get(campaign_key, 0) + 1
             except Exception as exc:

@@ -486,7 +486,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   };
 
   const bulkDelete = async () => {
-    if (!selectedIds.length || !confirm(`Delete ${selectedIds.length} leads?`)) return;
+    if (!selectedIds.length || !confirm(`Move ${selectedIds.length} leads to Trash? They stay there for 7 days before disappearing forever.`)) return;
     const token = localStorage.getItem(`${domain}_access`);
     await fetch(`${getApiBase(domain)}/api/leads/bulk_delete/`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ ids: selectedIds }) });
     setSelectedIds([]); fetchLeads();
@@ -542,10 +542,48 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   };
 
   const deleteLead = async (id: number) => {
-    if (!confirm("Delete this lead?")) return;
+    if (!confirm("Move this lead to Trash? It stays there for 7 days before disappearing forever.")) return;
     const token = localStorage.getItem(`${domain}_access`);
     await fetch(`${getApiBase(domain)}/api/leads/${id}/`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
     fetchLeads();
+  };
+
+  // ── Trash (soft-deleted leads; auto-purged after 7 days) ──
+  type TrashRow = {
+    id: number; first_name: string; last_name: string | null; phone: string | null;
+    email: string | null; status: string; trashed_at: string | null;
+    trashed_by_name: string | null; days_left: number;
+  };
+  const [showTrash, setShowTrash] = useState(false);
+  const [trashRows, setTrashRows] = useState<TrashRow[]>([]);
+  const [trashLoading, setTrashLoading] = useState(false);
+
+  const loadTrash = async () => {
+    setTrashLoading(true);
+    try {
+      const token = localStorage.getItem(`${domain}_access`);
+      const r = await fetch(`${getApiBase(domain)}/api/leads/trash/`, { headers: { Authorization: `Bearer ${token}` } });
+      const d = await r.json().catch(() => ({}));
+      setTrashRows(Array.isArray(d.leads) ? d.leads : []);
+    } catch { /* keep old rows */ }
+    finally { setTrashLoading(false); }
+  };
+
+  const openTrash = () => { setShowTrash(true); loadTrash(); };
+
+  const restoreFromTrash = async (id: number) => {
+    const token = localStorage.getItem(`${domain}_access`);
+    const r = await fetch(`${getApiBase(domain)}/api/leads/${id}/restore-trash/`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); alert(e.error || "Could not restore."); }
+    loadTrash(); fetchLeads();
+  };
+
+  const purgeFromTrash = async (id: number) => {
+    if (!confirm("Delete this lead forever? This cannot be undone.")) return;
+    const token = localStorage.getItem(`${domain}_access`);
+    const r = await fetch(`${getApiBase(domain)}/api/leads/${id}/purge/`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+    if (!(r.ok || r.status === 204)) { const e = await r.json().catch(() => ({})); alert(e.error || "Could not delete."); }
+    loadTrash();
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -644,6 +682,13 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
     setTasksLoading(true);
     setCallsLoading(true);
     const token = localStorage.getItem(`${domain}_access`);
+    // Opening the quick view counts as seeing the lead, so it drops off the
+    // sidebar's Leads badge (the URL doesn't change, so the layout can't tell).
+    fetch(`${getApiBase(domain)}/api/leads/${lead.id}/seen/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ modules: ["leads"] }),
+    }).catch(() => {});
     try {
       const [histRes, tasksRes, callsRes] = await Promise.all([
         fetch(`${getApiBase(domain)}/api/leads/${lead.id}/history/`, { headers: { Authorization: `Bearer ${token}` } }),
@@ -838,6 +883,12 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                   <I.Upload /> <span className="hidden md:inline">{isUploading ? "Uploading…" : "Import"}</span>
                 </button>
               </div>
+
+              <button onClick={openTrash}
+                title="Trashed leads — kept for 7 days, then deleted forever"
+                className="flex items-center gap-1.5 px-4 py-2 bg-white border border-slate-200 text-slate-600 rounded-xl text-sm font-semibold hover:bg-slate-50 hover:text-rose-600 active:scale-[0.97] transition-all shadow-sm shadow-slate-50">
+                <I.Trash /> <span className="hidden sm:inline">Trash</span>
+              </button>
 
               <button onClick={openAdd}
                 className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 active:scale-[0.97] transition-all shadow-sm shadow-indigo-200">
@@ -1342,7 +1393,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                             </button>
                             <button onClick={(e) => { e.stopPropagation(); deleteLead(lead.id); }}
                               className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all"
-                              title="Delete">
+                              title="Move to Trash">
                               <I.Trash />
                             </button>
                           </div>
@@ -1414,6 +1465,64 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
           )}
         </div>
       </div>
+
+      {/* ── Trash Modal ───────────────────────────────────────────────────────── */}
+      {showTrash && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={() => setShowTrash(false)}>
+          <div className="bg-white w-full max-w-3xl rounded-2xl shadow-2xl max-h-[85vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 flex-shrink-0">
+              <div>
+                <h2 className="text-base font-bold text-slate-900">Trash</h2>
+                <p className="text-[11px] text-slate-400 mt-0.5">Trashed leads are kept for 7 days, then deleted forever automatically.</p>
+              </div>
+              <button onClick={() => setShowTrash(false)} className="w-8 h-8 flex items-center justify-center rounded-xl bg-slate-100 text-slate-500 hover:bg-slate-200 transition text-sm">✕</button>
+            </div>
+            <div className="overflow-y-auto flex-1">
+              {trashLoading ? (
+                <div className="py-14 text-center text-sm text-slate-400">Loading…</div>
+              ) : trashRows.length === 0 ? (
+                <div className="py-14 text-center text-sm text-slate-400">Trash is empty.</div>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-[10px] font-bold text-slate-400 uppercase tracking-wide border-b border-slate-100 bg-slate-50/60">
+                      <th className="px-5 py-3">Lead</th>
+                      <th className="px-5 py-3">Trashed</th>
+                      <th className="px-5 py-3">Disappears In</th>
+                      <th className="px-5 py-3 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {trashRows.map(t => (
+                      <tr key={t.id} className="border-b border-slate-50 hover:bg-slate-50/60">
+                        <td className="px-5 py-3">
+                          <p className="font-semibold text-slate-800">{t.first_name} {t.last_name}</p>
+                          <p className="text-[11px] text-slate-400">{t.phone || "—"}{t.email ? ` · ${t.email}` : ""}</p>
+                        </td>
+                        <td className="px-5 py-3 text-slate-500 text-xs">
+                          {t.trashed_at ? new Date(t.trashed_at).toLocaleDateString("en-IN") : "—"}
+                          {t.trashed_by_name ? <span className="block text-[11px] text-slate-400">by {t.trashed_by_name}</span> : null}
+                        </td>
+                        <td className="px-5 py-3">
+                          <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${t.days_left <= 2 ? "bg-rose-50 text-rose-600" : "bg-amber-50 text-amber-700"}`}>
+                            {t.days_left <= 0 ? "today" : `${t.days_left} day${t.days_left === 1 ? "" : "s"}`}
+                          </span>
+                        </td>
+                        <td className="px-5 py-3">
+                          <div className="flex items-center justify-end gap-3">
+                            <button onClick={() => restoreFromTrash(t.id)} className="text-[12px] font-semibold text-indigo-600 hover:text-indigo-800">Restore</button>
+                            <button onClick={() => purgeFromTrash(t.id)} className="text-[12px] font-semibold text-rose-500 hover:text-rose-700">Delete forever</button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Add / Edit Modal ──────────────────────────────────────────────────── */}
       {showModal && (

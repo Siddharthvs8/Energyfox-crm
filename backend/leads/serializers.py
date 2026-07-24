@@ -1,5 +1,6 @@
 from rest_framework import serializers
-from .models import Lead, IntegrationSettings, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, Warranty, WarrantyDocument
+from django.utils import timezone
+from .models import Lead, IntegrationSettings, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, Warranty, WarrantyDocument, EmergencyService, PeriodicMaintenance, MaintenanceVisit
 from .document_kinds import SLOT_TO_KIND, SITE_VISIT_SHARED_SLOTS, DOC_STAGE1_SHARED_SLOTS, shared_doc_entries
 
 from users.serializers import UserSerializer
@@ -99,7 +100,17 @@ class DocumentationStage1Serializer(serializers.ModelSerializer):
         model = DocumentationStage1
         fields = '__all__'
         # Completion is driven only by the dedicated complete-* action, never a plain PATCH.
-        read_only_fields = ['lead', 'created_at', 'updated_at', 'is_complete', 'completed_at', 'completed_by']
+        # The section sign-off timestamps are stamped here, not sent by the client.
+        read_only_fields = ['lead', 'created_at', 'updated_at', 'is_complete', 'completed_at', 'completed_by',
+                            'name_change_completed_at', 'load_enhancement_completed_at']
+
+    def update(self, instance, validated_data):
+        """Stamp the section sign-off time whenever its flag flips."""
+        for flag, stamp in (('name_change_completed', 'name_change_completed_at'),
+                            ('load_enhancement_completed', 'load_enhancement_completed_at')):
+            if flag in validated_data and validated_data[flag] != getattr(instance, flag):
+                validated_data[stamp] = timezone.now() if validated_data[flag] else None
+        return super().update(instance, validated_data)
 
     def get_completed_by_name(self, obj):
         if obj.completed_by:
@@ -203,16 +214,35 @@ class LiasoningServiceSerializer(serializers.ModelSerializer):
 
 class BalancePaymentSerializer(serializers.ModelSerializer):
     recorded_by_name = serializers.SerializerMethodField()
+    receipt_id = serializers.SerializerMethodField()
+    receipt_number = serializers.SerializerMethodField()
 
     class Meta:
         model = BalancePayment
-        fields = ['id', 'amount', 'payment_mode', 'utr_details', 'note', 'recorded_by_name', 'created_at']
+        fields = ['id', 'amount', 'payment_mode', 'utr_details', 'on_account_of', 'note',
+                  'recorded_by_name', 'created_at', 'receipt_id', 'receipt_number']
 
     def get_recorded_by_name(self, obj):
         if obj.recorded_by:
             u = obj.recorded_by
             return f"{u.first_name} {u.last_name}".strip() or u.username
         return None
+
+    def get_receipt_id(self, obj):
+        rec = getattr(obj, 'receipt', None)
+        return rec.id if rec else None
+
+    def get_receipt_number(self, obj):
+        rec = getattr(obj, 'receipt', None)
+        return rec.number if rec else None
+
+
+class ReceiptVoucherSerializer(serializers.ModelSerializer):
+    class Meta:
+        from .models import ReceiptVoucher
+        model = ReceiptVoucher
+        fields = ['id', 'number', 'date', 'amount', 'amount_in_words', 'on_account_of',
+                  'payment_mode', 'received_from', 'address', 'is_initial', 'created_at']
 
 
 class PurchaseLogisticsSerializer(serializers.ModelSerializer):
@@ -266,6 +296,47 @@ class ServiceEntrySerializer(serializers.ModelSerializer):
             return f"{u.first_name} {u.last_name}".strip() or u.username
         return None
 
+class MaintenanceVisitSerializer(serializers.ModelSerializer):
+    completed_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MaintenanceVisit
+        fields = '__all__'
+        # Photos go through the dedicated upload endpoint; completion is stamped by the view.
+        read_only_fields = ['plan', 'sequence', 'due_date', 'panel_before', 'panel_after',
+                            'completed_at', 'completed_by', 'updated_at']
+
+    def get_completed_by_name(self, obj):
+        if obj.completed_by:
+            u = obj.completed_by
+            return f"{u.first_name} {u.last_name}".strip() or u.username
+        return None
+
+
+class PeriodicMaintenanceSerializer(serializers.ModelSerializer):
+    visits = MaintenanceVisitSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = PeriodicMaintenance
+        fields = '__all__'
+        read_only_fields = ['lead', 'created_by', 'created_at']
+
+
+class EmergencyServiceSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EmergencyService
+        fields = '__all__'
+        read_only_fields = ['created_by', 'created_at', 'updated_at']
+
+    def get_created_by_name(self, obj):
+        if obj.created_by:
+            u = obj.created_by
+            return f"{u.first_name} {u.last_name}".strip() or u.username
+        return None
+
+
 class LeadSerializer(serializers.ModelSerializer):
     assigned_to_details = UserSerializer(source='assigned_to', read_only=True)
     assigned_to_name = serializers.SerializerMethodField()
@@ -290,6 +361,8 @@ class LeadSerializer(serializers.ModelSerializer):
     class Meta:
         model = Lead
         fields = '__all__'
+        # Trash is driven only by the dedicated trash/restore actions, never a plain PATCH.
+        read_only_fields = ['is_trashed', 'trashed_at', 'trashed_by']
 
     def get_pipeline_stage_label(self, obj):
         return Lead.PIPELINE_STAGE_LABELS.get(obj.pipeline_stage, obj.pipeline_stage)

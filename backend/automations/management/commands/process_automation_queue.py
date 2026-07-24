@@ -93,4 +93,12 @@ class Command(BaseCommand):
         except Exception:
             pass
 
+        # 4) Purge leads trashed more than the retention period ago.
+        try:
+            from leads.models import Lead
+            cutoff = now - timedelta(days=Lead.TRASH_RETENTION_DAYS)
+            Lead.objects.filter(is_trashed=True, trashed_at__lte=cutoff).delete()
+        except Exception:
+            pass
+
         return resumed, inactive_fired, wa_sent

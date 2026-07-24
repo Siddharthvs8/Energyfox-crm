@@ -277,6 +277,14 @@ class AutomationRuleViewSet(viewsets.ModelViewSet):
                 {'value': 'phone', 'label': 'Phone', 'type': 'text'},
                 {'value': 'company', 'label': 'Company', 'type': 'text'},
                 {'value': 'notes', 'label': 'Notes', 'type': 'text'},
+                {'value': 'installation_location', 'label': 'Installation Location', 'type': 'text'},
+                # Pipeline flags (compare against "True" / "False")
+                {'value': 'is_lost', 'label': 'Deal Lost (True/False)', 'type': 'text'},
+                {'value': 'pushed_to_documentation', 'label': 'In Documentation — Closed Deal (True/False)', 'type': 'text'},
+                {'value': 'pushed_to_purchase', 'label': 'In Purchase & Logistics (True/False)', 'type': 'text'},
+                {'value': 'pushed_to_doc_stage2', 'label': 'In Documentation Stage 2 (True/False)', 'type': 'text'},
+                {'value': 'pushed_to_warranty', 'label': 'In Warranty (True/False)', 'type': 'text'},
+                {'value': 'pushed_to_liasoning', 'label': 'In Liasoning & Service (True/False)', 'type': 'text'},
             ],
             'operators': [
                 {'value': 'equals', 'label': 'Equals'},

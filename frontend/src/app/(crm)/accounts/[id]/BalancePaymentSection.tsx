@@ -1,6 +1,7 @@
 "use client";
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase, formatCurrency } from "@/lib/mock-data";
+import { downloadLeadReceipt } from "@/lib/receipt-pdf";
 import React, { useCallback, useEffect, useState } from "react";
 
 const PAYMENT_MODES = [
@@ -16,7 +17,7 @@ const inputCls =
   "w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all disabled:opacity-70";
 const labelCls = "block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5";
 
-type BP = { id: number; amount: string; payment_mode: string; utr_details: string; note: string; recorded_by_name: string | null; created_at: string };
+type BP = { id: number; amount: string; payment_mode: string; utr_details: string; on_account_of: string; note: string; recorded_by_name: string | null; created_at: string; receipt_id: number | null; receipt_number: string | null };
 type Summary = { deal_value: string; amount_received: string; discount_value: string; balance_amount: string; fully_paid: boolean; can_collect: boolean; payments: BP[] };
 
 const num = (v: any) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
@@ -33,6 +34,7 @@ export default function BalancePaymentSection({ leadId, canEdit, onChanged }: {
   const [amount, setAmount] = useState("");
   const [mode, setMode] = useState("");
   const [utr, setUtr] = useState("");
+  const [onAccountOf, setOnAccountOf] = useState("");
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -52,18 +54,19 @@ export default function BalancePaymentSection({ leadId, canEdit, onChanged }: {
   const addPayment = async () => {
     const amt = num(amount);
     if (amt <= 0) { alert("Enter a valid payment amount greater than zero."); return; }
+    if (!mode) { alert("Select a payment mode — it is required."); return; }
     if (needsUtr && !utr.trim()) { alert("Enter the UTR / transaction reference for non-cash payments."); return; }
     setSaving(true);
     try {
       const r = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeader() },
-        body: JSON.stringify({ amount: amt, payment_mode: mode, utr_details: needsUtr ? utr : "", note }),
+        body: JSON.stringify({ amount: amt, payment_mode: mode, utr_details: needsUtr ? utr : "", on_account_of: onAccountOf, note }),
       });
       if (r.ok) {
         const d = await r.json();
         load(d);
-        setAmount(""); setMode(""); setUtr(""); setNote("");
+        setAmount(""); setMode(""); setUtr(""); setOnAccountOf(""); setNote("");
         onChanged?.();
       } else { const e = await r.json().catch(() => ({})); alert(e.error || "Could not record the balance payment."); }
     } catch { alert("Network error while recording the payment."); }
@@ -114,10 +117,12 @@ export default function BalancePaymentSection({ leadId, canEdit, onChanged }: {
                 <p className="text-[10px] text-slate-400 mt-1">Balance due: ₹{formatCurrency(balance)}</p>
               </div>
               <div>
-                <label className={labelCls}>Payment Mode</label>
-                <select value={mode} onChange={e => setMode(e.target.value)} className={inputCls}>
+                <label className={labelCls}>Payment Mode <span className="text-rose-500 normal-case">*</span></label>
+                <select value={mode} onChange={e => setMode(e.target.value)}
+                  className={`${inputCls} ${!mode ? "border-rose-300 bg-rose-50/40" : ""}`}>
                   {PAYMENT_MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
                 </select>
+                {!mode && <p className="text-[11px] text-rose-500 mt-1">Required.</p>}
               </div>
               {needsUtr && (
                 <div>
@@ -125,6 +130,10 @@ export default function BalancePaymentSection({ leadId, canEdit, onChanged }: {
                   <input value={utr} onChange={e => setUtr(e.target.value)} placeholder="Transaction / reference no." className={inputCls} />
                 </div>
               )}
+              <div>
+                <label className={labelCls}>On Account of</label>
+                <input value={onAccountOf} onChange={e => setOnAccountOf(e.target.value)} placeholder="e.g. Balance payment" className={inputCls} />
+              </div>
               <div>
                 <label className={labelCls}>Note</label>
                 <input value={note} onChange={e => setNote(e.target.value)} placeholder="Optional note" className={inputCls} />
@@ -152,8 +161,9 @@ export default function BalancePaymentSection({ leadId, canEdit, onChanged }: {
                     <th className="py-2 pr-4">Date</th>
                     <th className="py-2 pr-4">Amount</th>
                     <th className="py-2 pr-4">Mode</th>
-                    <th className="py-2 pr-4">Note</th>
+                    <th className="py-2 pr-4">On Account of</th>
                     <th className="py-2 pr-4">Recorded By</th>
+                    <th className="py-2 pr-4">Receipt</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -162,8 +172,18 @@ export default function BalancePaymentSection({ leadId, canEdit, onChanged }: {
                       <td className="py-2 pr-4 text-slate-600">{new Date(p.created_at).toLocaleDateString("en-IN")}</td>
                       <td className="py-2 pr-4 font-semibold text-emerald-700">₹{formatCurrency(num(p.amount))}</td>
                       <td className="py-2 pr-4 text-slate-600 capitalize">{p.payment_mode || "—"}{p.utr_details ? ` · ${p.utr_details}` : ""}</td>
-                      <td className="py-2 pr-4 text-slate-600">{p.note || "—"}</td>
+                      <td className="py-2 pr-4 text-slate-600">{p.on_account_of || p.note || "—"}</td>
                       <td className="py-2 pr-4 text-slate-600">{p.recorded_by_name || "—"}</td>
+                      <td className="py-2 pr-4">
+                        {p.receipt_id ? (
+                          <button onClick={() => downloadLeadReceipt(leadId, { receiptId: p.receipt_id! })}
+                            title={p.receipt_number || "Download receipt"}
+                            className="inline-flex items-center gap-1 text-[12px] font-semibold text-indigo-600 hover:text-indigo-800">
+                            <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+                            Receipt
+                          </button>
+                        ) : <span className="text-slate-300">—</span>}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

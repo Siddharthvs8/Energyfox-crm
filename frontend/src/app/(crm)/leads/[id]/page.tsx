@@ -697,13 +697,6 @@ export default function LeadDetailPage({
             {lead.can_assign_bde && (
               <button onClick={openBdeModal} className="btn btn-sm bg-blue-600 hover:bg-blue-700 text-white font-semibold border border-blue-600">{lead.bde ? "Reassign BDE" : "Assign to BDE"}</button>
             )}
-            {lead.can_edit_site_visit && !lead.pushed_to_documentation && (
-              <button onClick={pushToDocumentation} disabled={pushingDoc || !lead.site_visit_complete}
-                title={!lead.site_visit_complete ? "Mark the site visit complete first" : ""}
-                className="btn btn-sm bg-violet-600 hover:bg-violet-700 text-white font-semibold border border-violet-600 disabled:opacity-50 disabled:cursor-not-allowed">
-                {pushingDoc ? "Pushing…" : "Push to Documentation"}
-              </button>
-            )}
             {lead.can_assign_documentation && lead.pushed_to_documentation && (
               <button onClick={openDocModal} className="btn btn-sm bg-amber-600 hover:bg-amber-700 text-white font-semibold border border-amber-600">{lead.documentation_staff ? "Reassign Documentation" : "Assign Documentation"}</button>
             )}
@@ -1146,6 +1139,25 @@ export default function LeadDetailPage({
       </div>
 
       <SiteVisitSection leadId={String(params.id)} canEdit={!!lead.can_edit_site_visit} onSaved={fetchData} />
+
+      {/* Push to documentation — the hand-off that follows the site visit above. */}
+      {lead.can_edit_site_visit && !lead.pushed_to_documentation && (
+        <div className="mt-5 bg-white rounded-2xl border border-slate-100 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-bold text-slate-900">Push to Documentation</p>
+            <p className="text-xs text-slate-400 mt-0.5">
+              {lead.site_visit_complete
+                ? "Site visit is complete — hand this lead over to the documentation team."
+                : "Mark the site visit complete above before pushing this lead to documentation."}
+            </p>
+          </div>
+          <button onClick={pushToDocumentation} disabled={pushingDoc || !lead.site_visit_complete}
+            title={!lead.site_visit_complete ? "Mark the site visit complete first" : ""}
+            className="px-5 py-2.5 bg-violet-600 hover:bg-violet-700 text-white rounded-xl text-sm font-semibold border border-violet-600 disabled:opacity-50 disabled:cursor-not-allowed transition flex-shrink-0">
+            {pushingDoc ? "Pushing…" : "Push to Documentation"}
+          </button>
+        </div>
+      )}
 
       {/* Assign to BDE Modal */}
       {showBdeModal && (

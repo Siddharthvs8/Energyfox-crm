@@ -2,7 +2,8 @@
 import { APP_SLUG, KSEB_PORTAL_URL } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
 import { kindForSlot } from "@/lib/docKinds";
-import React, { useCallback, useContext, useEffect, useState, createContext } from "react";
+import PdfDropField from "@/components/PdfDropField";
+import React, { useCallback, useContext, useEffect, useRef, useState, createContext } from "react";
 
 /* ── Slot definitions (key = DocumentationStage1Document.doc_type) ── */
 const NC_FILES = [
@@ -14,8 +15,8 @@ const NC_FILES = [
   ["nc_kseb_bill", "KSEB Bill"],
 ] as const;
 
-const LE_FILES = [["le_aadhaar", "Aadhaar"]] as const;
-const LE_CHECKS = [
+const LE_FILES = [
+  ["le_aadhaar", "Aadhaar"],
   ["le_test_cum_completion_report", "Test cum Completion Report"],
   ["le_sketch", "Sketch"],
 ] as const;
@@ -34,16 +35,18 @@ const LOAN_KYC = [
   ["loan_pan", "PAN"],
   ["loan_passbook", "Passbook"],
 ] as const;
+// The passbook itself lives in the KYC group above — no separate copy slot.
 const LOAN_FILES = [
   ["loan_land_tax", "Land Tax"],
-  ["loan_passbook_copy", "Passbook Copy"],
 ] as const;
 // ITR is only shown/required when "Loan above ₹2 lakh" is ticked.
 const LOAN_ITR: readonly [string, string] = ["loan_itr", "ITR"];
 const LOAN_PDF: readonly [string, string] = ["loan_agreement_purchase_order", "Agreement / Purchase Order"];
 
 // Non-file inputs → saved via JSON PATCH.
-const BOOL_KEYS = ["le_test_cum_completion_report", "le_sketch", "loan_above_2_lakh"] as const;
+const BOOL_KEYS = ["name_change_completed", "load_enhancement_completed"] as const;
+// ITR is only required above this loan amount (read from the site visit).
+const ITR_REQUIRED_ABOVE = 200000;
 const TEXT_KEYS = ["mnre_plant_capacity"] as const;
 
 // Mandatory MNRE doc_type slots (each needs ≥1 file) — mirrors the server.
@@ -61,37 +64,7 @@ const addBtnCls = (disabled: boolean) =>
 // deleted via a different endpoint and appear under every same-kind slot.
 type DS1Doc = { id: number; doc_type: string; file: string; shared?: boolean; kind?: string };
 
-const IMAGE_RE = /\.(jpe?g|png|webp|gif|bmp)$/i;
-const isImage = (f: File) => f.type.startsWith("image/") || IMAGE_RE.test(f.name);
-
-/* ── jsPDF: stitch dropped images into one PDF File ── */
-async function generatePdfFromImages(images: File[], fileName: string): Promise<File> {
-  const { jsPDF } = await import("jspdf");
-  const doc = new jsPDF({ unit: "pt", format: "a4" });
-  const pageW = doc.internal.pageSize.getWidth();
-  const pageH = doc.internal.pageSize.getHeight();
-  for (let i = 0; i < images.length; i++) {
-    const dataUrl: string = await new Promise((res, rej) => {
-      const fr = new FileReader();
-      fr.onload = () => res(fr.result as string);
-      fr.onerror = rej;
-      fr.readAsDataURL(images[i]);
-    });
-    const dims: { w: number; h: number } = await new Promise((res, rej) => {
-      const im = new Image();
-      im.onload = () => res({ w: im.naturalWidth, h: im.naturalHeight });
-      im.onerror = rej;
-      im.src = dataUrl;
-    });
-    const ratio = Math.min(pageW / dims.w, pageH / dims.h);
-    const w = dims.w * ratio;
-    const h = dims.h * ratio;
-    if (i > 0) doc.addPage();
-    const fmt = dataUrl.startsWith("data:image/png") ? "PNG" : "JPEG";
-    doc.addImage(dataUrl, fmt, (pageW - w) / 2, (pageH - h) / 2, w, h);
-  }
-  return new File([doc.output("blob")], fileName, { type: "application/pdf" });
-}
+/* Image detection + jsPDF stitching now live in the shared PdfDropField. */
 
 /* ── Shared state for the slot renderers (module-level → stable identity) ── */
 type DS1Ctx = {
@@ -146,87 +119,52 @@ function MultiFileField({ docType, label }: { docType: string; label: string }) 
   );
 }
 
-function CheckRow({ label, checked, onChange, disabled }: {
-  label: string; checked: boolean; disabled: boolean; onChange: (v: boolean) => void;
-}) {
-  return (
-    <label className={`flex items-center gap-2 text-sm font-medium ${disabled ? "text-slate-400 cursor-default" : "text-slate-700 cursor-pointer"}`}>
-      <input type="checkbox" checked={checked} disabled={disabled} onChange={e => onChange(e.target.checked)}
-        className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500/30 disabled:opacity-60" />
-      {label}
-    </label>
-  );
-}
-
 /* PDF slot — multiple files; attach PDFs/images directly OR drop images → generate one PDF. */
 function PdfMultiField({ docType, label }: { docType: string; label: string }) {
   const { disabled, addDocs, uploadingType } = useDS1();
-  const busy = uploadingType === docType;
-  const [images, setImages] = useState<File[]>([]);
-  const [generating, setGenerating] = useState(false);
-  const [dragActive, setDragActive] = useState(false);
-
-  const addImages = (list: FileList | File[] | null) => {
-    if (!list) return;
-    const imgs = Array.from(list).filter(isImage);
-    if (imgs.length) setImages(prev => [...prev, ...imgs]);
-    else if (Array.from(list).length) alert("Please drop image files (JPG/PNG) here — use “Attach PDF / file(s)” for PDFs.");
-  };
-  const generate = async () => {
-    if (!images.length) return;
-    setGenerating(true);
-    try {
-      const pdf = await generatePdfFromImages(images, `${docType}.pdf`);
-      await addDocs(docType, [pdf]);
-      setImages([]);
-    } catch { alert("Could not generate the PDF from those images."); }
-    finally { setGenerating(false); }
-  };
-
   return (
-    <div className="sm:col-span-2 lg:col-span-3 border border-slate-200 rounded-xl p-4 bg-slate-50/60">
-      <label className={labelCls}>{label}</label>
+    <PdfDropField docType={docType} label={label} disabled={disabled}
+      busy={uploadingType === docType} addFiles={addDocs}>
       <DocList docType={docType} />
-      <div className="grid sm:grid-cols-2 gap-3">
-        <div>
-          <p className="text-[10px] text-slate-400 mb-1">Attach PDF / file(s)</p>
-          <label className={addBtnCls(disabled || busy)}>
-            {busy ? "Uploading…" : "+ Add file(s)"}
-            <input type="file" accept="application/pdf,image/*" multiple disabled={disabled || busy} className="hidden"
-              onChange={e => { const fs = Array.from(e.target.files || []); e.currentTarget.value = ""; addDocs(docType, fs); }} />
-          </label>
-        </div>
-        <div>
-          <p className="text-[10px] text-slate-400 mb-1">Or drop images → generate PDF</p>
-          <div
-            onDragEnter={e => { if (disabled) return; e.preventDefault(); e.stopPropagation(); setDragActive(true); }}
-            onDragOver={e => { if (disabled) return; e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = "copy"; setDragActive(true); }}
-            onDragLeave={e => { if (disabled) return; e.preventDefault(); e.stopPropagation(); setDragActive(false); }}
-            onDrop={e => { if (disabled) return; e.preventDefault(); e.stopPropagation(); setDragActive(false); addImages(e.dataTransfer.files); }}
-            className={`rounded-lg border-2 border-dashed px-3 py-4 min-h-[180px] flex flex-col items-center justify-center text-center text-[11px] transition-colors ${disabled ? "border-slate-200 text-slate-300" : dragActive ? "border-indigo-400 bg-indigo-50 text-indigo-600" : "border-slate-300 text-slate-500"}`}
-          >
-            <label className={disabled ? "cursor-default" : "cursor-pointer text-indigo-600 font-semibold"}>
-              Drag &amp; drop images or <span className="underline">browse</span>
-              <input type="file" accept="image/*" multiple disabled={disabled} className="hidden"
-                onChange={e => { addImages(e.target.files); e.currentTarget.value = ""; }} />
-            </label>
-            {images.length > 0 && <p className="mt-1 text-slate-600">{images.length} image(s) ready</p>}
-          </div>
-          {images.length > 0 && !disabled && (
-            <button type="button" onClick={generate} disabled={generating || busy}
-              className="mt-2 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-[11px] font-semibold hover:bg-indigo-700 disabled:opacity-50">
-              {generating ? "Generating…" : `Generate PDF (${images.length})`}
-            </button>
-          )}
-        </div>
-      </div>
-      {busy && <span className="text-[10px] font-semibold text-indigo-600">Uploading…</span>}
-    </div>
+    </PdfDropField>
   );
 }
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h3 className="text-xs font-bold text-indigo-600 uppercase tracking-wide mb-3">{children}</h3>;
+}
+
+/* Sign-off bar for the Name Change / Load Enhancement sections. Completing one
+   unlocks the For MNRE / For Loan sections below. */
+function SectionCompleteBar({ label, done, doneAt, busy, readOnly, onToggle }: {
+  label: string; done: boolean; doneAt?: string; busy: boolean; readOnly: boolean;
+  onToggle: (v: boolean) => void;
+}) {
+  return (
+    <div className="mt-4 pt-4 border-t border-slate-100 flex flex-wrap items-center gap-3">
+      {done ? (
+        <>
+          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-lg text-xs font-semibold">
+            ✓ {label} completed{doneAt ? ` · ${new Date(doneAt).toLocaleDateString("en-IN")}` : ""}
+          </span>
+          {!readOnly && (
+            <button type="button" onClick={() => onToggle(false)} disabled={busy}
+              className="text-[12px] font-semibold text-slate-500 hover:text-slate-700 disabled:opacity-50">
+              {busy ? "Saving…" : "Undo"}
+            </button>
+          )}
+        </>
+      ) : (
+        <>
+          <button type="button" onClick={() => onToggle(true)} disabled={busy || readOnly}
+            className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-semibold hover:bg-emerald-700 disabled:opacity-50 transition">
+            {busy ? "Saving…" : `${label} Complete`}
+          </button>
+          <span className="text-[11px] text-slate-400">Opens the sections below.</span>
+        </>
+      )}
+    </div>
+  );
 }
 
 /* KYC (Know Your Customer) = Aadhaar + PAN + Passbook, grouped under one label. */
@@ -265,6 +203,10 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
 
   const [bools, setBools] = useState<Record<string, boolean>>({});
   const [texts, setTexts] = useState<Record<string, string>>({});
+  const [sectionAt, setSectionAt] = useState<Record<string, string | null>>({});
+  // Kept in a ref so `load` (a stable callback) can read the latest site visit.
+  const siteVisitRef = useRef(siteVisit);
+  siteVisitRef.current = siteVisit;
   const [documents, setDocuments] = useState<DS1Doc[]>([]);
   const [uploadingType, setUploadingType] = useState<string | null>(null);
   const [isComplete, setIsComplete] = useState(false);
@@ -277,7 +219,19 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
 
   const load = useCallback((d: any) => {
     setBools(Object.fromEntries(BOOL_KEYS.map(k => [k, !!d[k]])));
-    setTexts(Object.fromEntries(TEXT_KEYS.map(k => [k, d[k] ?? ""])));
+    const loaded = Object.fromEntries(TEXT_KEYS.map(k => [k, d[k] ?? ""])) as Record<string, string>;
+    // Plant capacity carries over from the BDE's site visit until documentation
+    // saves its own value.
+    if (!loaded.mnre_plant_capacity?.trim()) {
+      loaded.mnre_plant_capacity = String(siteVisitRef.current?.plant_capacity
+        || siteVisitRef.current?.feasible_capacity || "");
+    }
+    setTexts(loaded);
+    // Read-only sign-off stamps (kept out of `texts` so they're never PATCHed).
+    setSectionAt({
+      name_change_completed_at: d.name_change_completed_at ?? null,
+      load_enhancement_completed_at: d.load_enhancement_completed_at ?? null,
+    });
     setDocuments(Array.isArray(d.documents) ? d.documents : []);
     setIsComplete(!!d.is_complete);
     setCompletedByName(d.completed_by_name ?? null);
@@ -306,7 +260,6 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
   }, []);
 
   const readOnly = !canEdit || isComplete;
-  const setBool = (k: string, v: boolean) => { setBools(p => ({ ...p, [k]: v })); setSaved(false); };
   const setText = (k: string, v: string) => { setTexts(p => ({ ...p, [k]: v })); setSaved(false); };
 
   // Re-pull just the document list so shared documents re-merge across every
@@ -373,6 +326,23 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
     finally { setSaving(false); }
   };
 
+  // Section sign-off (Name Change / Load Enhancement) — saved immediately, since
+  // it unlocks the sections below it.
+  const [sectionSaving, setSectionSaving] = useState<string | null>(null);
+  const setSectionComplete = async (key: string, value: boolean) => {
+    setSectionSaving(key);
+    try {
+      const r = await fetch(url, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...authHeader() },
+        body: JSON.stringify({ ...bools, ...texts, [key]: value }),
+      });
+      if (r.ok) { load(await r.json()); onChanged?.(); }
+      else alert("Could not update this section.");
+    } catch { alert("Network error."); }
+    finally { setSectionSaving(null); }
+  };
+
   const hasDoc = (dt: string) => documents.some(d => d.doc_type === dt);
   const mnreReady = MNRE_REQUIRED_DOC_TYPES.every(hasDoc) && !!(texts["mnre_plant_capacity"] || "").trim();
 
@@ -422,6 +392,21 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
   const showLoadEnhancement = siteVisit?.load_enhancement === "yes";
   const showLoan = siteVisit?.loan === "yes";
 
+  // ITR is required only above ₹2 lakh — read from the loan amount the BDE
+  // recorded on the site visit, so documentation never re-enters it.
+  const loanAmount = parseFloat(String(siteVisit?.loan_amount || "").replace(/[^0-9.]/g, ""));
+  const loanAboveItrThreshold = Number.isFinite(loanAmount) && loanAmount > ITR_REQUIRED_ABOVE;
+
+  // The MNRE / Loan sections open only once the sections that come before them
+  // are signed off. Sections that don't apply to this customer never gate.
+  const ncDone = !showNameChange || !!bools["name_change_completed"];
+  const leDone = !showLoadEnhancement || !!bools["load_enhancement_completed"];
+  const laterSectionsOpen = ncDone && leDone;
+  const pendingSectionNames = [
+    !ncDone ? "Name Change" : null,
+    !leDone ? "Load Enhancement" : null,
+  ].filter(Boolean).join(" and ");
+
   const cardCls = "bg-white border border-slate-200 rounded-2xl shadow-sm p-5";
   const gridCls = "grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-4";
 
@@ -466,6 +451,14 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
           <div className={gridCls}>
             {NC_FILES.map(([k, lbl]) => <MultiFileField key={k} docType={k} label={lbl} />)}
           </div>
+          <SectionCompleteBar
+            label="Name Change"
+            done={!!bools["name_change_completed"]}
+            doneAt={sectionAt["name_change_completed_at"] || undefined}
+            busy={sectionSaving === "name_change_completed"}
+            readOnly={readOnly}
+            onToggle={v => setSectionComplete("name_change_completed", v)}
+          />
         </div>
       )}
 
@@ -476,16 +469,28 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
           <KsebButton />
           <div className={gridCls}>
             {LE_FILES.map(([k, lbl]) => <MultiFileField key={k} docType={k} label={lbl} />)}
-            <div className="flex flex-col gap-3 justify-center">
-              {LE_CHECKS.map(([k, lbl]) => (
-                <CheckRow key={k} label={lbl} checked={!!bools[k]} disabled={readOnly} onChange={v => setBool(k, v)} />
-              ))}
-            </div>
           </div>
+          <SectionCompleteBar
+            label="Load Enhancement"
+            done={!!bools["load_enhancement_completed"]}
+            doneAt={sectionAt["load_enhancement_completed_at"] || undefined}
+            busy={sectionSaving === "load_enhancement_completed"}
+            readOnly={readOnly}
+            onToggle={v => setSectionComplete("load_enhancement_completed", v)}
+          />
+        </div>
+      )}
+
+      {/* MNRE / Loan open once the sections above are signed off. */}
+      {!laterSectionsOpen && (
+        <div className="bg-amber-50/60 border border-amber-100 rounded-2xl p-5 text-sm text-amber-700">
+          Complete the <b>{pendingSectionNames}</b> section{pendingSectionNames.includes(" and ") ? "s" : ""} above to open
+          the For MNRE{showLoan ? " and For Loan" : ""} section{showLoan ? "s" : ""}.
         </div>
       )}
 
       {/* For MNRE — always shown, mandatory */}
+      {laterSectionsOpen && (
       <div className={cardCls}>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <SectionTitle>For MNRE <span className="text-rose-500 normal-case">(mandatory)</span></SectionTitle>
@@ -507,19 +512,27 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
           <PdfMultiField docType={MNRE_PDF[0]} label={MNRE_PDF[1]} />
         </div>
       </div>
+      )}
 
       {/* For Loan — only if loan == yes */}
-      {showLoan && (
+      {laterSectionsOpen && showLoan && (
         <div className={cardCls}>
           <SectionTitle>For Loan</SectionTitle>
           <div className={gridCls}>
             <KycGroup fields={LOAN_KYC} />
             {LOAN_FILES.map(([k, lbl]) => <MultiFileField key={k} docType={k} label={lbl} />)}
             <div className="sm:col-span-2 lg:col-span-3">
-              <CheckRow label="Loan above ₹2 lakh" checked={!!bools["loan_above_2_lakh"]} disabled={readOnly} onChange={v => setBool("loan_above_2_lakh", v)} />
-              {bools["loan_above_2_lakh"] && <p className="text-[10px] text-slate-400 mt-1">ITR is required for loans above ₹2 lakh.</p>}
+              <p className="text-[11px] text-slate-500">
+                Required loan amount:{" "}
+                <span className="font-semibold text-slate-700">
+                  {Number.isFinite(loanAmount) ? `₹${loanAmount.toLocaleString("en-IN")}` : "not recorded on the site visit"}
+                </span>
+                {loanAboveItrThreshold
+                  ? " — above ₹2 lakh, so an ITR report is required."
+                  : " — ITR is required only for loans above ₹2 lakh."}
+              </p>
             </div>
-            {bools["loan_above_2_lakh"] && <MultiFileField docType={LOAN_ITR[0]} label={LOAN_ITR[1]} />}
+            {loanAboveItrThreshold && <MultiFileField docType={LOAN_ITR[0]} label={LOAN_ITR[1]} />}
             <PdfMultiField docType={LOAN_PDF[0]} label={LOAN_PDF[1]} />
           </div>
         </div>

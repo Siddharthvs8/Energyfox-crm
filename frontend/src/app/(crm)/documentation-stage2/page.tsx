@@ -14,6 +14,7 @@ type Stage2Lead = {
   location: string | null;
   product_name: string | null;
   documentation_staff_name: string | null;
+  doc_stage2_staff_name: string | null;
   is_complete: boolean;
   pushed_at: string | null;
 };
@@ -106,8 +107,8 @@ export default function DocumentationStage2Page() {
                 </div>
                 <div className="flex items-center gap-4 flex-shrink-0">
                   <div className="hidden md:block text-right">
-                    <p className="text-[10px] text-slate-400 uppercase tracking-wide">Doc Staff</p>
-                    <p className="text-xs font-semibold text-slate-600">{l.documentation_staff_name || "Unassigned"}</p>
+                    <p className="text-[10px] text-slate-400 uppercase tracking-wide">Stage 2 Staff</p>
+                    <p className={`text-xs font-semibold ${l.doc_stage2_staff_name ? "text-slate-600" : "text-amber-600"}`}>{l.doc_stage2_staff_name || "Unassigned"}</p>
                   </div>
                   <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" className="text-slate-300"><polyline points="9 18 15 12 9 6" /></svg>
                 </div>

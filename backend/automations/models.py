@@ -27,14 +27,30 @@ class AutomationRule(models.Model):
     """
 
     TRIGGER_CHOICES = [
+        # ── Lead lifecycle (statuses: new, follow_up, positive, interested,
+        #    not_interested, converted) ──
         ('lead_created', 'Lead Created'),
         ('lead_status_changed', 'Lead Status Changed'),
         ('lead_updated', 'Lead Updated'),
+        ('lead_converted', 'Lead Converted'),
+        ('lead_lost', 'Deal Marked Lost'),
+        ('lead_inactive', 'Lead Inactive (no activity)'),
+        # ── Pipeline stages (post-conversion modules) ──
+        ('pushed_to_documentation', 'Closed Deal (Pushed to Documentation)'),
+        ('payment_partially_paid', 'Payment Verified — Partially Paid'),
+        ('payment_fully_paid', 'Payment Fully Paid (moves to Purchase)'),
+        ('project_completed', 'Project Completed (installation done)'),
+        ('doc_stage2_completed', 'Documentation Stage 2 Completed'),
+        ('warranty_completed', 'Warranty Completed'),
+        ('liasoning_completed', 'Liasoning & Service Completed'),
+        ('discom_approved', 'Discom Approval — Approved'),
+        ('discom_not_approved', 'Discom Approval — Not Approved'),
+        ('maintenance_scheduled', 'Periodic Maintenance Scheduled'),
+        # ── Activity ──
         ('task_created', 'Task Created'),
         ('task_completed', 'Task Completed'),
         ('campaign_lead_added', 'Lead Added to Campaign'),
         ('call_logged', 'Call Logged'),
-        ('lead_inactive', 'Lead Inactive (no activity)'),
         ('whatsapp_received', 'WhatsApp Reply Received'),
     ]
 
