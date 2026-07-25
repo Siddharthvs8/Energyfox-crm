@@ -7,6 +7,7 @@ the app EC2 instance via systemd timers (no extra service needed for 50 users).
 |-----|---------|---------|--------------|
 | Automation queue | `process_automation_queue` | every 5 min | resumes timed automation steps, flushes queued bulk WhatsApp, fires `lead_inactive`, purges 7-day-old Trash, trims automation logs >90 days |
 | Archive old leads | `archive_old_leads` | nightly 02:30 | archives terminal leads (lost / not interested / fully delivered) older than `ARCHIVE_AFTER_MONTHS` |
+| Database backup | `deploy/backup-db.sh` | nightly 03:00 | `pg_dump` of the CRM database, gzipped to `/var/backups/energyfox`, keeping 30 |
 | Certificate backup | `deploy/backup-certs.sh` | nightly 03:15 | snapshots `certbot/conf` (certs, private keys, ACME account key, renewal config) to `/var/backups/energyfox`, keeping 30 |
 
 If you run the stack with Docker Compose, prefix the command with
@@ -66,6 +67,32 @@ Persistent=true
 WantedBy=timers.target
 ```
 
+`energyfox-dbbackup.service`
+```ini
+[Unit]
+Description=EnergyFox database backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/energyfox
+ExecStart=/opt/energyfox/deploy/backup-db.sh
+```
+
+`energyfox-dbbackup.timer`
+```ini
+[Unit]
+Description=Back up the EnergyFox database nightly
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
 `energyfox-certbackup.service`
 ```ini
 [Unit]
@@ -95,9 +122,46 @@ WantedBy=timers.target
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now energyfox-queue.timer energyfox-archive.timer energyfox-certbackup.timer
+sudo systemctl enable --now energyfox-queue.timer energyfox-archive.timer \
+                            energyfox-dbbackup.timer energyfox-certbackup.timer
 systemctl list-timers | grep energyfox      # confirm next run times
 ```
+
+## Restoring the database
+
+Check what you have, then prove the archive actually loads before trusting it —
+`--restore-test` restores into a scratch database, compares the table count
+against production, and drops it again:
+
+```bash
+sudo ls -lh /var/backups/energyfox/db-*.sql.gz
+sudo ./deploy/backup-db.sh --restore-test                    # newest archive
+sudo ./deploy/backup-db.sh --restore-test /var/backups/energyfox/db-<ts>.sql.gz
+```
+
+To actually restore, load into an **empty** database. The dump carries no `DROP`
+statements, so replaying it over a populated database gives "already exists"
+errors on every object rather than replacing anything:
+
+```bash
+cd /opt/energyfox
+docker compose stop backend                                     # stop writes first
+docker compose exec -T db dropdb   -U energyfox --if-exists energyfox_crm
+docker compose exec -T db createdb -U energyfox energyfox_crm
+zcat /var/backups/energyfox/db-<ts>.sql.gz \
+  | docker compose exec -T db psql -v ON_ERROR_STOP=1 -U energyfox -d energyfox_crm
+docker compose start backend
+```
+
+`ON_ERROR_STOP=1` matters — without it psql reports success after skipping
+statements that failed, leaving a half-restored database that looks fine.
+
+Every `docker compose exec` here needs `-T`, and inside a script also
+`</dev/null`, or the client eats the rest of the script off stdin.
+
+**Uploads are not included.** `pg_dump` covers the database only; user uploads
+live in the `backend_media` Docker volume. That volume is nearly empty today,
+but it will not stay that way once invoices and documents are attached.
 
 ## Restoring certificates
 

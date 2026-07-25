@@ -86,11 +86,19 @@ docker compose restart backend
 docker compose exec db psql -U "$DB_USER" -d "$DB_NAME"
 ```
 
-Backup the database (do this before any migration-heavy release):
+The database and the TLS certificates are backed up nightly by systemd timers to
+`/var/backups/energyfox` (see `energyfox-cron.md` for restore steps). Take an
+extra one by hand before any migration-heavy release:
 
 ```bash
-docker compose exec -T db pg_dump -U "$DB_USER" "$DB_NAME" | gzip > ~/energyfox-$(date +%F).sql.gz
+sudo ./deploy/backup-db.sh          # verified + rotated, same as the nightly run
+sudo ./deploy/backup-db.sh --restore-test
 ```
+
+Both backup sets sit on the same EBS volume as the data they protect, so they
+cover accidental deletion and bad releases — **not** loss of the instance. EBS
+snapshots (AWS Backup or a DLM policy) are what covers that, and they capture the
+`backend_media` volume too, which `pg_dump` does not.
 
 Media is on the instance disk in the `backend_media` volume. Set
 `AWS_STORAGE_BUCKET_NAME` in `backend/.env` to move uploads to S3 (see
