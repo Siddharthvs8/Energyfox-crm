@@ -222,9 +222,13 @@ if not DEBUG:
     SECURE_CONTENT_TYPE_NOSNIFF = True
     X_FRAME_OPTIONS = 'DENY'
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-    SESSION_COOKIE_SECURE = True
-    CSRF_COOKIE_SECURE = True
-    SECURE_HSTS_SECONDS = 31536000
+    # Cookies are Secure-only by default. Set SECURE_COOKIES=False when the site is
+    # served over plain HTTP (e.g. a bare-IP EC2 deploy before TLS is in place) —
+    # otherwise the browser withholds the session/CSRF cookies and admin login fails.
+    SECURE_COOKIES = os.environ.get('SECURE_COOKIES', 'True').lower() in ('true', '1', 'yes')
+    SESSION_COOKIE_SECURE = SECURE_COOKIES
+    CSRF_COOKIE_SECURE = SECURE_COOKIES
+    SECURE_HSTS_SECONDS = 31536000 if SECURE_COOKIES else 0
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
     # Redirect http→https at the app. Leave off (default) when the ALB / nginx

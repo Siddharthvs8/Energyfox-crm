@@ -1,5 +1,9 @@
 .env
 backend/.env
+# Generated on the server by deploy/enable-tls.sh (from nginx-tls.conf.template)
+nginx-tls.conf
+# Let's Encrypt account keys, certificates and the ACME webroot
+certbot/
 *.pyc
 __pycache__/
 .next/
