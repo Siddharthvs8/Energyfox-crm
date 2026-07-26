@@ -38,11 +38,21 @@ class BranchSerializer(serializers.ModelSerializer):
 class UserSerializer(serializers.ModelSerializer):
     role_label = serializers.CharField(source='get_role_display', read_only=True)
     branch_name = serializers.CharField(source='branch.name', read_only=True, default=None)
+    # Whether the caller may edit/remove this account — lets the Team page hide
+    # controls that the API would refuse anyway.
+    can_manage = serializers.SerializerMethodField()
+
+    def get_can_manage(self, obj):
+        request = self.context.get('request')
+        actor = getattr(request, 'user', None)
+        if actor is None or not actor.is_authenticated:
+            return False
+        return bool(actor.pk == obj.pk or actor.can_manage(obj))
 
     class Meta:
         model = User
         fields = ['id', 'username', 'first_name', 'last_name', 'email', 'password',
-                  'role', 'role_label', 'branch', 'branch_name',
+                  'role', 'role_label', 'branch', 'branch_name', 'can_manage',
                   'is_staff', 'is_manager', 'is_general_manager', 'team', 'phone', 'voxbay_extension']
         extra_kwargs = {
             'password': {'write_only': True},

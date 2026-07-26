@@ -47,6 +47,7 @@ urlpatterns = [
     path('api/campaigns/', include('campaigns.urls')),
     path('api/automations/', include('automations.urls')),
     path('api/whatsapp/', include('messaging.urls')),
+    path('api/email/', include('messaging.email_urls')),
     path('api/', include(router.urls)),
     path('api/webhooks/meta-leads/', meta_leads_webhook, name='meta-leads-webhook'),
     path('api/webhooks/meta-leads', meta_leads_webhook, name='meta-leads-webhook-no-slash'),

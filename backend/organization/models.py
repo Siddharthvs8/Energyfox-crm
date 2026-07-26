@@ -53,6 +53,22 @@ class OrgSettings(models.Model):
     whatsapp_business_account_id = models.CharField(max_length=64, blank=True, default='')
     whatsapp_verify_token = models.CharField(max_length=128, blank=True, default='')
 
+    # ── Email (SMTP) ──
+    # Configured from Settings like the WhatsApp integration, so email doesn't
+    # depend on server env vars. Blank host ⇒ fall back to the EMAIL_* env
+    # settings (and then to Django's console backend in dev).
+    email_host = models.CharField(max_length=255, blank=True, default='')
+    email_port = models.IntegerField(default=587)
+    email_use_tls = models.BooleanField(default=True)
+    email_use_ssl = models.BooleanField(default=False)
+    email_host_user = models.CharField(max_length=255, blank=True, default='')
+    email_host_password = models.CharField(max_length=255, blank=True, default='')
+    email_from_name = models.CharField(max_length=120, blank=True, default='EnergyFox')
+    email_from_address = models.EmailField(blank=True, default='')
+    email_signature = models.TextField(
+        blank=True, default='',
+        help_text="Appended to outgoing emails sent from the CRM")
+
     # ── Custom Lead Statuses ──
     custom_lead_statuses = models.JSONField(default=list, blank=True)
 

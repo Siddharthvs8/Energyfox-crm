@@ -83,6 +83,8 @@ function TeamPageInner() {
   const [workspaceTeams, setWorkspaceTeams] = useState<any[]>([]);
   const [branches, setBranches] = useState<any[]>([]);
   const [currentUser, setCurrentUser] = useState<any>(null);
+  // Roles this user may grant (null until loaded = no filtering yet).
+  const [assignableRoles, setAssignableRoles] = useState<string[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<"members" | "teams">("members");
   const [showModal, setShowModal] = useState(false);
@@ -111,17 +113,19 @@ function TeamPageInner() {
     const token = localStorage.getItem(`${domain}_access`);
     if (!token) return;
     try {
-      const [tRes, wtRes, meRes, subRes, brRes] = await Promise.all([
+      const [tRes, wtRes, meRes, subRes, brRes, arRes] = await Promise.all([
         fetch(`${getApiBase(domain)}/api/users/`, { headers: { Authorization: `Bearer ${token}` } }),
         fetch(`${getApiBase(domain)}/api/teams/`, { headers: { Authorization: `Bearer ${token}` } }),
         fetch(`${getApiBase(domain)}/api/users/me/`, { headers: { Authorization: `Bearer ${token}` } }),
         fetch(`${getApiBase(domain)}/api/subscription/`, { headers: { Authorization: `Bearer ${token}` } }),
         fetch(`${getApiBase(domain)}/api/branches/`, { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`${getApiBase(domain)}/api/users/assignable-roles/`, { headers: { Authorization: `Bearer ${token}` } }),
       ]);
       const tData = await tRes.json(); setTeam(Array.isArray(tData) ? tData : tData.results || []);
       const wtData = await wtRes.json(); setWorkspaceTeams(Array.isArray(wtData) ? wtData : wtData.results || []);
       if (brRes.ok) { const brData = await brRes.json(); setBranches(Array.isArray(brData) ? brData : brData.results || []); }
       if (meRes.ok) setCurrentUser(await meRes.json());
+      if (arRes.ok) { const ar = await arRes.json(); if (Array.isArray(ar)) setAssignableRoles(ar.map((r: any) => r.value)); }
       if (subRes.ok) {
         const subData = await subRes.json();
         setMaxUsers(subData.max_users || 10);
@@ -166,14 +170,16 @@ function TeamPageInner() {
     try {
       const r = await fetch(url, { method, headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) });
       if (r.ok) { setShowModal(false); setEditingUser(null); setForm(blankForm); fetchTeam(); }
-      else { const err = await r.json(); alert(JSON.stringify(err)); }
+      else { const err = await r.json(); alert(err.detail || JSON.stringify(err)); }
     } catch {}
   };
 
   const deleteUser = async (id: number) => {
     if (!confirm("Remove this team member?")) return;
     const token = localStorage.getItem(`${domain}_access`);
-    await fetch(`${getApiBase(domain)}/api/users/${id}/`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+    const r = await fetch(`${getApiBase(domain)}/api/users/${id}/`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+    // Surface refusals (e.g. removing a peer admin) instead of failing silently.
+    if (!r.ok) { try { const e = await r.json(); alert(e.detail || "Could not remove this member."); } catch { alert("Could not remove this member."); } }
     fetchTeam();
   };
 
@@ -309,10 +315,12 @@ function TeamPageInner() {
                       </div>
                     </div>
                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      {(currentUser?.is_staff || currentUser?.is_general_manager || member.id === currentUser?.id) && (
+                      {/* can_manage comes from the API: your own profile, or an
+                          account below you in the hierarchy. */}
+                      {member.can_manage && (
                         <button onClick={() => openEditModal(member)} className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-all"><I.Edit /></button>
                       )}
-                      {currentUser?.is_staff && member.id !== currentUser?.id && (
+                      {currentUser?.is_staff && member.can_manage && member.id !== currentUser?.id && (
                         <button onClick={() => deleteUser(member.id)} className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all"><I.Trash /></button>
                       )}
                     </div>
@@ -421,7 +429,10 @@ function TeamPageInner() {
               <label className="block text-xs font-semibold text-slate-600 mb-1.5">Role</label>
               <div className="relative">
                 <select disabled={!currentUser?.is_staff && !currentUser?.is_general_manager} value={form.role} onChange={e => setForm({...form, role: e.target.value})} className="w-full appearance-none bg-slate-50 border border-slate-200 rounded-xl pl-4 pr-8 py-2.5 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer disabled:opacity-60 transition-all">
-                  {ROLES.filter(r => currentUser?.role === "superadmin" || !["admin", "superadmin"].includes(r.value)).map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+                  {/* Only roles below the current user's own — appointing an
+                      admin is a Super Admin's job. */}
+                  {ROLES.filter(r => assignableRoles === null || assignableRoles.includes(r.value) || r.value === form.role)
+                        .map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
                 </select>
                 <div className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"><I.ChevronDown /></div>
               </div>

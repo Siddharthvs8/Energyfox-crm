@@ -91,6 +91,32 @@ ROLE_BOOL_MAP = {
 }
 
 
+# Seniority of each role. A user may only create, edit or delete accounts that
+# rank strictly *below* their own — so an admin can manage the whole company but
+# cannot touch another admin or a super admin (including resetting their
+# password), and only a super admin can appoint an admin.
+ROLE_RANK = {
+    ROLE_SUPERADMIN: 100,
+    ROLE_ADMIN: 90,
+    ROLE_COO: 80,
+    ROLE_SALES_MANAGER: 70,
+    ROLE_DOC_MANAGER: 70,
+    ROLE_BRANCH_MANAGER: 60,
+    ROLE_PROJECT_MANAGER: 40,
+    ROLE_DOC_STAFF: 30,
+    ROLE_ACCOUNTS_STAFF: 30,
+    ROLE_PURCHASE_STAFF: 30,
+    ROLE_LIASONING_OFFICER: 30,
+    ROLE_BDE: 20,
+    ROLE_TELE_CALLER: 20,
+}
+
+
+def role_rank(role):
+    """Seniority of a role; unknown/blank roles sort to the bottom."""
+    return ROLE_RANK.get(role or '', 0)
+
+
 def _infer_role_from_flags(*, is_superuser, is_staff, is_general_manager, is_manager):
     """Bootstrap a role for legacy rows / createsuperuser (role left blank)."""
     if is_superuser:
@@ -138,6 +164,37 @@ class User(AbstractUser):
     def branch_scoped(self):
         return self.role == ROLE_BRANCH_MANAGER
 
+    # ── Account management hierarchy ──
+    @property
+    def rank(self):
+        """This user's seniority (see ROLE_RANK)."""
+        return role_rank(self.role)
+
+    def can_manage(self, other):
+        """Whether this user may edit or delete `other`'s account.
+
+        Only accounts strictly below you in the hierarchy — so an admin cannot
+        edit another admin or a super admin (which would otherwise let them reset
+        that account's password and take it over). Editing your *own* profile is
+        handled separately by the caller.
+        """
+        if other is None or not self.is_authenticated:
+            return False
+        if self.pk == other.pk:
+            return True
+        return self.rank > role_rank(other.role)
+
+    def can_assign_role(self, role):
+        """Whether this user may grant `role` — only roles below their own, so
+        appointing an admin is a super admin's job."""
+        if not role:
+            return True          # no role change requested
+        return self.rank > role_rank(role)
+
+    def assignable_roles(self):
+        """Roles this user is allowed to grant, for the Team form's picker."""
+        return [r for r, _ in ROLE_CHOICES if self.rank > role_rank(r)]
+
     def managed_user_ids(self):
         """Ids of the people this manager oversees — members of the teams they
         head, everyone in their branch (branch managers), and themselves.
@@ -154,4 +211,25 @@ class User(AbstractUser):
         if self.branch_scoped and self.branch_id:
             ids.update(
                 User.objects.filter(branch_id=self.branch_id).values_list('id', flat=True))
+        return ids
+
+    # Roles that own leads in the sales pipeline, so a lead can be handed to them.
+    LEAD_OWNER_ROLES = (ROLE_TELE_CALLER, ROLE_BDE)
+
+    def assignable_lead_user_ids(self):
+        """Ids this user may assign a lead to, or ``None`` when unrestricted.
+
+        Admins / GMs / managers can assign to anyone. An agent (tele caller, BDE)
+        may hand a lead to their own team and to other front-line agents — teams
+        are optional in this install, so team-only scoping would leave a teamless
+        agent able to assign to nobody but themselves.
+        """
+        if self.is_staff or self.is_general_manager or self.is_manager:
+            return None
+        ids = {self.id}
+        if self.team_id:
+            ids.update(User.objects.filter(team_id=self.team_id, is_active=True)
+                       .values_list('id', flat=True))
+        ids.update(User.objects.filter(role__in=self.LEAD_OWNER_ROLES, is_active=True)
+                   .values_list('id', flat=True))
         return ids

@@ -39,6 +39,15 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
     whatsapp_access_token: "",
     whatsapp_business_account_id: "",
     whatsapp_verify_token: "",
+    email_host: "",
+    email_port: 587,
+    email_use_tls: true,
+    email_use_ssl: false,
+    email_host_user: "",
+    email_host_password: "",
+    email_from_name: "",
+    email_from_address: "",
+    email_signature: "",
     theme: "indigo",
     warranty_company_name: "",
     warranty_cin: "",
@@ -53,6 +62,9 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
   });
 
   const [isSuperAdmin, setIsSuperAdmin] = useState(false);
+  // Whether outgoing email is actually working, and a way to prove it.
+  const [emailStatus, setEmailStatus] = useState<any>(null);
+  const [testingEmail, setTestingEmail] = useState(false);
   const [themeSaving, setThemeSaving] = useState("");
 
   const [logoFile, setLogoFile] = useState<File | null>(null);
@@ -177,6 +189,35 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
     }
   };
 
+  const loadEmailStatus = async () => {
+    const token = localStorage.getItem(`${domain}_access`);
+    if (!token) return;
+    try {
+      const r = await fetch(`${getApiBase(domain)}/api/email/status/`, { headers: { Authorization: `Bearer ${token}` } });
+      if (r.ok) setEmailStatus(await r.json());
+    } catch { /* banner just stays hidden */ }
+  };
+  useEffect(() => { loadEmailStatus(); }, [domain]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const sendTestEmail = async () => {
+    const to = window.prompt("Send the test email to:", tenantData.email_from_address || tenantData.email_host_user || "");
+    if (!to) return;
+    setTestingEmail(true); setError(""); setSuccess("");
+    try {
+      const token = localStorage.getItem(`${domain}_access`);
+      const r = await fetch(`${getApiBase(domain)}/api/email/test/`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ to }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) setSuccess(`Test email sent to ${d.to} from ${d.from}.`);
+      else setError(d.error || d.detail || "Test email failed.");
+      loadEmailStatus();
+    } catch { setError("Network error sending the test email."); }
+    finally { setTestingEmail(false); }
+  };
+
   // Instant-apply + persist the accent theme (super admin only).
   const selectTheme = async (key: string) => {
     setTenantData(p => ({ ...p, theme: key }));
@@ -226,6 +267,15 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
     formData.append("whatsapp_access_token", tenantData.whatsapp_access_token || "");
     formData.append("whatsapp_business_account_id", tenantData.whatsapp_business_account_id || "");
     formData.append("whatsapp_verify_token", tenantData.whatsapp_verify_token || "");
+    formData.append("email_host", tenantData.email_host || "");
+    formData.append("email_port", String(tenantData.email_port || 587));
+    formData.append("email_use_tls", String(!!tenantData.email_use_tls));
+    formData.append("email_use_ssl", String(!!tenantData.email_use_ssl));
+    formData.append("email_host_user", tenantData.email_host_user || "");
+    formData.append("email_host_password", tenantData.email_host_password || "");
+    formData.append("email_from_name", tenantData.email_from_name || "");
+    formData.append("email_from_address", tenantData.email_from_address || "");
+    formData.append("email_signature", tenantData.email_signature || "");
     if (invoiceFile) {
       formData.append("invoice_template", invoiceFile);
     }
@@ -611,6 +661,103 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
                   <label className="block text-sm font-semibold text-slate-700 mb-2">Inbound Webhook URL <span className="text-slate-400 font-normal">(paste into Meta → Configuration)</span></label>
                   <input readOnly onFocus={(e) => e.target.select()} value={`${getApiBase(domain)}/api/whatsapp/webhook`}
                     className="w-full bg-slate-100 border border-slate-200 rounded-xl px-4 py-3 text-xs font-mono text-slate-600" />
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-6 border-t border-slate-100">
+              <h3 className="text-lg font-bold text-slate-900 mb-1">Email Integration <span className="text-xs font-semibold text-indigo-600 align-middle">SMTP</span></h3>
+              <p className="text-sm text-slate-500 mb-4">
+                Outgoing email for the CRM — customer emails, automation &quot;Send Email&quot; actions and
+                purchase orders to vendors. Gmail / Google Workspace needs an <b>App Password</b>, not your login password.
+              </p>
+
+              {emailStatus && (
+                <div className={`mb-4 flex flex-wrap items-center gap-3 px-4 py-3 rounded-xl border text-sm ${emailStatus.configured ? "bg-emerald-50 border-emerald-100 text-emerald-700" : "bg-amber-50 border-amber-100 text-amber-700"}`}>
+                  <span className="font-semibold">
+                    {emailStatus.configured
+                      ? `✓ Connected — sending as ${emailStatus.from_address}`
+                      : "Not configured — emails are written to the server log instead of being sent."}
+                  </span>
+                  {emailStatus.configured && emailStatus.source === "env" && (
+                    <span className="text-[11px] text-emerald-600">(from server environment; fill in below to manage it here)</span>
+                  )}
+                </div>
+              )}
+
+              <div className="grid sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-2">SMTP Host</label>
+                  <input type="text" value={tenantData.email_host || ""}
+                    onChange={(e) => setTenantData({ ...tenantData, email_host: e.target.value })}
+                    placeholder="smtp.gmail.com"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-2">Port</label>
+                  <input type="number" value={tenantData.email_port ?? 587}
+                    onChange={(e) => setTenantData({ ...tenantData, email_port: parseInt(e.target.value) || 587 })}
+                    placeholder="587"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
+                  <p className="text-xs text-slate-400 mt-2">587 with TLS, or 465 with SSL.</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-2">Username</label>
+                  <input type="text" value={tenantData.email_host_user || ""}
+                    onChange={(e) => setTenantData({ ...tenantData, email_host_user: e.target.value })}
+                    placeholder="you@energyfox.in"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-2">Password / App Password</label>
+                  <input type="password" value={tenantData.email_host_password || ""}
+                    onChange={(e) => setTenantData({ ...tenantData, email_host_password: e.target.value })}
+                    placeholder="•••• (leave masked to keep current)"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
+                </div>
+                <div className="sm:col-span-2 flex flex-wrap items-center gap-6">
+                  <label className="flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer">
+                    <input type="checkbox" checked={!!tenantData.email_use_tls}
+                      onChange={(e) => setTenantData({ ...tenantData, email_use_tls: e.target.checked, email_use_ssl: e.target.checked ? false : tenantData.email_use_ssl })}
+                      className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500/30" />
+                    Use TLS (port 587)
+                  </label>
+                  <label className="flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer">
+                    <input type="checkbox" checked={!!tenantData.email_use_ssl}
+                      onChange={(e) => setTenantData({ ...tenantData, email_use_ssl: e.target.checked, email_use_tls: e.target.checked ? false : tenantData.email_use_tls })}
+                      className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500/30" />
+                    Use SSL (port 465)
+                  </label>
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-2">From Name</label>
+                  <input type="text" value={tenantData.email_from_name || ""}
+                    onChange={(e) => setTenantData({ ...tenantData, email_from_name: e.target.value })}
+                    placeholder="EnergyFox"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-2">From Address</label>
+                  <input type="email" value={tenantData.email_from_address || ""}
+                    onChange={(e) => setTenantData({ ...tenantData, email_from_address: e.target.value })}
+                    placeholder="info@energyfox.in"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
+                  <p className="text-xs text-slate-400 mt-2">Defaults to the username if left blank.</p>
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block text-sm font-semibold text-slate-700 mb-2">Email Signature</label>
+                  <textarea rows={3} value={tenantData.email_signature || ""}
+                    onChange={(e) => setTenantData({ ...tenantData, email_signature: e.target.value })}
+                    placeholder={"Regards,\nEnergyFox Consultants Pvt Ltd\n9526 396 823 · energyfox.in"}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
+                  <p className="text-xs text-slate-400 mt-2">Appended to every email the CRM sends.</p>
+                </div>
+                <div className="sm:col-span-2 flex flex-wrap items-center gap-3">
+                  <button type="button" onClick={sendTestEmail} disabled={testingEmail}
+                    className="px-5 py-2.5 bg-slate-800 text-white rounded-xl text-sm font-semibold hover:bg-slate-900 disabled:opacity-50 transition">
+                    {testingEmail ? "Sending…" : "Send Test Email"}
+                  </button>
+                  <span className="text-xs text-slate-400">Save first, then send a test to yourself to confirm it works.</span>
                 </div>
               </div>
             </div>

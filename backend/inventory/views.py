@@ -63,16 +63,19 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
             f"Regards,\nEnergyFox"
         )
 
-        msg = EmailMessage(subject=subject, body=body, to=recipients,
-                           from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', None))
+        # Sent through the CRM's configured email account (Settings → Email
+        # Integration) and recorded in the email outbox.
+        from messaging.email import send_and_log
+        attachments = []
         pdf = request.FILES.get('pdf')
         if pdf:
-            msg.attach(f"{po.number or 'purchase-order'}.pdf", pdf.read(), 'application/pdf')
+            attachments.append((f"{po.number or 'purchase-order'}.pdf", pdf.read(), 'application/pdf'))
 
-        try:
-            msg.send(fail_silently=False)
-        except Exception as exc:
-            return Response({'error': f'Email failed: {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
+        log = send_and_log(to=recipients, subject=subject, body=body, kind='purchase_order',
+                           attachments=attachments,
+                           created_by=request.user if request.user.is_authenticated else None)
+        if log.status != 'sent':
+            return Response({'error': f'Email failed: {log.error}'}, status=status.HTTP_502_BAD_GATEWAY)
 
         return Response({'status': 'sent', 'to': recipients})
 

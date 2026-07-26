@@ -264,10 +264,26 @@ def _evaluate_conditions(rule: AutomationRule, obj) -> bool:
     return all(results)
 
 
+# Condition fields resolved through a relation rather than a plain attribute, so
+# rules can match on a human name instead of a raw id. Keyed by the field name
+# offered in the rule builder (see automations.views.metadata_options).
+_RELATED_FIELDS = {
+    # Which Meta Lead Ads account (branch) the lead arrived from.
+    'meta_integration_name': lambda o: getattr(getattr(o, 'meta_integration', None), 'name', '') or '',
+    'assigned_to_name': lambda o: (
+        f"{o.assigned_to.first_name} {o.assigned_to.last_name}".strip() or o.assigned_to.username
+    ) if getattr(o, 'assigned_to', None) else '',
+    'product_name': lambda o: getattr(getattr(o, 'product', None), 'name', '') or '',
+}
+
+
 def _check_condition(obj, field: str, operator: str, expected) -> bool:
     """Evaluate a single condition against the object."""
     try:
-        actual = getattr(obj, field, None)
+        if field in _RELATED_FIELDS:
+            actual = _RELATED_FIELDS[field](obj)
+        else:
+            actual = getattr(obj, field, None)
     except Exception:
         return False
 
@@ -693,12 +709,16 @@ def _action_send_email(params, obj, context) -> str:
     subject = _render(params.get('subject', 'An update for you'), obj)
     body = _render(params.get('body', ''), obj)
 
-    from django.conf import settings
-    from django.core.mail import send_mail
-    from_email = (getattr(settings, 'DEFAULT_FROM_EMAIL', None)
-                  or getattr(settings, 'EMAIL_HOST_USER', None)
-                  or 'no-reply@energyfox.in')
-    send_mail(subject, body, from_email, [to], fail_silently=False)
+    # Goes through the CRM's configured email account (Settings → Email
+    # Integration) and is recorded in the email outbox.
+    from messaging.email import send_and_log
+    log = send_and_log(
+        to=to, subject=subject, body=body,
+        lead=obj if isinstance(obj, Lead) else None,
+        cc=params.get('cc'), kind='automation',
+    )
+    if log.status != 'sent':
+        raise ValueError(log.error or 'Email send failed')
     return f"Email sent to {to}"
 
 

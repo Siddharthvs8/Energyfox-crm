@@ -419,7 +419,15 @@ export default function AutomationBuilder({ domain, metaOptions, editingRule, on
                                     selectedField?.type === 'select' || cond.field === 'status' ? (
                                        <select value={cond.value} onChange={e => updateCondition(i, 'value', e.target.value)} className="w-full px-3 py-2 bg-black/50 border border-white/10 rounded-lg text-sm text-white">
                                           <option value="">Select value...</option>
-                                          {statusOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                                          {/* Status keeps its labelled options; every other select
+                                              field supplies its own list (e.g. Meta integrations). */}
+                                          {cond.field === 'status'
+                                            ? statusOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)
+                                            : (selectedField?.options || []).map((opt: any) => {
+                                                const v = typeof opt === 'string' ? opt : opt.value;
+                                                const l = typeof opt === 'string' ? opt : (opt.label ?? opt.value);
+                                                return <option key={v} value={v}>{l}</option>;
+                                              })}
                                        </select>
                                     ) : (
                                        <input value={cond.value} onChange={e => updateCondition(i, 'value', e.target.value)} placeholder="Filter value" type={selectedField?.type === 'number' ? 'number' : 'text'} className="w-full px-3 py-2 bg-black/50 border border-white/10 rounded-lg text-sm text-white" />

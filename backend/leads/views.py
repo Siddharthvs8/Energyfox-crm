@@ -3120,6 +3120,18 @@ class LeadViewSet(viewsets.ModelViewSet):
         if meta_campaign_name:
             queryset = queryset.filter(meta_campaign_name__icontains=meta_campaign_name)
 
+        # Filter by the Meta integration (one per branch) the lead came from.
+        # Accepts an integration id, 'none' for leads with no integration, or a
+        # name so saved links/automation rules can use the friendly branch name.
+        meta_integration = self.request.query_params.get('meta_integration')
+        if meta_integration:
+            if meta_integration == 'none':
+                queryset = queryset.filter(meta_integration__isnull=True)
+            elif str(meta_integration).isdigit():
+                queryset = queryset.filter(meta_integration_id=int(meta_integration))
+            else:
+                queryset = queryset.filter(meta_integration__name__iexact=meta_integration)
+
         # Filter by assignee
         assigned_to = self.request.query_params.get('assigned_to')
         if assigned_to:
@@ -3260,9 +3272,29 @@ class LeadViewSet(viewsets.ModelViewSet):
         
         return queryset
 
+    @staticmethod
+    def _assignable_user_ids(user):
+        """Ids this user may hand a lead to, or None when unrestricted.
+        Mirrors the people the assignee picker offers (see
+        ``User.assignable_lead_user_ids`` / ``/api/users/assignable/``)."""
+        if not user or not user.is_authenticated:
+            return set()
+        return user.assignable_lead_user_ids()
+
     def perform_create(self, serializer):
         instance = serializer.save()
-        
+
+        # An agent who adds a lead without naming an assignee keeps it: their
+        # lead list is scoped to leads they own, so an unassigned one would
+        # otherwise vanish the moment it was created.
+        user = self.request.user
+        if (instance.assigned_to_id is None and user.is_authenticated
+                and not user.is_staff
+                and not getattr(user, 'is_general_manager', False)
+                and not getattr(user, 'is_manager', False)):
+            instance.assigned_to = user
+            instance.save(update_fields=['assigned_to'])
+
         ActivityLog.objects.create(
             activity_type='lead_created',
             description=f"New lead added: {instance.first_name} {instance.last_name}",
@@ -3289,7 +3321,17 @@ class LeadViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer):
         old_status = serializer.instance.status
         old_notes  = serializer.instance.notes or ""
-        
+
+        # Re-assignment is scoped the same way as bulk assign: agents may only
+        # hand a lead to their own team.
+        if 'assigned_to' in serializer.validated_data:
+            target = serializer.validated_data['assigned_to']
+            allowed = self._assignable_user_ids(self.request.user)
+            if target is not None and allowed is not None and target.id not in allowed:
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied('You can only assign leads to your team or another tele caller / BDE.')
+
+
         if 'status' in serializer.validated_data and old_status != serializer.validated_data['status']:
             instance = serializer.save(status_changed_at=timezone.now())
         else:
@@ -3626,6 +3668,11 @@ class LeadViewSet(viewsets.ModelViewSet):
             target_user = User.objects.get(id=user_id)
         except User.DoesNotExist:
             return Response({'error': 'Target user not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        allowed = self._assignable_user_ids(request.user)
+        if allowed is not None and target_user.id not in allowed:
+            return Response({'error': 'You can only assign leads to your team or another tele caller / BDE.'},
+                            status=status.HTTP_403_FORBIDDEN)
 
         queryset = self.get_queryset().filter(id__in=ids)
         count = queryset.update(assigned_to=target_user)

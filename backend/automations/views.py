@@ -260,6 +260,13 @@ class AutomationRuleViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def metadata_options(self, request):
         """Return available fields, operators, action types for the rule builder UI."""
+        # Live Meta integration (branch) names, so a rule can be scoped to the
+        # account a lead arrived from without typing the name by hand.
+        from leads.models import IntegrationSettings
+        meta_integration_names = [
+            n for n in IntegrationSettings.objects.exclude(name='')
+            .order_by('name').values_list('name', flat=True)
+        ]
         return Response({
             'triggers': [
                 {'value': k, 'label': v}
@@ -270,6 +277,11 @@ class AutomationRuleViewSet(viewsets.ModelViewSet):
                 {'value': 'status', 'label': 'Status', 'type': 'select', 'options': [
                     'new', 'follow_up', 'positive', 'interested', 'not_interested', 'converted',
                 ]},
+                # Which Meta Lead Ads account (branch) the lead came from — lets a
+                # rule route, assign or notify per branch.
+                {'value': 'meta_integration_name', 'label': 'Meta Integration (Branch)',
+                 'type': 'select', 'options': meta_integration_names},
+                {'value': 'meta_campaign_name', 'label': 'Meta Campaign', 'type': 'text'},
                 {'value': 'value', 'label': 'Deal Value', 'type': 'number'},
                 {'value': 'first_name', 'label': 'First Name', 'type': 'text'},
                 {'value': 'last_name', 'label': 'Last Name', 'type': 'text'},

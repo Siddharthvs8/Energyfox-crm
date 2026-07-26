@@ -182,6 +182,9 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   const [campaignsList, setCampaignsList]   = useState<{id: number, name: string}[]>([]);
   const [productsList, setProductsList]     = useState<{id: number, name: string, default_price: string}[]>([]);
   const [productFilter, setProductFilter]   = useState("all");
+  // Which Meta Lead Ads account (one per branch) the lead arrived from.
+  const [metaIntegrationFilter, setMetaIntegrationFilter] = useState("all");
+  const [integrationsList, setIntegrationsList] = useState<{id: number, name: string}[]>([]);
   const [stageFilter,   setStageFilter]     = useState("all");
   const [createdType,    setCreatedType]    = useState("all");
   const [createdParam,   setCreatedParam]   = useState("2");
@@ -272,10 +275,13 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  const canAssign = currentUser?.is_staff || currentUser?.is_general_manager || currentUser?.is_manager;
+  // Tele callers add and assign their own leads too; the backend scopes an
+  // agent's choices to their own team, and the people picker only lists those.
+  const canAssign = currentUser?.is_staff || currentUser?.is_general_manager
+    || currentUser?.is_manager || currentUser?.role === "tele_caller";
 
-  useEffect(() => { fetchLeads(); fetchTeam(); fetchCampaigns(); fetchProducts(); }, [
-    domain, statusFilter, sourceFilter, assigneeFilter, campaignFilter, productFilter, stageFilter, search,
+  useEffect(() => { fetchLeads(); fetchTeam(); fetchCampaigns(); fetchProducts(); fetchIntegrations(); }, [
+    domain, statusFilter, sourceFilter, assigneeFilter, campaignFilter, productFilter, metaIntegrationFilter, stageFilter, search,
     createdType, createdParam, createdFrom, createdTo,
     modType, modParam, modFrom, modTo,
     valueMin, valueMax, companyFilter,
@@ -288,9 +294,14 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
     const token = localStorage.getItem(`${domain}_access`);
     if (!token) return;
     try {
-      const r = await fetch(`${getApiBase(domain)}/api/users/`, { headers: { Authorization: `Bearer ${token}` } });
+      // The assignable list, not the directory: it returns exactly the people
+      // the backend will accept as an assignee for this user's role.
+      const r = await fetch(`${getApiBase(domain)}/api/users/assignable/`, { headers: { Authorization: `Bearer ${token}` } });
       const d = await r.json();
-      setTeamMembers((Array.isArray(d) ? d : d.results || []).map((u: any) => ({ id: u.id, name: `${u.first_name} ${u.last_name}`.trim() || u.username })));
+      setTeamMembers((Array.isArray(d) ? d : d.results || []).map((u: any) => ({
+        id: u.id,
+        name: u.name || `${u.first_name || ""} ${u.last_name || ""}`.trim() || u.username,
+      })));
     } catch {}
   };
 
@@ -301,6 +312,20 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
       const r = await fetch(`${getApiBase(domain)}/api/campaigns/`, { headers: { Authorization: `Bearer ${token}` } });
       const d = await r.json();
       setCampaignsList((Array.isArray(d) ? d : d.results || []).map((c: any) => ({ id: c.id, name: c.name })));
+    } catch {}
+  };
+
+  // Meta integrations (one per branch) — used by the "Meta Integration" filter.
+  const fetchIntegrations = async () => {
+    const token = localStorage.getItem(`${domain}_access`);
+    if (!token) return;
+    try {
+      const r = await fetch(`${getApiBase(domain)}/api/integration-settings/`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) return;   // non-admins can't list integrations; filter just stays hidden
+      const d = await r.json();
+      setIntegrationsList((Array.isArray(d) ? d : d.results || [])
+        .filter((i: any) => i.name)
+        .map((i: any) => ({ id: i.id, name: i.name })));
     } catch {}
   };
 
@@ -384,6 +409,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
     if (assigneeFilter !== "all") q.append("assigned_to", assigneeFilter);
     if (campaignFilter !== "all") q.append("campaign",    campaignFilter);
     if (productFilter  !== "all") q.append("product",     productFilter);
+    if (metaIntegrationFilter !== "all") q.append("meta_integration", metaIntegrationFilter);
     if (stageFilter    !== "all") q.append("stage",       stageFilter);
     if (search)                   q.append("search", search);
     if (valueMin)                 q.append("value_min", valueMin);
@@ -979,6 +1005,18 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
               {campaignsList.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </div>
+
+          {/* Meta integration (branch) filter — only useful once one exists */}
+          {integrationsList.length > 0 && (
+            <div className="flex-shrink-0 w-full sm:w-[170px]">
+              <select value={metaIntegrationFilter} onChange={e => { setMetaIntegrationFilter(e.target.value); setPage(1); }}
+                className="dropdown-premium w-full">
+                <option value="all">All Meta Accounts</option>
+                <option value="none">Not from Meta</option>
+                {integrationsList.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
+              </select>
+            </div>
+          )}
 
           {/* Product filter */}
           <div className="flex-shrink-0 w-full sm:w-[150px]">

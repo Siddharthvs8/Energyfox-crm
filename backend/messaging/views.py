@@ -257,3 +257,94 @@ class WhatsAppMessagesView(APIView):
             'status': m.status, 'error': m.error,
             'created_at': timezone.localtime(m.created_at).isoformat(),
         } for m in rows])
+
+
+# ── Email ────────────────────────────────────────────────────────────────────
+class EmailStatusView(APIView):
+    """Whether outgoing email is configured, and from where (Settings vs env)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from .email import config_status
+        return Response(config_status())
+
+
+class EmailSendView(APIView):
+    """Send an email now — to a lead, or to an explicit address."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from leads.models import Lead
+        from .email import send_and_log
+
+        data = request.data or {}
+        lead = None
+        to = data.get('to')
+        lead_id = data.get('lead_id')
+        if lead_id:
+            lead = Lead.objects.filter(id=lead_id).first()
+            if lead and not to:
+                to = lead.email
+        if not to:
+            return Response({'detail': 'No recipient address.'}, status=400)
+        subject = (data.get('subject') or '').strip()
+        if not subject:
+            return Response({'detail': 'A subject is required.'}, status=400)
+
+        log = send_and_log(
+            to=to, subject=subject, body=data.get('body', ''), lead=lead,
+            cc=data.get('cc'), kind=data.get('kind') or 'manual',
+            created_by=request.user if request.user.is_authenticated else None,
+        )
+        ok = log.status == 'sent'
+        # Emails to a customer belong in that customer's history.
+        if ok and lead is not None:
+            try:
+                from leads.models import ActivityLog
+                ActivityLog.objects.create(
+                    activity_type='note_added',
+                    description=f"Email sent to {log.to_email}: {log.subject}",
+                    actor=request.user if request.user.is_authenticated else None,
+                    lead=lead, extra={'channel': 'email'})
+            except Exception:
+                pass
+        return Response({'id': log.id, 'status': log.status, 'error': log.error},
+                        status=200 if ok else 400)
+
+
+class EmailTestView(APIView):
+    """Send a test email to verify the SMTP settings. Admins only."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        if not request.user.is_staff:
+            return Response({'detail': 'Only admins can send a test email.'}, status=403)
+        from .email import send_test, from_address
+        to = (request.data or {}).get('to') or request.user.email
+        if not to:
+            return Response({'detail': 'No address to send the test to — add one to your profile.'},
+                            status=400)
+        log = send_test(to, created_by=request.user)
+        ok = log.status == 'sent'
+        return Response({'status': log.status, 'to': log.to_email,
+                         'from': from_address(), 'error': log.error},
+                        status=200 if ok else 400)
+
+
+class EmailMessagesView(APIView):
+    """Recent emails (for a lead, or the latest across the workspace)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from .models import EmailMessage as EmailLog
+        qs = EmailLog.objects.all()
+        lead_id = request.query_params.get('lead')
+        if lead_id:
+            qs = qs.filter(lead_id=lead_id)
+        return Response([{
+            'id': m.id, 'lead': m.lead_id, 'to_email': m.to_email, 'cc': m.cc,
+            'subject': m.subject, 'body': m.body, 'kind': m.kind,
+            'status': m.status, 'error': m.error,
+            'created_by': m.created_by_id,
+            'created_at': timezone.localtime(m.created_at).isoformat(),
+        } for m in qs[:100]])

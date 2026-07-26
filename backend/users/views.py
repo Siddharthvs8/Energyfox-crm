@@ -8,6 +8,26 @@ from .models import User, WorkspaceTeam, Branch
 from .serializers import UserSerializer, WorkspaceTeamSerializer, BranchSerializer
 
 
+def _looks_masked(value, current):
+    """True when `value` is the masked form of `current` being echoed back by the
+    settings form rather than a newly typed secret.
+
+    The API returns secrets as '••••1234'. A browser round-trips those bullets
+    intact, but any re-encoding in between can mangle them — and saving a mangled
+    mask would silently replace the real credential. So treat a value as a mask
+    whenever everything before the last 4 characters is non-alphanumeric and the
+    last 4 match what we already have.
+    """
+    if not value:
+        return False
+    if value.startswith('•'):
+        return True
+    if not current or len(value) != len(current) or len(value) <= 4:
+        return False
+    head, tail = value[:-4], value[-4:]
+    return tail == current[-4:] and head != '' and not any(c.isalnum() for c in head)
+
+
 class BranchViewSet(viewsets.ModelViewSet):
     """Manage branches (the admin Branches module). Admin/superadmin only."""
     serializer_class = BranchSerializer
@@ -235,6 +255,26 @@ class UserViewSet(viewsets.ModelViewSet):
                 qs = qs.filter(id=user.id)  # at least see themselves
         return qs
 
+    @action(detail=False, methods=['get'])
+    def assignable(self, request):
+        """People the caller may assign a lead to.
+
+        Kept separate from `list` (which is scoped to the caller's own team for
+        directory purposes) so the assignee picker always offers exactly the set
+        the backend will accept — agents get the front-line agents, managers and
+        admins get everyone.
+        """
+        allowed = request.user.assignable_lead_user_ids()
+        qs = User.objects.filter(is_active=True)
+        if allowed is not None:
+            qs = qs.filter(id__in=allowed)
+        return Response([{
+            'id': u.id,
+            'name': f"{u.first_name} {u.last_name}".strip() or u.username,
+            'role': u.role,
+            'role_label': u.get_role_display(),
+        } for u in qs.order_by('first_name', 'last_name')])
+
     def get_permissions(self):
         """
         Custom permissions:
@@ -248,26 +288,52 @@ class UserViewSet(viewsets.ModelViewSet):
 
     def check_object_permissions(self, request, obj):
         super().check_object_permissions(request, obj)
-        if self.action in ['update', 'partial_update']:
-            # Allow if it's the user's own profile OR they are an admin/general_manager
-            if not (request.user.is_staff or request.user.is_general_manager or obj.id == request.user.id):
-                self.permission_denied(request, message="You do not have permission to edit this profile.")
-        
-        if self.action == 'destroy':
-             if not request.user.is_staff:
-                self.permission_denied(request, message="Only admins can remove team members.")
+        actor = request.user
 
-    ADMIN_ROLES = {'admin', 'superadmin'}
+        if self.action in ['update', 'partial_update']:
+            # Your own profile, or an account below you in the hierarchy. An
+            # admin editing a peer or a super admin is refused — otherwise they
+            # could reset that account's password and take it over.
+            own = obj.id == actor.id
+            if not own and not actor.can_manage(obj):
+                self.permission_denied(
+                    request,
+                    message=("You can only edit your own profile and accounts below you. "
+                             f"Editing {obj.get_role_display()} accounts is a "
+                             "Super Admin's responsibility."))
+            # Staff-tier accounts are managed from Team; everyone else may only
+            # ever reach their own profile.
+            if not own and not (actor.is_staff or actor.is_general_manager):
+                self.permission_denied(request, message="You do not have permission to edit this profile.")
+
+        if self.action == 'destroy':
+            if not actor.is_staff:
+                self.permission_denied(request, message="Only admins can remove team members.")
+            if obj.id == actor.id:
+                self.permission_denied(request, message="You cannot remove your own account.")
+            if not actor.can_manage(obj):
+                self.permission_denied(
+                    request,
+                    message=f"Only a Super Admin can remove {obj.get_role_display()} accounts.")
 
     def _guard_role(self, serializer):
-        """Enforce who may assign which role (no self-escalation / privilege grant)."""
+        """Enforce who may grant which role — you can only appoint roles below
+        your own, so making someone an admin is a Super Admin's job."""
+        from rest_framework.exceptions import PermissionDenied
         requester = self.request.user
         new_role = serializer.validated_data.get('role')
         if new_role is None:
             return
-        # Only admin-tier may set roles at all; only a superadmin may grant admin/superadmin.
-        if not requester.is_staff or (new_role in self.ADMIN_ROLES and requester.role != 'superadmin'):
+        # Unchanged role on an edit is not a grant.
+        if serializer.instance is not None and serializer.instance.role == new_role:
+            return
+        if not requester.is_staff:
             serializer.validated_data.pop('role', None)
+            return
+        if not requester.can_assign_role(new_role):
+            from .models import ROLE_CHOICES
+            label = dict(ROLE_CHOICES).get(new_role, new_role)
+            raise PermissionDenied(f"Only a Super Admin can assign the {label} role.")
 
     def perform_create(self, serializer):
         self._guard_role(serializer)
@@ -276,6 +342,15 @@ class UserViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer):
         self._guard_role(serializer)
         serializer.save()
+
+    @action(detail=False, methods=['get'], url_path='assignable-roles')
+    def assignable_roles(self, request):
+        """Roles the caller may grant — drives the Team form's role picker so it
+        never offers something the API will reject."""
+        from .models import ROLE_CHOICES
+        allowed = set(request.user.assignable_roles())
+        return Response([{'value': r, 'label': label}
+                         for r, label in ROLE_CHOICES if r in allowed])
 
     @action(detail=False, methods=['get'])
     def me(self, request):
@@ -411,6 +486,10 @@ class TenantSettingsView(APIView):
         if org.whatsapp_access_token:
             masked_whatsapp_token = '•' * max(0, len(org.whatsapp_access_token) - 4) + org.whatsapp_access_token[-4:]
 
+        masked_email_password = ''
+        if org.email_host_password:
+            masked_email_password = '•' * max(0, len(org.email_host_password) - 4) + org.email_host_password[-4:]
+
         return Response({
             "name": org.name,
             "logo": org.logo.url if org.logo else None,
@@ -429,6 +508,15 @@ class TenantSettingsView(APIView):
             "whatsapp_business_account_id": org.whatsapp_business_account_id,
             "whatsapp_verify_token": org.whatsapp_verify_token,
             "whatsapp_access_token": masked_whatsapp_token,
+            "email_host": org.email_host,
+            "email_port": org.email_port,
+            "email_use_tls": org.email_use_tls,
+            "email_use_ssl": org.email_use_ssl,
+            "email_host_user": org.email_host_user,
+            "email_host_password": masked_email_password,
+            "email_from_name": org.email_from_name,
+            "email_from_address": org.email_from_address,
+            "email_signature": org.email_signature,
             "custom_lead_statuses": org.custom_lead_statuses or [],
             "theme": org.theme,
             "warranty_company_name": org.warranty_company_name,
@@ -541,6 +629,29 @@ class TenantSettingsView(APIView):
                             })
             tenant.custom_lead_statuses = cleaned_statuses
 
+        # Email (SMTP) integration — configured here instead of server env vars.
+        for f in ['email_host', 'email_host_user', 'email_from_name', 'email_from_address',
+                  'email_signature']:
+            v = request.data.get(f)
+            if v is not None:
+                setattr(tenant, f, v)
+        if request.data.get('email_port') not in (None, ''):
+            try:
+                tenant.email_port = int(request.data.get('email_port'))
+            except (TypeError, ValueError):
+                pass
+        for f in ['email_use_tls', 'email_use_ssl']:
+            v = request.data.get(f)
+            if v is not None:
+                setattr(tenant, f, str(v).lower() in ('true', '1', 'yes', 'on'))
+        # Masked value means "unchanged" — same convention as the other secrets,
+        # but tolerant of the mask characters being re-encoded in transit: any
+        # value whose head is all non-alphanumeric and whose last 4 match the
+        # stored secret is a mask being echoed back, not a new password.
+        pw = request.data.get('email_host_password')
+        if pw is not None and not _looks_masked(str(pw), tenant.email_host_password):
+            tenant.email_host_password = pw
+
         # Warranty certificate settings (fixed details printed on the generated document).
         for f in ['warranty_company_name', 'warranty_cin', 'warranty_gst',
                   'warranty_director_name', 'warranty_director_designation',
@@ -571,6 +682,10 @@ class TenantSettingsView(APIView):
         if getattr(tenant, 'whatsapp_access_token', ''):
             masked_whatsapp_token = '•' * max(0, len(tenant.whatsapp_access_token) - 4) + tenant.whatsapp_access_token[-4:]
 
+        masked_email_pw_out = ''
+        if tenant.email_host_password:
+            masked_email_pw_out = '•' * max(0, len(tenant.email_host_password) - 4) + tenant.email_host_password[-4:]
+
         return Response({
             "name": tenant.name,
             "logo": tenant.logo.url if tenant.logo else None,
@@ -589,6 +704,15 @@ class TenantSettingsView(APIView):
             "whatsapp_business_account_id": tenant.whatsapp_business_account_id,
             "whatsapp_verify_token": tenant.whatsapp_verify_token,
             "whatsapp_access_token": masked_whatsapp_token,
+            "email_host": tenant.email_host,
+            "email_port": tenant.email_port,
+            "email_use_tls": tenant.email_use_tls,
+            "email_use_ssl": tenant.email_use_ssl,
+            "email_host_user": tenant.email_host_user,
+            "email_host_password": masked_email_pw_out,
+            "email_from_name": tenant.email_from_name,
+            "email_from_address": tenant.email_from_address,
+            "email_signature": tenant.email_signature,
             "custom_lead_statuses": tenant.custom_lead_statuses or [],
             "warranty_company_name": tenant.warranty_company_name,
             "warranty_cin": tenant.warranty_cin,
