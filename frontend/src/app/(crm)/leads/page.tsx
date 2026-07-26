@@ -280,6 +280,10 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   const canAssign = currentUser?.is_staff || currentUser?.is_general_manager
     || currentUser?.is_manager || currentUser?.role === "tele_caller";
 
+  // A BDE reports through the site visit; the lead status belongs to the tele
+  // caller / managers. Mirrors can_edit_lead_status() on the backend.
+  const canEditStatus = !currentUser || currentUser.role !== "bde";
+
   useEffect(() => { fetchLeads(); fetchTeam(); fetchCampaigns(); fetchProducts(); fetchIntegrations(); }, [
     domain, statusFilter, sourceFilter, assigneeFilter, campaignFilter, productFilter, metaIntegrationFilter, stageFilter, search,
     createdType, createdParam, createdFrom, createdTo,
@@ -1415,6 +1419,8 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                             <span className={`absolute inset-0 rounded-lg pointer-events-none ${sm.bg} transition-all duration-200 group-hover/status:shadow-sm`} />
                             <select
                               value={lead.status}
+                              disabled={!canEditStatus}
+                              title={canEditStatus ? undefined : "Only the tele caller or a manager can change the lead status."}
                               onChange={e => updateStatus(lead.id, e.target.value)}
                               className={`relative appearance-none pl-2.5 pr-7 py-1.5 rounded-lg text-[11px] font-semibold cursor-pointer outline-none border-0 bg-transparent ${sm.text} min-w-[115px] transition-all duration-200`}
                               style={{ backgroundImage: 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%2394a3b8\' stroke-width=\'2.5\' stroke-linecap=\'round\' stroke-linejoin=\'round\'%3E%3Cpath d=\'M6 9l6 6 6-6\'/%3E%3C/svg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 6px center', backgroundSize: '12px' }}
@@ -1666,7 +1672,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                 <div>
                   <label className={LABEL}>Status</label>
                   <div className="relative">
-                    <select value={form.status} onChange={e => setForm({ ...form, status: e.target.value })} className={SELECT_FIELD}>
+                    <select value={form.status} disabled={!canEditStatus} title={canEditStatus ? undefined : "Only the tele caller or a manager can change the lead status."} onChange={e => setForm({ ...form, status: e.target.value })} className={SELECT_FIELD}>
                       {statusOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                     </select>
                     <div className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"><I.ChevronDown /></div>
@@ -2390,6 +2396,8 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
               </button>
             </div>
             <div className="p-5 space-y-4">
+              {/* Status is hidden for BDEs — they can still bulk-update the other fields. */}
+              {canEditStatus && (
               <div>
                 <label className="block text-xs font-semibold text-slate-600 mb-1.5">Status</label>
                 <select value={bulkUpdateStatus} onChange={e => setBulkUpdateStatus(e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-all text-slate-700">
@@ -2402,6 +2410,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                   <option value="converted">Converted</option>
                 </select>
               </div>
+              )}
               <div>
                 <label className="block text-xs font-semibold text-slate-600 mb-1.5">Source</label>
                 <select value={bulkUpdateSource} onChange={e => setBulkUpdateSource(e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-all text-slate-700">

@@ -405,6 +405,9 @@ export default function LeadDetailPage({
   };
 
   const canAssign = currentUser?.is_staff || currentUser?.is_general_manager || currentUser?.is_manager;
+  // A BDE reports through the site visit; the lead status belongs to the tele
+  // caller / managers. Mirrors can_edit_lead_status() on the backend.
+  const canEditStatus = !currentUser || currentUser.role !== "bde";
 
   const initiateCall = async () => {
     if (!lead?.phone) return alert("Lead does not have a phone number.");
@@ -1272,7 +1275,7 @@ export default function LeadDetailPage({
                 <div>
                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Status</label>
                   <div className="relative">
-                    <select value={form.status} onChange={e => setForm({ ...form, status: e.target.value })} className="w-full appearance-none bg-slate-50 border border-slate-200 rounded-xl pl-4 pr-8 py-2.5 text-sm font-medium text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all cursor-pointer">
+                    <select value={form.status} disabled={!canEditStatus} title={canEditStatus ? undefined : "Only the tele caller or a manager can change the lead status."} onChange={e => setForm({ ...form, status: e.target.value })} className="w-full appearance-none bg-slate-50 border border-slate-200 rounded-xl pl-4 pr-8 py-2.5 text-sm font-medium text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">
                       {Object.entries(statusMeta).map(([key, o]: [string, any]) => <option key={key} value={key}>{o.label}</option>)}
                     </select>
                     <div className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">

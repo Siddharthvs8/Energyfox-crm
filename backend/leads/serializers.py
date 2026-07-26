@@ -356,6 +356,7 @@ class LeadSerializer(serializers.ModelSerializer):
     deal_classification = serializers.SerializerMethodField()
     lost_by_name = serializers.SerializerMethodField()
     can_mark_lost = serializers.SerializerMethodField()
+    can_edit_status = serializers.SerializerMethodField()
     status = serializers.CharField(required=False)
 
     class Meta:
@@ -398,6 +399,10 @@ class LeadSerializer(serializers.ModelSerializer):
     def get_can_mark_lost(self, obj):
         from .access import can_mark_lead_lost
         return can_mark_lead_lost(self._request_user())
+
+    def get_can_edit_status(self, obj):
+        from .access import can_edit_lead_status
+        return can_edit_lead_status(self._request_user())
 
     def get_meta_integration_name(self, obj):
         return obj.meta_integration.name if obj.meta_integration else None

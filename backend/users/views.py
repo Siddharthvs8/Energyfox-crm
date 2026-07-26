@@ -335,12 +335,26 @@ class UserViewSet(viewsets.ModelViewSet):
             label = dict(ROLE_CHOICES).get(new_role, new_role)
             raise PermissionDenied(f"Only a Super Admin can assign the {label} role.")
 
+    def _guard_username(self, serializer):
+        """Only an Admin or Super Admin may change a username — nobody else, not
+        even on their own profile. The login name is issued by the company."""
+        from rest_framework.exceptions import PermissionDenied
+        instance = serializer.instance
+        if instance is None:
+            return                      # creation is already admin-only
+        new_username = serializer.validated_data.get('username')
+        if new_username is None or new_username == instance.username:
+            return                      # unchanged (the form always posts it)
+        if not self.request.user.is_staff:
+            raise PermissionDenied("Only an Admin or Super Admin can change a username.")
+
     def perform_create(self, serializer):
         self._guard_role(serializer)
         serializer.save()
 
     def perform_update(self, serializer):
         self._guard_role(serializer)
+        self._guard_username(serializer)
         serializer.save()
 
     @action(detail=False, methods=['get'], url_path='assignable-roles')

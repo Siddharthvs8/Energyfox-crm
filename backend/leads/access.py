@@ -96,6 +96,18 @@ def can_mark_lead_lost(user):
             or getattr(user, 'is_manager', False) or getattr(user, 'role', '') == 'bde')
 
 
+def can_edit_lead_status(user):
+    """Who may change a lead's status.
+
+    Everyone in the pipeline except BDEs: a BDE works the site visit and reports
+    through it, so the status is owned by the tele caller / managers. Automations
+    run without a request user and are not affected.
+    """
+    if not user or not user.is_authenticated:
+        return False
+    return getattr(user, 'role', '') != 'bde'
+
+
 def can_access_doc_stage2(user):
     """Who can open Documentation Stage 2: the documentation team plus admins /
     general managers (same audience as Documentation Stage 1)."""

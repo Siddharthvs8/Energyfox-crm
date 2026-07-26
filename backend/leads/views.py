@@ -3282,6 +3282,15 @@ class LeadViewSet(viewsets.ModelViewSet):
         return user.assignable_lead_user_ids()
 
     def perform_create(self, serializer):
+        # A BDE may add a lead but not stamp a status on it — new leads start at
+        # the model default and move on from there without them.
+        new_status = serializer.validated_data.get('status')
+        if new_status and new_status != 'new':
+            from .access import can_edit_lead_status
+            if not can_edit_lead_status(self.request.user):
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied('A BDE cannot set the lead status.')
+
         instance = serializer.save()
 
         # An agent who adds a lead without naming an assignee keeps it: their
@@ -3321,6 +3330,16 @@ class LeadViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer):
         old_status = serializer.instance.status
         old_notes  = serializer.instance.notes or ""
+
+        # BDEs don't own the lead status — they report through the site visit.
+        # Only an actual change is refused, so a PATCH that echoes back the
+        # current status (as the edit form does) still saves its other fields.
+        new_status = serializer.validated_data.get('status')
+        if new_status is not None and new_status != old_status:
+            from .access import can_edit_lead_status
+            if not can_edit_lead_status(self.request.user):
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied('A BDE cannot change the lead status.')
 
         # Re-assignment is scoped the same way as bulk assign: agents may only
         # hand a lead to their own team.
@@ -3689,7 +3708,13 @@ class LeadViewSet(viewsets.ModelViewSet):
             return Response({'error': 'IDs and update data are required'}, status=status.HTTP_400_BAD_REQUEST)
         
         allowed_fields = ['status', 'source']
-        
+
+        if update_data.get('status'):
+            from .access import can_edit_lead_status
+            if not can_edit_lead_status(request.user):
+                return Response({'error': 'A BDE cannot change the lead status.'},
+                                status=status.HTTP_403_FORBIDDEN)
+
         valid_data = {}
         for k, v in update_data.items():
             if k in allowed_fields:
