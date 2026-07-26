@@ -3040,7 +3040,9 @@ class LeadViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        base = Lead.objects.select_related('assigned_to')
+        # site_visit is read for every row (the list's Site Visit button/indicator),
+        # so pull it in the same query instead of one per lead.
+        base = Lead.objects.select_related('assigned_to', 'site_visit')
         if user.sees_all_leads:
             # superadmin / admin / coo / sales & documentation managers / documentation staff
             queryset = base.all().order_by('-created_at')
@@ -3282,14 +3284,17 @@ class LeadViewSet(viewsets.ModelViewSet):
         return user.assignable_lead_user_ids()
 
     def perform_create(self, serializer):
-        # A BDE may add a lead but not stamp a status on it — new leads start at
-        # the model default and move on from there without them.
+        from rest_framework.exceptions import PermissionDenied
+        from .access import can_add_leads, can_edit_lead_status
+
+        # Leads are sourced by the tele-calling side; a BDE only receives them.
+        if not can_add_leads(self.request.user):
+            raise PermissionDenied('A BDE cannot add leads.')
+
+        # Belt and braces for any other role that may not own the status.
         new_status = serializer.validated_data.get('status')
-        if new_status and new_status != 'new':
-            from .access import can_edit_lead_status
-            if not can_edit_lead_status(self.request.user):
-                from rest_framework.exceptions import PermissionDenied
-                raise PermissionDenied('A BDE cannot set the lead status.')
+        if new_status and new_status != 'new' and not can_edit_lead_status(self.request.user):
+            raise PermissionDenied('You cannot set the lead status.')
 
         instance = serializer.save()
 
@@ -3342,13 +3347,20 @@ class LeadViewSet(viewsets.ModelViewSet):
                 raise PermissionDenied('A BDE cannot change the lead status.')
 
         # Re-assignment is scoped the same way as bulk assign: agents may only
-        # hand a lead to their own team.
+        # hand a lead to their own team, and a BDE may not route leads at all.
+        # As with the status, an unchanged owner (the edit form posts it back) is
+        # not a re-assignment.
         if 'assigned_to' in serializer.validated_data:
+            from rest_framework.exceptions import PermissionDenied
             target = serializer.validated_data['assigned_to']
-            allowed = self._assignable_user_ids(self.request.user)
-            if target is not None and allowed is not None and target.id not in allowed:
-                from rest_framework.exceptions import PermissionDenied
-                raise PermissionDenied('You can only assign leads to your team or another tele caller / BDE.')
+            target_id = target.id if target is not None else None
+            if target_id != serializer.instance.assigned_to_id:
+                from .access import can_assign_leads
+                if not can_assign_leads(self.request.user):
+                    raise PermissionDenied('A BDE cannot assign leads.')
+                allowed = self._assignable_user_ids(self.request.user)
+                if target is not None and allowed is not None and target.id not in allowed:
+                    raise PermissionDenied('You can only assign leads to your team or another tele caller / BDE.')
 
 
         if 'status' in serializer.validated_data and old_status != serializer.validated_data['status']:
@@ -3438,6 +3450,10 @@ class LeadViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'])
     def bulk_upload(self, request):
         """Handles bulk uploads from a CSV file."""
+        from .access import can_add_leads
+        if not can_add_leads(request.user):
+            return Response({'error': 'A BDE cannot add leads.'}, status=status.HTTP_403_FORBIDDEN)
+
         if 'file' not in request.FILES:
             return Response({'error': 'No file provided.'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -3681,7 +3697,11 @@ class LeadViewSet(viewsets.ModelViewSet):
         
         if not ids or user_id is None:
             return Response({'error': 'IDs and user_id are required'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
+        from .access import can_assign_leads
+        if not can_assign_leads(request.user):
+            return Response({'error': 'A BDE cannot assign leads.'}, status=status.HTTP_403_FORBIDDEN)
+
         try:
             from users.models import User
             target_user = User.objects.get(id=user_id)
@@ -3713,6 +3733,12 @@ class LeadViewSet(viewsets.ModelViewSet):
             from .access import can_edit_lead_status
             if not can_edit_lead_status(request.user):
                 return Response({'error': 'A BDE cannot change the lead status.'},
+                                status=status.HTTP_403_FORBIDDEN)
+
+        if update_data.get('assigned_to_id'):
+            from .access import can_assign_leads
+            if not can_assign_leads(request.user):
+                return Response({'error': 'A BDE cannot assign leads.'},
                                 status=status.HTTP_403_FORBIDDEN)
 
         valid_data = {}

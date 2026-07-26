@@ -219,13 +219,16 @@ class User(AbstractUser):
     def assignable_lead_user_ids(self):
         """Ids this user may assign a lead to, or ``None`` when unrestricted.
 
-        Admins / GMs / managers can assign to anyone. An agent (tele caller, BDE)
-        may hand a lead to their own team and to other front-line agents — teams
-        are optional in this install, so team-only scoping would leave a teamless
-        agent able to assign to nobody but themselves.
+        Admins / GMs / managers can assign to anyone. A tele caller may hand a
+        lead to their own team and to other front-line agents — teams are optional
+        in this install, so team-only scoping would leave a teamless agent able to
+        assign to nobody but themselves. A BDE routes nothing, so their picker is
+        empty (see leads.access.can_assign_leads).
         """
         if self.is_staff or self.is_general_manager or self.is_manager:
             return None
+        if self.role == ROLE_BDE:
+            return set()
         ids = {self.id}
         if self.team_id:
             ids.update(User.objects.filter(team_id=self.team_id, is_active=True)

@@ -62,8 +62,11 @@ def can_edit_kseb_feasibility(user, lead):
 
 def can_assign_bde(user, lead):
     """Who may hand a lead off to a BDE: the lead's tele caller (owner) or any
-    manager/admin tier user."""
+    manager/admin tier user. Never the BDE side itself — routing work to a BDE
+    is not a BDE's job, even on a lead that happens to be owned by one."""
     if not user or not user.is_authenticated:
+        return False
+    if not can_assign_leads(user):
         return False
     if user.is_staff or user.is_general_manager or user.is_manager:
         return True
@@ -94,6 +97,27 @@ def can_mark_lead_lost(user):
         return False
     return (user.is_staff or getattr(user, 'is_general_manager', False)
             or getattr(user, 'is_manager', False) or getattr(user, 'role', '') == 'bde')
+
+
+def can_add_leads(user):
+    """Who may create a lead.
+
+    Everyone in the pipeline except BDEs: leads are sourced and owned by the
+    tele-calling side, and reach a BDE only as a hand-off for the site visit.
+    """
+    if not user or not user.is_authenticated:
+        return False
+    return getattr(user, 'role', '') != 'bde'
+
+
+def can_assign_leads(user):
+    """Who may route a lead — set its owner, or hand it to a BDE.
+
+    Same audience as can_add_leads: a BDE receives work, they don't distribute it.
+    """
+    if not user or not user.is_authenticated:
+        return False
+    return getattr(user, 'role', '') != 'bde'
 
 
 def can_edit_lead_status(user):

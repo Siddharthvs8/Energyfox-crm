@@ -283,6 +283,9 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   // A BDE reports through the site visit; the lead status belongs to the tele
   // caller / managers. Mirrors can_edit_lead_status() on the backend.
   const canEditStatus = !currentUser || currentUser.role !== "bde";
+  // Leads are sourced by the tele-calling side — a BDE only receives them.
+  // Mirrors can_add_leads() on the backend.
+  const canAddLeads = !currentUser || currentUser.role !== "bde";
 
   useEffect(() => { fetchLeads(); fetchTeam(); fetchCampaigns(); fetchProducts(); fetchIntegrations(); }, [
     domain, statusFilter, sourceFilter, assigneeFilter, campaignFilter, productFilter, metaIntegrationFilter, stageFilter, search,
@@ -930,10 +933,13 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                   className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors">
                   <I.Download /> <span className="hidden md:inline">Export</span>
                 </button>
+                {/* Import creates leads, so it follows the same rule as New Lead. */}
+                {canAddLeads && (
                 <button onClick={() => fileRef.current?.click()} disabled={isUploading}
                   className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors disabled:opacity-50">
                   <I.Upload /> <span className="hidden md:inline">{isUploading ? "Uploading…" : "Import"}</span>
                 </button>
+                )}
               </div>
 
               <button onClick={() => { setShowArchived(v => !v); setPage(1); }}
@@ -950,10 +956,12 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                 <I.Trash /> <span className="hidden sm:inline">Trash</span>
               </button>
 
+              {canAddLeads && (
               <button onClick={openAdd}
                 className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 active:scale-[0.97] transition-all shadow-sm shadow-indigo-200">
                 <I.Plus /> <span className="hidden sm:inline">New Lead</span>
               </button>
+              )}
             </div>
 
           </div>
@@ -1455,6 +1463,26 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                         {/* Actions */}
                         <td className="pr-3 py-3.5">
                           <div className="flex items-center justify-end gap-1">
+                            {/* Jumps straight to the Site Visit Details section on the
+                                lead page, and doubles as the completion indicator. */}
+                            <Link href={`/leads/${lead.id}#site-visit`} onClick={(e) => e.stopPropagation()}
+                              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wide whitespace-nowrap border transition-all ${
+                                lead.site_visit_complete
+                                  ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
+                                  : "bg-slate-50 text-slate-500 border-slate-200 hover:bg-indigo-50 hover:text-indigo-600 hover:border-indigo-200"}`}
+                              title={lead.site_visit_complete ? "Site visit completed — open the details" : "Open the site visit details"}>
+                              {lead.site_visit_complete ? (
+                                <>
+                                  <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12" /></svg>
+                                  Site Visit Completed
+                                </>
+                              ) : (
+                                <>
+                                  <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" /><circle cx="12" cy="10" r="3" /></svg>
+                                  Site Visit
+                                </>
+                              )}
+                            </Link>
                             <Link href={`/leads/${lead.id}`} onClick={(e) => e.stopPropagation()}
                               className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-sky-600 hover:bg-sky-50 transition-all"
                               title="View Details">
@@ -2422,6 +2450,9 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                   <option value="google">Google Ads</option>
                 </select>
               </div>
+              {/* Routing leads isn't open to everyone — same rule as the Assign
+                  action in the selection bar. */}
+              {canAssign && (
               <div>
                 <label className="block text-xs font-semibold text-slate-600 mb-1.5">Assignee</label>
                 <select value={bulkUpdateAssignee} onChange={e => setBulkUpdateAssignee(e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-all text-slate-700">
@@ -2429,6 +2460,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                   {teamMembers.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
                 </select>
               </div>
+              )}
               <div>
                 <label className="block text-xs font-semibold text-slate-600 mb-1.5">Product</label>
                 <select value={bulkUpdateProduct} onChange={e => setBulkUpdateProduct(e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-all text-slate-700">

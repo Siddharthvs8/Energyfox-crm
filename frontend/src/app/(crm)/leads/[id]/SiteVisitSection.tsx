@@ -202,6 +202,20 @@ export default function SiteVisitSection({ leadId, canEdit = true, onSaved }: { 
       .finally(() => setLoading(false));
   }, [leadId]);
 
+  // Arriving from the Leads list's "Site Visit" button (/leads/<id>#site-visit).
+  // Next.js can't honour the hash itself — this section mounts empty and grows once
+  // its data lands — so scroll here after loading, then again when the page above
+  // has settled its own height.
+  useEffect(() => {
+    if (loading || typeof window === "undefined") return;
+    if (window.location.hash !== "#site-visit") return;
+    const scroll = () => document.getElementById("site-visit")
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    const raf = requestAnimationFrame(scroll);
+    const t = setTimeout(scroll, 600);
+    return () => { cancelAnimationFrame(raf); clearTimeout(t); };
+  }, [loading]);
+
   const set = (k: TextKey, v: string) => { setForm(p => ({ ...p, [k]: v })); setSaved(false); };
   const toggleRcc = (v: string) => {
     setForm(p => ({ ...p, rcc_roof_types: p.rcc_roof_types.includes(v) ? p.rcc_roof_types.filter(x => x !== v) : [...p.rcc_roof_types, v] }));
@@ -278,7 +292,7 @@ export default function SiteVisitSection({ leadId, canEdit = true, onSaved }: { 
   const loanNeedsItr = Number.isFinite(loanAmountValue) && loanAmountValue > ITR_REQUIRED_ABOVE;
 
   return (
-    <div className="mt-6 bg-white rounded-2xl border border-slate-200/70 shadow-sm">
+    <div id="site-visit" className="mt-6 scroll-mt-6 bg-white rounded-2xl border border-slate-200/70 shadow-sm">
       <div className="px-6 py-4 border-b border-slate-100">
         <h2 className="font-semibold text-slate-900">Site Visit Details</h2>
         <p className="text-xs text-slate-400 mt-0.5">Filled by the BDE after the site visit.</p>
