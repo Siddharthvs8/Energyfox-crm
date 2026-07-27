@@ -309,9 +309,17 @@ class LeadViewSet(viewsets.ModelViewSet):
         if not can_edit_site_visit(request.user, lead):
             return Response({'error': 'You do not have permission to edit this site visit.'},
                             status=status.HTTP_403_FORBIDDEN)
+        had_po_date = bool(sv.po_signed_date)
         serializer = SiteVisitSerializer(sv, data=request.data, partial=(request.method == 'PATCH'))
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        sv = serializer.save()
+
+        # Signing the PO is what puts a lead on the KSEB feasibility queue, so the
+        # BDE's reminder has to be raised from here too — not only from the
+        # feasibility screen itself.
+        po_just_signed = bool(sv.po_signed_date) and not had_po_date
+        if sv.po_signed_date:
+            self._sync_feasibility_reminder(lead, sv)
         # The deal value lives on the Lead but is now entered by the BDE during the
         # site visit (no longer by the tele caller). Persist it when provided.
         if 'deal_value' in request.data:
@@ -323,6 +331,8 @@ class LeadViewSet(viewsets.ModelViewSet):
                 pass
         data = serializer.data
         data['deal_value'] = lead.value
+        # Tells the site-visit screen to send the BDE on to KSEB Feasibility.
+        data['po_just_signed'] = po_just_signed
         return Response(data)
 
     @staticmethod
@@ -355,9 +365,12 @@ class LeadViewSet(viewsets.ModelViewSet):
             existing.save(update_fields=['is_read'])
 
     # ── KSEB feasibility (BDE section for pushed-to-documentation leads) ──
-    def _feasibility_payload(self, lead, request):
+    def _feasibility_payload(self, lead, request, sv=None):
         from .access import can_edit_kseb_feasibility
-        sv = getattr(lead, 'site_visit', None)
+        # `sv` is passed by writers so the response reflects what was just saved;
+        # reading lead.site_visit here can hand back a stale cached instance.
+        if sv is None:
+            sv = getattr(lead, 'site_visit', None)
 
         def d(x):
             return x.isoformat() if x else None
@@ -389,9 +402,13 @@ class LeadViewSet(viewsets.ModelViewSet):
         user = request.user
         if not user or not user.is_authenticated:
             return Response({'error': 'Authentication required.'}, status=status.HTTP_401_UNAUTHORIZED)
-        qs = (Lead.objects.filter(pushed_to_documentation=True)
+        # A lead joins the feasibility queue the moment its PO is signed; leads
+        # already pushed to documentation stay on it as before.
+        qs = (Lead.objects.filter(Q(pushed_to_documentation=True)
+                                  | Q(site_visit__po_signed_date__isnull=False))
               .select_related('product', 'bde', 'site_visit')
               .prefetch_related('site_visit__documents')
+              .distinct()
               .order_by('-pushed_to_documentation_at'))
         if not (user.is_staff or getattr(user, 'is_general_manager', False)):
             if getattr(user, 'branch_scoped', False) and user.branch_id:
@@ -422,7 +439,7 @@ class LeadViewSet(viewsets.ModelViewSet):
         sv.save()
         sv.refresh_from_db()  # turn date strings into date objects for the payload/reminder
         self._sync_feasibility_reminder(lead, sv)
-        return Response(self._feasibility_payload(lead, request))
+        return Response(self._feasibility_payload(lead, request, sv=sv))
 
     @action(detail=True, methods=['post'], url_path='kseb-feasibility/documents')
     def kseb_feasibility_add_document(self, request, pk=None):
@@ -504,7 +521,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             description="KSEB feasibility completed by BDE; PO & feasibility dates sent to accounts.",
             actor=request.user if request.user.is_authenticated else None,
             lead=lead, extra={'auto_generated': True})
-        return Response(self._feasibility_payload(lead, request))
+        return Response(self._feasibility_payload(lead, request, sv=sv))
 
     @action(detail=True, methods=['post'], url_path='site-visit/documents')
     def site_visit_add_document(self, request, pk=None):

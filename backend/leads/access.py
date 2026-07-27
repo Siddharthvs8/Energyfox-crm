@@ -38,13 +38,15 @@ def can_edit_site_visit(user, lead):
 def can_edit_kseb_feasibility(user, lead):
     """Who may handle a lead's KSEB feasibility task (PO + feasibility receipt).
 
-    Active only AFTER the lead is pushed to documentation (the BDE handles it from
-    the dedicated feasibility section, not the now-locked site visit). Allowed for
-    the assigned BDE, that BDE's manager, and all-access roles.
+    Active once the lead has reached the feasibility queue — either its PO has
+    been signed on the site visit, or it has been pushed to documentation.
+    Allowed for the assigned BDE, that BDE's manager, and all-access roles.
     """
     if not user or not user.is_authenticated:
         return False
-    if not getattr(lead, 'pushed_to_documentation', False):
+    sv = getattr(lead, 'site_visit', None)
+    po_signed = bool(sv and sv.po_signed_date)
+    if not po_signed and not getattr(lead, 'pushed_to_documentation', False):
         return False
     if user.is_staff or getattr(user, 'is_general_manager', False):
         return True

@@ -257,3 +257,84 @@ class LeaderboardTests(TestCase):
         """Zero revenue must not sort to the top (NULLs did, before Coalesce)."""
         board = self.board()
         self.assertEqual(board[-1]['name'], 't_bde2')
+
+
+class PoSignedDateTests(TestCase):
+    """Signing the PO on the site visit is what puts a lead on the KSEB
+    feasibility queue and starts its 2-day clock."""
+
+    def setUp(self):
+        self.bde = mk('t_bde', 'bde')
+        self.caller = mk('t_caller', 'tele_caller')
+        self.lead = Lead.objects.create(first_name='P', last_name='Owner', phone='9994000001',
+                                        status='converted', assigned_to=self.caller,
+                                        bde=self.bde, value=100000)
+
+    def patch_site_visit(self, payload, actor=None):
+        return self.client.patch(f'/api/leads/{self.lead.id}/site-visit/', data=payload,
+                                 content_type='application/json',
+                                 HTTP_AUTHORIZATION=token_for(actor or self.bde))
+
+    def queue(self, actor=None):
+        r = self.client.get('/api/leads/bde-feasibility/',
+                            HTTP_AUTHORIZATION=token_for(actor or self.bde))
+        self.assertEqual(r.status_code, 200)
+        return r.json()
+
+    def test_lead_is_absent_from_the_queue_before_the_po_is_signed(self):
+        self.assertEqual(self.queue(), [])
+
+    def test_signing_the_po_adds_the_lead_to_the_queue(self):
+        r = self.patch_site_visit({'po_signed_date': '2026-07-27'})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['po_signed_date'], '2026-07-27')
+        ids = [row['id'] for row in self.queue()]
+        self.assertIn(self.lead.id, ids)
+
+    def test_the_save_reports_when_the_po_was_just_signed(self):
+        """Drives the hand-off popup, so it must fire once and not again."""
+        first = self.patch_site_visit({'po_signed_date': '2026-07-27'})
+        self.assertTrue(first.json()['po_just_signed'])
+        again = self.patch_site_visit({'po_signed_date': '2026-07-27'})
+        self.assertFalse(again.json()['po_just_signed'])
+
+    def test_other_edits_do_not_fire_the_prompt(self):
+        r = self.patch_site_visit({'kseb_section': 'Kollam'})
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.json()['po_just_signed'])
+
+    def test_due_date_is_two_days_after_signing(self):
+        r = self.patch_site_visit({'po_signed_date': '2026-07-27'})
+        self.assertEqual(r.json()['kseb_feasibility_due_date'], '2026-07-29')
+
+    def test_bde_gets_a_reminder_when_feasibility_is_outstanding(self):
+        from ai_manager.models import Notification
+        self.patch_site_visit({'po_signed_date': '2026-07-27', 'kseb_feasibility_taken': 'no'})
+        self.assertTrue(Notification.objects.filter(
+            user=self.bde, extra_data__kseb_feasibility_lead=self.lead.id).exists())
+
+    def test_feasibility_is_editable_without_a_push_to_documentation(self):
+        """It used to require pushed_to_documentation, which would have left the
+        queue row read-only."""
+        self.patch_site_visit({'po_signed_date': '2026-07-27'})
+        self.lead.refresh_from_db()
+        self.assertFalse(self.lead.pushed_to_documentation)
+        r = self.client.patch(f'/api/leads/{self.lead.id}/kseb-feasibility/',
+                              data={'kseb_feasibility_taken': 'yes',
+                                    'kseb_feasibility_date': '2026-07-28'},
+                              content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.bde))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertEqual(r.json()['kseb_feasibility_taken'], 'yes')
+
+    def test_queue_still_carries_pushed_leads_with_no_po_date(self):
+        pushed = Lead.objects.create(first_name='P', last_name='Pushed', phone='9994000002',
+                                     status='converted', assigned_to=self.caller, bde=self.bde,
+                                     value=1, pushed_to_documentation=True)
+        ids = [row['id'] for row in self.queue()]
+        self.assertIn(pushed.id, ids)
+
+    def test_a_bde_only_sees_their_own_queue(self):
+        other = mk('t_bde_other', 'bde')
+        self.patch_site_visit({'po_signed_date': '2026-07-27'})
+        self.assertEqual(self.queue(actor=other), [])

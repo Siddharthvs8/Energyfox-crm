@@ -3,6 +3,7 @@ import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
 import { kindForSlot } from "@/lib/docKinds";
 import PdfDropField from "@/components/PdfDropField";
+import Link from "next/link";
 import React, { useEffect, useState, createContext, useContext } from "react";
 
 // Scalar (text/choice) fields — saved via a JSON PATCH.
@@ -14,6 +15,7 @@ const TEXT_KEYS = [
   "cable_inverter_to_ac_db", "earthing_cable_length", "lightning_conductor_length",
   "earthing_surface", "anchoring_allowed",
   "name_change", "loan", "loan_amount", "load_enhancement", "email_linked_to_itr",
+  "po_signed_date",
 ] as const;
 
 // An ITR report is only required for loans above this amount.
@@ -177,6 +179,8 @@ export default function SiteVisitSection({ leadId, canEdit = true, onSaved }: { 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  // Set once the PO date has just been saved — sends the BDE to KSEB Feasibility.
+  const [poPrompt, setPoPrompt] = useState(false);
 
   const apiBase = getApiBase(APP_SLUG);
   const url = `${apiBase}/api/leads/${leadId}/site-visit/`;
@@ -277,10 +281,49 @@ export default function SiteVisitSection({ leadId, canEdit = true, onSaved }: { 
         body: JSON.stringify({ ...Object.fromEntries(TEXT_KEYS.map(k => [k, form[k]])), rcc_roof_types: form.rcc_roof_types, site_visit_complete: siteVisitComplete, deal_value: dealValue === "" ? "0" : dealValue }),
       });
       if (!res1.ok) { alert("Failed to save site visit details."); return; }
-      load(await res1.json());
+      const data = await res1.json();
+      load(data);
       setSaved(true);
       onSaved?.();
+      // The server tells us when this save is the one that signed the PO — that's
+      // the moment the lead lands on the KSEB feasibility queue.
+      if (data.po_just_signed) setPoPrompt(true);
     } catch { alert("Network error while saving site visit."); }
+    finally { setSaving(false); }
+  };
+
+  /** Picking a PO signed date saves straight away — the date is the trigger for
+   *  the feasibility hand-off, so it shouldn't wait behind Save Site Visit. */
+  const setPoSignedDate = (value: string) => {
+    setForm(prev => {
+      const next = { ...prev, po_signed_date: value };
+      // save() reads `form`, which won't have updated yet, so patch from `next`.
+      if (value) void savePoDate(next);
+      return next;
+    });
+    setSaved(false);
+  };
+
+  const savePoDate = async (next: Form) => {
+    setSaving(true);
+    try {
+      const res = await fetch(url, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...authHeader() },
+        body: JSON.stringify({
+          ...Object.fromEntries(TEXT_KEYS.map(k => [k, next[k]])),
+          rcc_roof_types: next.rcc_roof_types,
+          site_visit_complete: siteVisitComplete,
+          deal_value: dealValue === "" ? "0" : dealValue,
+        }),
+      });
+      if (!res.ok) { alert("Failed to save the PO signed date."); return; }
+      const data = await res.json();
+      load(data);
+      setSaved(true);
+      onSaved?.();
+      if (data.po_just_signed) setPoPrompt(true);
+    } catch { alert("Network error while saving the PO signed date."); }
     finally { setSaving(false); }
   };
 
@@ -423,11 +466,50 @@ export default function SiteVisitSection({ leadId, canEdit = true, onSaved }: { 
           </div>
           <PdfMultiField docType="purchase_order" label="Purchase Order" />
 
+          {/* Signing the PO starts the KSEB feasibility clock (due 2 days later),
+              so it saves on pick and hands the BDE straight over. */}
+          <div>
+            <label className={labelCls}>PO Signed Date</label>
+            <input type="date" value={form.po_signed_date} disabled={!canEdit}
+              onChange={e => setPoSignedDate(e.target.value)}
+              className={`${inputCls} disabled:opacity-70 disabled:cursor-not-allowed`} />
+            <p className="text-[10px] text-slate-400 mt-1">
+              Saves immediately and adds this lead to KSEB Feasibility.
+            </p>
+          </div>
+
           {/* Site visit photos */}
           <SectionTitle>Site Visit Photos</SectionTitle>
           {PHOTO_FIELDS.map(f => <MultiFileField key={f.key} docType={f.key} label={f.label} />)}
         </div>
         </SiteVisitCtx.Provider>
+
+        {/* PO signed → go and take the feasibility. */}
+        {poPrompt && (
+          <div className="popup-overlay">
+            <div className="popup-backdrop" onClick={() => setPoPrompt(false)} />
+            <div className="popup-card max-w-md w-full p-6 text-center">
+              <div className="w-14 h-14 mx-auto rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mb-4">
+                <svg width="26" height="26" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M12 2v4" /><path d="M12 18v4" /><circle cx="12" cy="12" r="4" /><path d="M2 12h4" /><path d="M18 12h4" /></svg>
+              </div>
+              <h3 className="text-base font-bold text-slate-900">Purchase order signed</h3>
+              <p className="text-sm text-slate-500 mt-2">
+                Site visit saved. Go to the <span className="font-semibold text-slate-700">KSEB Feasibility</span> section
+                and complete the feasibility requirements — it is due within 2 days of the PO date.
+              </p>
+              <div className="flex gap-3 mt-6">
+                <button onClick={() => setPoPrompt(false)}
+                  className="flex-1 py-2.5 border border-slate-200 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-all">
+                  Later
+                </button>
+                <Link href={`/feasibility`}
+                  className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 transition-all text-center">
+                  Go to KSEB Feasibility
+                </Link>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Actions — placed at the bottom of the form. */}
         <div className="flex flex-wrap items-center justify-end gap-3 px-6 py-4 border-t border-slate-100">
