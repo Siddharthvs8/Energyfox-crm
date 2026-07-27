@@ -72,14 +72,16 @@ export default function FeasibilityPage() {
     if (l.kseb_feasibility_complete) return { label: "Completed", cls: "bg-emerald-50 text-emerald-700" };
     if (l.po_signed_date && l.kseb_feasibility_taken === "no") return { label: "Feasibility pending", cls: "bg-amber-50 text-amber-700" };
     if (l.po_signed_date && l.kseb_feasibility_taken === "yes") return { label: "Feasibility taken", cls: "bg-sky-50 text-sky-700" };
-    return { label: "PO not taken", cls: "bg-slate-100 text-slate-600" };
+    // Nothing recorded yet on the feasibility itself — which is the outstanding
+    // work here, whether or not the PO date has been filled in.
+    return { label: "Feasibility not taken", cls: "bg-slate-100 text-slate-600" };
   };
 
   return (
     <div className="p-6 lg:p-8 max-w-[1100px]">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-slate-900">KSEB Feasibility</h1>
-        <p className="text-sm text-slate-500 mt-1">Your leads pushed to documentation. Record PO signing &amp; KSEB feasibility; completing it sends the dates to accounts.</p>
+        <p className="text-sm text-slate-500 mt-1">Leads with a signed PO, plus anything pushed to documentation. Take the KSEB feasibility within 2 days of the PO date; completing it sends the dates to accounts.</p>
       </div>
 
       <div className="mb-5 flex items-center gap-3">
@@ -91,7 +93,7 @@ export default function FeasibilityPage() {
       {loading ? (
         <div className="py-16 text-center text-sm text-slate-400">Loading…</div>
       ) : filtered.length === 0 ? (
-        <div className="bg-white border border-dashed border-slate-200 rounded-2xl p-12 text-center text-sm text-slate-400">No leads pushed to documentation yet.</div>
+        <div className="bg-white border border-dashed border-slate-200 rounded-2xl p-12 text-center text-sm text-slate-400">Nothing waiting on feasibility yet.</div>
       ) : (
         <div className="space-y-3">
           {filtered.map(l => {

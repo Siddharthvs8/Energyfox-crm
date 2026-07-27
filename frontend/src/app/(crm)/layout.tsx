@@ -166,6 +166,16 @@ const Nav = {
       <rect x="8" y="2" width="8" height="4" rx="1" /><path d="M9 14l2 2 4-4" />
     </svg>
   ),
+  StockIn: () => (
+    <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+      <path d="M12 17V3" /><path d="m6 11 6 6 6-6" /><path d="M19 21H5" />
+    </svg>
+  ),
+  StockOut: () => (
+    <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+      <path d="M12 7v14" /><path d="m18 13-6-6-6 6" /><path d="M19 3H5" />
+    </svg>
+  ),
   Caret: () => (
     <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
       <polyline points="6 9 12 15 18 9" />
@@ -380,12 +390,27 @@ export default function DashboardLayout({
   const [moduleCounts, setModuleCounts] = useState<Record<string, number>>({});
   const prevCountsRef = useRef<Record<string, number> | null>(null);
   const prevAssignedRef = useRef<Record<string, number> | null>(null);
-  // Work newly assigned to this user by name — shown as a centre-screen modal.
-  const [assignAlert, setAssignAlert] = useState<{ key: string; added: number } | null>(null);
+  // New work waiting on this user — shown as a centre-screen modal. Every role
+  // gets it, for every module they're responsible for: `mine` only decides the
+  // wording (personally assigned vs. arrived in a shared queue).
+  const [assignAlert, setAssignAlert] = useState<{ key: string; added: number; mine: boolean } | null>(null);
+  // Read synchronously inside the poll: a modal already on screen must not be
+  // swapped out from under the user, or the first item is never announced.
+  const alertOpenRef = useRef(false);
+  useEffect(() => { alertOpenRef.current = !!assignAlert; }, [assignAlert]);
+
+  // What we have already popped for this person, on this browser. Persisted so
+  // work that lands while they're logged out still raises the modal at next
+  // login instead of being silently absorbed into the badge — and so a refresh
+  // doesn't re-nag about the same backlog. Keyed per user: two people sharing a
+  // browser must not inherit each other's baseline.
+  const alertedKey = currentUser?.id ? `${domain}_alerted_counts_${currentUser.id}` : null;
 
   const fetchModuleCounts = useCallback(async () => {
     const tk = localStorage.getItem(`${domain}_access`);
-    if (!tk) return;
+    // Wait for /users/me — without the id there's no per-user baseline to
+    // compare against, and guessing one would either spam or swallow the popup.
+    if (!tk || !alertedKey) return;
     try {
       const r = await fetch(`${getApiBase(domain)}/api/leads/module-counts/`, {
         headers: { Authorization: `Bearer ${tk}` },
@@ -394,39 +419,42 @@ export default function DashboardLayout({
       const data = await r.json();
       const next: Record<string, number> = data.counts || {};
       const nextAssigned: Record<string, number> = data.assigned || {};
-      const prev = prevCountsRef.current;
-      const prevAssigned = prevAssignedRef.current;
 
-      if (prev) {
-        // Anything newly assigned to this user personally gets the modal…
-        const newlyAssigned = prevAssigned
-          ? Object.entries(nextAssigned)
-              .filter(([k, v]) => v > (prevAssigned[k] ?? 0))
-              .map(([k, v]) => ({ key: k, added: v - (prevAssigned[k] ?? 0) }))
-          : [];
+      let baseline = prevCountsRef.current;
+      if (!baseline) {
+        try { baseline = JSON.parse(localStorage.getItem(alertedKey) || "{}"); }
+        catch { baseline = {}; }
+      }
+
+      // Anything that grew is new work for this user. Counts are already
+      // "unseen" server-side, so a fresh browser starts from zero and the whole
+      // outstanding backlog is announced once.
+      const grown = Object.entries(next)
+        .filter(([k, v]) => v > (baseline![k] ?? 0))
+        .map(([k, v]) => ({ key: k, added: v - (baseline![k] ?? 0), mine: (nextAssigned[k] ?? 0) > 0 }));
+
+      if (grown.length) {
         // One modal at a time, however many customers it covers — a bulk
         // assignment of 50 leads is a single "50 new customers" popup, not 50.
-        if (newlyAssigned.length) setAssignAlert(newlyAssigned[0]);
-
-        // …everything else that grew is a quieter corner toast (including any
-        // further assigned modules beyond the one in the modal).
-        const modalKeys = new Set(newlyAssigned.slice(0, 1).map(g => g.key));
-        const grown = Object.entries(next)
-          .filter(([k, v]) => v > (prev[k] ?? 0) && !modalKeys.has(k))
-          .map(([k, v]) => ({ key: k, added: v - (prev[k] ?? 0) }));
-        if (grown.length) {
-          setToasts(t => [...t, ...grown.map(g => ({
+        // If one is still open, everything becomes a toast rather than replacing it.
+        const inModal = alertOpenRef.current ? null : grown[0];
+        if (inModal) { setAssignAlert(inModal); alertOpenRef.current = true; }
+        const rest = grown.filter(g => g !== inModal);
+        if (rest.length) {
+          setToasts(t => [...t, ...rest.map(g => ({
             id: `${Date.now()}-${g.key}`,
             message: `${g.added} new ${g.added === 1 ? "item" : "items"} in ${MODULE_LABELS[g.key] || g.key}`,
             href: `/${g.key}`,
           }))]);
         }
       }
+      // Announced (or nothing to announce) — this reading becomes the baseline.
+      localStorage.setItem(alertedKey, JSON.stringify(next));
       prevCountsRef.current = next;
       prevAssignedRef.current = nextAssigned;
       setModuleCounts(next);
     } catch { /* keep the previous badges */ }
-  }, [domain]);
+  }, [domain, alertedKey]);
 
   useEffect(() => {
     fetchModuleCounts();
@@ -637,8 +665,8 @@ export default function DashboardLayout({
   const inventoryItems = [
     { href: `/inventory`,            label: "Dashboard",        Icon: Nav.Dashboard, exact: true },
     { href: `/inventory/items`,      label: "Item Master",      Icon: Nav.Products },
-    { href: `/inventory/purchases`,  label: "Purchases",        Icon: Nav.PurchaseOrder },
-    { href: `/inventory/dispatch`,   label: "Sales / Dispatch", Icon: Nav.SalesOrder },
+    { href: `/inventory/purchases`,  label: "Purchases",        Icon: Nav.StockIn },
+    { href: `/inventory/dispatch`,   label: "Sales / Dispatch", Icon: Nav.StockOut },
     { href: `/inventory/suppliers`,  label: "Suppliers",        Icon: Nav.Vendor },
     { href: `/inventory/customers`,  label: "Customers",        Icon: Nav.Team },
   ];
@@ -959,7 +987,8 @@ export default function DashboardLayout({
           Manager popups so it can't be missed. */}
       {assignAlert && (
         <div className="popup-overlay">
-          <div className="popup-backdrop" onClick={() => setAssignAlert(null)} />
+          {/* No click-through dismiss: this has to be acknowledged. */}
+          <div className="popup-backdrop" />
           <div className="popup-card max-w-lg">
             <div className="h-40 bg-gradient-to-br from-amber-400 via-orange-500 to-rose-500 w-full flex items-center justify-center text-white relative overflow-hidden">
               <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-bl-full" />
@@ -967,10 +996,13 @@ export default function DashboardLayout({
               <div className="relative scale-[2.2]"><Nav.Quote /></div>
             </div>
             <div className="px-10 pb-10 pt-8 text-center flex flex-col items-center">
-              <h2 className="text-2xl font-black text-slate-800 mb-3 tracking-tight">New work assigned to you</h2>
+              <h2 className="text-2xl font-black text-slate-800 mb-3 tracking-tight">
+                {assignAlert.mine ? "New work assigned to you" : "New work in your queue"}
+              </h2>
               <p className="text-slate-500 text-base mb-8 leading-relaxed">
-                <b className="text-slate-700">{assignAlert.added}</b> new {assignAlert.added === 1 ? "customer has" : "customers have"} been
-                assigned to you in <b className="text-slate-700">{MODULE_LABELS[assignAlert.key] || assignAlert.key}</b>.
+                <b className="text-slate-700">{assignAlert.added}</b> new {assignAlert.added === 1 ? "customer" : "customers"}
+                {assignAlert.mine ? " assigned to you in " : " waiting in "}
+                <b className="text-slate-700">{MODULE_LABELS[assignAlert.key] || assignAlert.key}</b>.
               </p>
               <div className="flex gap-3 w-full max-w-sm">
                 <button onClick={() => setAssignAlert(null)}

@@ -338,3 +338,71 @@ class PoSignedDateTests(TestCase):
         other = mk('t_bde_other', 'bde')
         self.patch_site_visit({'po_signed_date': '2026-07-27'})
         self.assertEqual(self.queue(actor=other), [])
+
+
+class ModuleCountsCoverageTests(TestCase):
+    """The popup can only fire for modules that appear in module-counts, so every
+    role must see keys for the queues it actually works."""
+
+    EXPECTED = {
+        'tele_caller': ['leads'],
+        'bde': ['leads'],
+        'documentation_staff': ['documentation', 'documentation-stage2', 'discom-followup', 'warranty'],
+        'documentation_manager': ['documentation', 'documentation-stage2', 'discom-followup', 'warranty'],
+        'accounts_staff': ['accounts', 'accounts/partially-paid', 'accounts/fully-paid', 'accounts/completed'],
+        'purchase_staff': ['purchase'],
+        'project_manager': ['project'],
+        'liasoning_officer': ['liasoning', 'periodic-maintenance'],
+        'admin': ['leads', 'documentation', 'accounts', 'purchase', 'project', 'liasoning'],
+        'superadmin': ['leads', 'documentation', 'accounts', 'purchase', 'project', 'liasoning'],
+        'coo': ['leads', 'documentation', 'accounts', 'purchase', 'project', 'liasoning'],
+    }
+
+    def counts(self, user):
+        r = self.client.get('/api/leads/module-counts/', HTTP_AUTHORIZATION=token_for(user))
+        self.assertEqual(r.status_code, 200, user.role)
+        body = r.json()
+        self.assertIn('counts', body)
+        self.assertIn('assigned', body)
+        return body
+
+    def test_every_role_sees_its_own_modules(self):
+        for role, modules in self.EXPECTED.items():
+            body = self.counts(mk(f'c_{role}', role))
+            for module in modules:
+                self.assertIn(module, body['counts'], f'{role} is missing {module}')
+
+    def test_assignment_targets_report_an_assigned_bucket(self):
+        """`assigned` is what makes the modal say "assigned to you"."""
+        for role, module in (('documentation_staff', 'documentation'),
+                             ('accounts_staff', 'accounts'),
+                             ('purchase_staff', 'purchase'),
+                             ('project_manager', 'project'),
+                             ('bde', 'leads')):
+            body = self.counts(mk(f'a_{role}', role))
+            self.assertIn(module, body['assigned'], f'{role} has no assigned bucket for {module}')
+
+    def test_shared_queues_still_report_a_count(self):
+        """No named assignee, so no `assigned` bucket — the modal falls back to
+        "new work in your queue" and must still have a count to trigger on."""
+        body = self.counts(mk('s_doc', 'documentation_staff'))
+        for module in ('warranty', 'discom-followup'):
+            self.assertIn(module, body['counts'])
+            self.assertNotIn(module, body['assigned'])
+
+    def test_a_newly_assigned_lead_moves_the_count(self):
+        """The popup fires off a rising count, so the count has to move."""
+        caller = mk('c_owner', 'tele_caller')
+        before = self.counts(caller)['counts']['leads']
+        Lead.objects.create(first_name='N', last_name='New', phone='9995100001',
+                            status='new', assigned_to=caller, value=0)
+        after = self.counts(caller)
+        self.assertEqual(after['counts']['leads'], before + 1)
+        self.assertEqual(after['assigned']['leads'], after['counts']['leads'])
+
+    def test_b2b_roles_have_no_assignment_queues(self):
+        """Documents the gap: the stock register has no per-user assignment, so
+        these roles get no counts and therefore no popup."""
+        for role in ('store_manager', 'store_keeper', 'accounts_b2b'):
+            body = self.counts(mk(f'b_{role}', role))
+            self.assertEqual(body['assigned'], {'leads': 0}, role)
