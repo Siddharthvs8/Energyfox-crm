@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User, WorkspaceTeam, Branch
+from .models import User, WorkspaceTeam, Branch, CustomRole
 
 
 class BranchSerializer(serializers.ModelSerializer):
@@ -35,6 +35,25 @@ class BranchSerializer(serializers.ModelSerializer):
         } for u in obj.members.all().order_by('first_name', 'username')]
 
 
+class CustomRoleSerializer(serializers.ModelSerializer):
+    member_count = serializers.IntegerField(source='members.count', read_only=True)
+
+    class Meta:
+        model = CustomRole
+        fields = ['id', 'name', 'description', 'permissions', 'is_active',
+                  'member_count', 'created_at', 'updated_at']
+        read_only_fields = ['created_at', 'updated_at']
+
+    def validate_permissions(self, value):
+        from .permission_catalog import ALL_PERMISSION_KEYS, clean_permissions
+        if not isinstance(value, list):
+            raise serializers.ValidationError('Expected a list of permission keys.')
+        unknown = [str(v) for v in value if str(v) not in ALL_PERMISSION_KEYS]
+        if unknown:
+            raise serializers.ValidationError(f"Unknown permission(s): {', '.join(unknown)}")
+        return clean_permissions(value)
+
+
 class UserSerializer(serializers.ModelSerializer):
     role_label = serializers.CharField(source='get_role_display', read_only=True)
     branch_name = serializers.CharField(source='branch.name', read_only=True, default=None)
@@ -44,6 +63,17 @@ class UserSerializer(serializers.ModelSerializer):
     # Absolute URL so the frontend can use it directly (MEDIA_URL is relative in
     # local dev and an S3 domain in production).
     avatar_url = serializers.SerializerMethodField()
+    custom_role_name = serializers.CharField(source='custom_role.name', read_only=True, default=None)
+    # Resolved permission keys — empty for built-in roles, whose access comes from
+    # the role rules rather than a list. Drives the sidebar for custom users.
+    permissions = serializers.SerializerMethodField()
+
+    def get_permissions(self, obj):
+        # Same order as the role itself reports (catalogue order), so the two
+        # endpoints can't disagree about a role's contents.
+        if obj.granted is None:
+            return []
+        return list(obj.custom_role.permissions or [])
 
     # Any authenticated user may set their own picture, so bound the upload here
     # rather than trusting the browser.
@@ -78,7 +108,7 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = ['id', 'username', 'first_name', 'last_name', 'email', 'password',
                   'role', 'role_label', 'branch', 'branch_name', 'can_manage',
-                  'avatar', 'avatar_url',
+                  'avatar', 'avatar_url', 'custom_role', 'custom_role_name', 'permissions',
                   'is_staff', 'is_manager', 'is_general_manager', 'team', 'phone', 'voxbay_extension']
         extra_kwargs = {
             'password': {'write_only': True},

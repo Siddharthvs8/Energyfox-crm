@@ -39,6 +39,7 @@ const ROLES = [
   { value: "store_manager", label: "Store Manager" },
   { value: "store_keeper", label: "Store Keeper" },
   { value: "accounts_b2b", label: "Accounts B2B" },
+  { value: "custom", label: "Custom Role" },
   { value: "coo", label: "COO" },
   { value: "admin", label: "Admin" },
   { value: "superadmin", label: "Super Admin" },
@@ -62,6 +63,7 @@ const ROLE_COLORS: Record<string, { bg: string; text: string }> = {
   store_manager: { bg: "bg-amber-50", text: "text-amber-700" },
   store_keeper: { bg: "bg-amber-50", text: "text-amber-700" },
   accounts_b2b: { bg: "bg-amber-50", text: "text-amber-700" },
+  custom: { bg: "bg-fuchsia-50", text: "text-fuchsia-700" },
   bde: { bg: "bg-slate-100", text: "text-slate-600" },
   tele_caller: { bg: "bg-slate-100", text: "text-slate-600" },
 };
@@ -96,6 +98,8 @@ function TeamPageInner() {
   const [currentUser, setCurrentUser] = useState<any>(null);
   // Roles this user may grant (null until loaded = no filtering yet).
   const [assignableRoles, setAssignableRoles] = useState<string[] | null>(null);
+  // Custom user types defined in Settings → Roles & Permissions.
+  const [customRoles, setCustomRoles] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<"members" | "teams">("members");
   const [showModal, setShowModal] = useState(false);
@@ -111,7 +115,7 @@ function TeamPageInner() {
   const avatarInput = React.useRef<HTMLInputElement>(null);
   const isB2B = segment === "b2b";
 
-  const blankForm = { username: "", first_name: "", last_name: "", email: "", password: "", role: "tele_caller", team: "" as string | number, branch: "" as string | number, phone: "", voxbay_extension: "" };
+  const blankForm = { username: "", first_name: "", last_name: "", email: "", password: "", role: "tele_caller", custom_role: "" as string | number, team: "" as string | number, branch: "" as string | number, phone: "", voxbay_extension: "" };
   const [form, setForm] = useState(blankForm);
 
   const blankTeamForm = { name: "", manager: "" as string | number, member_ids: [] as (string | number)[] };
@@ -134,13 +138,14 @@ function TeamPageInner() {
     const seg = localStorage.getItem(`${domain}_biz_mode`) === "b2b" ? "b2b" : "b2c";
     const q = `?segment=${seg}`;
     try {
-      const [tRes, wtRes, meRes, subRes, brRes, arRes] = await Promise.all([
+      const [tRes, wtRes, meRes, subRes, brRes, arRes, crRes] = await Promise.all([
         fetch(`${getApiBase(domain)}/api/users/${q}`, { headers: { Authorization: `Bearer ${token}` } }),
         fetch(`${getApiBase(domain)}/api/teams/`, { headers: { Authorization: `Bearer ${token}` } }),
         fetch(`${getApiBase(domain)}/api/users/me/`, { headers: { Authorization: `Bearer ${token}` } }),
         fetch(`${getApiBase(domain)}/api/subscription/`, { headers: { Authorization: `Bearer ${token}` } }),
         fetch(`${getApiBase(domain)}/api/branches/`, { headers: { Authorization: `Bearer ${token}` } }),
         fetch(`${getApiBase(domain)}/api/users/assignable-roles/${q}`, { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`${getApiBase(domain)}/api/custom-roles/`, { headers: { Authorization: `Bearer ${token}` } }),
       ]);
       const tData = await tRes.json(); setTeam(Array.isArray(tData) ? tData : tData.results || []);
       const wtData = await wtRes.json(); setWorkspaceTeams(Array.isArray(wtData) ? wtData : wtData.results || []);
@@ -151,6 +156,7 @@ function TeamPageInner() {
         setSegment(B2B_ONLY_ROLES.includes(me.role) ? "b2b" : (seg as "b2c" | "b2b"));
       }
       if (arRes.ok) { const ar = await arRes.json(); if (Array.isArray(ar)) setAssignableRoles(ar.map((r: any) => r.value)); }
+      if (crRes.ok) { const cr = await crRes.json(); setCustomRoles((Array.isArray(cr) ? cr : cr.results || []).filter((r: any) => r.is_active)); }
       if (subRes.ok) {
         const subData = await subRes.json();
         setMaxUsers(subData.max_users || 10);
@@ -193,7 +199,7 @@ function TeamPageInner() {
 
   const openEditModal = (user: any) => {
     setEditingUser(user);
-    setForm({ username: user.username, first_name: user.first_name || "", last_name: user.last_name || "", email: user.email || "", password: "", role: user.role || "tele_caller", team: user.team || "", branch: user.branch || "", phone: user.phone || "", voxbay_extension: user.voxbay_extension || "" });
+    setForm({ username: user.username, first_name: user.first_name || "", last_name: user.last_name || "", email: user.email || "", password: "", role: user.role || "tele_caller", custom_role: user.custom_role || "", team: user.team || "", branch: user.branch || "", phone: user.phone || "", voxbay_extension: user.voxbay_extension || "" });
     setShowModal(true);
   };
 
@@ -222,6 +228,9 @@ function TeamPageInner() {
     if (!form.password) delete payload.password;
     payload.team = form.team || null;       // "" -> null for the FK
     payload.branch = form.branch || null;
+    // Only meaningful on the custom user type; clear it otherwise so a role
+    // change doesn't leave a stale permission set attached.
+    payload.custom_role = form.role === "custom" ? (form.custom_role || null) : null;
     const method = editingUser ? "PATCH" : "POST";
     const url = editingUser ? `${getApiBase(domain)}/api/users/${editingUser.id}/` : `${getApiBase(domain)}/api/users/`;
     try {
@@ -521,6 +530,25 @@ function TeamPageInner() {
                 <div className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"><I.ChevronDown /></div>
               </div>
             </div>
+            {/* Which custom user type — its permission list is what this account
+                can actually reach. Built in Settings → Roles & Permissions. */}
+            {form.role === "custom" && (
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-1.5">Custom User Type *</label>
+                <div className="relative">
+                  <select required disabled={!currentUser?.is_staff} value={form.custom_role}
+                    onChange={e => setForm({ ...form, custom_role: e.target.value })}
+                    className="w-full appearance-none bg-slate-50 border border-slate-200 rounded-xl pl-4 pr-8 py-2.5 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer disabled:opacity-60 transition-all">
+                    <option value="">Select a role…</option>
+                    {customRoles.map(r => <option key={r.id} value={r.id}>{r.name} ({r.permissions.length} permissions)</option>)}
+                  </select>
+                  <div className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"><I.ChevronDown /></div>
+                </div>
+                {customRoles.length === 0 && (
+                  <p className="text-[10px] text-amber-600 mt-1">No custom roles yet — create one in Settings → Roles &amp; Permissions.</p>
+                )}
+              </div>
+            )}
             <div>
               <label className="block text-xs font-semibold text-slate-600 mb-1.5">Assign Team</label>
               <div className="relative">

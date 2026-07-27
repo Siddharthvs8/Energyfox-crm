@@ -4,8 +4,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from core.permissions import IsAdminOnly
 from organization.utils import get_org_settings
-from .models import User, WorkspaceTeam, Branch
-from .serializers import UserSerializer, WorkspaceTeamSerializer, BranchSerializer
+from .models import User, WorkspaceTeam, Branch, CustomRole
+from .serializers import UserSerializer, CustomRoleSerializer, WorkspaceTeamSerializer, BranchSerializer
 
 
 def _looks_masked(value, current):
@@ -235,6 +235,33 @@ class WorkspaceTeamViewSet(viewsets.ModelViewSet):
             "leaderboard": leaderboard
         })
 
+class CustomRoleViewSet(viewsets.ModelViewSet):
+    """Custom user types, managed from Settings. Only admins / super admins may
+    change them: a role is a grant of access, so editing one is a privilege
+    change for everybody on it."""
+    serializer_class = CustomRoleSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    queryset = CustomRole.objects.all()
+
+    def get_permissions(self):
+        if self.action in ('list', 'retrieve'):
+            return [permissions.IsAuthenticated()]
+        return [permissions.IsAuthenticated(), permissions.IsAdminUser()]
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user if self.request.user.is_authenticated else None)
+
+    def destroy(self, request, *args, **kwargs):
+        role = self.get_object()
+        if role.members.exists():
+            return Response(
+                {'error': f'{role.name} is assigned to {role.members.count()} '
+                          f'user(s). Move them to another role first.'},
+                status=400,
+            )
+        return super().destroy(request, *args, **kwargs)
+
+
 class UserViewSet(viewsets.ModelViewSet):
     """
     A viewset for viewing and editing user instances.
@@ -434,6 +461,13 @@ class UserViewSet(viewsets.ModelViewSet):
     def me(self, request):
         serializer = self.get_serializer(request.user)
         return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='permission-catalog')
+    def permission_catalog(self, request):
+        """Every permission a custom user type can be granted — drives the
+        checkbox grid in Settings → Roles & Permissions."""
+        from .permission_catalog import catalog
+        return Response(catalog())
 
     @action(detail=False, methods=['get'])
     def bdes(self, request):

@@ -391,8 +391,9 @@ export default function DashboardLayout({
   const prevCountsRef = useRef<Record<string, number> | null>(null);
   const prevAssignedRef = useRef<Record<string, number> | null>(null);
   // New work waiting on this user — shown as a centre-screen modal. Every role
-  // gets it, for every module they're responsible for: `mine` only decides the
-  // wording (personally assigned vs. arrived in a shared queue).
+  // that does the work gets it, for every module they're responsible for
+  // (`mine` only decides the wording); admins get toasts instead — see
+  // modalMuted below.
   const [assignAlert, setAssignAlert] = useState<{ key: string; added: number; mine: boolean } | null>(null);
   // Read synchronously inside the poll: a modal already on screen must not be
   // swapped out from under the user, or the first item is never announced.
@@ -405,6 +406,11 @@ export default function DashboardLayout({
   // doesn't re-nag about the same backlog. Keyed per user: two people sharing a
   // browser must not inherit each other's baseline.
   const alertedKey = currentUser?.id ? `${domain}_alerted_counts_${currentUser.id}` : null;
+
+  // Admins and super admins oversee every module at once, so the blocking modal
+  // would fire at them constantly for work that isn't theirs to do. They still
+  // get the corner toasts and the sidebar badges.
+  const modalMuted = !!currentUser?.is_staff;
 
   const fetchModuleCounts = useCallback(async () => {
     const tk = localStorage.getItem(`${domain}_access`);
@@ -437,7 +443,7 @@ export default function DashboardLayout({
         // One modal at a time, however many customers it covers — a bulk
         // assignment of 50 leads is a single "50 new customers" popup, not 50.
         // If one is still open, everything becomes a toast rather than replacing it.
-        const inModal = alertOpenRef.current ? null : grown[0];
+        const inModal = (modalMuted || alertOpenRef.current) ? null : grown[0];
         if (inModal) { setAssignAlert(inModal); alertOpenRef.current = true; }
         const rest = grown.filter(g => g !== inModal);
         if (rest.length) {
@@ -454,7 +460,7 @@ export default function DashboardLayout({
       prevAssignedRef.current = nextAssigned;
       setModuleCounts(next);
     } catch { /* keep the previous badges */ }
-  }, [domain, alertedKey]);
+  }, [domain, alertedKey, modalMuted]);
 
   useEffect(() => {
     fetchModuleCounts();
@@ -558,15 +564,30 @@ export default function DashboardLayout({
   // Liasoning officer gets a focused view — only the Liasoning & Service module.
   const isLiasoningOnly = currentUser?.role === "liasoning_officer";
 
+  // A custom user type reaches exactly the modules ticked on its role in
+  // Settings → Roles & Permissions. `permissions` holds those keys, which are
+  // the same slugs as the nav hrefs, so the match is mechanical.
+  const onCustomRole = currentUser?.role === "custom";
+  const grantedPerms: string[] = currentUser?.permissions || [];
+  const permKeyFor = (item: any) =>
+    item.perm || (item.href === `/` ? "dashboard" : String(item.href || "").replace(/^\//, ""));
+
   // Purchase staff keep the stock register, so they get the Inventory group too,
   // as do the B2B roles for whom it is the entire application.
-  const canSeeInventory = currentUser?.is_staff || currentUser?.is_general_manager
-    || currentUser?.role === "purchase_staff" || isB2BOnly;
+  const canSeeInventory = onCustomRole
+    ? grantedPerms.includes("inventory")
+    : currentUser?.is_staff || currentUser?.is_general_manager
+      || currentUser?.role === "purchase_staff" || isB2BOnly;
 
   // Manager features visible to manager, general manager, and admin
   const navItems = allNavItems.filter(item => {
     if (item.inventoryGroup) {
       return canSeeInventory;
+    }
+    // Custom user types are decided purely by their permission list — none of
+    // the role flags below apply to them.
+    if (onCustomRole) {
+      return grantedPerms.includes(permKeyFor(item));
     }
     if (bizMode === "b2b") {
       return !!item.inB2B;   // wholesale side is Inventory (the group, above) + Team

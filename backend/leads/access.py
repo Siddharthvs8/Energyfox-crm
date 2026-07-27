@@ -2,7 +2,25 @@
 
 Shared by the Lead serializer (to tell the UI what to show) and the viewset
 actions (to actually enforce it).
+
+Every `can_*` gate below first asks the user's custom role (if they are on one):
+a user type defined in Settings grants exactly the keys it lists, so it must be
+able to both open and close a door that a built-in role would decide differently.
+`custom_grant` returns None for built-in roles, which means "fall through".
 """
+
+
+def custom_grant(user, key):
+    """True/False when the user is on a custom role, else None.
+
+    Note the difference between None and False matters at every call site: None
+    means "this user isn't custom, use the built-in rules", while False means
+    "a custom role exists and does not include this permission".
+    """
+    if not user or not getattr(user, 'is_authenticated', False):
+        return False
+    can = getattr(user, 'can', None)
+    return can(key) if callable(can) else None
 
 
 def can_edit_site_visit(user, lead):
@@ -86,6 +104,9 @@ def can_assign_documentation(user):
     documentation staff member. Not lead-specific."""
     if not user or not user.is_authenticated:
         return False
+    granted = custom_grant(user, 'queue.assign')
+    if granted is not None:
+        return granted
     return user.is_staff or getattr(user, 'role', '') == 'documentation_manager'
 
 
@@ -97,6 +118,9 @@ def can_mark_lead_lost(user):
     restore it: admins, general managers, branch managers, and BDEs."""
     if not user or not user.is_authenticated:
         return False
+    granted = custom_grant(user, 'leads.mark_lost')
+    if granted is not None:
+        return granted
     return (user.is_staff or getattr(user, 'is_general_manager', False)
             or getattr(user, 'is_manager', False) or getattr(user, 'role', '') == 'bde')
 
@@ -109,6 +133,9 @@ def can_add_leads(user):
     """
     if not user or not user.is_authenticated:
         return False
+    granted = custom_grant(user, 'leads.add')
+    if granted is not None:
+        return granted
     return getattr(user, 'role', '') != 'bde'
 
 
@@ -119,6 +146,9 @@ def can_assign_leads(user):
     """
     if not user or not user.is_authenticated:
         return False
+    granted = custom_grant(user, 'leads.assign')
+    if granted is not None:
+        return granted
     return getattr(user, 'role', '') != 'bde'
 
 
@@ -131,6 +161,9 @@ def can_edit_lead_status(user):
     """
     if not user or not user.is_authenticated:
         return False
+    granted = custom_grant(user, 'leads.status')
+    if granted is not None:
+        return granted
     return getattr(user, 'role', '') != 'bde'
 
 
@@ -139,6 +172,9 @@ def can_access_doc_stage2(user):
     general managers (same audience as Documentation Stage 1)."""
     if not user or not user.is_authenticated:
         return False
+    granted = custom_grant(user, 'documentation-stage2')
+    if granted is not None:
+        return granted
     return (user.is_staff or getattr(user, 'is_general_manager', False)
             or getattr(user, 'role', '') in DOCUMENTATION_ROLES)
 
@@ -149,6 +185,9 @@ def can_reopen_documentation(user):
     staff can complete a stage but not reopen it."""
     if not user or not user.is_authenticated:
         return False
+    granted = custom_grant(user, 'queue.assign')
+    if granted is not None:
+        return granted
     return (user.is_staff or getattr(user, 'is_general_manager', False)
             or getattr(user, 'role', '') == 'documentation_manager')
 
@@ -158,6 +197,9 @@ def can_access_liasoning(user):
     admins / general managers who oversee them."""
     if not user or not user.is_authenticated:
         return False
+    granted = custom_grant(user, 'liasoning')
+    if granted is not None:
+        return granted
     return (user.is_staff or getattr(user, 'is_general_manager', False)
             or getattr(user, 'role', '') == 'liasoning_officer')
 
@@ -167,6 +209,9 @@ def can_access_warranty(user):
     general managers (it lives under documentation)."""
     if not user or not user.is_authenticated:
         return False
+    granted = custom_grant(user, 'warranty')
+    if granted is not None:
+        return granted
     return (user.is_staff or getattr(user, 'is_general_manager', False)
             or getattr(user, 'role', '') in DOCUMENTATION_ROLES)
 
@@ -177,6 +222,9 @@ def can_access_accounts(user):
     get a read-only view of the accounts data alongside their own module."""
     if not user or not user.is_authenticated:
         return False
+    granted = custom_grant(user, 'accounts')
+    if granted is not None:
+        return granted
     return (user.is_staff or getattr(user, 'is_general_manager', False)
             or getattr(user, 'role', '') in ('accounts_staff', 'purchase_staff'))
 
@@ -186,6 +234,9 @@ def can_assign_accounts(user):
     and reopen a completed payment verification. Not lead-specific."""
     if not user or not user.is_authenticated:
         return False
+    granted = custom_grant(user, 'queue.assign')
+    if granted is not None:
+        return granted
     return user.is_staff or getattr(user, 'is_general_manager', False)
 
 
@@ -218,6 +269,9 @@ def can_access_purchase(user):
     general managers who oversee them."""
     if not user or not user.is_authenticated:
         return False
+    granted = custom_grant(user, 'purchase')
+    if granted is not None:
+        return granted
     return (user.is_staff or getattr(user, 'is_general_manager', False)
             or getattr(user, 'role', '') == 'purchase_staff')
 
@@ -227,6 +281,9 @@ def can_assign_purchase(user):
     and reopen a completed purchase & logistics record. Not lead-specific."""
     if not user or not user.is_authenticated:
         return False
+    granted = custom_grant(user, 'queue.assign')
+    if granted is not None:
+        return granted
     return user.is_staff or getattr(user, 'is_general_manager', False)
 
 
@@ -257,6 +314,9 @@ def can_access_project(user):
     plus admins / general managers."""
     if not user or not user.is_authenticated:
         return False
+    granted = custom_grant(user, 'project')
+    if granted is not None:
+        return granted
     return (user.is_staff or getattr(user, 'is_general_manager', False)
             or getattr(user, 'role', '') == 'project_manager')
 
@@ -266,6 +326,9 @@ def can_assign_project(user):
     a completed project. Not lead-specific."""
     if not user or not user.is_authenticated:
         return False
+    granted = custom_grant(user, 'queue.assign')
+    if granted is not None:
+        return granted
     return user.is_staff or getattr(user, 'is_general_manager', False)
 
 
@@ -295,6 +358,9 @@ def can_access_documentation(user):
     """Who can open the Documentation view (the pushed-customer queue)."""
     if not user or not user.is_authenticated:
         return False
+    granted = custom_grant(user, 'documentation')
+    if granted is not None:
+        return granted
     return (user.is_staff or getattr(user, 'is_general_manager', False)
             or getattr(user, 'role', '') in DOCUMENTATION_ROLES)
 

@@ -11,7 +11,8 @@ from rest_framework_simplejwt.views import (
 from leads.views import LeadViewSet
 from leads.webhooks import meta_leads_webhook
 from tasks.views import TaskViewSet
-from users.views import UserViewSet, SubscriptionStatusView, WorkspaceTeamViewSet, TenantSettingsView, BranchViewSet
+from users.views import (UserViewSet, SubscriptionStatusView, WorkspaceTeamViewSet,
+                         TenantSettingsView, BranchViewSet, CustomRoleViewSet)
 from leads.views import LeadViewSet, IntegrationSettingsViewSet, DashboardStatsView, LeaderboardView, ConvertedAnalyticsView, ProductViewSet, ServiceEntryViewSet, EmergencyServiceViewSet
 from inventory.views import (VendorViewSet, PurchaseOrderViewSet, QuoteViewSet, SalesOrderViewSet,
                             StockItemViewSet, StockCustomerViewSet, GoodsReceiptViewSet,
@@ -23,6 +24,7 @@ router.register(r'tasks', TaskViewSet)
 router.register(r'users', UserViewSet, basename='users')
 router.register(r'teams', WorkspaceTeamViewSet, basename='teams')
 router.register(r'branches', BranchViewSet, basename='branches')
+router.register(r'custom-roles', CustomRoleViewSet, basename='custom-roles')
 router.register(r'integration-settings', IntegrationSettingsViewSet, basename='integration-settings')
 router.register(r'products', ProductViewSet, basename='products')
 router.register(r'service-entries', ServiceEntryViewSet, basename='service-entries')

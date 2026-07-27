@@ -28,6 +28,35 @@ class Branch(models.Model):
         return self.name
 
 
+class CustomRole(models.Model):
+    """A user type defined from Settings instead of in code.
+
+    `permissions` is a list of keys from users.permission_catalog; a user on this
+    role can reach exactly those modules and do exactly those things. Nothing is
+    implied — an empty list is a valid (and powerless) role.
+    """
+    name = models.CharField(max_length=80, unique=True)
+    description = models.CharField(max_length=200, blank=True, default='')
+    permissions = models.JSONField(default=list, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+    def save(self, *args, **kwargs):
+        from .permission_catalog import clean_permissions
+        # Never store a key we don't recognise — a stale key would look granted
+        # in the UI while silently doing nothing.
+        self.permissions = clean_permissions(self.permissions)
+        super().save(*args, **kwargs)
+
+
 class WorkspaceTeam(models.Model):
     name = models.CharField(max_length=150)
     manager = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='managed_teams')
@@ -64,6 +93,10 @@ ROLE_STORE_MANAGER = 'store_manager'
 ROLE_STORE_KEEPER = 'store_keeper'
 ROLE_ACCOUNTS_B2B = 'accounts_b2b'
 
+# A user type defined in Settings → Roles & Permissions rather than in code. The
+# account's access comes from its CustomRole's permission list; see User.granted.
+ROLE_CUSTOM = 'custom'
+
 ROLE_CHOICES = [
     (ROLE_SUPERADMIN, 'Super Admin'),
     (ROLE_ADMIN, 'Admin'),
@@ -81,6 +114,7 @@ ROLE_CHOICES = [
     (ROLE_STORE_MANAGER, 'Store Manager'),
     (ROLE_STORE_KEEPER, 'Store Keeper'),
     (ROLE_ACCOUNTS_B2B, 'Accounts B2B'),
+    (ROLE_CUSTOM, 'Custom Role'),
 ]
 
 # Roles that live entirely on the B2B side.
@@ -106,6 +140,9 @@ ROLE_BOOL_MAP = {
     ROLE_STORE_MANAGER:  (False, False, False, False),
     ROLE_STORE_KEEPER:   (False, False, False, False),
     ROLE_ACCOUNTS_B2B:   (False, False, False, False),
+    # A custom user type gets nothing implicitly — every door it can open is
+    # listed on its CustomRole.
+    ROLE_CUSTOM:         (False, False, False, False),
 }
 
 
@@ -130,6 +167,8 @@ ROLE_RANK = {
     ROLE_STORE_MANAGER: 60,
     ROLE_STORE_KEEPER: 30,
     ROLE_ACCOUNTS_B2B: 30,
+    # Staff tier: an admin can manage them, they can't manage anyone.
+    ROLE_CUSTOM: 30,
 }
 
 
@@ -163,6 +202,9 @@ class User(AbstractUser):
     # Profile picture. Anyone may set their own (see UserViewSet); falls back to
     # the initial-letter avatar when empty.
     avatar = models.ImageField(upload_to='avatars/', null=True, blank=True)
+    # Only meaningful when role == ROLE_CUSTOM.
+    custom_role = models.ForeignKey(CustomRole, on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name='members')
 
     def save(self, *args, **kwargs):
         # `role` is the source of truth. Derive the cached booleans from it; if role
@@ -182,11 +224,36 @@ class User(AbstractUser):
     # ── Capability helpers (read-only; used by data-visibility + serializer output) ──
     @property
     def sees_all_leads(self):
+        granted = self.can('leads.view_all')
+        if granted is not None:
+            return granted
         return self.is_staff or self.is_general_manager or self.role in (ROLE_DOC_STAFF, ROLE_ACCOUNTS_STAFF, ROLE_PURCHASE_STAFF, ROLE_PROJECT_MANAGER, ROLE_LIASONING_OFFICER)
 
     @property
     def branch_scoped(self):
         return self.role == ROLE_BRANCH_MANAGER
+
+    # ── Custom user types ──
+    @property
+    def on_custom_role(self):
+        """True when this account's access is driven by a CustomRole."""
+        return self.role == ROLE_CUSTOM and self.custom_role_id is not None             and bool(self.custom_role and self.custom_role.is_active)
+
+    @property
+    def granted(self):
+        """Permission keys this account holds, or ``None`` when it isn't on a
+        custom role (i.e. the built-in role rules apply instead)."""
+        if not self.on_custom_role:
+            return None
+        return set(self.custom_role.permissions or [])
+
+    def can(self, key):
+        """Tri-state: True/False for a custom role, ``None`` to fall through to
+        the built-in role rules. Callers must distinguish None from False."""
+        keys = self.granted
+        if keys is None:
+            return None
+        return key in keys
 
     @property
     def is_b2b_only(self):

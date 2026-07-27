@@ -2,9 +2,20 @@
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
 import { THEMES, applyTheme } from "@/lib/themes";
+import RolesSection from "./RolesSection";
 
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+
+type SettingsTab = "general" | "integrations" | "automation" | "documents" | "roles";
+
+const TABS: { key: SettingsTab; label: string; blurb: string }[] = [
+  { key: "general", label: "General", blurb: "Company profile, branding and plan." },
+  { key: "integrations", label: "Integrations", blurb: "Payments, telephony, WhatsApp and email." },
+  { key: "automation", label: "Automation", blurb: "Target reminders and your own lead statuses." },
+  { key: "documents", label: "Documents", blurb: "Invoices and the warranty certificate." },
+  { key: "roles", label: "Roles & Permissions", blurb: "Build your own user types and choose what each one can reach." },
+];
 
 export default function TenantSettingsPage({ params: paramsPromise }: { params: Promise<{ domain: string }> }) {
   const params = React.use(paramsPromise);
@@ -62,10 +73,13 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
   });
 
   const [isSuperAdmin, setIsSuperAdmin] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   // Whether outgoing email is actually working, and a way to prove it.
   const [emailStatus, setEmailStatus] = useState<any>(null);
   const [testingEmail, setTestingEmail] = useState(false);
   const [themeSaving, setThemeSaving] = useState("");
+  // Settings is long, so it's split into sections rather than one endless scroll.
+  const [tab, setTab] = useState<SettingsTab>("general");
 
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [previewLogo, setPreviewLogo] = useState("");
@@ -180,6 +194,7 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
         if (meRes.ok) {
           const me = await meRes.json();
           setIsSuperAdmin(!!me.is_superuser);
+          setIsAdmin(!!me.is_staff);
         }
       } catch { /* non-fatal */ }
     } catch (err) {
@@ -372,17 +387,31 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
 
   return (
     <div className="max-w-3xl mx-auto p-4 sm:p-6 lg:p-8">
-      <div className="mb-8">
+      <div className="mb-6">
         <h1 className="text-2xl font-bold text-slate-900">Workspace Settings</h1>
-        <p className="text-sm text-slate-500 mt-1">Manage your company profile and preferences.</p>
+        <p className="text-sm text-slate-500 mt-1">{TABS.find(t => t.key === tab)?.blurb}</p>
+      </div>
+
+      <div className="flex gap-1 mb-6 border-b border-slate-200 overflow-x-auto no-scrollbar">
+        {TABS.map(t => (
+          <button key={t.key} type="button" onClick={() => setTab(t.key)}
+            className={`px-4 py-2.5 text-sm font-semibold whitespace-nowrap border-b-2 -mb-px transition-colors ${
+              tab === t.key ? "border-indigo-600 text-indigo-600" : "border-transparent text-slate-500 hover:text-slate-800"}`}>
+            {t.label}
+          </button>
+        ))}
       </div>
 
       {error && <div className="mb-6 p-4 bg-red-50 text-red-600 rounded-xl text-sm border border-red-100">{error}</div>}
       {success && <div className="mb-6 p-4 bg-emerald-50 text-emerald-600 rounded-xl text-sm border border-emerald-100">{success}</div>}
 
+      {/* Roles is its own module with its own saves, so it sits outside the
+          workspace-settings form. */}
+      {tab === "roles" ? <RolesSection domain={domain} isAdmin={isAdmin} /> : (
       <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
         <form onSubmit={handleSave} className="p-6 sm:p-8">
           <div className="space-y-6">
+            {tab === "general" && (<>
             <div>
               <label className="block text-sm font-semibold text-slate-700 mb-2">Company Name</label>
               <input 
@@ -464,6 +493,9 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
               </div>
             </div>
 
+            </>)}
+
+            {tab === "integrations" && (<>
             <div className="pt-6 border-t border-slate-100">
               <h3 className="text-lg font-bold text-slate-900 mb-4">Razorpay Integration</h3>
               <p className="text-sm text-slate-500 mb-6">Connect your Razorpay account to generate payment links for leads.</p>
@@ -762,6 +794,9 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
               </div>
             </div>
 
+            </>)}
+
+            {tab === "documents" && (<>
             <div className="pt-6 border-t border-slate-100">
               <h3 className="text-lg font-bold text-slate-900 mb-4">Invoice Generation</h3>
               <p className="text-sm text-slate-500 mb-6">Upload a DOCX invoice template. The system will use this template to automatically generate PDF invoices when a lead completes payment.</p>
@@ -799,6 +834,9 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
               </div>
             </div>
  
+            </>)}
+
+            {tab === "automation" && (<>
             <div className="pt-6 border-t border-slate-100">
               <h3 className="text-lg font-bold text-slate-900 mb-2">⏰ Target Popup Intervals</h3>
               <p className="text-sm text-slate-500 mb-6">Configure how frequently popup alerts appear to agents who are below their daily or monthly performance targets.</p>
@@ -882,6 +920,9 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
               </div>
             </div>
 
+            </>)}
+
+            {tab === "documents" && (<>
             <div className="pt-6 border-t border-slate-100">
               <h3 className="text-lg font-bold text-slate-900 mb-2">Warranty Document</h3>
               <p className="text-sm text-slate-500 mb-6">Fixed details printed on the generated warranty certificate — company identity, director sign-off, default warranty years, signature &amp; seal. These are not entered per customer.</p>
@@ -980,6 +1021,7 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
                 <p className="sm:col-span-2 text-xs text-slate-400">Transparent PNG works best for the signature and seal. They are embedded in every generated warranty certificate.</p>
               </div>
             </div>
+            </>)}
           </div>
 
           <div className="mt-8 flex justify-end">
@@ -993,6 +1035,7 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
           </div>
         </form>
       </div>
+      )}
     </div>
   );
 }
