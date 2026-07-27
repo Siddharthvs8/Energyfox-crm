@@ -298,6 +298,36 @@ class PoSignedDateTests(TestCase):
         again = self.patch_site_visit({'po_signed_date': '2026-07-27'})
         self.assertFalse(again.json()['po_just_signed'])
 
+    def test_full_form_save_with_a_blank_po_date(self):
+        """The browser posts every scalar it holds, so an untouched date arrives
+        as "". A DateField rejects that, which failed the whole save."""
+        payload = {
+            'roof_type': 'rcc', 'connection_type': '', 'connected_load': '',
+            'kseb_section': 'Kollam', 'plant_capacity': '5 kW',
+            'name_change': '', 'loan': '', 'loan_amount': '',
+            'po_signed_date': '', 'kseb_feasibility_date': '',
+            'rcc_roof_types': ['flat'], 'site_visit_complete': False, 'deal_value': '250000',
+        }
+        r = self.patch_site_visit(payload)
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertIsNone(r.json()['po_signed_date'])
+        self.assertFalse(r.json()['po_just_signed'])
+        self.assertEqual(r.json()['kseb_section'], 'Kollam')
+
+    def test_clearing_a_saved_po_date(self):
+        self.patch_site_visit({'po_signed_date': '2026-07-27'})
+        r = self.patch_site_visit({'po_signed_date': ''})
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertIsNone(r.json()['po_signed_date'])
+        r = self.patch_site_visit({'po_signed_date': None})
+        self.assertEqual(r.status_code, 200)
+        self.assertIsNone(r.json()['po_signed_date'])
+
+    def test_a_real_bad_date_is_still_rejected(self):
+        r = self.patch_site_visit({'po_signed_date': 'not-a-date'})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('po_signed_date', r.json())
+
     def test_other_edits_do_not_fire_the_prompt(self):
         r = self.patch_site_visit({'kseb_section': 'Kollam'})
         self.assertEqual(r.status_code, 200)

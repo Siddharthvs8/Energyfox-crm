@@ -271,16 +271,39 @@ export default function SiteVisitSection({ leadId, canEdit = true, onSaved }: { 
     } catch { alert("Network error while deleting."); }
   };
 
+  /** Scalars + rcc_roof_types as JSON. (Files upload separately, immediately.) */
+  const scalarPayload = (f: Form) => ({
+    ...Object.fromEntries(TEXT_KEYS.map(k => [k, f[k]])),
+    // Every other key here is a CharField, where "" is a valid value. This one
+    // is a date: an empty string is not, so a cleared date must go as null.
+    po_signed_date: f.po_signed_date || null,
+    rcc_roof_types: f.rcc_roof_types,
+    site_visit_complete: siteVisitComplete,
+    deal_value: dealValue === "" ? "0" : dealValue,
+  });
+
+  /** Pull something readable out of a DRF error body for the alert. */
+  const reason = async (res: Response) => {
+    try {
+      const e = await res.json();
+      const first = Object.entries(e)[0];
+      if (!first) return "";
+      const [field, msg] = first;
+      return `
+
+${field}: ${Array.isArray(msg) ? msg[0] : msg}`;
+    } catch { return ""; }
+  };
+
   const save = async () => {
     setSaving(true);
     try {
-      // Scalars + rcc_roof_types via JSON. (Files are uploaded separately, immediately.)
       const res1 = await fetch(url, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", ...authHeader() },
-        body: JSON.stringify({ ...Object.fromEntries(TEXT_KEYS.map(k => [k, form[k]])), rcc_roof_types: form.rcc_roof_types, site_visit_complete: siteVisitComplete, deal_value: dealValue === "" ? "0" : dealValue }),
+        body: JSON.stringify(scalarPayload(form)),
       });
-      if (!res1.ok) { alert("Failed to save site visit details."); return; }
+      if (!res1.ok) { alert(`Failed to save site visit details.${await reason(res1)}`); return; }
       const data = await res1.json();
       load(data);
       setSaved(true);
@@ -310,14 +333,9 @@ export default function SiteVisitSection({ leadId, canEdit = true, onSaved }: { 
       const res = await fetch(url, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", ...authHeader() },
-        body: JSON.stringify({
-          ...Object.fromEntries(TEXT_KEYS.map(k => [k, next[k]])),
-          rcc_roof_types: next.rcc_roof_types,
-          site_visit_complete: siteVisitComplete,
-          deal_value: dealValue === "" ? "0" : dealValue,
-        }),
+        body: JSON.stringify(scalarPayload(next)),
       });
-      if (!res.ok) { alert("Failed to save the PO signed date."); return; }
+      if (!res.ok) { alert(`Failed to save the PO signed date.${await reason(res)}`); return; }
       const data = await res.json();
       load(data);
       setSaved(true);

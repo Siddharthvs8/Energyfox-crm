@@ -72,6 +72,20 @@ class SiteVisitSerializer(serializers.ModelSerializer):
         d = obj.kseb_feasibility_due_date
         return d.isoformat() if d else None
 
+    # The site-visit form posts every scalar it holds, and a cleared date arrives
+    # as "". That's fine for the CharFields but a DateField rejects it outright,
+    # which would fail the whole save over a field the user never touched.
+    DATE_FIELDS = ('po_signed_date', 'kseb_feasibility_date')
+
+    def to_internal_value(self, data):
+        if hasattr(data, 'get'):
+            blanks = [f for f in self.DATE_FIELDS if data.get(f) == '']
+            if blanks:
+                data = data.copy()
+                for f in blanks:
+                    data[f] = None
+        return super().to_internal_value(data)
+
     def validate_rcc_roof_types(self, value):
         allowed = {'flat', 'slope', 'tiled', 'non_linear'}
         if not isinstance(value, list):
