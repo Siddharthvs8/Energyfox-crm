@@ -1,6 +1,7 @@
 "use client";
 import { APP_SLUG } from "@/lib/config";
 import { applyTheme } from "@/lib/themes";
+import { initNightMode, applyNightMode, preferredNightMode } from "@/lib/nightMode";
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
@@ -166,6 +167,17 @@ const Nav = {
       <rect x="8" y="2" width="8" height="4" rx="1" /><path d="M9 14l2 2 4-4" />
     </svg>
   ),
+  Sun: () => (
+    <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+    </svg>
+  ),
+  Moon: () => (
+    <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+      <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
+    </svg>
+  ),
   StockIn: () => (
     <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
       <path d="M12 17V3" /><path d="m6 11 6 6 6-6" /><path d="M19 21H5" />
@@ -228,6 +240,7 @@ export default function DashboardLayout({
   // A view mode, not a permission: the toggle is admin-only and every module it
   // reveals still enforces its own access on the server.
   const [bizMode, setBizMode] = useState<"b2c" | "b2b">("b2c");
+  const [night, setNight] = useState(false);
 
   // Store manager / store keeper / accounts B2B work the wholesale side only.
   const isB2BOnly = B2B_ONLY_ROLES.includes(currentUser?.role);
@@ -265,6 +278,18 @@ export default function DashboardLayout({
   useEffect(() => {
     applyTheme(localStorage.getItem(`${domain}_theme`));
   }, [domain]);
+
+  // Night mode: restore the saved choice (or follow the OS on a first visit).
+  useEffect(() => {
+    initNightMode();
+    setNight(preferredNightMode());
+  }, []);
+
+  const toggleNight = () => {
+    const next = !night;
+    setNight(next);
+    applyNightMode(next);
+  };
 
   // When popups change, ensure an active popup is set
   useEffect(() => {
@@ -875,6 +900,14 @@ export default function DashboardLayout({
               </div>
             </Link>
             <button
+              onClick={toggleNight}
+              aria-pressed={night}
+              className="text-slate-500 hover:text-amber-300 p-1 transition-colors flex-shrink-0"
+              title={night ? "Switch to day mode" : "Switch to night mode"}
+            >
+              {night ? <Nav.Sun /> : <Nav.Moon />}
+            </button>
+            <button
               onClick={() => {
                 localStorage.removeItem(`${domain}_access`);
                 localStorage.removeItem(`${domain}_refresh`);
@@ -900,9 +933,16 @@ export default function DashboardLayout({
             <img src="/energyfox-mark.png" alt="Energyfox" className="w-7 h-7 object-contain" />
             <span className="text-sm font-bold text-slate-900 capitalize">{subscription?.name || domain}</span>
           </div>
-          <Link href={`/team?edit=me`}>
-            <Avatar name={userName} url={currentUser?.avatar_url} size={32} />
-          </Link>
+          <div className="flex items-center gap-2">
+            <button onClick={toggleNight} aria-pressed={night}
+              className="text-slate-400 hover:text-slate-700 p-1.5 transition-colors"
+              title={night ? "Switch to day mode" : "Switch to night mode"}>
+              {night ? <Nav.Sun /> : <Nav.Moon />}
+            </button>
+            <Link href={`/team?edit=me`}>
+              <Avatar name={userName} url={currentUser?.avatar_url} size={32} />
+            </Link>
+          </div>
         </header>
 
         <div key={pathname} className="flex-1 page-enter">{children}</div>
