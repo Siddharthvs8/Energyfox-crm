@@ -1,6 +1,7 @@
 "use client";
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
+import Avatar from "@/components/Avatar";
 
 import React, { useState, useEffect, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
@@ -106,6 +107,8 @@ function TeamPageInner() {
   // B2B staff always see the wholesale roster; an admin sees whichever side the
   // sidebar switch is on.
   const [segment, setSegment] = useState<"b2c" | "b2b">("b2c");
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const avatarInput = React.useRef<HTMLInputElement>(null);
   const isB2B = segment === "b2b";
 
   const blankForm = { username: "", first_name: "", last_name: "", email: "", password: "", role: "tele_caller", team: "" as string | number, branch: "" as string | number, phone: "", voxbay_extension: "" };
@@ -154,6 +157,38 @@ function TeamPageInner() {
         setTelephonyProvider(subData.telephony_provider || "voxbay");
       }
     } catch {} finally { setLoading(false); }
+  };
+
+  // The picture is stored the moment it's chosen (its own multipart endpoint),
+  // rather than waiting for Save Changes with the rest of the JSON form.
+  const uploadAvatar = async (file: File) => {
+    if (!editingUser) return;
+    setAvatarBusy(true);
+    const token = localStorage.getItem(`${domain}_access`);
+    const body = new FormData();
+    body.append("avatar", file);
+    try {
+      const r = await fetch(`${getApiBase(domain)}/api/users/${editingUser.id}/avatar/`, {
+        method: "POST", headers: { Authorization: `Bearer ${token}` }, body,
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(d.avatar?.[0] || d.detail || d.error || "Could not upload the picture."); return; }
+      setEditingUser(d);
+      fetchTeam();
+    } catch { alert("Network error while uploading the picture."); }
+    finally { setAvatarBusy(false); if (avatarInput.current) avatarInput.current.value = ""; }
+  };
+
+  const removeAvatar = async () => {
+    if (!editingUser?.avatar_url) return;
+    setAvatarBusy(true);
+    const token = localStorage.getItem(`${domain}_access`);
+    try {
+      const r = await fetch(`${getApiBase(domain)}/api/users/${editingUser.id}/avatar/`, {
+        method: "DELETE", headers: { Authorization: `Bearer ${token}` },
+      });
+      if (r.ok) { setEditingUser(await r.json()); fetchTeam(); }
+    } catch {} finally { setAvatarBusy(false); }
   };
 
   const openEditModal = (user: any) => {
@@ -286,9 +321,8 @@ function TeamPageInner() {
             <div className="absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b from-indigo-500 to-violet-600" />
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Your Manager</p>
             <div className="flex items-center gap-4">
-              <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-base font-bold text-white shadow-sm flex-shrink-0">
-                {(myManager.first_name?.[0] || myManager.username[0]).toUpperCase()}
-              </div>
+              <Avatar name={myManager.first_name || myManager.username} url={myManager.avatar_url}
+                size={48} className="shadow-sm" textClass="text-base" />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 flex-wrap">
                   <h3 className="text-sm font-bold text-slate-900 truncate">{myManager.first_name} {myManager.last_name || myManager.username}</h3>
@@ -322,9 +356,8 @@ function TeamPageInner() {
                 <div key={member.id} className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all group">
                   <div className="flex items-start justify-between mb-4">
                     <div className="flex items-center gap-3">
-                      <div className={`w-11 h-11 rounded-xl bg-gradient-to-br ${gradients[i % gradients.length]} flex items-center justify-center text-sm font-bold text-white shadow-sm flex-shrink-0`}>
-                        {(member.first_name?.[0] || member.username[0]).toUpperCase()}
-                      </div>
+                      <Avatar name={member.first_name || member.username} url={member.avatar_url}
+                        size={44} className="shadow-sm" textClass="text-sm" />
                       <div className="min-w-0">
                         <h3 className="text-sm font-bold text-slate-900 truncate">{member.first_name} {member.last_name || member.username}</h3>
                         <p className="text-xs text-slate-400 truncate">{member.email || `@${member.username}`}</p>
@@ -403,9 +436,8 @@ function TeamPageInner() {
                     <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-2">Members</p>
                     <div className="flex flex-wrap gap-1.5">
                       {members.slice(0, 6).map((m: any, i: number) => (
-                        <div key={m.id} className={`w-7 h-7 rounded-full bg-gradient-to-br ${gradients[i % gradients.length]} flex items-center justify-center text-[10px] font-bold text-white ring-2 ring-white`} title={`${m.first_name} ${m.last_name}`}>
-                          {m.first_name?.charAt(0)?.toUpperCase()}
-                        </div>
+                        <Avatar key={m.id} name={m.first_name || m.username} url={m.avatar_url} size={28}
+                          ring="ring-2 ring-white" textClass="text-[10px]" />
                       ))}
                       {members.length > 6 && <div className="w-7 h-7 rounded-full bg-slate-100 flex items-center justify-center text-[10px] font-bold text-slate-400 ring-2 ring-white">+{members.length - 6}</div>}
                       {members.length === 0 && <span className="text-xs text-slate-400">No members assigned</span>}
@@ -428,6 +460,33 @@ function TeamPageInner() {
         }
       >
         <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Profile picture. Only offered on an existing account — a new one has
+              no id yet to attach the upload to. */}
+          {editingUser && (
+            <div className="flex items-center gap-4 pb-4 border-b border-slate-100">
+              <Avatar name={form.first_name || form.username} url={editingUser.avatar_url}
+                size={64} textClass="text-xl" />
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-slate-600 mb-1.5">Profile Picture</p>
+                <div className="flex items-center gap-2">
+                  <button type="button" disabled={avatarBusy} onClick={() => avatarInput.current?.click()}
+                    className="px-3 py-1.5 rounded-xl bg-indigo-50 text-indigo-700 text-xs font-semibold hover:bg-indigo-100 disabled:opacity-50 transition-all">
+                    {avatarBusy ? "Uploading…" : editingUser.avatar_url ? "Change" : "Upload"}
+                  </button>
+                  {editingUser.avatar_url && (
+                    <button type="button" disabled={avatarBusy} onClick={removeAvatar}
+                      className="px-3 py-1.5 rounded-xl text-slate-500 text-xs font-semibold hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50 transition-all">
+                      Remove
+                    </button>
+                  )}
+                </div>
+                <p className="text-[10px] text-slate-400 mt-1.5">JPEG, PNG, WebP or GIF · up to 5 MB</p>
+                <input ref={avatarInput} type="file" accept="image/jpeg,image/png,image/webp,image/gif"
+                  className="hidden"
+                  onChange={e => { const f = e.target.files?.[0]; if (f) uploadAvatar(f); }} />
+              </div>
+            </div>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div><label className="block text-xs font-semibold text-slate-600 mb-1.5">First Name</label><input required value={form.first_name} onChange={e => setForm({...form, first_name: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all" /></div>
             <div><label className="block text-xs font-semibold text-slate-600 mb-1.5">Last Name</label><input required value={form.last_name} onChange={e => setForm({...form, last_name: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all" /></div>

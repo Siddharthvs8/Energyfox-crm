@@ -6,6 +6,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { getApiBase } from "@/lib/mock-data";
+import Avatar from "@/components/Avatar";
 
 // ── Premium SVG Icons ──────────────────────────────────────────────────────────
 const Nav = {
@@ -644,8 +645,6 @@ export default function DashboardLayout({
   const inventoryActive = inventoryItems.some(i => pathname.startsWith(i.href));
   const inventoryExpanded = inventoryOpen || inventoryActive;
 
-  const avatarColors = ["from-indigo-500 to-violet-600", "from-cyan-500 to-blue-600", "from-pink-500 to-rose-500"];
-  const color = avatarColors[domain.charCodeAt(0) % avatarColors.length];
 
   const isLoginPage = pathname.endsWith("/login");
   if (isLoginPage) {
@@ -820,9 +819,7 @@ export default function DashboardLayout({
         <div className="p-3 border-t border-white/5 flex-shrink-0">
           <div className="flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 transition-colors group">
             <Link href={`/team?edit=me`} className="flex items-center gap-3 flex-1 min-w-0">
-              <div className={`w-8 h-8 rounded-full bg-gradient-to-br ${color} flex items-center justify-center text-xs font-bold text-white flex-shrink-0 ring-2 ring-white/10`}>
-                {userName.charAt(0).toUpperCase()}
-              </div>
+              <Avatar name={userName} url={currentUser?.avatar_url} size={32} ring="ring-2 ring-white/10" />
               <div className="min-w-0">
                 <div className="text-sm font-medium text-slate-200 truncate capitalize leading-tight">{userName}</div>
                 <div className="text-[10px] text-slate-500 leading-tight">Edit Profile</div>
@@ -855,9 +852,7 @@ export default function DashboardLayout({
             <span className="text-sm font-bold text-slate-900 capitalize">{subscription?.name || domain}</span>
           </div>
           <Link href={`/team?edit=me`}>
-            <div className={`w-8 h-8 rounded-full bg-gradient-to-br ${color} flex items-center justify-center text-xs font-bold text-white`}>
-              {userName.charAt(0).toUpperCase()}
-            </div>
+            <Avatar name={userName} url={currentUser?.avatar_url} size={32} />
           </Link>
         </header>
 

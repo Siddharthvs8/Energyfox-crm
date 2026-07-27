@@ -3,7 +3,9 @@
 These guard a real privilege-escalation path — before the hierarchy checks, any
 is_staff user could PATCH a super admin's password and take the account over.
 """
-from django.test import TestCase
+import tempfile
+
+from django.test import TestCase, override_settings
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import User
@@ -282,3 +284,124 @@ class UsernameChangeTests(TestCase):
         self.assertEqual(r.status_code, 403)
         self.superadmin.refresh_from_db()
         self.assertEqual(self.superadmin.username, 't_super')
+
+
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp(prefix='avatar-tests-'))
+class AvatarTests(TestCase):
+    """Everyone may set their own picture; nobody may set someone else's unless
+    the hierarchy already lets them edit that account."""
+
+    def setUp(self):
+        self.superadmin = mk('t_super', 'superadmin')
+        self.admin = mk('t_admin', 'admin')
+        self.bde = mk('t_bde', 'bde')
+        self.caller = mk('t_caller', 'tele_caller')
+
+    @staticmethod
+    def image(name='pic.png', size=(8, 8), fmt='PNG'):
+        """A real image — Django's ImageField runs it through Pillow, so a
+        hand-rolled byte string won't do."""
+        from io import BytesIO
+        from PIL import Image
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        buf = BytesIO()
+        Image.new('RGB', size, (200, 120, 40)).save(buf, format=fmt)
+        return SimpleUploadedFile(name, buf.getvalue(), content_type=f'image/{fmt.lower()}')
+
+    def post_avatar(self, actor, target, upload=None):
+        return self.client.post(f'/api/users/{target.id}/avatar/',
+                                {'avatar': upload if upload is not None else self.image()},
+                                HTTP_AUTHORIZATION=token_for(actor))
+
+    def test_anyone_can_set_their_own(self):
+        for user in (self.bde, self.caller, self.admin, self.superadmin):
+            r = self.post_avatar(user, user)
+            self.assertEqual(r.status_code, 200, f"{user.role}: {r.content[:200]}")
+            self.assertTrue(r.json()['avatar_url'], user.role)
+            user.refresh_from_db()
+            self.assertTrue(user.avatar.name.startswith('avatars/'), user.avatar.name)
+
+    def test_cannot_set_a_visible_peers_picture(self):
+        """Same team, so the account IS fetchable — this exercises the action's own
+        guard, since check_object_permissions only covers update/destroy."""
+        from .models import WorkspaceTeam
+        team = WorkspaceTeam.objects.create(name='Squad')
+        for u in (self.bde, self.caller):
+            u.team = team
+            u.save()
+        r = self.post_avatar(self.bde, self.caller)
+        self.assertEqual(r.status_code, 403)
+        self.caller.refresh_from_db()
+        self.assertFalse(self.caller.avatar)
+
+    def test_cannot_set_an_out_of_scope_picture(self):
+        r = self.post_avatar(self.bde, self.admin)
+        self.assertIn(r.status_code, (403, 404))
+        self.admin.refresh_from_db()
+        self.assertFalse(self.admin.avatar)
+
+    def test_hierarchy_still_applies(self):
+        self.assertEqual(self.post_avatar(self.admin, self.bde).status_code, 200)
+        self.assertEqual(self.post_avatar(self.admin, self.superadmin).status_code, 403)
+
+    def test_replacing_removes_the_old_file(self):
+        self.post_avatar(self.bde, self.bde)
+        self.bde.refresh_from_db()
+        first, storage = self.bde.avatar.name, self.bde.avatar.storage
+        self.assertTrue(storage.exists(first))
+        self.post_avatar(self.bde, self.bde, self.image('second.png'))
+        self.bde.refresh_from_db()
+        self.assertNotEqual(self.bde.avatar.name, first)
+        self.assertFalse(storage.exists(first))
+
+    def test_delete_clears_it(self):
+        self.post_avatar(self.bde, self.bde)
+        self.bde.refresh_from_db()
+        name, storage = self.bde.avatar.name, self.bde.avatar.storage
+        r = self.client.delete(f'/api/users/{self.bde.id}/avatar/',
+                               HTTP_AUTHORIZATION=token_for(self.bde))
+        self.assertEqual(r.status_code, 200)
+        self.assertIsNone(r.json()['avatar_url'])
+        self.bde.refresh_from_db()
+        self.assertFalse(self.bde.avatar)
+        self.assertFalse(storage.exists(name))
+
+    def test_rejects_a_non_image(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        bad = SimpleUploadedFile('run.sh', b'#!/bin/sh\necho hi\n', content_type='text/x-sh')
+        r = self.post_avatar(self.bde, self.bde, bad)
+        self.assertEqual(r.status_code, 400)
+        self.bde.refresh_from_db()
+        self.assertFalse(self.bde.avatar)
+
+    def test_rejects_an_oversized_image(self):
+        """A valid image, just too big — the size check sits behind Pillow's."""
+        import os
+        from io import BytesIO
+        from PIL import Image
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        buf = BytesIO()
+        # Noise doesn't compress, so this clears 5 MB as a PNG.
+        Image.frombytes('RGB', (1500, 1500), os.urandom(1500 * 1500 * 3)).save(buf, format='PNG')
+        self.assertGreater(buf.tell(), 5 * 1024 * 1024)
+        big = SimpleUploadedFile('big.png', buf.getvalue(), content_type='image/png')
+        r = self.post_avatar(self.bde, self.bde, big)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('5 MB', str(r.json()))
+        self.bde.refresh_from_db()
+        self.assertFalse(self.bde.avatar)
+
+    def test_missing_file_is_a_400(self):
+        r = self.client.post(f'/api/users/{self.bde.id}/avatar/', {},
+                             HTTP_AUTHORIZATION=token_for(self.bde))
+        self.assertEqual(r.status_code, 400)
+
+    def test_avatar_url_is_absolute(self):
+        r = self.post_avatar(self.bde, self.bde)
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertTrue(r.json()['avatar_url'].startswith('http'))
+
+    def test_me_carries_the_picture(self):
+        self.post_avatar(self.bde, self.bde)
+        r = self.client.get('/api/users/me/', HTTP_AUTHORIZATION=token_for(self.bde))
+        self.assertTrue(r.json()['avatar_url'])

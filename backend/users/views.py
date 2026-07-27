@@ -1,4 +1,4 @@
-from rest_framework import viewsets, permissions
+from rest_framework import viewsets, permissions, parsers
 from rest_framework.decorators import action
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -390,6 +390,45 @@ class UserViewSet(viewsets.ModelViewSet):
             allowed -= set(B2B_ONLY_ROLES)
         return Response([{'value': r, 'label': label}
                          for r, label in ROLE_CHOICES if r in allowed])
+
+    @action(detail=True, methods=['post', 'delete'], url_path='avatar',
+            parser_classes=[parsers.MultiPartParser, parsers.FormParser])
+    def avatar(self, request, pk=None):
+        """Set (POST) or clear (DELETE) a profile picture.
+
+        Everyone may change their own; touching someone else's follows the same
+        hierarchy as editing their profile. Note this action needs its own check —
+        check_object_permissions only guards update/destroy, so without it any
+        authenticated user could overwrite anyone's picture.
+        """
+        from rest_framework.exceptions import PermissionDenied
+        user = self.get_object()
+        actor = request.user
+        if user.id != actor.id and not actor.can_manage(user):
+            raise PermissionDenied('You can only change your own profile picture.')
+
+        # Keep hold of the current file so the replaced one doesn't linger in
+        # media storage forever.
+        storage, previous = user.avatar.storage, (user.avatar.name or None)
+
+        if request.method == 'DELETE':
+            if previous:
+                user.avatar = None
+                user.save(update_fields=['avatar'])
+                storage.delete(previous)
+            return Response(self.get_serializer(user).data)
+
+        upload = request.FILES.get('avatar') or request.FILES.get('file')
+        if not upload:
+            return Response({'error': 'No image supplied.'}, status=400)
+
+        serializer = self.get_serializer(user, data={'avatar': upload}, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        user.refresh_from_db()
+        if previous and previous != user.avatar.name:
+            storage.delete(previous)
+        return Response(self.get_serializer(user).data)
 
     @action(detail=False, methods=['get'])
     def me(self, request):

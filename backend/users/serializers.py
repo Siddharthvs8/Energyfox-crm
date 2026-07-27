@@ -41,6 +41,31 @@ class UserSerializer(serializers.ModelSerializer):
     # Whether the caller may edit/remove this account — lets the Team page hide
     # controls that the API would refuse anyway.
     can_manage = serializers.SerializerMethodField()
+    # Absolute URL so the frontend can use it directly (MEDIA_URL is relative in
+    # local dev and an S3 domain in production).
+    avatar_url = serializers.SerializerMethodField()
+
+    # Any authenticated user may set their own picture, so bound the upload here
+    # rather than trusting the browser.
+    AVATAR_MAX_BYTES = 5 * 1024 * 1024
+    AVATAR_TYPES = ('image/jpeg', 'image/png', 'image/webp', 'image/gif')
+
+    def validate_avatar(self, value):
+        if not value:
+            return value
+        if value.size > self.AVATAR_MAX_BYTES:
+            raise serializers.ValidationError('Picture must be 5 MB or smaller.')
+        content_type = getattr(value, 'content_type', None)
+        if content_type and content_type not in self.AVATAR_TYPES:
+            raise serializers.ValidationError('Use a JPEG, PNG, WebP or GIF image.')
+        return value
+
+    def get_avatar_url(self, obj):
+        if not obj.avatar:
+            return None
+        url = obj.avatar.url
+        request = self.context.get('request')
+        return request.build_absolute_uri(url) if request else url
 
     def get_can_manage(self, obj):
         request = self.context.get('request')
@@ -53,6 +78,7 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = ['id', 'username', 'first_name', 'last_name', 'email', 'password',
                   'role', 'role_label', 'branch', 'branch_name', 'can_manage',
+                  'avatar', 'avatar_url',
                   'is_staff', 'is_manager', 'is_general_manager', 'team', 'phone', 'voxbay_extension']
         extra_kwargs = {
             'password': {'write_only': True},

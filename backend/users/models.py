@@ -160,6 +160,9 @@ class User(AbstractUser):
 
     phone = models.CharField(max_length=20, blank=True, null=True)
     voxbay_extension = models.CharField(max_length=20, blank=True, null=True)
+    # Profile picture. Anyone may set their own (see UserViewSet); falls back to
+    # the initial-letter avatar when empty.
+    avatar = models.ImageField(upload_to='avatars/', null=True, blank=True)
 
     def save(self, *args, **kwargs):
         # `role` is the source of truth. Derive the cached booleans from it; if role
