@@ -159,3 +159,80 @@ class StockAccessTests(TestCase):
 
     def test_anonymous_is_rejected(self):
         self.assertEqual(self.client.get('/api/stock-summary/').status_code, 401)
+
+
+class InventoryDashboardTests(TestCase):
+    """The retail inventory overview: product stock plus the three document
+    pipelines."""
+
+    def setUp(self):
+        from leads.models import Product
+        from .models import PurchaseOrder, PurchaseOrderItem, Quote, QuoteItem, SalesOrder, SalesOrderItem
+        self.admin = mk('d_admin', 'admin')
+        self.bde = mk('d_bde', 'bde')
+
+        self.panel = Product.objects.create(name='Panel 540W', sku='P-540', unit='Nos',
+                                            cost_price=Decimal('9800'), stock_quantity=10, reorder_level=2)
+        self.inverter = Product.objects.create(name='Inverter 5kW', sku='I-5K', unit='Nos',
+                                               cost_price=Decimal('32000'), stock_quantity=1, reorder_level=5)
+
+        today = timezone.localdate()
+        vendor = Vendor.objects.create(name='Waaree')
+        po = PurchaseOrder.objects.create(vendor=vendor, status='ordered', order_date=today)
+        PurchaseOrderItem.objects.create(purchase_order=po, quantity=2, unit_price=Decimal('9750'))
+
+        q = Quote.objects.create(status='sent', quote_date=today)
+        QuoteItem.objects.create(quote=q, quantity=1, unit_price=Decimal('11200'))
+
+        so = SalesOrder.objects.create(status='confirmed', order_date=today, tax_percent=Decimal('10'))
+        SalesOrderItem.objects.create(sales_order=so, quantity=1, unit_price=Decimal('20000'))
+
+    def get(self, user):
+        r = self.client.get('/api/inventory-dashboard/', HTTP_AUTHORIZATION=token_for(user))
+        return r.status_code, (r.json() if r.content else {})
+
+    def test_stock_figures(self):
+        code, d = self.get(self.admin)
+        self.assertEqual(code, 200)
+        self.assertEqual(d['product_count'], 2)
+        # 10 × 9800 + 1 × 32000
+        self.assertEqual(Decimal(d['stock_value']), Decimal('130000'))
+        self.assertEqual(d['low_stock_count'], 1)               # inverter: 1 <= 5
+        self.assertEqual(d['low_stock'][0]['sku'], 'I-5K')
+
+    def test_document_pipelines(self):
+        code, d = self.get(self.admin)
+        self.assertEqual(d['purchase_order_status'], {'ordered': 1})
+        self.assertEqual(d['quote_status'], {'sent': 1})
+        self.assertEqual(d['sales_order_status'], {'confirmed': 1})
+        self.assertEqual(Decimal(d['open_purchase_value']), Decimal('19500'))   # 2 × 9750
+        self.assertEqual(Decimal(d['open_quote_value']), Decimal('11200'))
+        # Tax lives on the header, line value on the items: 20000 + 10%.
+        self.assertEqual(Decimal(d['open_sales_value']), Decimal('22000'))
+        self.assertEqual(d['vendor_count'], 1)
+
+    def test_monthly_series_covers_six_months_and_lands_this_month(self):
+        code, d = self.get(self.admin)
+        self.assertEqual(len(d['monthly']), 6)
+        current = d['monthly'][-1]
+        self.assertEqual(Decimal(current['purchases']), Decimal('19500'))
+        self.assertEqual(Decimal(current['sales']), Decimal('22000'))
+        self.assertTrue(all(Decimal(m['purchases']) == 0 for m in d['monthly'][:-1]))
+
+    def test_only_the_inventory_audience_can_read_it(self):
+        self.assertEqual(self.get(mk('d_coo', 'coo'))[0], 200)
+        self.assertEqual(self.get(self.bde)[0], 403)
+        self.assertEqual(self.get(mk('d_caller', 'tele_caller'))[0], 403)
+        self.assertEqual(self.client.get('/api/inventory-dashboard/').status_code, 401)
+
+    def test_a_custom_role_with_the_inventory_permission_can_read_it(self):
+        from users.models import CustomRole
+        role = CustomRole.objects.create(name='Stock Watcher', permissions=['inventory'])
+        u = mk('d_custom', 'custom')
+        u.custom_role = role
+        u.save()
+        self.assertEqual(self.get(u)[0], 200)
+        role.permissions = ['leads']
+        role.save()
+        u.refresh_from_db()
+        self.assertEqual(self.get(u)[0], 403)

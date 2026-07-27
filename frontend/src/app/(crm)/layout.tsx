@@ -597,12 +597,13 @@ export default function DashboardLayout({
   const permKeyFor = (item: any) =>
     item.perm || (item.href === `/` ? "dashboard" : String(item.href || "").replace(/^\//, ""));
 
-  // Purchase staff keep the stock register, so they get the Inventory group too,
-  // as do the B2B roles for whom it is the entire application.
-  const canSeeInventory = onCustomRole
-    ? grantedPerms.includes("inventory")
-    : currentUser?.is_staff || currentUser?.is_general_manager
-      || currentUser?.role === "purchase_staff" || isB2BOnly;
+  // B2B is the stock register, so its staff always have the group. On the retail
+  // side it's the admin/GM module it always was.
+  const canSeeInventory = isB2BOnly || bizMode === "b2b"
+    ? true
+    : onCustomRole
+      ? grantedPerms.includes("inventory")
+      : currentUser?.is_staff || currentUser?.is_general_manager;
 
   // Manager features visible to manager, general manager, and admin
   const navItems = allNavItems.filter(item => {
@@ -708,7 +709,20 @@ export default function DashboardLayout({
     exact ? pathname === href || pathname === `/` : (pathname === href || pathname.startsWith(href + "/"));
 
   // ── Inventory module (grouped, collapsible) ──
-  const inventoryItems = [
+  // The retail CRM's Inventory module — the original sales-document set.
+  const b2cInventoryItems = [
+    { href: `/inventory-dashboard`, label: "Dashboard",   Icon: Nav.Dashboard },
+    { href: `/products`,        label: "Products",        Icon: Nav.Products },
+    { href: `/vendors`,         label: "Suppliers",       Icon: Nav.Vendor },
+    { href: `/customers`,       label: "Customers",       Icon: Nav.Team },
+    { href: `/quotes`,          label: "Quotes",          Icon: Nav.Quote },
+    { href: `/sales-orders`,    label: "Sales / Dispatches", Icon: Nav.StockOut },
+    { href: `/purchase-orders`, label: "Purchase Orders", Icon: Nav.PurchaseOrder },
+  ];
+
+  // The wholesale side's Inventory module is the stock register — that is the
+  // whole of B2B, so it keeps its own sub-modules.
+  const b2bInventoryItems = [
     { href: `/inventory`,            label: "Dashboard",        Icon: Nav.Dashboard, exact: true },
     { href: `/inventory/items`,      label: "Item Master",      Icon: Nav.Products },
     { href: `/inventory/purchases`,  label: "Purchases",        Icon: Nav.StockIn },
@@ -716,6 +730,8 @@ export default function DashboardLayout({
     { href: `/inventory/suppliers`,  label: "Suppliers",        Icon: Nav.Vendor },
     { href: `/inventory/customers`,  label: "Customers",        Icon: Nav.Team },
   ];
+
+  const inventoryItems = bizMode === "b2b" ? b2bInventoryItems : b2cInventoryItems;
   const inventoryActive = inventoryItems.some(i => pathname.startsWith(i.href));
   const inventoryExpanded = inventoryOpen || inventoryActive;
 

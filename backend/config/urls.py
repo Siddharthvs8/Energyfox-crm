@@ -16,7 +16,8 @@ from users.views import (UserViewSet, SubscriptionStatusView, WorkspaceTeamViewS
 from leads.views import LeadViewSet, IntegrationSettingsViewSet, DashboardStatsView, LeaderboardView, ConvertedAnalyticsView, ProductViewSet, ServiceEntryViewSet, EmergencyServiceViewSet
 from inventory.views import (VendorViewSet, PurchaseOrderViewSet, QuoteViewSet, SalesOrderViewSet,
                             StockItemViewSet, StockCustomerViewSet, GoodsReceiptViewSet,
-                            StockDispatchViewSet, StockSummaryView)
+                            StockDispatchViewSet, StockSummaryView,
+                            InventoryDashboardView)
 
 router = DefaultRouter()
 router.register(r'leads', LeadViewSet)
@@ -57,6 +58,7 @@ urlpatterns = [
     path('api/whatsapp/', include('messaging.urls')),
     path('api/email/', include('messaging.email_urls')),
     path('api/stock-summary/', StockSummaryView.as_view(), name='stock-summary'),
+    path('api/inventory-dashboard/', InventoryDashboardView.as_view(), name='inventory-dashboard'),
     path('api/', include(router.urls)),
     path('api/webhooks/meta-leads/', meta_leads_webhook, name='meta-leads-webhook'),
     path('api/webhooks/meta-leads', meta_leads_webhook, name='meta-leads-webhook-no-slash'),

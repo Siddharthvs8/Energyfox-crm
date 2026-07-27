@@ -292,3 +292,109 @@ class StockSummaryView(APIView):
                 'status': 'REORDER' if i.needs_reorder else 'OK',
             } for i in items],
         })
+
+
+# ─── Inventory dashboard (retail side: products + sales documents) ───────────
+class IsInventoryViewer(permissions.BasePermission):
+    """Same audience as the Inventory module in the sidebar."""
+    message = 'You do not have access to the inventory dashboard.'
+
+    def has_permission(self, request, view):
+        u = request.user
+        if not u or not u.is_authenticated:
+            return False
+        granted = u.can('inventory') if hasattr(u, 'can') else None
+        if granted is not None:
+            return granted
+        return bool(u.is_staff or getattr(u, 'is_general_manager', False))
+
+
+class InventoryDashboardView(APIView):
+    """Overview of the retail inventory module: product stock plus the quote,
+    sales-order and purchase-order pipelines.
+
+    Document totals come from each model's own `total` property rather than a SQL
+    sum, because discount and tax live on the header while the line values live on
+    the items — reimplementing that in SQL would be a second source of truth. The
+    query set is bounded to the reporting window to keep that affordable.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsInventoryViewer]
+    MONTHS = 6
+
+    def get(self, request):
+        from leads.models import Product
+
+        today = timezone.localdate()
+        # First day of the month, MONTHS-1 months back.
+        start_month = today.replace(day=1)
+        for _ in range(self.MONTHS - 1):
+            start_month = (start_month - timezone.timedelta(days=1)).replace(day=1)
+
+        # ── Products / stock ──
+        products = list(Product.objects.all())
+        stock_value = sum((Decimal(p.stock_quantity or 0) * (p.cost_price or Decimal('0'))
+                           for p in products), Decimal('0'))
+        low = [p for p in products if p.low_stock]
+
+        def doc_date(doc, field):
+            return getattr(doc, field, None) or timezone.localtime(doc.created_at).date()
+
+        def load(model, date_field):
+            return list(model.objects.prefetch_related('items').all()), date_field
+
+        quotes, q_field = load(Quote, 'quote_date')
+        orders, so_field = load(SalesOrder, 'order_date')
+        pos, po_field = load(PurchaseOrder, 'order_date')
+
+        def status_counts(rows):
+            out = {}
+            for r in rows:
+                out[r.status] = out.get(r.status, 0) + 1
+            return out
+
+        def month_key(d):
+            return f"{d.year}-{d.month:02d}"
+
+        # Six-month value series, purchases vs sales.
+        series = {}
+        cursor = start_month
+        while cursor <= today:
+            series[month_key(cursor)] = {
+                'name': cursor.strftime('%b'), 'purchases': Decimal('0'), 'sales': Decimal('0'),
+            }
+            cursor = (cursor.replace(day=28) + timezone.timedelta(days=4)).replace(day=1)
+
+        for rows, field, bucket in ((pos, po_field, 'purchases'), (orders, so_field, 'sales')):
+            for r in rows:
+                d = doc_date(r, field)
+                key = month_key(d)
+                if key in series:
+                    series[key][bucket] += (r.total or Decimal('0'))
+
+        def open_value(rows, open_statuses):
+            return sum((r.total or Decimal('0')) for r in rows if r.status in open_statuses)
+
+        return Response({
+            'product_count': len(products),
+            'stock_value': stock_value,
+            'low_stock_count': len(low),
+            'vendor_count': Vendor.objects.count(),
+
+            'quote_count': len(quotes),
+            'quote_status': status_counts(quotes),
+            'open_quote_value': open_value(quotes, {'draft', 'sent'}),
+
+            'sales_order_count': len(orders),
+            'sales_order_status': status_counts(orders),
+            'open_sales_value': open_value(orders, {'draft', 'confirmed', 'shipped'}),
+
+            'purchase_order_count': len(pos),
+            'purchase_order_status': status_counts(pos),
+            'open_purchase_value': open_value(pos, {'draft', 'ordered'}),
+
+            'monthly': list(series.values()),
+            'low_stock': [{
+                'id': p.id, 'name': p.name, 'sku': p.sku, 'unit': p.unit,
+                'stock_quantity': p.stock_quantity, 'reorder_level': p.reorder_level,
+            } for p in sorted(low, key=lambda x: x.stock_quantity)[:10]],
+        })

@@ -371,6 +371,7 @@ class LeadSerializer(serializers.ModelSerializer):
     lost_by_name = serializers.SerializerMethodField()
     can_mark_lost = serializers.SerializerMethodField()
     can_edit_status = serializers.SerializerMethodField()
+    is_closed_deal = serializers.SerializerMethodField()
     status = serializers.CharField(required=False)
 
     class Meta:
@@ -384,25 +385,45 @@ class LeadSerializer(serializers.ModelSerializer):
 
     def get_deal_classification(self, obj):
         """Fulfilment/payment milestone for a converted lead, shown on the
-        Converted Leads board. 'lost' (deal fell through) overrides everything;
-        otherwise payment verification outranks the earlier documentation hand-off:
+        Converted Leads board. A deal is closed once money has actually arrived
+        in accounts — reaching documentation is not a closed deal, it is work in
+        progress:
           - 'lost'           — converted deal the customer skipped / backed out of
-          - 'fully_paid'     — payment verified with no balance remaining
-          - 'partially_paid' — payment verified but a balance is still due
-          - 'closed_deal'    — site visit done & pushed to documentation
-          - None             — converted but not yet past documentation
+          - 'fully_paid'     — paid in full (nothing left to receive)
+          - 'partially_paid' — part payment received, a balance is still due
+          - None             — converted, but no payment received yet
         """
         if obj.status != 'converted':
             return None
         if obj.is_lost:
             return 'lost'
+        if not self._payment_received(obj):
+            return None
+        pv = obj.payment_verification
+        balance = pv.balance_amount or 0
+        return 'fully_paid' if balance <= 0 else 'partially_paid'
+
+    @staticmethod
+    def _payment_received(obj):
+        """Has the lead reached accounts and had a payment (part or full) taken?
+
+        `is_complete` alone isn't enough: accounts can verify a record before the
+        customer has actually paid, and a part payment can be recorded before the
+        verification is signed off. Either one counts as money in.
+        """
+        from decimal import Decimal
+        if not obj.pushed_to_accounts:
+            return False
         pv = getattr(obj, 'payment_verification', None)
-        if pv and pv.is_complete:
-            balance = pv.balance_amount or 0
-            return 'fully_paid' if balance <= 0 else 'partially_paid'
-        if obj.pushed_to_documentation:
-            return 'closed_deal'
-        return None
+        if not pv:
+            return False
+        received = pv.amount_received or Decimal('0')
+        return received > 0
+
+    def get_is_closed_deal(self, obj):
+        """A closed deal: in accounts with a payment (partial or full) received.
+        Drives the Closed Deal chip on the Converted Leads board."""
+        return bool(obj.status == 'converted' and not obj.is_lost and self._payment_received(obj))
 
     def get_lost_by_name(self, obj):
         if obj.lost_by:

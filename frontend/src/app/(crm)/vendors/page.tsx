@@ -52,16 +52,16 @@ export default function VendorsPage({ params: paramsPromise }: { params: Promise
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify(form),
       });
-      if (res.ok) { setShowModal(false); fetchVendors(); } else alert("Failed to save vendor.");
+      if (res.ok) { setShowModal(false); fetchVendors(); } else alert("Failed to save supplier.");
     } catch { alert("Network error."); } finally { setSaving(false); }
   };
 
   const handleDelete = async (id: number) => {
-    if (!confirm("Delete this vendor?")) return;
+    if (!confirm("Delete this supplier?")) return;
     const token = localStorage.getItem(`${domain}_access`);
     try {
       const res = await fetch(`${getApiBase(domain)}/api/vendors/${id}/`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
-      if (res.ok) fetchVendors(); else alert("Failed to delete vendor.");
+      if (res.ok) fetchVendors(); else alert("Failed to delete supplier.");
     } catch { alert("Network error."); }
   };
 
@@ -79,18 +79,18 @@ export default function VendorsPage({ params: paramsPromise }: { params: Promise
     <div className="max-w-6xl mx-auto p-4 sm:p-6 lg:p-8">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Vendors</h1>
-          <p className="text-sm text-slate-500 mt-1">Manage suppliers you purchase stock from.</p>
+          <h1 className="text-2xl font-bold text-slate-900">Suppliers</h1>
+          <p className="text-sm text-slate-500 mt-1">Manage the suppliers you purchase stock from.</p>
         </div>
         <button onClick={openCreate} className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl text-sm font-semibold transition-colors flex items-center gap-2 shadow-sm">
           <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>
-          Add Vendor
+          Add Supplier
         </button>
       </div>
 
       <div className="mb-4 relative max-w-sm">
         <svg className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></svg>
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search vendors..." className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition" />
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search suppliers..." className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition" />
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
@@ -98,7 +98,7 @@ export default function VendorsPage({ params: paramsPromise }: { params: Promise
           <table className="w-full text-left border-collapse min-w-[700px]">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200 text-xs uppercase tracking-wider text-slate-500 font-semibold">
-                <th className="py-4 px-6">Vendor</th>
+                <th className="py-4 px-6">Supplier</th>
                 <th className="py-4 px-6">Contact</th>
                 <th className="py-4 px-6">Phone</th>
                 <th className="py-4 px-6">GST</th>
@@ -109,7 +109,7 @@ export default function VendorsPage({ params: paramsPromise }: { params: Promise
             <tbody className="divide-y divide-slate-100">
               {filtered.length === 0 ? (
                 <tr><td colSpan={6} className="py-12 text-center text-slate-500">
-                  <p className="font-medium text-slate-900">No vendors found</p>
+                  <p className="font-medium text-slate-900">No suppliers found</p>
                   <p className="text-sm mt-1">Add a supplier to start creating purchase orders.</p>
                 </td></tr>
               ) : filtered.map(v => (
@@ -143,13 +143,13 @@ export default function VendorsPage({ params: paramsPromise }: { params: Promise
           <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={() => setShowModal(false)} />
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg relative z-10 overflow-hidden">
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
-              <h3 className="font-bold text-lg text-slate-900">{editVendor ? "Edit Vendor" : "Add Vendor"}</h3>
+              <h3 className="font-bold text-lg text-slate-900">{editVendor ? "Edit Supplier" : "Add Supplier"}</h3>
               <button onClick={() => setShowModal(false)} className="text-slate-400 hover:text-slate-600"><svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" /></svg></button>
             </div>
             <form onSubmit={handleSave} className="p-6">
               <div className="space-y-4 mb-6">
                 <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-1.5">Vendor Name *</label>
+                  <label className="block text-sm font-semibold text-slate-700 mb-1.5">Supplier Name *</label>
                   <input required value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className={field} placeholder="e.g. Acme Supplies" />
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -165,7 +165,7 @@ export default function VendorsPage({ params: paramsPromise }: { params: Promise
               </div>
               <div className="flex gap-3">
                 <button type="button" onClick={() => setShowModal(false)} className="flex-1 px-4 py-2.5 text-slate-600 font-medium hover:bg-slate-50 rounded-xl transition-colors">Cancel</button>
-                <button type="submit" disabled={saving} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 rounded-xl transition shadow-sm disabled:opacity-50">{saving ? "Saving..." : "Save Vendor"}</button>
+                <button type="submit" disabled={saving} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 rounded-xl transition shadow-sm disabled:opacity-50">{saving ? "Saving..." : "Save Supplier"}</button>
               </div>
             </form>
           </div>

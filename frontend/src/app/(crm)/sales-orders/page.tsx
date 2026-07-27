@@ -112,12 +112,12 @@ export default function SalesOrdersPage({ params: paramsPromise }: { params: Pro
     <div className="max-w-6xl mx-auto p-4 sm:p-6 lg:p-8">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Sales Orders</h1>
+          <h1 className="text-2xl font-bold text-slate-900">Sales / Dispatches</h1>
           <p className="text-sm text-slate-500 mt-1">Confirmed customer orders. Confirming an order reduces product stock.</p>
         </div>
         <button onClick={openCreate} className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl text-sm font-semibold transition-colors flex items-center gap-2 shadow-sm">
           <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>
-          New Sales Order
+          New Dispatch
         </button>
       </div>
 
@@ -162,7 +162,7 @@ export default function SalesOrdersPage({ params: paramsPromise }: { params: Pro
           <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={() => setShowModal(false)} />
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl relative z-10 max-h-[90vh] overflow-hidden flex flex-col">
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between flex-shrink-0">
-              <h3 className="font-bold text-lg text-slate-900">{editOrder ? `Edit ${editOrder.number}` : "New Sales Order"}</h3>
+              <h3 className="font-bold text-lg text-slate-900">{editOrder ? `Edit ${editOrder.number}` : "New Dispatch"}</h3>
               <button onClick={() => setShowModal(false)} className="text-slate-400 hover:text-slate-600"><svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" /></svg></button>
             </div>
             <form onSubmit={handleSave} className="p-6 overflow-y-auto flex-1">
@@ -226,7 +226,7 @@ export default function SalesOrdersPage({ params: paramsPromise }: { params: Pro
 
               <div className="flex gap-3">
                 <button type="button" onClick={() => setShowModal(false)} className="flex-1 px-4 py-2.5 text-slate-600 font-medium hover:bg-slate-50 rounded-xl transition-colors">Cancel</button>
-                <button type="submit" disabled={saving} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 rounded-xl transition shadow-sm disabled:opacity-50">{saving ? "Saving..." : "Save Sales Order"}</button>
+                <button type="submit" disabled={saving} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 rounded-xl transition shadow-sm disabled:opacity-50">{saving ? "Saving..." : "Save Dispatch"}</button>
               </div>
             </form>
           </div>

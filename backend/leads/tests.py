@@ -528,3 +528,96 @@ class TeleCallerRetainsLeadTests(TestCase):
         lead = Lead.objects.create(first_name='T', last_name='Private', phone='9996000008',
                                    assigned_to=self.caller, value=0)
         self.assertNotIn(lead.id, self.ids_for(self.caller2))
+
+
+class ClosedDealTests(TestCase):
+    """A deal is closed when money has arrived in accounts — part or full —
+    not when it reaches documentation."""
+
+    def setUp(self):
+        from decimal import Decimal
+        self.admin = mk('cd_admin', 'admin')
+        self.lead = Lead.objects.create(first_name='C', last_name='Deal', phone='9997000001',
+                                        status='converted', value=Decimal('100000'))
+
+    def payload(self):
+        r = self.client.get(f'/api/leads/{self.lead.id}/', HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200)
+        return r.json()
+
+    def pay(self, amount, complete=False, discount=0):
+        from decimal import Decimal
+        from .models import PaymentVerification
+        pv, _ = PaymentVerification.objects.get_or_create(lead=self.lead)
+        pv.amount_received = Decimal(str(amount))
+        pv.discount_value = Decimal(str(discount))
+        pv.is_complete = complete
+        pv.save()
+        return pv
+
+    def test_converted_alone_is_not_a_closed_deal(self):
+        d = self.payload()
+        self.assertFalse(d['is_closed_deal'])
+        self.assertIsNone(d['deal_classification'])
+
+    def test_reaching_documentation_is_not_a_closed_deal(self):
+        """This used to be the trigger; documentation is work in progress."""
+        self.lead.pushed_to_documentation = True
+        self.lead.save()
+        d = self.payload()
+        self.assertFalse(d['is_closed_deal'])
+        self.assertIsNone(d['deal_classification'])
+
+    def test_in_accounts_with_nothing_paid_is_not_closed(self):
+        self.lead.pushed_to_accounts = True
+        self.lead.save()
+        self.pay(0)
+        d = self.payload()
+        self.assertFalse(d['is_closed_deal'])
+
+    def test_part_payment_closes_the_deal(self):
+        self.lead.pushed_to_accounts = True
+        self.lead.save()
+        self.pay(40000)
+        d = self.payload()
+        self.assertTrue(d['is_closed_deal'])
+        self.assertEqual(d['deal_classification'], 'partially_paid')
+
+    def test_full_payment_closes_the_deal(self):
+        self.lead.pushed_to_accounts = True
+        self.lead.save()
+        self.pay(100000)
+        d = self.payload()
+        self.assertTrue(d['is_closed_deal'])
+        self.assertEqual(d['deal_classification'], 'fully_paid')
+
+    def test_a_discount_can_settle_the_balance(self):
+        self.lead.pushed_to_accounts = True
+        self.lead.save()
+        self.pay(90000, discount=10000)
+        self.assertEqual(self.payload()['deal_classification'], 'fully_paid')
+
+    def test_verified_with_no_money_taken_is_not_closed(self):
+        """Accounts can sign off a record before the customer has actually paid."""
+        self.lead.pushed_to_accounts = True
+        self.lead.save()
+        self.pay(0, complete=True)
+        self.assertFalse(self.payload()['is_closed_deal'])
+
+    def test_a_lost_deal_is_never_closed(self):
+        self.lead.pushed_to_accounts = True
+        self.lead.is_lost = True
+        self.lead.save()
+        self.pay(50000)
+        d = self.payload()
+        self.assertFalse(d['is_closed_deal'])
+        self.assertEqual(d['deal_classification'], 'lost')
+
+    def test_an_unconverted_lead_is_never_closed(self):
+        self.lead.status = 'interested'
+        self.lead.pushed_to_accounts = True
+        self.lead.save()
+        self.pay(50000)
+        d = self.payload()
+        self.assertFalse(d['is_closed_deal'])
+        self.assertIsNone(d['deal_classification'])

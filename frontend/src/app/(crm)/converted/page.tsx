@@ -38,15 +38,23 @@ function StatusPill({ status, statusMeta }: { status: string; statusMeta: Record
 
 // ─── Deal classification (fulfilment / payment milestone) ───────────────────────
 const DEAL_CLASS_META: Record<string, { label: string; cls: string }> = {
-  closed_deal:    { label: "Closed Deal",    cls: "bg-indigo-50 text-indigo-700 border-indigo-100" },
   partially_paid: { label: "Partially Paid", cls: "bg-amber-50 text-amber-700 border-amber-100" },
   fully_paid:     { label: "Fully Paid",     cls: "bg-emerald-50 text-emerald-700 border-emerald-100" },
   lost:           { label: "Lost",           cls: "bg-rose-50 text-rose-700 border-rose-100" },
 };
-function DealClassBadge({ value }: { value?: string | null }) {
+const CHIP = "inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border";
+
+/** Closed Deal = in accounts with a payment (partial or full) taken. Shown next
+ *  to the payment detail, so a paid deal reads "Closed Deal · Partially Paid". */
+function DealClassBadge({ value, closed }: { value?: string | null; closed?: boolean }) {
   const m = value ? DEAL_CLASS_META[value] : null;
-  if (!m) return null;
-  return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border ${m.cls}`}>{m.label}</span>;
+  if (!m && !closed) return null;
+  return (
+    <>
+      {closed && <span className={`${CHIP} bg-indigo-50 text-indigo-700 border-indigo-100`}>Closed Deal</span>}
+      {m && <span className={`${CHIP} ${m.cls}`}>{m.label}</span>}
+    </>
+  );
 }
 
 // ─── Timeline event config ────────────────────────────────────────────────────
@@ -193,7 +201,8 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
 
   const stageMatch = (l: any) => {
     if (!stageFilter) return true;
-    if (stageFilter === "converted") return !l.deal_classification;  // converted, no further milestone
+    if (stageFilter === "converted") return !l.deal_classification && !l.is_closed_deal;  // nothing landed yet
+    if (stageFilter === "closed_deal") return !!l.is_closed_deal;
     return l.deal_classification === stageFilter;
   };
   const filtered = leads.filter(l =>
@@ -432,7 +441,7 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
                         <div>
                           <p className="text-[13px] font-bold text-slate-800 group-hover:text-emerald-700 transition-colors">{lead.first_name} {lead.last_name}</p>
                           <p className="text-[11px] text-slate-400">{lead.email || lead.phone || "—"}</p>
-                          <div className="mt-1 flex items-center gap-1.5"><StageTag stage={lead.pipeline_stage} /><DealClassBadge value={lead.deal_classification} /></div>
+                          <div className="mt-1 flex items-center gap-1.5 flex-wrap"><StageTag stage={lead.pipeline_stage} /><DealClassBadge value={lead.deal_classification} closed={lead.is_closed_deal} /></div>
                         </div>
                       </div>
                     </td>

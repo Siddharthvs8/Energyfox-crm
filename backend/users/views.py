@@ -100,7 +100,11 @@ class BranchViewSet(viewsets.ModelViewSet):
                 leads=Count('id'),
                 converted=Count('id', filter=Q(status='converted', is_lost=False)),
                 lost=Count('id', filter=Q(is_lost=True)),
-                closed_deals=Count('id', filter=Q(pushed_to_documentation=True)),
+                # A closed deal is one that has been paid (part or full), the same
+                # rule the Converted Leads board uses — not merely handed to
+                # documentation, which is work in progress.
+                closed_deals=Count('id', filter=Q(pushed_to_accounts=True,
+                                                  payment_verification__amount_received__gt=0)),
                 completed=Count('id', filter=Q(project__is_complete=True)),
                 deal_value=Sum('value', filter=Q(status='converted', is_lost=False)),
                 collected=Sum('payment_verification__amount_received'),
