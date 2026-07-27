@@ -57,6 +57,13 @@ ROLE_BRANCH_MANAGER = 'branch_manager'
 ROLE_BDE = 'bde'
 ROLE_TELE_CALLER = 'tele_caller'
 
+# ── B2B (wholesale) side ──
+# These people work the stock register only: no leads, no pipeline, no B2C
+# modules. See User.is_b2b_only.
+ROLE_STORE_MANAGER = 'store_manager'
+ROLE_STORE_KEEPER = 'store_keeper'
+ROLE_ACCOUNTS_B2B = 'accounts_b2b'
+
 ROLE_CHOICES = [
     (ROLE_SUPERADMIN, 'Super Admin'),
     (ROLE_ADMIN, 'Admin'),
@@ -71,7 +78,13 @@ ROLE_CHOICES = [
     (ROLE_BRANCH_MANAGER, 'Branch Manager'),
     (ROLE_BDE, 'BDE'),
     (ROLE_TELE_CALLER, 'Tele Caller'),
+    (ROLE_STORE_MANAGER, 'Store Manager'),
+    (ROLE_STORE_KEEPER, 'Store Keeper'),
+    (ROLE_ACCOUNTS_B2B, 'Accounts B2B'),
 ]
+
+# Roles that live entirely on the B2B side.
+B2B_ONLY_ROLES = (ROLE_STORE_MANAGER, ROLE_STORE_KEEPER, ROLE_ACCOUNTS_B2B)
 
 # role -> (is_staff, is_superuser, is_general_manager, is_manager)
 ROLE_BOOL_MAP = {
@@ -88,6 +101,11 @@ ROLE_BOOL_MAP = {
     ROLE_BRANCH_MANAGER: (False, False, False, True),
     ROLE_BDE:            (False, False, False, False),
     ROLE_TELE_CALLER:    (False, False, False, False),
+    # All-False on purpose: is_staff / is_manager would hand these B2B roles
+    # lead, team and assignment powers they have no business with.
+    ROLE_STORE_MANAGER:  (False, False, False, False),
+    ROLE_STORE_KEEPER:   (False, False, False, False),
+    ROLE_ACCOUNTS_B2B:   (False, False, False, False),
 }
 
 
@@ -109,6 +127,9 @@ ROLE_RANK = {
     ROLE_LIASONING_OFFICER: 30,
     ROLE_BDE: 20,
     ROLE_TELE_CALLER: 20,
+    ROLE_STORE_MANAGER: 60,
+    ROLE_STORE_KEEPER: 30,
+    ROLE_ACCOUNTS_B2B: 30,
 }
 
 
@@ -163,6 +184,11 @@ class User(AbstractUser):
     @property
     def branch_scoped(self):
         return self.role == ROLE_BRANCH_MANAGER
+
+    @property
+    def is_b2b_only(self):
+        """Works the wholesale side only — the stock register, no lead pipeline."""
+        return self.role in B2B_ONLY_ROLES
 
     # ── Account management hierarchy ──
     @property

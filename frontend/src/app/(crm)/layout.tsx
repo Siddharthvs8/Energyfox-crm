@@ -174,6 +174,10 @@ const Nav = {
 
 // Module key (from /api/leads/module-counts/) -> the name used in the "new work"
 // popup. The keys match each module's route, so the badge maps by href.
+// Roles that exist only on the wholesale side — they get the B2B view and no
+// toggle. Mirrors users.models.B2B_ONLY_ROLES.
+const B2B_ONLY_ROLES = ["store_manager", "store_keeper", "accounts_b2b"];
+
 const MODULE_LABELS: Record<string, string> = {
   "leads": "Leads",
   "documentation": "Documentation Stage 1",
@@ -209,6 +213,41 @@ export default function DashboardLayout({
   const [showNotifDropdown, setShowNotifDropdown] = useState(false);
   const [toasts, setToasts] = useState<any[]>([]);
   const [inventoryOpen, setInventoryOpen] = useState(false);
+  // B2C (the whole CRM) vs B2B (wholesale — stock only, no lead pipeline).
+  // A view mode, not a permission: the toggle is admin-only and every module it
+  // reveals still enforces its own access on the server.
+  const [bizMode, setBizMode] = useState<"b2c" | "b2b">("b2c");
+
+  // Store manager / store keeper / accounts B2B work the wholesale side only.
+  const isB2BOnly = B2B_ONLY_ROLES.includes(currentUser?.role);
+
+  // Restore the saved mode once we know who is logged in. B2B-only staff are
+  // pinned there; for everyone else only admins and super admins have B2B, so
+  // anyone else is put back into B2C.
+  useEffect(() => {
+    if (!currentUser) return;
+    if (B2B_ONLY_ROLES.includes(currentUser.role)) { setBizMode("b2b"); return; }
+    const saved = localStorage.getItem(`${domain}_biz_mode`);
+    setBizMode(currentUser.is_staff && saved === "b2b" ? "b2b" : "b2c");
+  }, [currentUser, domain]);
+
+  // Someone in B2B who lands on a B2C route (a bookmark, a back button, a link
+  // in a notification) is sent to the only module the mode carries.
+  useEffect(() => {
+    if (bizMode !== "b2b") return;
+    const allowed = [`/inventory`, `/team`];
+    if (!allowed.some(p => pathname === p || pathname.startsWith(`${p}/`))) router.replace(`/inventory`);
+  }, [bizMode, pathname, router]);
+
+  const switchMode = (mode: "b2c" | "b2b") => {
+    if (mode === bizMode) return;
+    setBizMode(mode);
+    localStorage.setItem(`${domain}_biz_mode`, mode);
+    setSidebarOpen(false);
+    // B2B only carries Inventory, so land there rather than on a page whose nav
+    // entry has just disappeared.
+    router.push(mode === "b2b" ? `/inventory` : `/`);
+  };
 
   // Apply the cached accent theme immediately on mount (avoids a flash before
   // the subscription fetch resolves and re-applies the authoritative value).
@@ -456,7 +495,7 @@ export default function DashboardLayout({
     { href: `/manager`,       label: "Manager",         Icon: Nav.Admin, managerFeature: true },
     { href: `/automations`,   label: "Automations",    Icon: Nav.Automation, adminOnly: true },
     { href: `/meta`,          label: "Meta Integration",Icon: Nav.Meta, strictAdminOnly: true },
-    { href: `/team`,          label: "Team",            Icon: Nav.Team },
+    { href: `/team`,          label: "Team",            Icon: Nav.Team, inB2B: true },
     { href: `/branches`,      label: "Branches",        Icon: Nav.Admin, adminOnly: true },
     { href: `/documentation`, label: "Documentation Stage 1", Icon: Nav.Quote, docFeature: true },
     { href: `/documentation-stage2`, label: "Documentation Stage 2", Icon: Nav.Quote, docStage2Feature: true },
@@ -490,8 +529,19 @@ export default function DashboardLayout({
   // Liasoning officer gets a focused view — only the Liasoning & Service module.
   const isLiasoningOnly = currentUser?.role === "liasoning_officer";
 
+  // Purchase staff keep the stock register, so they get the Inventory group too,
+  // as do the B2B roles for whom it is the entire application.
+  const canSeeInventory = currentUser?.is_staff || currentUser?.is_general_manager
+    || currentUser?.role === "purchase_staff" || isB2BOnly;
+
   // Manager features visible to manager, general manager, and admin
   const navItems = allNavItems.filter(item => {
+    if (item.inventoryGroup) {
+      return canSeeInventory;
+    }
+    if (bizMode === "b2b") {
+      return !!item.inB2B;   // wholesale side is Inventory (the group, above) + Team
+    }
     if (isDocOnly) {
       return !!item.docFeature || !!item.docStage2Feature || !!item.warrantyFeature;
     }
@@ -584,13 +634,13 @@ export default function DashboardLayout({
 
   // ── Inventory module (grouped, collapsible) ──
   const inventoryItems = [
-    { href: `/products`,        label: "Products",        Icon: Nav.Products },
-    { href: `/vendors`,         label: "Vendors",         Icon: Nav.Vendor },
-    { href: `/quotes`,          label: "Quotes",          Icon: Nav.Quote },
-    { href: `/sales-orders`,    label: "Sales Orders",    Icon: Nav.SalesOrder },
-    { href: `/purchase-orders`, label: "Purchase Orders", Icon: Nav.PurchaseOrder },
+    { href: `/inventory`,            label: "Dashboard",        Icon: Nav.Dashboard, exact: true },
+    { href: `/inventory/items`,      label: "Item Master",      Icon: Nav.Products },
+    { href: `/inventory/purchases`,  label: "Purchases",        Icon: Nav.PurchaseOrder },
+    { href: `/inventory/dispatch`,   label: "Sales / Dispatch", Icon: Nav.SalesOrder },
+    { href: `/inventory/suppliers`,  label: "Suppliers",        Icon: Nav.Vendor },
+    { href: `/inventory/customers`,  label: "Customers",        Icon: Nav.Team },
   ];
-  const canSeeInventory = currentUser?.is_staff || currentUser?.is_general_manager;
   const inventoryActive = inventoryItems.some(i => pathname.startsWith(i.href));
   const inventoryExpanded = inventoryOpen || inventoryActive;
 
@@ -632,6 +682,29 @@ export default function DashboardLayout({
           </button>
         </div>
 
+        {/* B2C / B2B switch — admins and super admins only; everyone else is B2C. */}
+        {currentUser?.is_staff && (
+          <div className="px-4 pt-3 flex-shrink-0">
+            <div className="flex p-0.5 bg-white/[0.06] rounded-xl" role="group" aria-label="Business mode">
+              {(["b2c", "b2b"] as const).map(mode => (
+                <button
+                  key={mode}
+                  onClick={() => switchMode(mode)}
+                  aria-pressed={bizMode === mode}
+                  title={mode === "b2c" ? "Retail CRM — the full pipeline" : "Wholesale — stock register only"}
+                  className={`flex-1 py-1.5 rounded-[10px] text-[11px] font-bold uppercase tracking-wider transition-all duration-200 ${
+                    bizMode === mode
+                      ? "bg-accent text-white shadow-lg shadow-accent"
+                      : "text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  {mode.toUpperCase()}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Nav items */}
         <nav className="flex-1 py-3 px-2.5 space-y-0.5 overflow-y-auto">
           {navItems.map(item => {
@@ -658,7 +731,9 @@ export default function DashboardLayout({
                   {inventoryExpanded && (
                     <div className="mt-0.5 ml-3 pl-3 border-l border-white/10 space-y-0.5">
                       {inventoryItems.map(sub => {
-                        const subActive = pathname.startsWith(sub.href);
+                        const subActive = (sub as any).exact
+                          ? pathname === sub.href
+                          : pathname === sub.href || pathname.startsWith(sub.href + "/");
                         return (
                           <Link
                             key={sub.href}

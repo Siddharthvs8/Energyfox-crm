@@ -215,3 +215,45 @@ class SiteVisitIndicatorTests(TestCase):
         standalone = [q['sql'] for q in ctx.captured_queries
                       if 'FROM "leads_sitevisit"' in q['sql']]
         self.assertEqual(standalone, [], f"{len(standalone)} per-lead site_visit queries")
+
+
+class LeaderboardTests(TestCase):
+    """The board ranks BDEs on the deals they closed."""
+
+    def setUp(self):
+        self.caller = mk('t_caller', 'tele_caller')
+        self.admin = mk('t_admin', 'admin')
+        self.bde1 = mk('t_bde1', 'bde')
+        self.bde2 = mk('t_bde2', 'bde')
+        # Owned by the tele caller, closed by bde1 — the money follows the BDE.
+        Lead.objects.create(first_name='A', last_name='Won', phone='9993000001',
+                            status='converted', assigned_to=self.caller, bde=self.bde1, value=86676)
+        Lead.objects.create(first_name='B', last_name='Open', phone='9993000002',
+                            status='interested', assigned_to=self.caller, bde=self.bde2, value=50000)
+
+    def board(self, actor=None, period='all_time'):
+        r = self.client.get(f'/api/leaderboard/?period={period}',
+                            HTTP_AUTHORIZATION=token_for(actor or self.admin))
+        self.assertEqual(r.status_code, 200)
+        return r.json()['leaderboard']
+
+    def test_only_bdes_are_listed(self):
+        names = [row['name'] for row in self.board()]
+        self.assertEqual(sorted(names), ['t_bde1', 't_bde2'])
+        self.assertTrue(all(row['role'] == 'BDE' for row in self.board()))
+
+    def test_credit_follows_the_bde_not_the_owner(self):
+        top = self.board()[0]
+        self.assertEqual(top['name'], 't_bde1')
+        self.assertEqual(top['closed_sales'], 1)
+        self.assertEqual(top['revenue'], 86676.0)
+
+    def test_unconverted_leads_are_not_counted(self):
+        row = next(r for r in self.board() if r['name'] == 't_bde2')
+        self.assertEqual(row['closed_sales'], 0)
+        self.assertEqual(row['revenue'], 0.0)
+
+    def test_bde_with_no_deals_still_appears_at_the_bottom(self):
+        """Zero revenue must not sort to the top (NULLs did, before Coalesce)."""
+        board = self.board()
+        self.assertEqual(board[-1]['name'], 't_bde2')

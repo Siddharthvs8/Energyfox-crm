@@ -92,7 +92,7 @@ export default function LeaderboardPage({ params: paramsPromise }: { params: Pro
           <h1 className="text-3xl font-black text-slate-900 tracking-tight flex items-center gap-3">
              <span className="text-4xl">🏆</span> Sales Leaderboard
           </h1>
-          <p className="text-sm text-slate-500 mt-1 font-medium">Rankings based on closed sales and revenue</p>
+          <p className="text-sm text-slate-500 mt-1 font-medium">BDEs ranked by the deals they closed and the revenue they brought in</p>
         </div>
 
         <div className="flex p-1 bg-white border border-slate-100 rounded-2xl shadow-sm self-start sm:self-center">
@@ -123,7 +123,7 @@ export default function LeaderboardPage({ params: paramsPromise }: { params: Pro
             <svg width="40" height="40" fill="none" stroke="#94a3b8" strokeWidth="1.5" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
           </div>
           <h3 className="text-xl font-bold text-slate-800">No Sales Recorded</h3>
-          <p className="text-slate-400 text-sm mt-2 max-w-xs mx-auto">No users have closed any sales in this time period yet. Time to hustle!</p>
+          <p className="text-slate-400 text-sm mt-2 max-w-xs mx-auto">No BDE has closed a deal in this time period yet. Time to hustle!</p>
         </div>
       ) : (
         <div className="grid gap-4">
@@ -134,7 +134,7 @@ export default function LeaderboardPage({ params: paramsPromise }: { params: Pro
                 <thead>
                   <tr className="bg-slate-50/50 border-b border-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
                     <th className="px-8 py-5 w-20">Rank</th>
-                    <th className="px-6 py-5">Sales Agent</th>
+                    <th className="px-6 py-5">BDE</th>
                     <th className="px-6 py-5 text-center">Closed Sales</th>
                     <th className="px-8 py-5 text-right">Total Revenue</th>
                   </tr>
@@ -192,7 +192,7 @@ export default function LeaderboardPage({ params: paramsPromise }: { params: Pro
                   <AnimatedNumber value={data.reduce((acc: any, curr: any) => acc + curr.revenue, 0)} prefix="₹" isCurrency />
                 </p>
                 <div className="mt-4 flex items-center gap-2">
-                   <span className="text-[10px] font-bold bg-white/20 px-3 py-1 rounded-full">{data.length} Sales Agents</span>
+                   <span className="text-[10px] font-bold bg-white/20 px-3 py-1 rounded-full">{data.length} BDEs</span>
                 </div>
              </div>
              <div className="bg-white border border-slate-100 rounded-[2rem] p-8 shadow-sm">

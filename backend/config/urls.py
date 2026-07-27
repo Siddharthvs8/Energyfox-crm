@@ -13,7 +13,9 @@ from leads.webhooks import meta_leads_webhook
 from tasks.views import TaskViewSet
 from users.views import UserViewSet, SubscriptionStatusView, WorkspaceTeamViewSet, TenantSettingsView, BranchViewSet
 from leads.views import LeadViewSet, IntegrationSettingsViewSet, DashboardStatsView, LeaderboardView, ConvertedAnalyticsView, ProductViewSet, ServiceEntryViewSet, EmergencyServiceViewSet
-from inventory.views import VendorViewSet, PurchaseOrderViewSet, QuoteViewSet, SalesOrderViewSet
+from inventory.views import (VendorViewSet, PurchaseOrderViewSet, QuoteViewSet, SalesOrderViewSet,
+                            StockItemViewSet, StockCustomerViewSet, GoodsReceiptViewSet,
+                            StockDispatchViewSet, StockSummaryView)
 
 router = DefaultRouter()
 router.register(r'leads', LeadViewSet)
@@ -29,6 +31,10 @@ router.register(r'vendors', VendorViewSet, basename='vendors')
 router.register(r'purchase-orders', PurchaseOrderViewSet, basename='purchase-orders')
 router.register(r'quotes', QuoteViewSet, basename='quotes')
 router.register(r'sales-orders', SalesOrderViewSet, basename='sales-orders')
+router.register(r'stock-items', StockItemViewSet, basename='stock-items')
+router.register(r'stock-customers', StockCustomerViewSet, basename='stock-customers')
+router.register(r'goods-receipts', GoodsReceiptViewSet, basename='goods-receipts')
+router.register(r'stock-dispatches', StockDispatchViewSet, basename='stock-dispatches')
 
 
 urlpatterns = [
@@ -48,6 +54,7 @@ urlpatterns = [
     path('api/automations/', include('automations.urls')),
     path('api/whatsapp/', include('messaging.urls')),
     path('api/email/', include('messaging.email_urls')),
+    path('api/stock-summary/', StockSummaryView.as_view(), name='stock-summary'),
     path('api/', include(router.urls)),
     path('api/webhooks/meta-leads/', meta_leads_webhook, name='meta-leads-webhook'),
     path('api/webhooks/meta-leads', meta_leads_webhook, name='meta-leads-webhook-no-slash'),

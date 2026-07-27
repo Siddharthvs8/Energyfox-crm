@@ -243,8 +243,26 @@ class UserViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        from .models import B2B_ONLY_ROLES
         qs = User.objects.filter(is_active=True).order_by('first_name', 'last_name')
         user = self.request.user
+
+        # The wholesale side keeps its own roster. B2B staff see that roster and
+        # nothing else; they have no team or branch scoping to fall through to.
+        if user.is_b2b_only:
+            return qs.filter(role__in=B2B_ONLY_ROLES)
+
+        # Which roster the *directory* shows: ?segment=b2b is the B2B Team module
+        # asking for the wholesale side, otherwise B2B people stay out of the
+        # CRM's lists and pickers. Detail routes are deliberately exempt — an
+        # admin editing a B2B account posts to /api/users/<id>/ with no segment,
+        # and filtering there would 404 them out of their own Team page.
+        if self.action == 'list':
+            if self.request.query_params.get('segment') == 'b2b':
+                qs = qs.filter(role__in=B2B_ONLY_ROLES)
+            else:
+                qs = qs.exclude(role__in=B2B_ONLY_ROLES)
+
         # Admin and GM see all users; branch managers see their branch; others see their team/self
         if not (user.is_staff or user.is_general_manager):
             if user.branch_scoped and user.branch_id:
@@ -264,8 +282,10 @@ class UserViewSet(viewsets.ModelViewSet):
         the backend will accept — agents get the front-line agents, managers and
         admins get everyone.
         """
+        from .models import B2B_ONLY_ROLES
         allowed = request.user.assignable_lead_user_ids()
-        qs = User.objects.filter(is_active=True)
+        # B2B staff never own leads, so they never belong in an assignee picker.
+        qs = User.objects.filter(is_active=True).exclude(role__in=B2B_ONLY_ROLES)
         if allowed is not None:
             qs = qs.filter(id__in=allowed)
         return Response([{
@@ -361,8 +381,13 @@ class UserViewSet(viewsets.ModelViewSet):
     def assignable_roles(self, request):
         """Roles the caller may grant — drives the Team form's role picker so it
         never offers something the API will reject."""
-        from .models import ROLE_CHOICES
+        from .models import ROLE_CHOICES, B2B_ONLY_ROLES
         allowed = set(request.user.assignable_roles())
+        # On the wholesale side only wholesale roles are on offer, and vice versa.
+        if request.query_params.get('segment') == 'b2b' or request.user.is_b2b_only:
+            allowed &= set(B2B_ONLY_ROLES)
+        else:
+            allowed -= set(B2B_ONLY_ROLES)
         return Response([{'value': r, 'label': label}
                          for r, label in ROLE_CHOICES if r in allowed])
 

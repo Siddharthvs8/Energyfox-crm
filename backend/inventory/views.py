@@ -132,3 +132,163 @@ class SalesOrderViewSet(viewsets.ModelViewSet):
         if status_f and status_f != 'all':
             qs = qs.filter(status=status_f)
         return qs
+
+
+# ─── Stock register ─────────────────────────────────────────────────────────
+from decimal import Decimal  # noqa: E402
+from django.db.models import Sum, OuterRef, Subquery, DecimalField, Value, F  # noqa: E402
+from django.db.models.functions import Coalesce  # noqa: E402
+from django.utils import timezone  # noqa: E402
+from rest_framework.views import APIView  # noqa: E402
+
+from .models import StockItem, StockCustomer, GoodsReceipt, StockDispatch  # noqa: E402
+from .serializers import (  # noqa: E402
+    StockItemSerializer, StockCustomerSerializer,
+    GoodsReceiptSerializer, StockDispatchSerializer,
+)
+
+_MONEY = DecimalField(max_digits=16, decimal_places=2)
+
+
+class IsStockKeeper(permissions.BasePermission):
+    """The warehouse desk: admins, general managers, purchase staff, and the
+    B2B roles (store manager / store keeper / accounts B2B) whose whole job is
+    this module."""
+    message = 'You do not have access to the stock register.'
+
+    def has_permission(self, request, view):
+        u = request.user
+        if not u or not u.is_authenticated:
+            return False
+        return bool(u.is_staff or getattr(u, 'is_general_manager', False)
+                    or getattr(u, 'role', '') == 'purchase_staff'
+                    or getattr(u, 'is_b2b_only', False))
+
+
+def _movement_total(model, field='quantity'):
+    """Per-item Sum as a subquery — two plain annotations across two reverse FKs
+    would multiply each other's rows and inflate both totals."""
+    return Coalesce(
+        Subquery(
+            model.objects.filter(item=OuterRef('pk')).values('item')
+            .annotate(t=Sum(field)).values('t')[:1],
+            output_field=_MONEY,
+        ),
+        Value(Decimal('0')), output_field=_MONEY,
+    )
+
+
+def stock_items_with_ledger():
+    """Item master annotated with its received/dispatched totals."""
+    return StockItem.objects.annotate(
+        received_qty=_movement_total(GoodsReceipt),
+        dispatched_qty=_movement_total(StockDispatch),
+    )
+
+
+class StockItemViewSet(viewsets.ModelViewSet):
+    serializer_class = StockItemSerializer
+    permission_classes = [permissions.IsAuthenticated, IsStockKeeper]
+
+    def get_queryset(self):
+        qs = stock_items_with_ledger()
+        search = self.request.query_params.get('search')
+        if search:
+            qs = qs.filter(
+                Q(code__icontains=search) | Q(brand__icontains=search)
+                | Q(model_name__icontains=search) | Q(category__icontains=search)
+            )
+        category = self.request.query_params.get('category')
+        if category and category != 'all':
+            qs = qs.filter(category=category)
+        return qs.order_by('code')
+
+    def destroy(self, request, *args, **kwargs):
+        """Items with movement history stay put — deleting one would erase the
+        receipts and dispatches that explain the stock on hand."""
+        item = self.get_object()
+        if item.receipts.exists() or item.dispatches.exists():
+            return Response(
+                {'error': f'{item.code} has receipts or dispatches logged against it. '
+                          'Delete those movements first, or mark the item inactive.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().destroy(request, *args, **kwargs)
+
+
+class StockCustomerViewSet(viewsets.ModelViewSet):
+    serializer_class = StockCustomerSerializer
+    permission_classes = [permissions.IsAuthenticated, IsStockKeeper]
+    queryset = StockCustomer.objects.all()
+
+    def get_queryset(self):
+        qs = StockCustomer.objects.all().order_by('name')
+        search = self.request.query_params.get('search')
+        if search:
+            qs = qs.filter(Q(name__icontains=search) | Q(contact_person__icontains=search))
+        return qs
+
+
+class _MovementViewSet(viewsets.ModelViewSet):
+    permission_classes = [permissions.IsAuthenticated, IsStockKeeper]
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user if self.request.user.is_authenticated else None)
+
+
+class GoodsReceiptViewSet(_MovementViewSet):
+    serializer_class = GoodsReceiptSerializer
+    queryset = GoodsReceipt.objects.all()
+
+    def get_queryset(self):
+        return GoodsReceipt.objects.select_related('item', 'supplier', 'created_by')
+
+
+class StockDispatchViewSet(_MovementViewSet):
+    serializer_class = StockDispatchSerializer
+    queryset = StockDispatch.objects.all()
+
+    def get_queryset(self):
+        return StockDispatch.objects.select_related('item', 'customer', 'created_by')
+
+
+class StockSummaryView(APIView):
+    """Dashboard figures for the stock register: total value, reorder alerts and
+    this month's inward/outward movement."""
+    permission_classes = [permissions.IsAuthenticated, IsStockKeeper]
+
+    def get(self, request):
+        items = list(stock_items_with_ledger())
+
+        total_value = sum((i.stock_value for i in items), Decimal('0'))
+        low = [i for i in items if i.needs_reorder]
+
+        by_category = {}
+        for i in items:
+            by_category[i.category] = by_category.get(i.category, Decimal('0')) + i.stock_value
+
+        month_start = timezone.localdate().replace(day=1)
+        month_in = GoodsReceipt.objects.filter(date__gte=month_start).aggregate(
+            t=Coalesce(Sum(F('quantity') * F('rate'), output_field=_MONEY),
+                       Value(Decimal('0')), output_field=_MONEY))['t']
+        month_out = StockDispatch.objects.filter(date__gte=month_start).aggregate(
+            t=Coalesce(Sum(F('quantity') * F('rate'), output_field=_MONEY),
+                       Value(Decimal('0')), output_field=_MONEY))['t']
+
+        return Response({
+            'sku_count': len(items),
+            'total_value': total_value,
+            'reorder_count': len(low),
+            'month_purchases': month_in,
+            'month_sales': month_out,
+            'by_category': [{'name': name, 'value': value} for name, value in sorted(by_category.items())],
+            'reorder_alerts': [{
+                'id': i.id, 'code': i.code, 'brand': i.brand, 'model_name': i.model_name,
+                'unit': i.unit, 'closing_stock': i.closing_stock, 'reorder_level': i.reorder_level,
+            } for i in low],
+            'stock_levels': [{
+                'id': i.id, 'code': i.code, 'unit': i.unit,
+                'closing_stock': i.closing_stock, 'reorder_level': i.reorder_level,
+                'status': 'REORDER' if i.needs_reorder else 'OK',
+            } for i in items],
+        })

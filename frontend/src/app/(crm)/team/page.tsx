@@ -35,10 +35,17 @@ const ROLES = [
   { value: "purchase_staff", label: "Purchase Staff" },
   { value: "project_manager", label: "Project Manager" },
   { value: "liasoning_officer", label: "Liasoning Officer" },
+  { value: "store_manager", label: "Store Manager" },
+  { value: "store_keeper", label: "Store Keeper" },
+  { value: "accounts_b2b", label: "Accounts B2B" },
   { value: "coo", label: "COO" },
   { value: "admin", label: "Admin" },
   { value: "superadmin", label: "Super Admin" },
 ];
+// Wholesale-side roles. They live in their own roster: the B2B Team module
+// lists them, the CRM's Team module doesn't. Mirrors users.models.B2B_ONLY_ROLES.
+const B2B_ONLY_ROLES = ["store_manager", "store_keeper", "accounts_b2b"];
+
 const ROLE_COLORS: Record<string, { bg: string; text: string }> = {
   superadmin: { bg: "bg-violet-50", text: "text-violet-700" },
   admin: { bg: "bg-violet-50", text: "text-violet-700" },
@@ -51,6 +58,9 @@ const ROLE_COLORS: Record<string, { bg: string; text: string }> = {
   purchase_staff: { bg: "bg-orange-50", text: "text-orange-700" },
   project_manager: { bg: "bg-indigo-50", text: "text-indigo-700" },
   liasoning_officer: { bg: "bg-purple-50", text: "text-purple-700" },
+  store_manager: { bg: "bg-amber-50", text: "text-amber-700" },
+  store_keeper: { bg: "bg-amber-50", text: "text-amber-700" },
+  accounts_b2b: { bg: "bg-amber-50", text: "text-amber-700" },
   bde: { bg: "bg-slate-100", text: "text-slate-600" },
   tele_caller: { bg: "bg-slate-100", text: "text-slate-600" },
 };
@@ -93,6 +103,10 @@ function TeamPageInner() {
   const [showTeamModal, setShowTeamModal] = useState(false);
   const [editingTeam, setEditingTeam] = useState<any>(null);
   const [telephonyProvider, setTelephonyProvider] = useState("voxbay");
+  // B2B staff always see the wholesale roster; an admin sees whichever side the
+  // sidebar switch is on.
+  const [segment, setSegment] = useState<"b2c" | "b2b">("b2c");
+  const isB2B = segment === "b2b";
 
   const blankForm = { username: "", first_name: "", last_name: "", email: "", password: "", role: "tele_caller", team: "" as string | number, branch: "" as string | number, phone: "", voxbay_extension: "" };
   const [form, setForm] = useState(blankForm);
@@ -112,19 +126,27 @@ function TeamPageInner() {
   const fetchTeam = async () => {
     const token = localStorage.getItem(`${domain}_access`);
     if (!token) return;
+    // The backend pins B2B staff to their own roster whatever we ask for; this
+    // only decides which side an admin is looking at.
+    const seg = localStorage.getItem(`${domain}_biz_mode`) === "b2b" ? "b2b" : "b2c";
+    const q = `?segment=${seg}`;
     try {
       const [tRes, wtRes, meRes, subRes, brRes, arRes] = await Promise.all([
-        fetch(`${getApiBase(domain)}/api/users/`, { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`${getApiBase(domain)}/api/users/${q}`, { headers: { Authorization: `Bearer ${token}` } }),
         fetch(`${getApiBase(domain)}/api/teams/`, { headers: { Authorization: `Bearer ${token}` } }),
         fetch(`${getApiBase(domain)}/api/users/me/`, { headers: { Authorization: `Bearer ${token}` } }),
         fetch(`${getApiBase(domain)}/api/subscription/`, { headers: { Authorization: `Bearer ${token}` } }),
         fetch(`${getApiBase(domain)}/api/branches/`, { headers: { Authorization: `Bearer ${token}` } }),
-        fetch(`${getApiBase(domain)}/api/users/assignable-roles/`, { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`${getApiBase(domain)}/api/users/assignable-roles/${q}`, { headers: { Authorization: `Bearer ${token}` } }),
       ]);
       const tData = await tRes.json(); setTeam(Array.isArray(tData) ? tData : tData.results || []);
       const wtData = await wtRes.json(); setWorkspaceTeams(Array.isArray(wtData) ? wtData : wtData.results || []);
       if (brRes.ok) { const brData = await brRes.json(); setBranches(Array.isArray(brData) ? brData : brData.results || []); }
-      if (meRes.ok) setCurrentUser(await meRes.json());
+      if (meRes.ok) {
+        const me = await meRes.json();
+        setCurrentUser(me);
+        setSegment(B2B_ONLY_ROLES.includes(me.role) ? "b2b" : (seg as "b2c" | "b2b"));
+      }
       if (arRes.ok) { const ar = await arRes.json(); if (Array.isArray(ar)) setAssignableRoles(ar.map((r: any) => r.value)); }
       if (subRes.ok) {
         const subData = await subRes.json();
@@ -226,11 +248,12 @@ function TeamPageInner() {
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div className="flex items-center gap-6">
               <div>
-                <h1 className="text-lg font-bold text-slate-900">{isAdminOrGM ? "Team" : "My Team"}</h1>
+                <h1 className="text-lg font-bold text-slate-900">{isB2B ? "B2B Team" : isAdminOrGM ? "Team" : "My Team"}</h1>
                 <p className="text-[11px] text-slate-400 mt-0.5">{team.length} members</p>
               </div>
-              {/* Tabs - only show for admin/GM */}
-              {isAdminOrGM && (
+              {/* Tabs - only show for admin/GM. Workspace teams are a sales-side
+                  concept, so the wholesale roster is a flat member list. */}
+              {isAdminOrGM && !isB2B && (
               <div className="flex items-center gap-1 bg-slate-100 rounded-xl p-1 w-full sm:w-auto overflow-x-auto no-scrollbar">
                 {([["members", "Members", <I.Users key="u" />], ["teams", "Teams", <I.Team key="t" />]] as [string, string, React.ReactNode][]).map(([id, label, icon]) => (
                   <button key={id} onClick={() => setActiveTab(id as any)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${activeTab === id ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
@@ -244,7 +267,7 @@ function TeamPageInner() {
               <button
                 onClick={() => activeTab === "members"
                   ? (currentUser?.is_staff
-                    ? (setEditingUser(null), setForm(blankForm), setShowModal(true))
+                    ? (setEditingUser(null), setForm({ ...blankForm, role: isB2B ? "store_keeper" : blankForm.role }), setShowModal(true))
                     : alert("Only admins can create new users."))
                   : (setEditingTeam(null), setTeamForm(blankTeamForm), setShowTeamModal(true))}
                 className="flex items-center justify-center gap-1.5 px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 transition-all shadow-sm shadow-indigo-200 w-full sm:w-auto"

@@ -168,3 +168,74 @@ class SalesOrderSerializer(_TaxedDocSerializer):
                     item.product.save(update_fields=['stock_quantity'])
             instance.stock_committed = True
             instance.save(update_fields=['stock_committed'])
+
+
+# ─── Stock register ─────────────────────────────────────────────────────────
+from .models import StockItem, StockCustomer, GoodsReceipt, StockDispatch  # noqa: E402
+
+
+class StockItemSerializer(serializers.ModelSerializer):
+    """The item master row plus its derived ledger (never stored, always summed
+    from the movements — see StockItem.closing_stock)."""
+    received = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    dispatched = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    closing_stock = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    stock_value = serializers.DecimalField(max_digits=16, decimal_places=2, read_only=True)
+    status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StockItem
+        fields = ['id', 'code', 'category', 'brand', 'model_name', 'unit',
+                  'opening_stock', 'unit_cost', 'reorder_level', 'location', 'is_active',
+                  'received', 'dispatched', 'closing_stock', 'stock_value', 'status',
+                  'created_at']
+        read_only_fields = ['created_at']
+
+    def get_status(self, obj):
+        return 'REORDER' if obj.needs_reorder else 'OK'
+
+
+class StockCustomerSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StockCustomer
+        fields = '__all__'
+        read_only_fields = ['created_at']
+
+
+class _MovementSerializer(serializers.ModelSerializer):
+    item_code = serializers.CharField(source='item.code', read_only=True)
+    item_label = serializers.SerializerMethodField()
+    amount = serializers.DecimalField(max_digits=16, decimal_places=2, read_only=True)
+    created_by_name = serializers.SerializerMethodField()
+
+    def get_item_label(self, obj):
+        it = obj.item
+        return f"{it.brand} {it.model_name}".strip() or it.code
+
+    def get_created_by_name(self, obj):
+        u = obj.created_by
+        if not u:
+            return None
+        return f"{u.first_name} {u.last_name}".strip() or u.username
+
+
+class GoodsReceiptSerializer(_MovementSerializer):
+    supplier_name = serializers.CharField(source='supplier.name', read_only=True, default=None)
+
+    class Meta:
+        model = GoodsReceipt
+        fields = ['id', 'grn_no', 'date', 'supplier', 'supplier_name', 'item', 'item_code',
+                  'item_label', 'quantity', 'rate', 'amount', 'notes',
+                  'created_by', 'created_by_name', 'created_at']
+        read_only_fields = ['created_by', 'created_at']
+
+
+class StockDispatchSerializer(_MovementSerializer):
+    customer_name = serializers.CharField(source='customer.name', read_only=True, default=None)
+
+    class Meta:
+        model = StockDispatch
+        fields = ['id', 'invoice_no', 'date', 'customer', 'customer_name', 'item', 'item_code',
+                  'item_label', 'quantity', 'rate', 'amount', 'site', 'notes',
+                  'created_by', 'created_by_name', 'created_at']
+        read_only_fields = ['created_by', 'created_at']

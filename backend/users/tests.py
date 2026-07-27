@@ -115,6 +115,134 @@ class AccountHierarchyTests(TestCase):
         self.assertTrue(flags['t_bde'])
 
 
+class B2BRoleTests(TestCase):
+    """Store manager / store keeper / accounts B2B belong to the wholesale side
+    and must not pick up any B2C powers along the way."""
+
+    ROLES = ('store_manager', 'store_keeper', 'accounts_b2b')
+
+    def test_flagged_b2b_only(self):
+        for role in self.ROLES:
+            self.assertTrue(mk(f't_{role}', role).is_b2b_only, role)
+        self.assertFalse(mk('t_bde', 'bde').is_b2b_only)
+        self.assertFalse(mk('t_admin', 'admin').is_b2b_only)
+
+    def test_carry_no_b2c_powers(self):
+        """is_staff / is_manager would open team, lead and assignment paths."""
+        for role in self.ROLES:
+            u = mk(f't_{role}', role)
+            self.assertFalse(u.is_staff, role)
+            self.assertFalse(u.is_superuser, role)
+            self.assertFalse(u.is_general_manager, role)
+            self.assertFalse(u.is_manager, role)
+            self.assertFalse(u.sees_all_leads, role)
+            self.assertFalse(u.branch_scoped, role)
+
+    def test_see_no_leads(self):
+        from leads.models import Lead
+        Lead.objects.create(first_name='Someone', phone='9995550000', value=0)
+        for role in self.ROLES:
+            u = mk(f't_{role}', role)
+            r = self.client.get('/api/leads/', HTTP_AUTHORIZATION=token_for(u))
+            rows = r.json() if isinstance(r.json(), list) else r.json()['results']
+            self.assertEqual(rows, [], role)
+
+    def test_admin_can_appoint_them(self):
+        admin = mk('t_admin', 'admin')
+        for role in self.ROLES:
+            r = self.client.post('/api/users/', data={
+                'username': f'new_{role}', 'password': 'Pw@123456', 'role': role},
+                content_type='application/json', HTTP_AUTHORIZATION=token_for(admin))
+            self.assertEqual(r.status_code, 201, role)
+        offered = [x['value'] for x in self.client.get(
+            '/api/users/assignable-roles/?segment=b2b',
+            HTTP_AUTHORIZATION=token_for(admin)).json()]
+        for role in self.ROLES:
+            self.assertIn(role, offered)
+
+    def test_store_manager_outranks_the_other_two(self):
+        sm = mk('t_sm', 'store_manager')
+        self.assertTrue(sm.can_manage(mk('t_sk', 'store_keeper')))
+        self.assertTrue(sm.can_manage(mk('t_ab', 'accounts_b2b')))
+        self.assertFalse(mk('t_sk2', 'store_keeper').can_manage(sm))
+
+
+class B2BRosterTests(TestCase):
+    """The wholesale roster lives in the B2B Team module and nowhere else."""
+
+    def setUp(self):
+        self.admin = mk('t_admin', 'admin')
+        self.caller = mk('t_caller', 'tele_caller')
+        self.bde = mk('t_bde', 'bde')
+        self.store_mgr = mk('t_store_mgr', 'store_manager')
+        self.keeper = mk('t_keeper', 'store_keeper')
+        self.acct = mk('t_acct_b2b', 'accounts_b2b')
+
+    def usernames(self, actor, query=''):
+        r = self.client.get(f'/api/users/{query}', HTTP_AUTHORIZATION=token_for(actor))
+        self.assertEqual(r.status_code, 200)
+        rows = r.json()
+        rows = rows if isinstance(rows, list) else rows['results']
+        return sorted(x['username'] for x in rows)
+
+    def test_crm_team_module_hides_b2b_staff(self):
+        listed = self.usernames(self.admin)
+        self.assertIn('t_bde', listed)
+        for name in ('t_store_mgr', 't_keeper', 't_acct_b2b'):
+            self.assertNotIn(name, listed)
+
+    def test_b2b_team_module_shows_only_b2b_staff(self):
+        self.assertEqual(self.usernames(self.admin, '?segment=b2b'),
+                         ['t_acct_b2b', 't_keeper', 't_store_mgr'])
+
+    def test_b2b_staff_always_get_their_own_roster(self):
+        """Pinned server-side — asking for the B2C segment changes nothing."""
+        for actor in (self.store_mgr, self.keeper, self.acct):
+            for query in ('', '?segment=b2c', '?segment=b2b'):
+                self.assertEqual(self.usernames(actor, query),
+                                 ['t_acct_b2b', 't_keeper', 't_store_mgr'],
+                                 f'{actor.role} {query!r}')
+
+    def test_role_picker_is_segmented(self):
+        def roles(query=''):
+            r = self.client.get(f'/api/users/assignable-roles/{query}',
+                                HTTP_AUTHORIZATION=token_for(self.admin))
+            return [x['value'] for x in r.json()]
+
+        b2b = roles('?segment=b2b')
+        self.assertEqual(sorted(b2b), ['accounts_b2b', 'store_keeper', 'store_manager'])
+        b2c = roles()
+        self.assertIn('bde', b2c)
+        for role in ('store_manager', 'store_keeper', 'accounts_b2b'):
+            self.assertNotIn(role, b2c)
+
+    def test_b2b_staff_are_never_offered_as_lead_assignees(self):
+        r = self.client.get('/api/users/assignable/', HTTP_AUTHORIZATION=token_for(self.admin))
+        names = [x['name'] for x in r.json()]
+        for name in ('t_store_mgr', 't_keeper', 't_acct_b2b'):
+            self.assertNotIn(name, names)
+
+    def test_admins_can_still_manage_b2b_accounts(self):
+        """The edit/delete calls carry no ?segment, so the roster filter must not
+        reach detail routes — it would 404 the B2B Team page's own buttons."""
+        superadmin = mk('t_super', 'superadmin')
+        for actor in (superadmin, self.admin):
+            r = self.client.patch(f'/api/users/{self.keeper.id}/', data={'first_name': actor.role},
+                                  content_type='application/json',
+                                  HTTP_AUTHORIZATION=token_for(actor))
+            self.assertEqual(r.status_code, 200, actor.role)
+        r = self.client.delete(f'/api/users/{self.acct.id}/',
+                               HTTP_AUTHORIZATION=token_for(superadmin))
+        self.assertEqual(r.status_code, 204)
+
+    def test_b2b_staff_cannot_reach_a_b2c_account(self):
+        """Their roster pins every action, not just the list."""
+        r = self.client.patch(f'/api/users/{self.bde.id}/', data={'first_name': 'Nope'},
+                              content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.store_mgr))
+        self.assertEqual(r.status_code, 404)
+
+
 class UsernameChangeTests(TestCase):
     """Only an Admin or Super Admin may change a username — including their own."""
 

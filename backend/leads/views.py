@@ -3992,21 +3992,24 @@ class LeaderboardView(APIView):
     def get(self, request):
         period = request.query_params.get('period', 'all_time') # daily, monthly, all_time
         today = timezone.localdate()
-        
-        # Build the filter for "won" leads
-        won_filter = Q(assigned_leads__status__in=['converted'])
-        
+
+        # Credit goes to the lead's BDE, not its owner: the tele caller hands a
+        # lead over and the BDE closes it (a lead cannot even reach Converted
+        # until a BDE is assigned — see LeadSerializer.validate), so `bde` is the
+        # relation that actually carries the sale.
+        won_filter = Q(bde_leads__status__in=['converted'])
+
         if period == 'daily':
             won_filter &= (
-                Q(assigned_leads__status_changed_at__date=today) | 
-                (Q(assigned_leads__status_changed_at__isnull=True) & Q(assigned_leads__created_at__date=today))
+                Q(bde_leads__status_changed_at__date=today) |
+                (Q(bde_leads__status_changed_at__isnull=True) & Q(bde_leads__created_at__date=today))
             )
         elif period == 'monthly':
             current_month = today.month
             current_year = today.year
             won_filter &= (
-                Q(assigned_leads__status_changed_at__month=current_month, assigned_leads__status_changed_at__year=current_year) |
-                (Q(assigned_leads__status_changed_at__isnull=True) & Q(assigned_leads__created_at__month=current_month, assigned_leads__created_at__year=current_year))
+                Q(bde_leads__status_changed_at__month=current_month, bde_leads__status_changed_at__year=current_year) |
+                (Q(bde_leads__status_changed_at__isnull=True) & Q(bde_leads__created_at__month=current_month, bde_leads__created_at__year=current_year))
             )
 
         # Single annotated query instead of N+1 loop
@@ -4016,17 +4019,20 @@ class LeaderboardView(APIView):
         # Coalesce revenue to 0 so users with no won leads don't get a NULL,
         # which PostgreSQL sorts FIRST on a descending order (pushing zero-sales
         # agents to the top of the leaderboard).
-        users = WorkspaceUser.objects.filter(is_active=True).annotate(
-            closed_sales=Count('assigned_leads', filter=won_filter),
-            revenue=Coalesce(Sum('assigned_leads__value', filter=won_filter), Decimal('0'))
+        # BDEs only — the board ranks the people who close deals, so admins,
+        # managers and back-office staff don't pad it out with rows of zeros.
+        from users.models import ROLE_BDE
+        users = WorkspaceUser.objects.filter(is_active=True, role=ROLE_BDE).annotate(
+            closed_sales=Count('bde_leads', filter=won_filter),
+            revenue=Coalesce(Sum('bde_leads__value', filter=won_filter), Decimal('0'))
         ).order_by('-revenue', '-closed_sales', 'first_name', 'last_name')
-        
+
         leaderboard = []
         for u in users:
             leaderboard.append({
                 "id": u.id,
                 "name": f"{u.first_name} {u.last_name}".strip() or u.username,
-                "role": "Admin" if u.is_staff else ("General Manager" if u.is_general_manager else ("Manager" if u.is_manager else "Agent")),
+                "role": "BDE",
                 "closed_sales": u.closed_sales or 0,
                 "revenue": float(u.revenue or 0)
             })
