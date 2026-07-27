@@ -436,3 +436,95 @@ class ModuleCountsCoverageTests(TestCase):
         for role in ('store_manager', 'store_keeper', 'accounts_b2b'):
             body = self.counts(mk(f'b_{role}', role))
             self.assertEqual(body['assigned'], {'leads': 0}, role)
+
+
+class TeleCallerRetainsLeadTests(TestCase):
+    """Handing a lead on must not drop it out of the tele caller's list."""
+
+    def setUp(self):
+        self.caller = mk('t_caller', 'tele_caller')
+        self.caller2 = mk('t_caller2', 'tele_caller')
+        self.bde = mk('t_bde', 'bde')
+        self.admin = mk('t_admin', 'admin')
+
+    def ids_for(self, user):
+        r = self.client.get('/api/leads/?all=true', HTTP_AUTHORIZATION=token_for(user))
+        self.assertEqual(r.status_code, 200)
+        rows = r.json() if isinstance(r.json(), list) else r.json()['results']
+        return [x['id'] for x in rows]
+
+    def test_owning_a_lead_stamps_the_tele_caller(self):
+        lead = Lead.objects.create(first_name='T', last_name='One', phone='9996000001',
+                                   assigned_to=self.caller, value=0)
+        lead.refresh_from_db()
+        self.assertEqual(lead.tele_caller_id, self.caller.id)
+
+    def test_a_bde_owner_is_not_stamped_as_the_tele_caller(self):
+        lead = Lead.objects.create(first_name='T', last_name='Two', phone='9996000002',
+                                   assigned_to=self.bde, value=0)
+        lead.refresh_from_db()
+        self.assertIsNone(lead.tele_caller_id)
+
+    def test_lead_stays_visible_after_ownership_moves_to_the_bde(self):
+        lead = Lead.objects.create(first_name='T', last_name='Handed', phone='9996000003',
+                                   assigned_to=self.caller, value=0)
+        self.assertIn(lead.id, self.ids_for(self.caller))
+
+        r = self.client.patch(f'/api/leads/{lead.id}/', data={'assigned_to': self.bde.id},
+                              content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.caller))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        lead.refresh_from_db()
+        self.assertEqual(lead.assigned_to_id, self.bde.id)      # ownership did move
+        self.assertIn(lead.id, self.ids_for(self.caller))        # …and it's still theirs to see
+        self.assertIn(lead.id, self.ids_for(self.bde))
+
+    def test_the_first_tele_caller_is_kept_not_overwritten(self):
+        """Re-assigning between tele callers must not erase who worked it first."""
+        lead = Lead.objects.create(first_name='T', last_name='Kept', phone='9996000004',
+                                   assigned_to=self.caller, value=0)
+        lead.assigned_to = self.caller2
+        lead.save()
+        lead.refresh_from_db()
+        self.assertEqual(lead.tele_caller_id, self.caller.id)
+        self.assertIn(lead.id, self.ids_for(self.caller))
+        self.assertIn(lead.id, self.ids_for(self.caller2))
+
+    def test_bulk_assign_stamps_too(self):
+        """queryset.update() skips Lead.save(), so the bulk path needs its own stamp."""
+        lead = Lead.objects.create(first_name='T', last_name='Bulk', phone='9996000005', value=0)
+        r = self.client.post('/api/leads/bulk_assign/',
+                             data={'ids': [lead.id], 'user_id': self.caller.id},
+                             content_type='application/json',
+                             HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200)
+        lead.refresh_from_db()
+        self.assertEqual(lead.tele_caller_id, self.caller.id)
+
+    def test_bulk_update_assignee_stamps_too(self):
+        lead = Lead.objects.create(first_name='T', last_name='BulkUpd', phone='9996000006', value=0)
+        r = self.client.post('/api/leads/bulk_update/',
+                             data={'ids': [lead.id], 'data': {'assigned_to_id': self.caller.id}},
+                             content_type='application/json',
+                             HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200)
+        lead.refresh_from_db()
+        self.assertEqual(lead.tele_caller_id, self.caller.id)
+
+    def test_assigning_a_bde_leaves_the_owner_alone(self):
+        """The dedicated hand-off only sets `bde`; the tele caller keeps the lead."""
+        lead = Lead.objects.create(first_name='T', last_name='Bde', phone='9996000007',
+                                   assigned_to=self.caller, value=0)
+        r = self.client.post(f'/api/leads/{lead.id}/assign-bde/', data={'bde': self.bde.id},
+                             content_type='application/json',
+                             HTTP_AUTHORIZATION=token_for(self.caller))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        lead.refresh_from_db()
+        self.assertEqual(lead.assigned_to_id, self.caller.id)
+        self.assertEqual(lead.bde_id, self.bde.id)
+        self.assertIn(lead.id, self.ids_for(self.caller))
+
+    def test_another_tele_caller_still_sees_nothing_of_it(self):
+        lead = Lead.objects.create(first_name='T', last_name='Private', phone='9996000008',
+                                   assigned_to=self.caller, value=0)
+        self.assertNotIn(lead.id, self.ids_for(self.caller2))

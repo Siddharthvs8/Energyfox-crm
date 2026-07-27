@@ -286,6 +286,9 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   // Leads are sourced by the tele-calling side — a BDE only receives them.
   // Mirrors can_add_leads() on the backend.
   const canAddLeads = !currentUser || currentUser.role !== "bde";
+  // The site visit is the BDE's job; a tele caller has nothing to do in it, so
+  // the shortcut and its completed badge are hidden from them.
+  const showSiteVisit = !currentUser || currentUser.role !== "tele_caller";
 
   useEffect(() => { fetchLeads(); fetchTeam(); fetchCampaigns(); fetchProducts(); fetchIntegrations(); }, [
     domain, statusFilter, sourceFilter, assigneeFilter, campaignFilter, productFilter, metaIntegrationFilter, stageFilter, search,
@@ -1465,6 +1468,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                           <div className="flex items-center justify-end gap-1">
                             {/* Jumps straight to the Site Visit Details section on the
                                 lead page, and doubles as the completion indicator. */}
+                            {showSiteVisit && (
                             <Link href={`/leads/${lead.id}#site-visit`} onClick={(e) => e.stopPropagation()}
                               className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wide whitespace-nowrap border transition-all ${
                                 lead.site_visit_complete
@@ -1483,6 +1487,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                                 </>
                               )}
                             </Link>
+                            )}
                             <Link href={`/leads/${lead.id}`} onClick={(e) => e.stopPropagation()}
                               className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-sky-600 hover:bg-sky-50 transition-all"
                               title="View Details">

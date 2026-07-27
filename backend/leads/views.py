@@ -3067,14 +3067,17 @@ class LeadViewSet(viewsets.ModelViewSet):
             # Branch manager: everything their branch works on — leads owned by
             # branch staff, handled by a branch BDE, plus their own + unassigned.
             from django.db.models import Q
-            scope = Q(assigned_to=user) | Q(bde=user) | Q(assigned_to__isnull=True)
+            scope = Q(assigned_to=user) | Q(bde=user) | Q(tele_caller=user) | Q(assigned_to__isnull=True)
             if user.branch_id:
                 scope |= Q(assigned_to__branch_id=user.branch_id) | Q(bde__branch_id=user.branch_id)
             queryset = base.filter(scope).distinct().order_by('-created_at')
         else:
-            # Tele caller: leads assigned to them. BDE: leads handed off to them as BDE.
+            # Tele caller: leads they own or once owned (handing a lead to a BDE
+            # moves assigned_to, and it must not disappear from their list).
+            # BDE: leads handed off to them as BDE.
             from django.db.models import Q
-            queryset = base.filter(Q(assigned_to=user) | Q(bde=user)).distinct().order_by('-created_at')
+            queryset = (base.filter(Q(assigned_to=user) | Q(bde=user) | Q(tele_caller=user))
+                        .distinct().order_by('-created_at'))
 
         # Trashed leads live only in the Trash view (and are purged after 7 days).
         queryset = queryset.filter(is_trashed=False)
@@ -3290,6 +3293,13 @@ class LeadViewSet(viewsets.ModelViewSet):
             queryset = queryset.order_by('-created_at')
         
         return queryset
+
+    @staticmethod
+    def _stamp_tele_caller(queryset, target_user):
+        """Bulk assignment uses queryset.update(), which skips Lead.save() — so
+        the tele-caller stamp has to be applied here too."""
+        if target_user and getattr(target_user, 'role', '') == 'tele_caller':
+            queryset.filter(tele_caller__isnull=True).update(tele_caller=target_user)
 
     @staticmethod
     def _assignable_user_ids(user):
@@ -3732,7 +3742,8 @@ class LeadViewSet(viewsets.ModelViewSet):
 
         queryset = self.get_queryset().filter(id__in=ids)
         count = queryset.update(assigned_to=target_user)
-        
+        self._stamp_tele_caller(Lead.objects.filter(id__in=ids), target_user)
+
         return Response({'message': f'Successfully assigned {count} leads to {target_user.username}.'})
 
     @action(detail=False, methods=['post'])
@@ -3775,6 +3786,10 @@ class LeadViewSet(viewsets.ModelViewSet):
         count = 0
         if valid_data:
             count = queryset.update(**valid_data)
+            if valid_data.get('assigned_to_id'):
+                from users.models import User as _U
+                self._stamp_tele_caller(Lead.objects.filter(id__in=ids),
+                                        _U.objects.filter(pk=valid_data['assigned_to_id']).first())
         
         # Handle Campaign ManyToMany linkage
         if 'campaign_id' in update_data and update_data['campaign_id']:

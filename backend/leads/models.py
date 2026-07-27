@@ -50,6 +50,16 @@ class Lead(models.Model):
         related_name='assigned_leads',
         help_text="Tele caller handling this lead",
     )
+    # The tele caller who worked this lead, remembered separately from the current
+    # owner. Handing a lead to a BDE moves `assigned_to`, and without this the
+    # lead would vanish from the tele caller's list the moment they passed it on.
+    tele_caller = models.ForeignKey(
+        'users.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='tele_caller_leads',
+    )
     bde = models.ForeignKey(
         'users.User',
         on_delete=models.SET_NULL,
@@ -213,6 +223,19 @@ class Lead(models.Model):
         if self.bde_id:
             return 'site_visit'
         return 'tele_caller'
+
+    def save(self, *args, **kwargs):
+        # Remember the first tele caller to own this lead. Bulk paths that use
+        # queryset.update() skip save(), so they stamp it themselves — see
+        # LeadViewSet._stamp_tele_caller.
+        if self.assigned_to_id and not self.tele_caller_id:
+            owner = self.assigned_to
+            if owner and getattr(owner, 'role', '') == 'tele_caller':
+                self.tele_caller_id = owner.id
+                update_fields = kwargs.get('update_fields')
+                if update_fields is not None:
+                    kwargs['update_fields'] = list(update_fields) + ['tele_caller']
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.first_name} {self.last_name}"
