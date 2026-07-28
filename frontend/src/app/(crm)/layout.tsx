@@ -712,23 +712,24 @@ export default function DashboardLayout({
   // The retail CRM's Inventory module — the original sales-document set.
   const b2cInventoryItems = [
     { href: `/inventory-dashboard`, label: "Dashboard",   Icon: Nav.Dashboard },
-    { href: `/products`,        label: "Products",        Icon: Nav.Products },
+    { href: `/products`,        label: "Item Master",     Icon: Nav.Products },
     { href: `/vendors`,         label: "Suppliers",       Icon: Nav.Vendor },
     { href: `/customers`,       label: "Customers",       Icon: Nav.Team },
     { href: `/quotes`,          label: "Quotes",          Icon: Nav.Quote },
     { href: `/sales-orders`,    label: "Sales / Dispatches", Icon: Nav.StockOut },
-    { href: `/purchase-orders`, label: "Purchase Orders", Icon: Nav.PurchaseOrder },
+    { href: `/purchase-orders`, label: "Purchases",       Icon: Nav.StockIn },
   ];
 
   // The wholesale side's Inventory module is the stock register — that is the
   // whole of B2B, so it keeps its own sub-modules.
   const b2bInventoryItems = [
-    { href: `/inventory`,            label: "Dashboard",        Icon: Nav.Dashboard, exact: true },
-    { href: `/inventory/items`,      label: "Item Master",      Icon: Nav.Products },
-    { href: `/inventory/purchases`,  label: "Purchases",        Icon: Nav.StockIn },
-    { href: `/inventory/dispatch`,   label: "Sales / Dispatch", Icon: Nav.StockOut },
-    { href: `/inventory/suppliers`,  label: "Suppliers",        Icon: Nav.Vendor },
-    { href: `/inventory/customers`,  label: "Customers",        Icon: Nav.Team },
+    { href: `/inventory`,            label: "Dashboard",          Icon: Nav.Dashboard, exact: true },
+    { href: `/inventory/items`,      label: "Item Master",        Icon: Nav.Products },
+    { href: `/inventory/suppliers`,  label: "Suppliers",          Icon: Nav.Vendor },
+    { href: `/inventory/customers`,  label: "Customers",          Icon: Nav.Team },
+    { href: `/inventory/quotes`,     label: "Quotes",             Icon: Nav.Quote },
+    { href: `/inventory/dispatch`,   label: "Sales / Dispatches",  Icon: Nav.StockOut },
+    { href: `/inventory/purchases`,  label: "Purchases",          Icon: Nav.StockIn },
   ];
 
   const inventoryItems = bizMode === "b2b" ? b2bInventoryItems : b2cInventoryItems;

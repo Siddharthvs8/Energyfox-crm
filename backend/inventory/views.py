@@ -141,10 +141,11 @@ from django.db.models.functions import Coalesce  # noqa: E402
 from django.utils import timezone  # noqa: E402
 from rest_framework.views import APIView  # noqa: E402
 
-from .models import StockItem, StockCustomer, GoodsReceipt, StockDispatch  # noqa: E402
+from .models import (StockItem, StockCustomer, GoodsReceipt, StockDispatch,  # noqa: E402
+                     StockQuote)
 from .serializers import (  # noqa: E402
     StockItemSerializer, StockCustomerSerializer,
-    GoodsReceiptSerializer, StockDispatchSerializer,
+    GoodsReceiptSerializer, StockDispatchSerializer, StockQuoteSerializer,
 )
 
 _MONEY = DecimalField(max_digits=16, decimal_places=2)
@@ -398,3 +399,65 @@ class InventoryDashboardView(APIView):
                 'stock_quantity': p.stock_quantity, 'reorder_level': p.reorder_level,
             } for p in sorted(low, key=lambda x: x.stock_quantity)[:10]],
         })
+
+
+class StockQuoteViewSet(viewsets.ModelViewSet):
+    """Wholesale quotations. Accepting one is recorded by converting it, which
+    writes the dispatch rows that take the goods out of stock."""
+    serializer_class = StockQuoteSerializer
+    permission_classes = [permissions.IsAuthenticated, IsStockKeeper]
+    queryset = StockQuote.objects.all()
+
+    def get_queryset(self):
+        qs = (StockQuote.objects
+              .select_related('customer', 'created_by')
+              .prefetch_related('items', 'items__item'))
+        status_f = self.request.query_params.get('status')
+        if status_f and status_f != 'all':
+            qs = qs.filter(status=status_f)
+        return qs
+
+    def destroy(self, request, *args, **kwargs):
+        quote = self.get_object()
+        if quote.status == 'converted':
+            return Response(
+                {'error': f'{quote.number} has been dispatched. Delete those dispatch '
+                          f'rows first if this was a mistake.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=True, methods=['post'])
+    def convert(self, request, pk=None):
+        """Turn an accepted quote into stock dispatches — one row per line, all
+        sharing the quote's number as the invoice reference.
+
+        Guarded so it can only happen once: a second call would take the same
+        goods out of stock twice.
+        """
+        quote = self.get_object()
+        if quote.status == 'converted':
+            return Response({'error': f'{quote.number} has already been dispatched.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        lines = list(quote.items.all())
+        if not lines:
+            return Response({'error': 'Add at least one line before dispatching.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        dispatch_date = quote.quote_date or timezone.localdate()
+        created = [
+            StockDispatch.objects.create(
+                invoice_no=quote.number or '', date=dispatch_date, customer=quote.customer,
+                item=line.item, quantity=line.quantity, rate=line.unit_price,
+                site=quote.site, notes=f"From quote {quote.number}",
+                created_by=request.user if request.user.is_authenticated else None,
+            )
+            for line in lines
+        ]
+        quote.status = 'converted'
+        quote.converted_at = timezone.now()
+        quote.save(update_fields=['status', 'converted_at', 'updated_at'])
+
+        data = self.get_serializer(quote).data
+        data['dispatched_lines'] = len(created)
+        return Response(data)

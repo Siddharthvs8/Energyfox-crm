@@ -1,8 +1,8 @@
 "use client";
 /**
- * Shared plumbing for the Inventory module's six pages (Dashboard, Item Master,
- * Purchases, Sales / Dispatch, Suppliers, Customers). Each page is a thin shell
- * over `useStock`, which loads only the collections that page needs.
+ * Shared plumbing for the Inventory module's pages (Dashboard, Item Master,
+ * Suppliers, Customers, Quotes, Sales / Dispatches, Purchases). Each page is a
+ * thin shell over `useStock`, which loads only the collections it needs.
  */
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
@@ -37,6 +37,7 @@ const SOURCES: Record<string, string> = {
   dispatches: "stock-dispatches",
   suppliers: "vendors",
   customers: "stock-customers",
+  quotes: "stock-quotes",
 };
 
 const asArray = (d: any) => (Array.isArray(d) ? d : d?.results || []);
@@ -97,7 +98,19 @@ export function useStock(want: (keyof typeof SOURCES)[]) {
     load();
   };
 
-  return { ...data, loading, denied, create, remove, reload: load } as any;
+  /** POST to an action endpoint (e.g. a quote's convert) and refresh. Returns the
+   *  response body on success, null when the API refuses. */
+  const act = async (path: string, body?: any) => {
+    const r = await fetch(`${api}/api/${path}/`, {
+      method: "POST", headers: authJson(), body: JSON.stringify(body || {}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { alert(d.error || d.detail || "That action could not be completed."); return null; }
+    load();
+    return d;
+  };
+
+  return { ...data, loading, denied, create, remove, act, reload: load } as any;
 }
 
 /* ── Page frame ───────────────────────────────────────────────────────────── */

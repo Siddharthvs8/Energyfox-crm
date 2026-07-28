@@ -171,7 +171,8 @@ class SalesOrderSerializer(_TaxedDocSerializer):
 
 
 # ─── Stock register ─────────────────────────────────────────────────────────
-from .models import StockItem, StockCustomer, GoodsReceipt, StockDispatch  # noqa: E402
+from .models import (StockItem, StockCustomer, GoodsReceipt, StockDispatch,  # noqa: E402
+                     StockQuote, StockQuoteItem)
 
 
 class StockItemSerializer(serializers.ModelSerializer):
@@ -239,3 +240,65 @@ class StockDispatchSerializer(_MovementSerializer):
                   'item_label', 'quantity', 'rate', 'amount', 'site', 'notes',
                   'created_by', 'created_by_name', 'created_at']
         read_only_fields = ['created_by', 'created_at']
+
+
+class StockQuoteItemSerializer(serializers.ModelSerializer):
+    item_code = serializers.CharField(source='item.code', read_only=True)
+    item_label = serializers.SerializerMethodField()
+    line_total = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = StockQuoteItem
+        fields = ['id', 'item', 'item_code', 'item_label', 'description',
+                  'quantity', 'unit_price', 'line_total']
+
+    def get_item_label(self, obj):
+        it = obj.item
+        return f"{it.brand} {it.model_name}".strip() or it.code
+
+
+class StockQuoteSerializer(_DocSerializer):
+    item_model = StockQuoteItem
+    parent_fk = 'quote'
+
+    items = StockQuoteItemSerializer(many=True, required=False)
+    customer_name = serializers.CharField(source='customer.name', read_only=True, default=None)
+    created_by_name = serializers.SerializerMethodField()
+    subtotal = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    discount_amount = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    taxable_amount = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    tax_amount = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    total = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = StockQuote
+        fields = [
+            'id', 'number', 'customer', 'customer_name', 'status', 'quote_date', 'expiry_date',
+            'site', 'discount_percent', 'tax_percent', 'notes',
+            'created_by', 'created_by_name', 'created_at', 'converted_at',
+            'items', 'subtotal', 'discount_amount', 'taxable_amount', 'tax_amount', 'total',
+        ]
+        # Status reaches 'converted' only through the convert action, which is what
+        # writes the dispatch rows — setting it by hand would skip the stock move.
+        read_only_fields = ['number', 'created_by', 'converted_at']
+
+    def get_created_by_name(self, obj):
+        u = obj.created_by
+        if not u:
+            return None
+        return f"{u.first_name} {u.last_name}".strip() or u.username
+
+    def validate_status(self, value):
+        if value == 'converted':
+            raise serializers.ValidationError(
+                'Use the convert action so the dispatch is recorded with it.')
+        if self.instance and self.instance.status == 'converted':
+            raise serializers.ValidationError('A converted quote can no longer be changed.')
+        return value
+
+    def validate(self, data):
+        # Editing anything on a converted quote would silently diverge from the
+        # dispatches already written from it.
+        if self.instance and self.instance.status == 'converted':
+            raise serializers.ValidationError('A converted quote can no longer be edited.')
+        return data

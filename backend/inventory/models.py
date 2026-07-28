@@ -288,3 +288,43 @@ class StockDispatch(_StockMovement):
 
     def __str__(self):
         return self.invoice_no or f"Dispatch #{self.pk}"
+
+
+class StockQuote(_TaxedDoc):
+    """A wholesale quotation over stock items.
+
+    Reuses the same header maths as the retail Quote (subtotal → discount → tax),
+    but priced off StockItem rather than the product catalogue. Accepting one is
+    recorded by converting it, which writes the dispatch rows that take the goods
+    out of stock — see StockQuoteViewSet.convert.
+    """
+    NUMBER_PREFIX = 'SQ'
+    STATUS_CHOICES = [
+        ('draft', 'Draft'),
+        ('sent', 'Sent'),
+        ('accepted', 'Accepted'),
+        ('declined', 'Declined'),
+        ('converted', 'Converted'),
+    ]
+    customer = models.ForeignKey(StockCustomer, on_delete=models.SET_NULL, null=True, blank=True,
+                                related_name='quotes')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft', db_index=True)
+    quote_date = models.DateField(null=True, blank=True)
+    expiry_date = models.DateField(null=True, blank=True)
+    site = models.CharField(max_length=255, blank=True, default='')
+    # Guard: a quote's stock may only be dispatched once.
+    converted_at = models.DateTimeField(null=True, blank=True)
+
+
+class StockQuoteItem(models.Model):
+    quote = models.ForeignKey(StockQuote, on_delete=models.CASCADE, related_name='items')
+    # PROTECT for the same reason movements use it: an item with paperwork against
+    # it can't be deleted out from under it.
+    item = models.ForeignKey(StockItem, on_delete=models.PROTECT, related_name='quote_lines')
+    description = models.CharField(max_length=255, blank=True, default='')
+    quantity = models.DecimalField(max_digits=12, decimal_places=2, default=1)
+    unit_price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
+    @property
+    def line_total(self):
+        return (self.quantity or Decimal('0')) * (self.unit_price or Decimal('0'))

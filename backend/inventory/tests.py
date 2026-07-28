@@ -236,3 +236,123 @@ class InventoryDashboardTests(TestCase):
         role.save()
         u.refresh_from_db()
         self.assertEqual(self.get(u)[0], 403)
+
+
+class StockQuoteTests(TestCase):
+    """Wholesale quotes: header maths, and converting one writes the dispatches
+    that take the goods out of stock."""
+
+    def setUp(self):
+        self.admin = mk('q_admin', 'admin')
+        self.keeper = mk('q_keeper', 'store_keeper')
+        self.bde = mk('q_bde', 'bde')
+        self.customer = StockCustomer.objects.create(name='Green Fields Resort')
+        self.panel = StockItem.objects.create(code='Q-PNL', category='Solar Panel', brand='Waaree',
+                                              model_name='540W', opening_stock=100,
+                                              unit_cost=Decimal('9800'), reorder_level=10)
+        self.cable = StockItem.objects.create(code='Q-CBL', category='Cable', opening_stock=500,
+                                              unit_cost=Decimal('45'), reorder_level=50)
+
+    def auth(self, user=None):
+        return {'HTTP_AUTHORIZATION': token_for(user or self.admin)}
+
+    def make_quote(self, **over):
+        payload = {
+            'customer': self.customer.id, 'quote_date': str(timezone.localdate()),
+            'site': 'Kollam', 'discount_percent': '10', 'tax_percent': '18',
+            'items': [
+                {'item': self.panel.id, 'quantity': '10', 'unit_price': '11200'},
+                {'item': self.cable.id, 'quantity': '100', 'unit_price': '50'},
+            ],
+        }
+        payload.update(over)
+        return self.client.post('/api/stock-quotes/', data=payload,
+                                content_type='application/json', **self.auth())
+
+    def test_quote_totals(self):
+        r = self.make_quote()
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        d = r.json()
+        # 10 × 11200 + 100 × 50 = 117000; −10% = 105300; +18% = 124254
+        self.assertEqual(Decimal(d['subtotal']), Decimal('117000'))
+        self.assertEqual(Decimal(d['discount_amount']), Decimal('11700'))
+        self.assertEqual(Decimal(d['tax_amount']), Decimal('18954'))
+        self.assertEqual(Decimal(d['total']), Decimal('124254'))
+        self.assertTrue(d['number'].startswith('SQ-'))
+        self.assertEqual(len(d['items']), 2)
+
+    def test_a_quote_alone_does_not_move_stock(self):
+        self.make_quote()
+        self.panel.refresh_from_db()
+        self.assertEqual(self.panel.closing_stock, 100)
+
+    def test_converting_writes_one_dispatch_per_line(self):
+        qid = self.make_quote().json()['id']
+        r = self.client.post(f'/api/stock-quotes/{qid}/convert/', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(r.json()['dispatched_lines'], 2)
+        self.assertEqual(r.json()['status'], 'converted')
+
+        self.panel.refresh_from_db(); self.cable.refresh_from_db()
+        self.assertEqual(self.panel.closing_stock, 90)      # 100 − 10
+        self.assertEqual(self.cable.closing_stock, 400)     # 500 − 100
+
+        d = StockDispatch.objects.get(item=self.panel)
+        self.assertEqual(d.customer_id, self.customer.id)
+        self.assertEqual(d.site, 'Kollam')
+        self.assertEqual(d.rate, Decimal('11200'))
+        self.assertTrue(d.invoice_no.startswith('SQ-'))
+
+    def test_converting_twice_is_refused(self):
+        """A second convert would take the same goods out of stock again."""
+        qid = self.make_quote().json()['id']
+        self.client.post(f'/api/stock-quotes/{qid}/convert/', **self.auth())
+        r = self.client.post(f'/api/stock-quotes/{qid}/convert/', **self.auth())
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('already been dispatched', str(r.json()))
+        self.assertEqual(StockDispatch.objects.count(), 2)
+
+    def test_an_empty_quote_cannot_be_dispatched(self):
+        r = self.make_quote(items=[])
+        qid = r.json()['id']
+        r = self.client.post(f'/api/stock-quotes/{qid}/convert/', **self.auth())
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(StockDispatch.objects.count(), 0)
+
+    def test_status_cannot_be_set_to_converted_by_hand(self):
+        """That would skip the stock move entirely."""
+        qid = self.make_quote().json()['id']
+        r = self.client.patch(f'/api/stock-quotes/{qid}/', data={'status': 'converted'},
+                              content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(StockDispatch.objects.count(), 0)
+
+    def test_a_converted_quote_is_locked(self):
+        qid = self.make_quote().json()['id']
+        self.client.post(f'/api/stock-quotes/{qid}/convert/', **self.auth())
+        r = self.client.patch(f'/api/stock-quotes/{qid}/', data={'tax_percent': '0'},
+                              content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 400)
+        r = self.client.delete(f'/api/stock-quotes/{qid}/', **self.auth())
+        self.assertEqual(r.status_code, 400)
+
+    def test_an_open_quote_can_be_edited_and_deleted(self):
+        qid = self.make_quote().json()['id']
+        r = self.client.patch(f'/api/stock-quotes/{qid}/', data={'status': 'sent'},
+                              content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['status'], 'sent')
+        self.assertEqual(self.client.delete(f'/api/stock-quotes/{qid}/', **self.auth()).status_code, 204)
+
+    def test_store_keeper_can_quote_but_a_bde_cannot(self):
+        self.assertEqual(self.client.get('/api/stock-quotes/', **self.auth(self.keeper)).status_code, 200)
+        self.assertEqual(self.client.get('/api/stock-quotes/', **self.auth(self.bde)).status_code, 403)
+
+    def test_editing_lines_replaces_them(self):
+        qid = self.make_quote().json()['id']
+        r = self.client.patch(f'/api/stock-quotes/{qid}/', data={
+            'items': [{'item': self.panel.id, 'quantity': '5', 'unit_price': '11000'}]},
+            content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(len(r.json()['items']), 1)
+        self.assertEqual(Decimal(r.json()['subtotal']), Decimal('55000'))

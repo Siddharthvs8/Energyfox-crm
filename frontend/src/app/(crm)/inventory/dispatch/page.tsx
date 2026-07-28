@@ -7,7 +7,7 @@ export default function DispatchPage() {
     useStock(["dispatches", "items", "customers"]);
 
   return (
-    <StockPage title="Sales / Dispatch" loading={loading} denied={denied}
+    <StockPage title="Sales / Dispatches" loading={loading} denied={denied}
       subtitle="Log every outward delivery to a customer or project site.">
       <MovementPage
         kind="dispatch" rows={dispatches} items={items} parties={customers}

@@ -1,7 +1,7 @@
 "use client";
 /**
  * Inventory Dashboard — the overview screen for the retail inventory module:
- * product stock plus the quote / sales-order / purchase-order pipelines.
+ * item stock plus the quote, dispatch and purchase pipelines.
  * (The wholesale side has its own dashboard under B2B → Inventory.)
  */
 import { APP_SLUG } from "@/lib/config";
@@ -79,7 +79,7 @@ export default function InventoryDashboardPage() {
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-6">
-        <Metric label="Products" value={data?.product_count ?? 0} href="/products" />
+        <Metric label="Items" value={data?.product_count ?? 0} href="/products" />
         <Metric label="Stock Value" value={rupee(data?.stock_value)} accent />
         <Metric label="Low Stock" value={data?.low_stock_count ?? 0} warn={(data?.low_stock_count ?? 0) > 0} href="/products" />
         <Metric label="Open Quotes" value={rupee(data?.open_quote_value)} href="/quotes" />
@@ -110,9 +110,9 @@ export default function InventoryDashboardPage() {
         </Panel>
 
         <Panel title="Low stock" subtitle="At or below the reorder level"
-          action={<Link href="/products" className="text-[11px] font-semibold text-indigo-600 hover:text-indigo-800">Open products →</Link>}>
+          action={<Link href="/products" className="text-[11px] font-semibold text-indigo-600 hover:text-indigo-800">Open item master →</Link>}>
           {(data?.low_stock || []).length === 0 ? (
-            <p className="text-sm font-medium text-emerald-600 py-6 text-center">All products above their reorder level.</p>
+            <p className="text-sm font-medium text-emerald-600 py-6 text-center">All items above their reorder level.</p>
           ) : (
             <div className="divide-y divide-slate-50 -mt-1">
               {data.low_stock.map((p: any) => (
@@ -135,10 +135,10 @@ export default function InventoryDashboardPage() {
       <div className="grid md:grid-cols-3 gap-5 mt-5">
         <Pipeline title="Quotes" href="/quotes" total={data?.quote_count} counts={data?.quote_status}
           footer={<>Open value <b className="text-slate-700">{rupee(data?.open_quote_value)}</b></>} />
-        <Pipeline title="Sales Orders" href="/sales-orders" total={data?.sales_order_count} counts={data?.sales_order_status}
+        <Pipeline title="Sales / Dispatches" href="/sales-orders" total={data?.sales_order_count} counts={data?.sales_order_status}
           footer={<>Open value <b className="text-slate-700">{rupee(data?.open_sales_value)}</b></>} />
-        <Pipeline title="Purchase Orders" href="/purchase-orders" total={data?.purchase_order_count} counts={data?.purchase_order_status}
-          footer={<>Committed <b className="text-slate-700">{rupee(data?.open_purchase_value)}</b> · {data?.vendor_count ?? 0} vendors</>} />
+        <Pipeline title="Purchases" href="/purchase-orders" total={data?.purchase_order_count} counts={data?.purchase_order_status}
+          footer={<>Committed <b className="text-slate-700">{rupee(data?.open_purchase_value)}</b> · {data?.vendor_count ?? 0} suppliers</>} />
       </div>
     </div>
   );
