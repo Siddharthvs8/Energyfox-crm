@@ -225,16 +225,32 @@ class Lead(models.Model):
         return 'tele_caller'
 
     def save(self, *args, **kwargs):
-        # Remember the first tele caller to own this lead. Bulk paths that use
-        # queryset.update() skip save(), so they stamp it themselves — see
-        # LeadViewSet._stamp_tele_caller.
-        if self.assigned_to_id and not self.tele_caller_id:
-            owner = self.assigned_to
-            if owner and getattr(owner, 'role', '') == 'tele_caller':
-                self.tele_caller_id = owner.id
-                update_fields = kwargs.get('update_fields')
-                if update_fields is not None:
-                    kwargs['update_fields'] = list(update_fields) + ['tele_caller']
+        """Keep the two ownership roles in step with the current owner.
+
+        Handing a lead to someone *is* the assignment: giving it to a tele caller
+        records them as the tele caller, giving it to a BDE records them as the
+        BDE. Without the BDE half, a lead assigned to a BDE through the owner
+        field left `bde` empty and could never be marked Converted.
+
+        Both stamps are sticky, so ownership ends up shared: the tele caller who
+        worked the lead and the BDE who took it on both keep sight of it.
+
+        Bulk paths use queryset.update() and skip save(), so they stamp these
+        themselves — see LeadViewSet._stamp_owner_role.
+        """
+        owner = self.assigned_to if self.assigned_to_id else None
+        role = getattr(owner, 'role', '') if owner else ''
+        stamped = []
+        if role == 'tele_caller' and not self.tele_caller_id:
+            self.tele_caller_id = owner.id
+            stamped.append('tele_caller')
+        elif role == 'bde' and not self.bde_id:
+            self.bde_id = owner.id
+            stamped.append('bde')
+        if stamped:
+            update_fields = kwargs.get('update_fields')
+            if update_fields is not None:
+                kwargs['update_fields'] = list(update_fields) + stamped
         super().save(*args, **kwargs)
 
     def __str__(self):

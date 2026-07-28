@@ -3295,11 +3295,17 @@ class LeadViewSet(viewsets.ModelViewSet):
         return queryset
 
     @staticmethod
-    def _stamp_tele_caller(queryset, target_user):
+    def _stamp_owner_role(queryset, target_user):
         """Bulk assignment uses queryset.update(), which skips Lead.save() — so
-        the tele-caller stamp has to be applied here too."""
-        if target_user and getattr(target_user, 'role', '') == 'tele_caller':
+        the ownership stamps have to be applied here too. Mirrors Lead.save():
+        an owner who is a tele caller is recorded as the tele caller, one who is
+        a BDE is recorded as the BDE (without which the lead can never be
+        converted)."""
+        role = getattr(target_user, 'role', '') if target_user else ''
+        if role == 'tele_caller':
             queryset.filter(tele_caller__isnull=True).update(tele_caller=target_user)
+        elif role == 'bde':
+            queryset.filter(bde__isnull=True).update(bde=target_user)
 
     @staticmethod
     def _assignable_user_ids(user):
@@ -3742,7 +3748,7 @@ class LeadViewSet(viewsets.ModelViewSet):
 
         queryset = self.get_queryset().filter(id__in=ids)
         count = queryset.update(assigned_to=target_user)
-        self._stamp_tele_caller(Lead.objects.filter(id__in=ids), target_user)
+        self._stamp_owner_role(Lead.objects.filter(id__in=ids), target_user)
 
         return Response({'message': f'Successfully assigned {count} leads to {target_user.username}.'})
 
@@ -3788,8 +3794,8 @@ class LeadViewSet(viewsets.ModelViewSet):
             count = queryset.update(**valid_data)
             if valid_data.get('assigned_to_id'):
                 from users.models import User as _U
-                self._stamp_tele_caller(Lead.objects.filter(id__in=ids),
-                                        _U.objects.filter(pk=valid_data['assigned_to_id']).first())
+                self._stamp_owner_role(Lead.objects.filter(id__in=ids),
+                                       _U.objects.filter(pk=valid_data['assigned_to_id']).first())
         
         # Handle Campaign ManyToMany linkage
         if 'campaign_id' in update_data and update_data['campaign_id']:

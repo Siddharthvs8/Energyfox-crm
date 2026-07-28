@@ -90,7 +90,11 @@ def can_assign_bde(user, lead):
         return False
     if user.is_staff or user.is_general_manager or user.is_manager:
         return True
-    return bool(lead.assigned_to_id and lead.assigned_to_id == user.id)
+    # The current owner, or the tele caller who worked it — ownership is shared
+    # once a lead is handed on, so passing it to a BDE must not cost the tele
+    # caller the ability to hand it to a different one.
+    return bool((lead.assigned_to_id and lead.assigned_to_id == user.id)
+                or (lead.tele_caller_id and lead.tele_caller_id == user.id))
 
 
 def can_push_to_documentation(user, lead):

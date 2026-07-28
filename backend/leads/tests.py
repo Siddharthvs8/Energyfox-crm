@@ -621,3 +621,96 @@ class ClosedDealTests(TestCase):
         d = self.payload()
         self.assertFalse(d['is_closed_deal'])
         self.assertIsNone(d['deal_classification'])
+
+
+class SharedOwnershipTests(TestCase):
+    """Assigning a lead to a BDE — through the owner field or the dedicated
+    action — must record them as the BDE and leave the tele caller in place."""
+
+    def setUp(self):
+        self.caller = mk('so_caller', 'tele_caller')
+        self.bde = mk('so_bde', 'bde')
+        self.bde2 = mk('so_bde2', 'bde')
+        self.admin = mk('so_admin', 'admin')
+        self.lead = Lead.objects.create(first_name='S', last_name='Own', phone='9998000001',
+                                        status='new', assigned_to=self.caller, value=0)
+
+    def ids_for(self, user):
+        r = self.client.get('/api/leads/?all=true', HTTP_AUTHORIZATION=token_for(user))
+        rows = r.json() if isinstance(r.json(), list) else r.json()['results']
+        return [x['id'] for x in rows]
+
+    def patch(self, actor, payload):
+        return self.client.patch(f'/api/leads/{self.lead.id}/', data=payload,
+                                 content_type='application/json',
+                                 HTTP_AUTHORIZATION=token_for(actor))
+
+    def test_owning_a_lead_as_a_bde_records_the_bde(self):
+        """The bug: this left `bde` empty, so the lead could never be converted."""
+        r = self.patch(self.caller, {'assigned_to': self.bde.id})
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.assigned_to_id, self.bde.id)
+        self.assertEqual(self.lead.bde_id, self.bde.id)
+        self.assertEqual(self.lead.tele_caller_id, self.caller.id)
+
+    def test_the_lead_can_then_be_converted(self):
+        self.patch(self.caller, {'assigned_to': self.bde.id})
+        r = self.patch(self.caller, {'status': 'converted'})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.status, 'converted')
+
+    def test_converting_without_any_bde_is_still_refused(self):
+        r = self.patch(self.caller, {'status': 'converted'})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('Assign a BDE', str(r.json()))
+
+    def test_both_sides_keep_the_lead(self):
+        self.patch(self.caller, {'assigned_to': self.bde.id})
+        self.assertIn(self.lead.id, self.ids_for(self.caller))
+        self.assertIn(self.lead.id, self.ids_for(self.bde))
+
+    def test_bulk_assign_to_a_bde_records_the_bde(self):
+        """queryset.update() skips Lead.save(), so the bulk path stamps too."""
+        r = self.client.post('/api/leads/bulk_assign/',
+                             data={'ids': [self.lead.id], 'user_id': self.bde.id},
+                             content_type='application/json',
+                             HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200)
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.bde_id, self.bde.id)
+
+    def test_bulk_update_assignee_records_the_bde(self):
+        r = self.client.post('/api/leads/bulk_update/',
+                             data={'ids': [self.lead.id], 'data': {'assigned_to_id': self.bde.id}},
+                             content_type='application/json',
+                             HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200)
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.bde_id, self.bde.id)
+
+    def test_an_existing_bde_is_not_overwritten(self):
+        """The dedicated hand-off stays authoritative over the owner field."""
+        self.client.post(f'/api/leads/{self.lead.id}/assign-bde/', data={'bde': self.bde2.id},
+                         content_type='application/json', HTTP_AUTHORIZATION=token_for(self.caller))
+        self.patch(self.caller, {'assigned_to': self.bde.id})
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.bde_id, self.bde2.id)
+        self.assertEqual(self.lead.assigned_to_id, self.bde.id)
+
+    def test_tele_caller_can_still_change_the_bde_after_handing_it_over(self):
+        """Ownership is shared, so passing the lead on must not cost them this."""
+        self.patch(self.caller, {'assigned_to': self.bde.id})
+        r = self.client.post(f'/api/leads/{self.lead.id}/assign-bde/', data={'bde': self.bde2.id},
+                             content_type='application/json', HTTP_AUTHORIZATION=token_for(self.caller))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.bde_id, self.bde2.id)
+
+    def test_a_tele_caller_owner_is_not_recorded_as_a_bde(self):
+        other = mk('so_caller2', 'tele_caller')
+        self.patch(self.admin, {'assigned_to': other.id})
+        self.lead.refresh_from_db()
+        self.assertIsNone(self.lead.bde_id)
+        self.assertEqual(self.lead.tele_caller_id, self.caller.id)   # first one sticks
