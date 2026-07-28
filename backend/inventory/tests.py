@@ -356,3 +356,63 @@ class StockQuoteTests(TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(len(r.json()['items']), 1)
         self.assertEqual(Decimal(r.json()['subtotal']), Decimal('55000'))
+
+
+class StockSummaryShapeTests(TestCase):
+    """The wholesale dashboard reports the same shape as the retail one, so the
+    two screens can be laid out identically."""
+
+    def setUp(self):
+        self.admin = mk('s_admin', 'admin')
+        self.item = StockItem.objects.create(code='S1', category='Solar Panel', opening_stock=20,
+                                             unit_cost=Decimal('100'), reorder_level=2)
+        today = timezone.localdate()
+        GoodsReceipt.objects.create(item=self.item, date=today, quantity=5, rate=Decimal('90'))
+        StockDispatch.objects.create(item=self.item, date=today, quantity=2, rate=Decimal('150'))
+        Vendor.objects.create(name='S Supplier')
+        StockCustomer.objects.create(name='S Customer')
+
+    def get(self):
+        r = self.client.get('/api/stock-summary/', HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200)
+        return r.json()
+
+    def test_six_month_series_ends_this_month(self):
+        d = self.get()
+        self.assertEqual(len(d['monthly']), 6)
+        last = d['monthly'][-1]
+        self.assertEqual(Decimal(last['purchases']), Decimal('450'))    # 5 × 90
+        self.assertEqual(Decimal(last['sales']), Decimal('300'))        # 2 × 150
+        # Earlier months have no movement at all.
+        self.assertTrue(all(Decimal(m['purchases']) == 0 and Decimal(m['sales']) == 0
+                            for m in d['monthly'][:-1]))
+
+    def test_counts_for_the_pipeline_cards(self):
+        d = self.get()
+        self.assertEqual(d['receipt_count'], 1)
+        self.assertEqual(d['dispatch_count'], 1)
+        self.assertEqual(d['supplier_count'], 1)
+        self.assertEqual(d['customer_count'], 1)
+        self.assertEqual(d['quote_count'], 0)
+        self.assertEqual(d['quote_status'], {})
+        self.assertEqual(Decimal(d['open_quote_value']), Decimal('0'))
+
+    def test_quote_pipeline_counts_open_value_only(self):
+        from .models import StockQuote, StockQuoteItem
+        for status, qty in (('sent', 2), ('accepted', 1), ('declined', 5)):
+            q = StockQuote.objects.create(status=status, quote_date=timezone.localdate())
+            StockQuoteItem.objects.create(quote=q, item=self.item, quantity=qty, unit_price=Decimal('100'))
+        d = self.get()
+        self.assertEqual(d['quote_count'], 3)
+        self.assertEqual(d['quote_status'], {'sent': 1, 'accepted': 1, 'declined': 1})
+        # Declined is excluded: 2×100 + 1×100
+        self.assertEqual(Decimal(d['open_quote_value']), Decimal('300'))
+
+    def test_existing_fields_are_untouched(self):
+        """The old keys still drive the low-stock panel and KPI cards."""
+        d = self.get()
+        for key in ('sku_count', 'total_value', 'reorder_count', 'month_purchases',
+                    'month_sales', 'by_category', 'reorder_alerts', 'stock_levels'):
+            self.assertIn(key, d)
+        self.assertEqual(d['sku_count'], 1)
+        self.assertEqual(Decimal(d['total_value']), Decimal('2300'))   # (20+5−2) × 100

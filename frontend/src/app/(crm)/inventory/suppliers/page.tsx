@@ -1,25 +1,23 @@
 "use client";
 import React from "react";
-import { useStock, StockPage, PartyPage } from "../shared";
+import { useStock, PartyScreen, PartyCol } from "../shared";
 
-const COLUMNS = [
-  { key: "name", label: "Supplier Name", required: true },
-  { key: "gst_number", label: "GSTIN" },
+const COLUMNS: PartyCol[] = [
+  { key: "name", label: "Supplier", required: true, placeholder: "e.g. Waaree Energies Ltd" },
+  { key: "gst_number", label: "GSTIN", mono: true },
   { key: "contact_person", label: "Contact Person" },
-  { key: "phone", label: "Phone" },
-  { key: "payment_terms", label: "Payment Terms" },
+  { key: "phone", label: "Phone", mono: true },
+  { key: "payment_terms", label: "Payment Terms", placeholder: "e.g. 30 days credit" },
 ];
 
-export default function SuppliersPage() {
-  const { suppliers, loading, denied, create, remove } = useStock(["suppliers"]);
+export default function StockSuppliersPage() {
+  const { suppliers, loading, denied, save, remove } = useStock(["suppliers"]);
 
   return (
-    <StockPage title="Suppliers" loading={loading} denied={denied}
-      subtitle="Vendors you purchase solar equipment from.">
-      <PartyPage
-        noun="supplier" columns={COLUMNS} rows={suppliers}
-        onAdd={(row: any) => create("suppliers", row)}
-        onDelete={(id: number) => remove("suppliers", id, "supplier")} />
-    </StockPage>
+    <PartyScreen
+      title="Suppliers" subtitle="The suppliers you purchase stock from." noun="Supplier"
+      columns={COLUMNS} rows={suppliers} loading={loading} denied={denied}
+      onSave={(body, id) => save("suppliers", body, id)}
+      onDelete={(id) => remove("suppliers", id, "supplier")} />
   );
 }

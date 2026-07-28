@@ -254,9 +254,11 @@ class StockDispatchViewSet(_MovementViewSet):
 
 
 class StockSummaryView(APIView):
-    """Dashboard figures for the stock register: total value, reorder alerts and
-    this month's inward/outward movement."""
+    """Dashboard figures for the stock register: total value, reorder alerts,
+    this month's movement, a six-month series and the quote pipeline — the same
+    shape the retail inventory dashboard reports, so the two screens match."""
     permission_classes = [permissions.IsAuthenticated, IsStockKeeper]
+    MONTHS = 6
 
     def get(self, request):
         items = list(stock_items_with_ledger())
@@ -268,13 +270,42 @@ class StockSummaryView(APIView):
         for i in items:
             by_category[i.category] = by_category.get(i.category, Decimal('0')) + i.stock_value
 
-        month_start = timezone.localdate().replace(day=1)
-        month_in = GoodsReceipt.objects.filter(date__gte=month_start).aggregate(
-            t=Coalesce(Sum(F('quantity') * F('rate'), output_field=_MONEY),
-                       Value(Decimal('0')), output_field=_MONEY))['t']
-        month_out = StockDispatch.objects.filter(date__gte=month_start).aggregate(
-            t=Coalesce(Sum(F('quantity') * F('rate'), output_field=_MONEY),
-                       Value(Decimal('0')), output_field=_MONEY))['t']
+        today = timezone.localdate()
+        month_start = today.replace(day=1)
+
+        def movement_value(model, **filters):
+            return model.objects.filter(**filters).aggregate(
+                t=Coalesce(Sum(F('quantity') * F('rate'), output_field=_MONEY),
+                           Value(Decimal('0')), output_field=_MONEY))['t']
+
+        month_in = movement_value(GoodsReceipt, date__gte=month_start)
+        month_out = movement_value(StockDispatch, date__gte=month_start)
+
+        # Six-month purchases-vs-sales series, matching the retail dashboard's
+        # chart. Walk the months so an empty month still gets a bar.
+        start_month = month_start
+        for _ in range(self.MONTHS - 1):
+            start_month = (start_month - timezone.timedelta(days=1)).replace(day=1)
+
+        monthly = []
+        cursor = start_month
+        while cursor <= today:
+            nxt = (cursor.replace(day=28) + timezone.timedelta(days=4)).replace(day=1)
+            monthly.append({
+                'name': cursor.strftime('%b'),
+                'purchases': movement_value(GoodsReceipt, date__gte=cursor, date__lt=nxt),
+                'sales': movement_value(StockDispatch, date__gte=cursor, date__lt=nxt),
+            })
+            cursor = nxt
+
+        # Quote pipeline. Totals come from the model's own `total` property, since
+        # discount and tax live on the header — see InventoryDashboardView.
+        quotes = list(StockQuote.objects.prefetch_related('items'))
+        quote_status = {}
+        for q in quotes:
+            quote_status[q.status] = quote_status.get(q.status, 0) + 1
+        open_quote_value = sum((q.total or Decimal('0')) for q in quotes
+                               if q.status in {'draft', 'sent', 'accepted'})
 
         return Response({
             'sku_count': len(items),
@@ -282,6 +313,14 @@ class StockSummaryView(APIView):
             'reorder_count': len(low),
             'month_purchases': month_in,
             'month_sales': month_out,
+            'monthly': monthly,
+            'receipt_count': GoodsReceipt.objects.count(),
+            'dispatch_count': StockDispatch.objects.count(),
+            'supplier_count': Vendor.objects.count(),
+            'customer_count': StockCustomer.objects.count(),
+            'quote_count': len(quotes),
+            'quote_status': quote_status,
+            'open_quote_value': open_quote_value,
             'by_category': [{'name': name, 'value': value} for name, value in sorted(by_category.items())],
             'reorder_alerts': [{
                 'id': i.id, 'code': i.code, 'brand': i.brand, 'model_name': i.model_name,

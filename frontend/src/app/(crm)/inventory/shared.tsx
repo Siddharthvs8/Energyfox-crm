@@ -1,8 +1,13 @@
 "use client";
 /**
  * Shared plumbing for the Inventory module's pages (Dashboard, Item Master,
- * Suppliers, Customers, Quotes, Sales / Dispatches, Purchases). Each page is a
- * thin shell over `useStock`, which loads only the collections it needs.
+ * Suppliers, Customers, Quotes, Sales / Dispatches, Purchases).
+ *
+ * The screens deliberately mirror their retail twins (/products, /vendors,
+ * /quotes …): page header with an "Add …" button, a search box, a card table with
+ * Edit / Delete links, and a centred modal for create and edit. The wholesale
+ * *data* stays its own — StockItem's closing stock is derived from movements
+ * rather than stored — so only the presentation is shared.
  */
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
@@ -10,13 +15,14 @@ import { getApiBase } from "@/lib/mock-data";
 import React, { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 
-/* ── Icons (inline, matching the rest of the app) ─────────────────────────── */
+/* ── Icons ────────────────────────────────────────────────────────────────── */
 export const I = {
-  Plus: () => <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>,
+  Plus: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>,
+  X: () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" /></svg>,
   Trash: () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M3 6h18" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>,
   Alert: () => <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3z" /><path d="M12 9v4" /><path d="M12 17h.01" /></svg>,
   Check: () => <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path d="m9 12 2 2 4-4" /></svg>,
-  Search: () => <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" /></svg>,
+  Box: () => <svg width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" /><line x1="7" y1="7" x2="7.01" y2="7" /></svg>,
 };
 
 export const CATS = ["Solar Panel", "Inverter", "Battery", "Mounting Structure", "Cable", "BOS Accessory", "Other"];
@@ -25,7 +31,9 @@ export const rupee = (n: any) => "₹" + Number(n || 0).toLocaleString("en-IN", 
 export const num = (n: any) => Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
 export const todayISO = () => new Date().toISOString().slice(0, 10);
 
-export const FIELD = "w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition";
+/** Modal input + label, matching /products and /vendors. */
+export const FIELD = "w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition";
+export const LABEL = "block text-sm font-semibold text-slate-700 mb-1.5";
 
 /* ── Data ─────────────────────────────────────────────────────────────────── */
 
@@ -41,6 +49,14 @@ const SOURCES: Record<string, string> = {
 };
 
 const asArray = (d: any) => (Array.isArray(d) ? d : d?.results || []);
+
+/** Pull a readable message out of whatever the API returned. */
+const explain = async (r: Response, fallback: string) => {
+  try {
+    const e = await r.json();
+    return e.error || e.detail || Object.values(e).flat().join("\n") || fallback;
+  } catch { return fallback; }
+};
 
 export function useStock(want: (keyof typeof SOURCES)[]) {
   const domain = APP_SLUG;
@@ -68,21 +84,18 @@ export function useStock(want: (keyof typeof SOURCES)[]) {
         next[names[i]] = names[i] === "summary" ? body : asArray(body);
       }
       setData(next);
-    } catch {} finally { setLoading(false); }
+    } catch { /* keep what we had */ } finally { setLoading(false); }
   }, [api, key]);
 
   useEffect(() => { load(); }, [load]);
 
   const authJson = () => ({ "Content-Type": "application/json", Authorization: `Bearer ${token()}` });
 
-  /** POST a new row; returns false (and explains) when the API refuses. */
-  const create = async (source: keyof typeof SOURCES, body: any) => {
-    const r = await fetch(`${api}/api/${SOURCES[source]}/`, { method: "POST", headers: authJson(), body: JSON.stringify(body) });
-    if (!r.ok) {
-      const e = await r.json().catch(() => ({}));
-      alert(e.error || e.detail || Object.values(e).flat().join("\n") || "Could not save.");
-      return false;
-    }
+  /** Create when `id` is absent, update when present. Returns false on refusal. */
+  const save = async (source: keyof typeof SOURCES, body: any, id?: number | null) => {
+    const url = id ? `${api}/api/${SOURCES[source]}/${id}/` : `${api}/api/${SOURCES[source]}/`;
+    const r = await fetch(url, { method: id ? "PATCH" : "POST", headers: authJson(), body: JSON.stringify(body) });
+    if (!r.ok) { alert(await explain(r, "Could not save.")); return false; }
     load();
     return true;
   };
@@ -90,33 +103,29 @@ export function useStock(want: (keyof typeof SOURCES)[]) {
   const remove = async (source: keyof typeof SOURCES, id: number, label: string) => {
     if (!confirm(`Delete this ${label}?`)) return;
     const r = await fetch(`${api}/api/${SOURCES[source]}/${id}/`, { method: "DELETE", headers: authJson() });
-    if (!r.ok) {
-      const e = await r.json().catch(() => ({}));
-      alert(e.error || e.detail || "Could not delete.");
-      return;
-    }
+    if (!r.ok) { alert(await explain(r, "Could not delete.")); return; }
     load();
   };
 
-  /** POST to an action endpoint (e.g. a quote's convert) and refresh. Returns the
-   *  response body on success, null when the API refuses. */
+  /** POST to an action endpoint (e.g. a quote's convert) and refresh. */
   const act = async (path: string, body?: any) => {
     const r = await fetch(`${api}/api/${path}/`, {
       method: "POST", headers: authJson(), body: JSON.stringify(body || {}),
     });
+    if (!r.ok) { alert(await explain(r, "That action could not be completed.")); return null; }
     const d = await r.json().catch(() => ({}));
-    if (!r.ok) { alert(d.error || d.detail || "That action could not be completed."); return null; }
     load();
     return d;
   };
 
-  return { ...data, loading, denied, create, remove, act, reload: load } as any;
+  return { ...data, loading, denied, save, remove, act, reload: load } as any;
 }
 
 /* ── Page frame ───────────────────────────────────────────────────────────── */
 
-export function StockPage({ title, subtitle, loading, denied, children }: {
-  title: string; subtitle: string; loading?: boolean; denied?: boolean; children: React.ReactNode;
+export function StockPage({ title, subtitle, action, loading, denied, children }: {
+  title: string; subtitle: React.ReactNode; action?: React.ReactNode;
+  loading?: boolean; denied?: boolean; children: React.ReactNode;
 }) {
   if (loading) return (
     <div className="p-8 flex items-center justify-center h-full">
@@ -135,23 +144,148 @@ export function StockPage({ title, subtitle, loading, denied, children }: {
   );
 
   return (
-    <div className="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-slate-900">{title}</h1>
-        <p className="text-sm text-slate-500 mt-1">{subtitle}</p>
+    <div className="max-w-6xl mx-auto p-4 sm:p-6 lg:p-8">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900">{title}</h1>
+          <p className="text-sm text-slate-500 mt-1">{subtitle}</p>
+        </div>
+        {action}
       </div>
       {children}
     </div>
   );
 }
 
-/* ── Shared UI bits ───────────────────────────────────────────────────────── */
+/** The header's primary button, e.g. "Add Item". */
+export function AddButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button onClick={onClick}
+      className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl text-sm font-semibold transition-colors flex items-center gap-2 shadow-sm flex-shrink-0">
+      <I.Plus /> {label}
+    </button>
+  );
+}
 
-export function Panel({ title, children, right }: { title: string; children: React.ReactNode; right?: React.ReactNode }) {
+export function SearchBar({ value, onChange, placeholder }: {
+  value: string; onChange: (v: string) => void; placeholder: string;
+}) {
+  return (
+    <div className="mb-4 relative max-w-sm">
+      <svg className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></svg>
+      <input value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+        className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition" />
+    </div>
+  );
+}
+
+/** Centred dialog, the same shell the retail pages use for create/edit. */
+export function Modal({ show, title, onClose, onSubmit, saving, submitLabel, wide, children }: {
+  show: boolean; title: string; onClose: () => void; onSubmit: (e: React.FormEvent) => void;
+  saving?: boolean; submitLabel: string; wide?: boolean; children: React.ReactNode;
+}) {
+  if (!show) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+      <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={onClose} />
+      <div className={`bg-white rounded-2xl shadow-xl w-full ${wide ? "max-w-3xl" : "max-w-lg"} relative z-10 overflow-hidden max-h-[92vh] flex flex-col`}>
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between flex-shrink-0">
+          <h3 className="font-bold text-lg text-slate-900">{title}</h3>
+          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600"><I.X /></button>
+        </div>
+        <form onSubmit={onSubmit} className="p-6 overflow-y-auto">
+          <div className="space-y-4 mb-6">{children}</div>
+          <div className="flex gap-3">
+            <button type="button" onClick={onClose}
+              className="flex-1 px-4 py-2.5 text-slate-600 font-medium hover:bg-slate-50 rounded-xl transition-colors">
+              Cancel
+            </button>
+            <button type="submit" disabled={saving}
+              className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 rounded-xl transition shadow-sm disabled:opacity-50">
+              {saving ? "Saving..." : submitLabel}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+export function Fld({ label, children }: { label: string; children: React.ReactNode }) {
+  return <div><label className={LABEL}>{label}</label>{children}</div>;
+}
+
+/** Field row inside a modal — two-up or three-up, stacking on mobile. */
+export function Row({ cols = 2, children }: { cols?: 2 | 3; children: React.ReactNode }) {
+  return (
+    <div className={`grid grid-cols-1 gap-4 ${cols === 3 ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
+      {children}
+    </div>
+  );
+}
+
+/** Edit / Delete text links, as the retail tables use. */
+export function RowActions({ onEdit, onDelete }: { onEdit?: () => void; onDelete?: () => void }) {
+  return (
+    <span className="whitespace-nowrap">
+      {onEdit && <button onClick={onEdit} className="text-indigo-600 hover:text-indigo-900 text-sm font-medium mr-4">Edit</button>}
+      {onDelete && <button onClick={onDelete} className="text-rose-600 hover:text-rose-900 text-sm font-medium">Delete</button>}
+    </span>
+  );
+}
+
+export type Col = { label: string; align?: "left" | "right" | "center" };
+
+/** Card table with the retail look: grey header, roomy cells, illustrated empty state. */
+export function DataTable({ columns, rows, empty, minWidth = 720 }: {
+  columns: (string | Col)[]; rows: React.ReactNode[][];
+  empty?: { title: string; hint?: string }; minWidth?: number;
+}) {
+  const cols: Col[] = columns.map(c => (typeof c === "string" ? { label: c } : c));
+  const align = (a?: string) => (a === "right" ? "text-right" : a === "center" ? "text-center" : "text-left");
+
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="w-full text-left border-collapse" style={{ minWidth }}>
+          <thead>
+            <tr className="bg-slate-50 border-b border-slate-200 text-xs uppercase tracking-wider text-slate-500 font-semibold">
+              {cols.map((c, i) => <th key={i} className={`py-4 px-6 ${align(c.align)} whitespace-nowrap`}>{c.label}</th>)}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {rows.length === 0 ? (
+              <tr>
+                <td colSpan={cols.length} className="py-12 text-center text-slate-500">
+                  <div className="mx-auto w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mb-3 text-slate-400"><I.Box /></div>
+                  <p className="font-medium text-slate-900">{empty?.title || "Nothing here yet"}</p>
+                  {empty?.hint && <p className="text-sm mt-1">{empty.hint}</p>}
+                </td>
+              </tr>
+            ) : rows.map((row, ri) => (
+              <tr key={ri} className="hover:bg-slate-50/50 transition-colors">
+                {row.map((cell, ci) => (
+                  <td key={ci} className={`py-4 px-6 text-sm text-slate-700 ${align(cols[ci]?.align)}`}>{cell}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+export function Panel({ title, subtitle, children, right }: {
+  title: string; subtitle?: string; children: React.ReactNode; right?: React.ReactNode;
+}) {
   return (
     <div className="bg-white border border-slate-200 rounded-2xl p-5">
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-sm font-bold text-slate-900">{title}</h2>
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div>
+          <h2 className="text-sm font-bold text-slate-900">{title}</h2>
+          {subtitle && <p className="text-[11px] text-slate-400 mt-0.5">{subtitle}</p>}
+        </div>
         {right}
       </div>
       {children}
@@ -163,25 +297,6 @@ export function Empty({ text }: { text: string }) {
   return <p className="text-sm text-slate-400 text-center py-10">{text}</p>;
 }
 
-export function FormPanel({ title, children, onSubmit, saving, action }: any) {
-  return (
-    <div className="bg-white border border-slate-200 rounded-2xl p-5 mb-5">
-      <h2 className="text-sm font-bold text-slate-900 mb-3">{title}</h2>
-      <form onSubmit={onSubmit} className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 items-end">
-        {children}
-        <button type="submit" disabled={saving}
-          className="flex items-center justify-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl px-4 h-[38px] text-sm font-semibold transition-colors shadow-sm">
-          <I.Plus /> {saving ? "Saving…" : action}
-        </button>
-      </form>
-    </div>
-  );
-}
-
-export function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return <label className="block"><span className="block text-[11px] font-semibold text-slate-500 mb-1">{label}</span>{children}</label>;
-}
-
 export function StatusPill({ status }: { status: string }) {
   const ok = status === "OK";
   return (
@@ -190,145 +305,213 @@ export function StatusPill({ status }: { status: string }) {
   );
 }
 
-export function DeleteBtn({ onClick }: { onClick: () => void }) {
-  return (
-    <button onClick={onClick} aria-label="Delete"
-      className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-all">
-      <I.Trash />
-    </button>
-  );
-}
+/* ── Suppliers / Customers: one whole screen, different columns ───────────── */
 
-export function Table({ columns, rows }: { columns: string[]; rows: React.ReactNode[][] }) {
-  return (
-    <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
-      <div className="overflow-x-auto">
-        <table className="w-full text-left border-collapse">
-          <thead>
-            <tr className="bg-slate-50 border-b border-slate-200">
-              {columns.map((c, i) => (
-                <th key={i} className="py-3 px-4 text-[10px] font-bold uppercase tracking-wider text-slate-500 whitespace-nowrap">{c}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-50">
-            {rows.length === 0 ? (
-              <tr><td colSpan={columns.length} className="py-12 text-center text-sm text-slate-400">Nothing logged yet.</td></tr>
-            ) : rows.map((row, ri) => (
-              <tr key={ri} className="hover:bg-slate-50/60 transition-colors">
-                {row.map((cell, ci) => (
-                  <td key={ci} className="py-3 px-4 text-[13px] text-slate-700 whitespace-nowrap">{cell}</td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
+export type PartyCol = { key: string; label: string; required?: boolean; placeholder?: string; mono?: boolean };
 
-/* ── Purchases and Dispatch are the same screen with the arrow reversed ───── */
-
-export function MovementPage({ kind, rows, items, parties, onAdd, onDelete }: any) {
-  const isReceipt = kind === "receipt";
-  const blank = isReceipt
-    ? { grn_no: "", date: todayISO(), supplier: "", item: "", quantity: "", rate: "" }
-    : { invoice_no: "", date: todayISO(), customer: "", item: "", quantity: "", rate: "", site: "" };
+export function PartyScreen({ title, subtitle, noun, columns, rows, loading, denied, onSave, onDelete }: {
+  title: string; subtitle: string; noun: string; columns: PartyCol[]; rows: any[];
+  loading?: boolean; denied?: boolean;
+  onSave: (body: any, id?: number | null) => Promise<boolean>;
+  onDelete: (id: number) => void;
+}) {
+  const blank = Object.fromEntries(columns.map(c => [c.key, ""]));
   const [form, setForm] = useState<any>(blank);
+  const [editing, setEditing] = useState<any>(null);
+  const [show, setShow] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [search, setSearch] = useState("");
 
+  const openCreate = () => { setEditing(null); setForm(blank); setShow(true); };
+  const openEdit = (r: any) => {
+    setEditing(r);
+    setForm(Object.fromEntries(columns.map(c => [c.key, r[c.key] ?? ""])));
+    setShow(true);
+  };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!String(form[columns[0].key] || "").trim()) return;
+    setSaving(true);
+    const ok = await onSave(form, editing?.id);
+    setSaving(false);
+    if (ok) { setShow(false); setEditing(null); setForm(blank); }
+  };
+
+  const term = search.trim().toLowerCase();
+  const list: any[] = rows || [];
+  const filtered = !term ? list
+    : list.filter(r => columns.some(c => String(r[c.key] || "").toLowerCase().includes(term)));
+
+  return (
+    <StockPage title={title} subtitle={subtitle} loading={loading} denied={denied}
+      action={<AddButton label={`Add ${noun}`} onClick={openCreate} />}>
+
+      <SearchBar value={search} onChange={setSearch} placeholder={`Search ${noun.toLowerCase()}s...`} />
+
+      <DataTable
+        columns={[...columns.map(c => c.label), { label: "Actions", align: "right" }]}
+        empty={{ title: `No ${noun.toLowerCase()}s found`, hint: `Add a ${noun.toLowerCase()} to get started.` }}
+        rows={filtered.map(r => [
+          ...columns.map((c, i) => (
+            i === 0
+              ? <span className="font-semibold text-slate-900">{r[c.key] || "—"}</span>
+              : <span className={c.mono ? "font-mono text-xs text-slate-500" : ""}>{r[c.key] || "—"}</span>
+          )),
+          <RowActions onEdit={() => openEdit(r)} onDelete={() => onDelete(r.id)} />,
+        ])} />
+
+      <Modal show={show} title={`${editing ? "Edit" : "Add"} ${noun}`} onClose={() => setShow(false)}
+        onSubmit={submit} saving={saving} submitLabel={`Save ${noun}`}>
+        {columns.map(c => (
+          <Fld key={c.key} label={c.required ? `${c.label} *` : c.label}>
+            <input required={c.required} value={form[c.key]} placeholder={c.placeholder}
+              onChange={e => setForm({ ...form, [c.key]: e.target.value })} className={FIELD} />
+          </Fld>
+        ))}
+      </Modal>
+    </StockPage>
+  );
+}
+
+/* ── Purchases / Dispatches: one screen, the arrow reversed ───────────────── */
+
+export function MovementScreen({ kind, rows, items, parties, loading, denied, onSave, onDelete }: {
+  kind: "receipt" | "dispatch"; rows: any[]; items: any[]; parties: any[];
+  loading?: boolean; denied?: boolean;
+  onSave: (body: any, id?: number | null) => Promise<boolean>;
+  onDelete: (id: number) => void;
+}) {
+  const isReceipt = kind === "receipt";
+  const refKey = isReceipt ? "grn_no" : "invoice_no";
   const partyKey = isReceipt ? "supplier" : "customer";
+
+  const blank = {
+    [refKey]: "", date: todayISO(), [partyKey]: "", item: "",
+    quantity: "", rate: "", site: "", notes: "",
+  } as any;
+
+  const [form, setForm] = useState<any>(blank);
+  const [editing, setEditing] = useState<any>(null);
+  const [show, setShow] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [search, setSearch] = useState("");
+
+  const itemList: any[] = items || [];
+  const partyList: any[] = parties || [];
+  const list: any[] = rows || [];
+
+  const openCreate = () => { setEditing(null); setForm({ ...blank }); setShow(true); };
+  const openEdit = (r: any) => {
+    setEditing(r);
+    setForm({
+      [refKey]: r[refKey] || "", date: r.date || todayISO(),
+      [partyKey]: r[partyKey] || "", item: r.item || "",
+      quantity: r.quantity ?? "", rate: r.rate ?? "", site: r.site || "", notes: r.notes || "",
+    });
+    setShow(true);
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.item || !form.quantity) return;
     setSaving(true);
-    const ok = await onAdd({ ...form, [partyKey]: form[partyKey] || null, rate: form.rate || 0 });
+    const ok = await onSave({ ...form, [partyKey]: form[partyKey] || null, rate: form.rate || 0 }, editing?.id);
     setSaving(false);
-    if (ok) setForm({ ...blank, date: form.date });
+    if (ok) { setShow(false); setEditing(null); setForm({ ...blank }); }
   };
 
-  if ((items || []).length === 0) {
-    return <Empty text="Add an item in Item Master first — every movement is logged against one." />;
-  }
+  const term = search.trim().toLowerCase();
+  const filtered = !term ? list : list.filter(r =>
+    `${r[refKey] || ""} ${r.item_code || ""} ${r.item_label || ""} ${(isReceipt ? r.supplier_name : r.customer_name) || ""}`
+      .toLowerCase().includes(term));
+
+  const noun = isReceipt ? "Receipt" : "Dispatch";
 
   return (
-    <div>
-      <FormPanel title={isReceipt ? "Log a receipt" : "Log a dispatch"} onSubmit={submit} saving={saving}
-        action={isReceipt ? "Log receipt" : "Log dispatch"}>
-        <Field label={isReceipt ? "GRN no." : "Invoice no."}>
-          <input value={isReceipt ? form.grn_no : form.invoice_no}
-            onChange={e => setForm({ ...form, [isReceipt ? "grn_no" : "invoice_no"]: e.target.value })}
-            className={`${FIELD} font-mono`} placeholder={isReceipt ? "GRN-0001" : "INV-S001"} />
-        </Field>
-        <Field label="Date"><input type="date" required value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} className={FIELD} /></Field>
-        <Field label={isReceipt ? "Supplier" : "Customer"}>
-          <select value={form[partyKey]} onChange={e => setForm({ ...form, [partyKey]: e.target.value })} className={FIELD}>
-            <option value="">—</option>
-            {(parties || []).map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
-        </Field>
-        <Field label="Item *">
-          <select required value={form.item} onChange={e => setForm({ ...form, item: e.target.value })} className={FIELD}>
-            <option value="">Select item…</option>
-            {items.map((i: any) => <option key={i.id} value={i.id}>{i.code} — {`${i.brand} ${i.model_name}`.trim()}</option>)}
-          </select>
-        </Field>
-        <Field label={isReceipt ? "Qty received *" : "Qty dispatched *"}>
-          <input type="number" step="any" required value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value })} className={FIELD} />
-        </Field>
-        <Field label="Unit rate (₹)"><input type="number" step="any" value={form.rate} onChange={e => setForm({ ...form, rate: e.target.value })} className={FIELD} /></Field>
-        {!isReceipt && <Field label="Site address"><input value={form.site} onChange={e => setForm({ ...form, site: e.target.value })} className={FIELD} /></Field>}
-      </FormPanel>
+    <StockPage
+      title={isReceipt ? "Purchases" : "Sales / Dispatches"}
+      subtitle={isReceipt
+        ? "Every stock receipt from a supplier (GRN)."
+        : "Every outward delivery to a customer or project site."}
+      loading={loading} denied={denied}
+      action={itemList.length > 0 ? <AddButton label={`New ${noun}`} onClick={openCreate} /> : undefined}>
 
-      <Table columns={[isReceipt ? "GRN" : "Invoice", "Date", isReceipt ? "Supplier" : "Customer", "Item", "Qty", "Rate", "Amount", "Logged by", ""]}
-        rows={(rows || []).map((r: any) => [
-          <span className="font-mono font-semibold text-slate-800">{(isReceipt ? r.grn_no : r.invoice_no) || "—"}</span>,
-          <span className="font-mono text-slate-500">{r.date}</span>,
-          (isReceipt ? r.supplier_name : r.customer_name) || "—",
-          <span><span className="font-mono">{r.item_code}</span> <span className="text-slate-400">— {r.item_label}</span></span>,
-          <span className="tabular-nums font-semibold">{num(r.quantity)}</span>,
-          <span className="tabular-nums">{rupee(r.rate)}</span>,
-          <span className="tabular-nums font-semibold">{rupee(r.amount)}</span>,
-          <span className="text-slate-400 text-xs">{r.created_by_name || "—"}</span>,
-          <DeleteBtn onClick={() => onDelete(r.id)} />,
-        ])} />
-    </div>
-  );
-}
+      {itemList.length === 0 ? (
+        <DataTable columns={["Item"]} rows={[]}
+          empty={{ title: "No items yet", hint: "Add an item in Item Master first — every movement is logged against one." }} />
+      ) : (
+        <>
+          <SearchBar value={search} onChange={setSearch}
+            placeholder={isReceipt ? "Search receipts..." : "Search dispatches..."} />
 
-/* ── Suppliers and Customers are the same screen with different columns ───── */
+          <DataTable
+            columns={[
+              isReceipt ? "GRN" : "Invoice", "Date", isReceipt ? "Supplier" : "Customer", "Item",
+              { label: "Qty", align: "right" }, { label: "Rate", align: "right" },
+              { label: "Amount", align: "right" }, "Logged by", { label: "Actions", align: "right" },
+            ]}
+            minWidth={980}
+            empty={{ title: `No ${noun.toLowerCase()}s yet`, hint: `Record your first ${noun.toLowerCase()}.` }}
+            rows={filtered.map(r => [
+              <span className="font-mono font-semibold text-slate-900">{r[refKey] || "—"}</span>,
+              <span className="font-mono text-xs text-slate-500">{r.date}</span>,
+              (isReceipt ? r.supplier_name : r.customer_name) || "—",
+              <span><span className="font-mono text-xs">{r.item_code}</span> <span className="text-slate-400">— {r.item_label}</span></span>,
+              <span className="tabular-nums font-semibold">{num(r.quantity)}</span>,
+              <span className="tabular-nums">{rupee(r.rate)}</span>,
+              <span className="tabular-nums font-semibold">{rupee(r.amount)}</span>,
+              <span className="text-xs text-slate-400">{r.created_by_name || "—"}</span>,
+              <RowActions onEdit={() => openEdit(r)} onDelete={() => onDelete(r.id)} />,
+            ])} />
+        </>
+      )}
 
-export function PartyPage({ noun, columns, rows, onAdd, onDelete }: any) {
-  const blank = Object.fromEntries(columns.map((c: any) => [c.key, ""]));
-  const [form, setForm] = useState<any>(blank);
-  const [saving, setSaving] = useState(false);
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!form[columns[0].key]?.trim()) return;
-    setSaving(true);
-    const ok = await onAdd(form);
-    setSaving(false);
-    if (ok) setForm(blank);
-  };
-
-  return (
-    <div>
-      <FormPanel title={`Add ${noun}`} onSubmit={submit} saving={saving} action="Add">
-        {columns.map((c: any) => (
-          <Field key={c.key} label={c.required ? `${c.label} *` : c.label}>
-            <input required={c.required} value={form[c.key]} onChange={e => setForm({ ...form, [c.key]: e.target.value })} className={FIELD} />
-          </Field>
-        ))}
-      </FormPanel>
-
-      <Table columns={[...columns.map((c: any) => c.label), ""]}
-        rows={(rows || []).map((r: any) => [
-          ...columns.map((c: any) => r[c.key] || "—"),
-          <DeleteBtn onClick={() => onDelete(r.id)} />,
-        ])} />
-    </div>
+      <Modal show={show} title={`${editing ? "Edit" : "New"} ${noun}`} onClose={() => setShow(false)}
+        onSubmit={submit} saving={saving} submitLabel={`Save ${noun}`}>
+        <Row>
+          <Fld label={isReceipt ? "GRN No." : "Invoice No."}>
+            <input value={form[refKey]} onChange={e => setForm({ ...form, [refKey]: e.target.value })}
+              className={`${FIELD} font-mono`} placeholder={isReceipt ? "GRN-0001" : "INV-S001"} />
+          </Fld>
+          <Fld label="Date *">
+            <input type="date" required value={form.date}
+              onChange={e => setForm({ ...form, date: e.target.value })} className={FIELD} />
+          </Fld>
+        </Row>
+        <Row>
+          <Fld label={isReceipt ? "Supplier" : "Customer"}>
+            <select value={form[partyKey]} onChange={e => setForm({ ...form, [partyKey]: e.target.value })} className={FIELD}>
+              <option value="">—</option>
+              {partyList.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </Fld>
+          <Fld label="Item *">
+            <select required value={form.item} onChange={e => setForm({ ...form, item: e.target.value })} className={FIELD}>
+              <option value="">Select item…</option>
+              {itemList.map(i => <option key={i.id} value={i.id}>{i.code} — {`${i.brand} ${i.model_name}`.trim()}</option>)}
+            </select>
+          </Fld>
+        </Row>
+        <Row>
+          <Fld label={isReceipt ? "Qty Received *" : "Qty Dispatched *"}>
+            <input type="number" step="any" min="0" required value={form.quantity}
+              onChange={e => setForm({ ...form, quantity: e.target.value })} className={FIELD} />
+          </Fld>
+          <Fld label="Unit Rate (₹)">
+            <input type="number" step="any" min="0" value={form.rate}
+              onChange={e => setForm({ ...form, rate: e.target.value })} className={FIELD} />
+          </Fld>
+        </Row>
+        {!isReceipt && (
+          <Fld label="Site Address">
+            <input value={form.site} onChange={e => setForm({ ...form, site: e.target.value })} className={FIELD} />
+          </Fld>
+        )}
+        <Fld label="Notes">
+          <textarea rows={2} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} className={FIELD} />
+        </Fld>
+      </Modal>
+    </StockPage>
   );
 }
