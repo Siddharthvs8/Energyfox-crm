@@ -714,3 +714,57 @@ class SharedOwnershipTests(TestCase):
         self.lead.refresh_from_db()
         self.assertIsNone(self.lead.bde_id)
         self.assertEqual(self.lead.tele_caller_id, self.caller.id)   # first one sticks
+
+
+class OwnerDisplayTests(TestCase):
+    """The Leads list shows both owners once a lead is handed to a BDE."""
+
+    def setUp(self):
+        self.caller = mk('od_caller', 'tele_caller')
+        self.bde = mk('od_bde', 'bde')
+        self.admin = mk('od_admin', 'admin')
+
+    def payload(self, lead):
+        r = self.client.get(f'/api/leads/{lead.id}/', HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200)
+        return r.json()
+
+    def test_before_a_bde_only_the_tele_caller_is_named(self):
+        lead = Lead.objects.create(first_name='O', last_name='One', phone='9999000001',
+                                   assigned_to=self.caller, value=0)
+        d = self.payload(lead)
+        self.assertEqual(d['tele_caller_name'], 'od_caller')
+        self.assertIsNone(d['bde_name'])
+
+    def test_after_the_hand_off_both_are_named(self):
+        lead = Lead.objects.create(first_name='O', last_name='Two', phone='9999000002',
+                                   assigned_to=self.caller, value=0)
+        self.client.post(f'/api/leads/{lead.id}/assign-bde/', data={'bde': self.bde.id},
+                         content_type='application/json', HTTP_AUTHORIZATION=token_for(self.caller))
+        d = self.payload(lead)
+        self.assertEqual(d['tele_caller_name'], 'od_caller')
+        self.assertEqual(d['bde_name'], 'od_bde')
+
+    def test_the_tele_caller_survives_ownership_moving_to_the_bde(self):
+        """assigned_to_name would report the BDE — the tele caller must persist."""
+        lead = Lead.objects.create(first_name='O', last_name='Three', phone='9999000003',
+                                   assigned_to=self.caller, value=0)
+        self.client.patch(f'/api/leads/{lead.id}/', data={'assigned_to': self.bde.id},
+                          content_type='application/json', HTTP_AUTHORIZATION=token_for(self.caller))
+        d = self.payload(lead)
+        self.assertEqual(d['assigned_to_name'], 'od_bde')
+        self.assertEqual(d['tele_caller_name'], 'od_caller')
+        self.assertEqual(d['bde_name'], 'od_bde')
+
+    def test_legacy_leads_fall_back_to_the_owner(self):
+        """Rows that predate the tele_caller field still name their tele caller."""
+        lead = Lead.objects.create(first_name='O', last_name='Four', phone='9999000004', value=0)
+        Lead.objects.filter(pk=lead.pk).update(assigned_to=self.caller, tele_caller=None)
+        self.assertEqual(self.payload(lead)['tele_caller_name'], 'od_caller')
+
+    def test_a_non_agent_owner_is_not_reported_as_a_tele_caller(self):
+        lead = Lead.objects.create(first_name='O', last_name='Five', phone='9999000005',
+                                   assigned_to=self.admin, value=0)
+        d = self.payload(lead)
+        self.assertIsNone(d['tele_caller_name'])
+        self.assertEqual(d['assigned_to_name'], 'od_admin')

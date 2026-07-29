@@ -987,7 +987,7 @@ export default function LeadDetailPage({
               </div>
               <div>
                 <p className="text-xs text-slate-400 mb-1">Tele Caller</p>
-                <p className="text-sm font-semibold text-indigo-600">{lead.assigned_to_name || "Unassigned"}</p>
+                <p className="text-sm font-semibold text-indigo-600">{lead.tele_caller_name || lead.assigned_to_name || "Unassigned"}</p>
               </div>
               <div>
                 <p className="text-xs text-slate-400 mb-1">BDE</p>

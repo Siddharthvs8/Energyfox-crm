@@ -360,6 +360,9 @@ class LeadSerializer(serializers.ModelSerializer):
     next_task = serializers.SerializerMethodField()
     meta_integration_name = serializers.SerializerMethodField()
     bde_name = serializers.SerializerMethodField()
+    # The tele caller who worked the lead, which is not the same as the current
+    # owner once it has been handed to a BDE — both are shown as its owners.
+    tele_caller_name = serializers.SerializerMethodField()
     can_edit_site_visit = serializers.SerializerMethodField()
     can_assign_bde = serializers.SerializerMethodField()
     can_assign_documentation = serializers.SerializerMethodField()
@@ -445,6 +448,16 @@ class LeadSerializer(serializers.ModelSerializer):
     def get_bde_name(self, obj):
         if obj.bde:
             return f"{obj.bde.first_name} {obj.bde.last_name}".strip() or obj.bde.username
+        return None
+
+    def get_tele_caller_name(self, obj):
+        u = obj.tele_caller
+        if u:
+            return f"{u.first_name} {u.last_name}".strip() or u.username
+        # Older leads predate the field; fall back to the owner when they are one.
+        owner = obj.assigned_to
+        if owner and getattr(owner, 'role', '') == 'tele_caller':
+            return f"{owner.first_name} {owner.last_name}".strip() or owner.username
         return None
 
     def _request_user(self):

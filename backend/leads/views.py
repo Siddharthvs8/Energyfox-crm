@@ -3059,7 +3059,7 @@ class LeadViewSet(viewsets.ModelViewSet):
         user = self.request.user
         # site_visit is read for every row (the list's Site Visit button/indicator),
         # so pull it in the same query instead of one per lead.
-        base = Lead.objects.select_related('assigned_to', 'site_visit')
+        base = Lead.objects.select_related('assigned_to', 'tele_caller', 'bde', 'site_visit')
         if user.sees_all_leads:
             # superadmin / admin / coo / sales & documentation managers / documentation staff
             queryset = base.all().order_by('-created_at')

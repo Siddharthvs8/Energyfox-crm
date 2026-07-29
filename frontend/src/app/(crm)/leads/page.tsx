@@ -1400,18 +1400,10 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                           </div>
                         </td>
 
-                        {/* Owner */}
+                        {/* Owner — a lead handed to a BDE has two: the tele
+                            caller who worked it and the BDE who took it on. */}
                         <td className="px-4 py-3.5">
-                          {lead.assigned_to_name ? (
-                            <div className="flex items-center gap-2">
-                              <div className="w-6 h-6 rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 text-white flex items-center justify-center text-[9px] font-bold flex-shrink-0">
-                                {lead.assigned_to_name.charAt(0).toUpperCase()}
-                              </div>
-                              <span className="text-[11px] font-medium text-slate-600 truncate max-w-[90px]">{lead.assigned_to_name}</span>
-                            </div>
-                          ) : (
-                            <span className="text-[11px] text-slate-300 italic">Unassigned</span>
-                          )}
+                          <Owners lead={lead} />
                         </td>
 
                         {/* Source */}
@@ -2527,6 +2519,45 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ── Owners ────────────────────────────────────────────────────────────────
+ * A lead starts with one owner, the tele caller. Handing it to a BDE doesn't
+ * transfer it — ownership becomes shared, so both are listed with their role.
+ * Falls back to whoever the lead is assigned to when neither role is recorded
+ * (e.g. a lead sitting with an admin).
+ */
+function Owners({ lead }: { lead: any }) {
+  const people: { name: string; role: string; tint: string }[] = [];
+  if (lead.tele_caller_name) {
+    people.push({ name: lead.tele_caller_name, role: "Tele Caller", tint: "from-indigo-500 to-violet-600" });
+  }
+  if (lead.bde_name) {
+    people.push({ name: lead.bde_name, role: "BDE", tint: "from-amber-500 to-orange-600" });
+  }
+  if (people.length === 0 && lead.assigned_to_name) {
+    people.push({ name: lead.assigned_to_name, role: "Owner", tint: "from-indigo-500 to-violet-600" });
+  }
+
+  if (people.length === 0) {
+    return <span className="text-[11px] text-slate-300 italic">Unassigned</span>;
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      {people.map(p => (
+        <div key={p.role} className="flex items-center gap-2" title={`${p.name} · ${p.role}`}>
+          <div className={`w-6 h-6 rounded-full bg-gradient-to-br ${p.tint} text-white flex items-center justify-center text-[9px] font-bold flex-shrink-0`}>
+            {p.name.charAt(0).toUpperCase()}
+          </div>
+          <div className="min-w-0 leading-tight">
+            <p className="text-[11px] font-medium text-slate-600 truncate max-w-[90px]">{p.name}</p>
+            <p className="text-[9px] uppercase tracking-wider text-slate-400">{p.role}</p>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
