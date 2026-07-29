@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 from .models import (
     Vendor,
@@ -109,7 +111,9 @@ class PurchaseOrderSerializer(_DocSerializer):
         if instance.status == 'received' and not instance.stock_received:
             for item in instance.items.all():
                 if item.product:
-                    item.product.stock_quantity = (item.product.stock_quantity or 0) + int(item.quantity or 0)
+                    # No int(): receiving 4.5 must add 4.5, not 4.
+                    item.product.stock_quantity = ((item.product.stock_quantity or Decimal('0'))
+                                                   + (item.quantity or Decimal('0')))
                     item.product.save(update_fields=['stock_quantity'])
             instance.stock_received = True
             instance.save(update_fields=['stock_received'])
@@ -164,7 +168,9 @@ class SalesOrderSerializer(_TaxedDocSerializer):
         if instance.status in ('confirmed', 'shipped', 'delivered') and not instance.stock_committed:
             for item in instance.items.all():
                 if item.product:
-                    item.product.stock_quantity = max(0, (item.product.stock_quantity or 0) - int(item.quantity or 0))
+                    item.product.stock_quantity = max(Decimal('0'),
+                                                      (item.product.stock_quantity or Decimal('0'))
+                                                      - (item.quantity or Decimal('0')))
                     item.product.save(update_fields=['stock_quantity'])
             instance.stock_committed = True
             instance.save(update_fields=['stock_committed'])

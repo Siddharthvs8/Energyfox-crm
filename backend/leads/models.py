@@ -8,8 +8,11 @@ class Product(models.Model):
     sku = models.CharField(max_length=60, blank=True, default='', db_index=True)
     unit = models.CharField(max_length=20, blank=True, default='unit')
     cost_price = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
-    stock_quantity = models.IntegerField(default=0)
-    reorder_level = models.IntegerField(default=0)
+    # Decimal, not integer: stock is counted in metres of cable and fractions of
+    # a set as often as in whole panels, and an integer field silently truncated
+    # every fraction that passed through it.
+    stock_quantity = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    reorder_level = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

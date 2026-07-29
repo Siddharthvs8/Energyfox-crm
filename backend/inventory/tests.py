@@ -416,3 +416,99 @@ class StockSummaryShapeTests(TestCase):
             self.assertIn(key, d)
         self.assertEqual(d['sku_count'], 1)
         self.assertEqual(Decimal(d['total_value']), Decimal('2300'))   # (20+5−2) × 100
+
+
+class FractionalQuantityTests(TestCase):
+    """Fractions must survive: cable is bought in metres, structures in part
+    sets. Nothing in the inventory path may round or truncate them."""
+
+    def setUp(self):
+        self.admin = mk('fq_admin', 'admin')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': token_for(self.admin)}
+
+    # ── Wholesale (stock register) ──
+    def test_stock_movements_keep_their_fractions(self):
+        item = StockItem.objects.create(code='FQ-CBL', category='Cable', unit='Mtr',
+                                        opening_stock=Decimal('10.5'), unit_cost=Decimal('45.25'))
+        GoodsReceipt.objects.create(item=item, date=timezone.localdate(),
+                                    quantity=Decimal('4.5'), rate=Decimal('500.50'))
+        StockDispatch.objects.create(item=item, date=timezone.localdate(),
+                                     quantity=Decimal('2.25'), rate=Decimal('600.75'))
+        item.refresh_from_db()
+        self.assertEqual(item.received, Decimal('4.50'))
+        self.assertEqual(item.dispatched, Decimal('2.25'))
+        self.assertEqual(item.closing_stock, Decimal('12.75'))       # 10.5 + 4.5 − 2.25
+        self.assertEqual(item.stock_value, Decimal('576.9375'))      # 12.75 × 45.25
+
+    def test_a_fractional_movement_survives_the_api(self):
+        item = StockItem.objects.create(code='FQ-API', category='Cable', unit='Mtr')
+        r = self.client.post('/api/stock-dispatches/', data={
+            'date': str(timezone.localdate()), 'item': item.id,
+            'quantity': '4.5', 'rate': '500.50',
+        }, content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 201, r.content[:200])
+        self.assertEqual(Decimal(r.json()['quantity']), Decimal('4.50'))
+        self.assertEqual(Decimal(r.json()['rate']), Decimal('500.50'))
+        self.assertEqual(Decimal(r.json()['amount']), Decimal('2252.25'))   # not 2252
+
+    def test_a_fractional_quote_line_survives(self):
+        from .models import StockQuote
+        item = StockItem.objects.create(code='FQ-QT', category='Cable', unit='Mtr')
+        r = self.client.post('/api/stock-quotes/', data={
+            'quote_date': str(timezone.localdate()),
+            'items': [{'item': item.id, 'quantity': '4.5', 'unit_price': '500.50'}],
+        }, content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 201, r.content[:200])
+        self.assertEqual(Decimal(r.json()['subtotal']), Decimal('2252.25'))
+
+        qid = r.json()['id']
+        self.client.post(f'/api/stock-quotes/{qid}/convert/', **self.auth())
+        d = StockDispatch.objects.get(item=item)
+        self.assertEqual(d.quantity, Decimal('4.50'))
+        self.assertEqual(d.rate, Decimal('500.50'))
+
+    # ── Retail (product catalogue) ──
+    def test_a_product_can_hold_fractional_stock(self):
+        from leads.models import Product
+        r = self.client.post('/api/products/', data={
+            'name': 'DC Cable', 'sku': 'FQ-P', 'unit': 'Mtr',
+            'default_price': '55.75', 'cost_price': '45.25',
+            'stock_quantity': '120.5', 'reorder_level': '10.5',
+        }, content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 201, r.content[:200])
+        p = Product.objects.get(sku='FQ-P')
+        self.assertEqual(p.stock_quantity, Decimal('120.50'))
+        self.assertEqual(p.reorder_level, Decimal('10.50'))
+
+    def test_receiving_a_purchase_order_adds_the_whole_fraction(self):
+        """int() used to truncate this: receiving 4.5 added only 4."""
+        from leads.models import Product
+        from .models import PurchaseOrder, PurchaseOrderItem
+        p = Product.objects.create(name='Cable', sku='FQ-PO', unit='Mtr',
+                                   stock_quantity=Decimal('10'), cost_price=Decimal('45'))
+        po = PurchaseOrder.objects.create(status='draft')
+        PurchaseOrderItem.objects.create(purchase_order=po, product=p,
+                                         quantity=Decimal('4.5'), unit_price=Decimal('45'))
+        r = self.client.patch(f'/api/purchase-orders/{po.id}/', data={'status': 'received'},
+                              content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        p.refresh_from_db()
+        self.assertEqual(p.stock_quantity, Decimal('14.50'))     # not 14
+
+    def test_low_stock_still_compares_correctly_with_fractions(self):
+        from leads.models import Product
+        p = Product.objects.create(name='Cable', sku='FQ-LOW', unit='Mtr',
+                                   stock_quantity=Decimal('10.4'), reorder_level=Decimal('10.5'))
+        self.assertTrue(p.low_stock)
+        p.stock_quantity = Decimal('10.6')
+        self.assertFalse(p.low_stock)
+
+    def test_the_retail_dashboard_values_a_fractional_stock(self):
+        from leads.models import Product
+        Product.objects.create(name='Cable', sku='FQ-DASH', unit='Mtr',
+                               stock_quantity=Decimal('120.5'), cost_price=Decimal('45.25'))
+        r = self.client.get('/api/inventory-dashboard/', **self.auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(Decimal(r.json()['stock_value']), Decimal('5452.625'))  # 120.5 × 45.25

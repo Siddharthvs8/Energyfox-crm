@@ -14,7 +14,15 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
 } from "recharts";
 
-const rupee = (n: any) => "₹" + Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 });
+/** Money. Shows paise only when there are any, so ₹90,000 stays clean while
+ *  ₹2,252.25 keeps its fraction instead of being rounded to ₹2,252. */
+const rupee = (n: any) => {
+  const v = Number(n || 0);
+  return "₹" + v.toLocaleString("en-IN", {
+    minimumFractionDigits: Number.isInteger(v) ? 0 : 2,
+    maximumFractionDigits: 2,
+  });
+};
 const num = (n: any) => Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
 
 /** Status pill colours, shared by all three document types. */

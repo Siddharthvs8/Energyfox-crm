@@ -53,7 +53,9 @@ export default function ProductsPage({ params: paramsPromise }: { params: Promis
     const payload = {
       name: form.name, sku: form.sku, unit: form.unit,
       default_price: form.default_price || 0, cost_price: form.cost_price || 0,
-      stock_quantity: parseInt(form.stock_quantity) || 0, reorder_level: parseInt(form.reorder_level) || 0,
+      // Not parseInt: stock is decimal (metres of cable, part sets), and parsing
+      // to an integer silently dropped the fraction on the way out.
+      stock_quantity: form.stock_quantity || 0, reorder_level: form.reorder_level || 0,
     };
     const url = editProduct ? `${getApiBase(domain)}/api/products/${editProduct.id}/` : `${getApiBase(domain)}/api/products/`;
     try {
@@ -139,7 +141,7 @@ export default function ProductsPage({ params: paramsPromise }: { params: Promis
                       <td className="py-4 px-6 text-center">
                         <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${low ? "bg-rose-50 text-rose-600" : "bg-emerald-50 text-emerald-600"}`}>
                           {low && <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />}
-                          {p.stock_quantity ?? 0} {p.unit || "unit"}{low ? " · Low" : ""}
+                          {Number(p.stock_quantity ?? 0).toLocaleString("en-IN", { maximumFractionDigits: 2 })} {p.unit || "unit"}{low ? " · Low" : ""}
                         </span>
                       </td>
                       <td className="py-4 px-6 text-right whitespace-nowrap">
@@ -190,11 +192,11 @@ export default function ProductsPage({ params: paramsPromise }: { params: Promis
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <div>
                     <label className="block text-sm font-semibold text-slate-700 mb-1.5">Stock Qty</label>
-                    <input type="number" min="0" value={form.stock_quantity} onChange={(e) => setForm({ ...form, stock_quantity: e.target.value })} className={field} />
+                    <input type="number" step="any" min="0" value={form.stock_quantity} onChange={(e) => setForm({ ...form, stock_quantity: e.target.value })} className={field} />
                   </div>
                   <div>
                     <label className="block text-sm font-semibold text-slate-700 mb-1.5">Reorder Level</label>
-                    <input type="number" min="0" value={form.reorder_level} onChange={(e) => setForm({ ...form, reorder_level: e.target.value })} className={field} />
+                    <input type="number" step="any" min="0" value={form.reorder_level} onChange={(e) => setForm({ ...form, reorder_level: e.target.value })} className={field} />
                   </div>
                   <div>
                     <label className="block text-sm font-semibold text-slate-700 mb-1.5">Unit</label>

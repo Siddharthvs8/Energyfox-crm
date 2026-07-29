@@ -27,7 +27,15 @@ export const I = {
 
 export const CATS = ["Solar Panel", "Inverter", "Battery", "Mounting Structure", "Cable", "BOS Accessory", "Other"];
 
-export const rupee = (n: any) => "₹" + Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 });
+/** Money. Shows paise only when there are any, so ₹90,000 stays clean while
+ *  ₹2,252.25 keeps its fraction instead of being rounded to ₹2,252. */
+export const rupee = (n: any) => {
+  const v = Number(n || 0);
+  return "₹" + v.toLocaleString("en-IN", {
+    minimumFractionDigits: Number.isInteger(v) ? 0 : 2,
+    maximumFractionDigits: 2,
+  });
+};
 export const num = (n: any) => Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
 export const todayISO = () => new Date().toISOString().slice(0, 10);
 
