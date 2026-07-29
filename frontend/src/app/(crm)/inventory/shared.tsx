@@ -396,7 +396,7 @@ export function MovementScreen({ kind, rows, items, parties, loading, denied, on
 
   const blank = {
     [refKey]: "", date: todayISO(), [partyKey]: "", item: "",
-    quantity: "", rate: "", site: "", notes: "",
+    quantity: "", rate: "", tax_percent: "", site: "", notes: "",
   } as any;
 
   const [form, setForm] = useState<any>(blank);
@@ -415,7 +415,8 @@ export function MovementScreen({ kind, rows, items, parties, loading, denied, on
     setForm({
       [refKey]: r[refKey] || "", date: r.date || todayISO(),
       [partyKey]: r[partyKey] || "", item: r.item || "",
-      quantity: r.quantity ?? "", rate: r.rate ?? "", site: r.site || "", notes: r.notes || "",
+      quantity: r.quantity ?? "", rate: r.rate ?? "", tax_percent: r.tax_percent ?? "",
+      site: r.site || "", notes: r.notes || "",
     });
     setShow(true);
   };
@@ -424,7 +425,10 @@ export function MovementScreen({ kind, rows, items, parties, loading, denied, on
     e.preventDefault();
     if (!form.item || !form.quantity) return;
     setSaving(true);
-    const ok = await onSave({ ...form, [partyKey]: form[partyKey] || null, rate: form.rate || 0 }, editing?.id);
+    const body: any = { ...form, [partyKey]: form[partyKey] || null, rate: form.rate || 0 };
+    if (isReceipt) delete body.tax_percent;      // receipts carry no tax
+    else body.tax_percent = form.tax_percent || 0;
+    const ok = await onSave(body, editing?.id);
     setSaving(false);
     if (ok) { setShow(false); setEditing(null); setForm({ ...blank }); }
   };
@@ -435,6 +439,11 @@ export function MovementScreen({ kind, rows, items, parties, loading, denied, on
       .toLowerCase().includes(term));
 
   const noun = isReceipt ? "Receipt" : "Dispatch";
+
+  // Live totals for the modal, mirroring the server: goods value, then tax on top.
+  const goodsValue = (Number(form.quantity) || 0) * (Number(form.rate) || 0);
+  const taxValue = goodsValue * (Number(form.tax_percent) || 0) / 100;
+  const lineTotal = goodsValue + taxValue;
 
   return (
     <StockPage
@@ -457,9 +466,12 @@ export function MovementScreen({ kind, rows, items, parties, loading, denied, on
             columns={[
               isReceipt ? "GRN" : "Invoice", "Date", isReceipt ? "Supplier" : "Customer", "Item",
               { label: "Qty", align: "right" }, { label: "Rate", align: "right" },
-              { label: "Amount", align: "right" }, "Logged by", { label: "Actions", align: "right" },
+              { label: "Amount", align: "right" },
+              ...(isReceipt ? [] : [{ label: "Tax", align: "right" as const },
+                                    { label: "Total", align: "right" as const }]),
+              "Logged by", { label: "Actions", align: "right" },
             ]}
-            minWidth={980}
+            minWidth={isReceipt ? 980 : 1140}
             empty={{ title: `No ${noun.toLowerCase()}s yet`, hint: `Record your first ${noun.toLowerCase()}.` }}
             rows={filtered.map(r => [
               <span className="font-mono font-semibold text-slate-900">{r[refKey] || "—"}</span>,
@@ -468,7 +480,15 @@ export function MovementScreen({ kind, rows, items, parties, loading, denied, on
               <span><span className="font-mono text-xs">{r.item_code}</span> <span className="text-slate-400">— {r.item_label}</span></span>,
               <span className="tabular-nums font-semibold">{num(r.quantity)}</span>,
               <span className="tabular-nums">{rupee(r.rate)}</span>,
-              <span className="tabular-nums font-semibold">{rupee(r.amount)}</span>,
+              <span className="tabular-nums">{rupee(r.amount)}</span>,
+              ...(isReceipt ? [] : [
+                <span className="tabular-nums text-slate-500">
+                  {Number(r.tax_percent || 0) > 0
+                    ? <>{num(r.tax_percent)}% <span className="text-slate-400">· {rupee(r.tax_amount)}</span></>
+                    : "—"}
+                </span>,
+                <span className="tabular-nums font-semibold">{rupee(r.total)}</span>,
+              ]),
               <span className="text-xs text-slate-400">{r.created_by_name || "—"}</span>,
               <RowActions onEdit={() => openEdit(r)} onDelete={() => onDelete(r.id)} />,
             ])} />
@@ -512,9 +532,27 @@ export function MovementScreen({ kind, rows, items, parties, loading, denied, on
           </Fld>
         </Row>
         {!isReceipt && (
-          <Fld label="Site Address">
-            <input value={form.site} onChange={e => setForm({ ...form, site: e.target.value })} className={FIELD} />
-          </Fld>
+          <>
+            <Row>
+              <Fld label="Tax %">
+                <input type="number" step="any" min="0" max="100" value={form.tax_percent}
+                  onChange={e => setForm({ ...form, tax_percent: e.target.value })}
+                  className={FIELD} placeholder="e.g. 18" />
+              </Fld>
+              <Fld label="Total">
+                {/* Read-only preview so the invoiced figure is visible while typing. */}
+                <div className={`${FIELD} bg-slate-100 text-slate-700 font-semibold tabular-nums`}>
+                  {rupee(lineTotal)}
+                  {taxValue > 0 && (
+                    <span className="font-normal text-slate-400"> (incl. {rupee(taxValue)} tax)</span>
+                  )}
+                </div>
+              </Fld>
+            </Row>
+            <Fld label="Site Address">
+              <input value={form.site} onChange={e => setForm({ ...form, site: e.target.value })} className={FIELD} />
+            </Fld>
+          </>
         )}
         <Fld label="Notes">
           <textarea rows={2} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} className={FIELD} />

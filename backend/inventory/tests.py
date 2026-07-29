@@ -512,3 +512,92 @@ class FractionalQuantityTests(TestCase):
         r = self.client.get('/api/inventory-dashboard/', **self.auth())
         self.assertEqual(r.status_code, 200)
         self.assertEqual(Decimal(r.json()['stock_value']), Decimal('5452.625'))  # 120.5 × 45.25
+
+
+class DispatchTaxTests(TestCase):
+    """Tax on a dispatch line: `amount` stays the goods value, `total` is what
+    the customer is invoiced."""
+
+    def setUp(self):
+        self.admin = mk('dt_admin', 'admin')
+        self.item = StockItem.objects.create(code='DT-PNL', category='Solar Panel',
+                                             opening_stock=Decimal('100'), unit_cost=Decimal('9800'))
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': token_for(self.admin)}
+
+    def test_tax_splits_goods_value_from_the_invoiced_total(self):
+        r = self.client.post('/api/stock-dispatches/', data={
+            'date': str(timezone.localdate()), 'item': self.item.id,
+            'quantity': '10', 'rate': '11200', 'tax_percent': '18',
+        }, content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 201, r.content[:200])
+        d = r.json()
+        self.assertEqual(Decimal(d['amount']), Decimal('112000'))       # goods
+        self.assertEqual(Decimal(d['tax_amount']), Decimal('20160'))    # 18%
+        self.assertEqual(Decimal(d['total']), Decimal('132160'))
+
+    def test_tax_defaults_to_zero(self):
+        r = self.client.post('/api/stock-dispatches/', data={
+            'date': str(timezone.localdate()), 'item': self.item.id,
+            'quantity': '2', 'rate': '100',
+        }, content_type='application/json', **self.auth())
+        d = r.json()
+        self.assertEqual(Decimal(d['tax_percent']), Decimal('0'))
+        self.assertEqual(Decimal(d['total']), Decimal('200'))
+
+    def test_tax_keeps_its_fraction(self):
+        """Entered figures are never rounded away; a *derived* tax is carried to
+        the paisa, like every other money field here — ₹56.30625 isn't payable."""
+        r = self.client.post('/api/stock-dispatches/', data={
+            'date': str(timezone.localdate()), 'item': self.item.id,
+            'quantity': '4.5', 'rate': '500.50', 'tax_percent': '2.5',
+        }, content_type='application/json', **self.auth())
+        d = r.json()
+        self.assertEqual(Decimal(d['quantity']), Decimal('4.50'))       # as entered
+        self.assertEqual(Decimal(d['rate']), Decimal('500.50'))         # as entered
+        self.assertEqual(Decimal(d['amount']), Decimal('2252.25'))      # exact
+        self.assertEqual(Decimal(d['tax_amount']), Decimal('56.31'))    # 56.30625 → paise
+        self.assertEqual(Decimal(d['total']), Decimal('2308.56'))
+        # The paise figures still add up.
+        self.assertEqual(Decimal(d['amount']) + Decimal(d['tax_amount']), Decimal(d['total']))
+
+    def test_tax_does_not_touch_the_stock_ledger(self):
+        """Stock moves in units; tax is money only."""
+        self.client.post('/api/stock-dispatches/', data={
+            'date': str(timezone.localdate()), 'item': self.item.id,
+            'quantity': '10', 'rate': '11200', 'tax_percent': '18',
+        }, content_type='application/json', **self.auth())
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.closing_stock, Decimal('90'))
+
+    def test_a_converted_quote_carries_its_tax_onto_the_dispatch(self):
+        r = self.client.post('/api/stock-quotes/', data={
+            'quote_date': str(timezone.localdate()), 'tax_percent': '18',
+            'items': [{'item': self.item.id, 'quantity': '10', 'unit_price': '11200'}],
+        }, content_type='application/json', **self.auth())
+        qid = r.json()['id']
+        self.client.post(f'/api/stock-quotes/{qid}/convert/', **self.auth())
+        d = StockDispatch.objects.get(item=self.item)
+        self.assertEqual(d.tax_percent, Decimal('18.00'))
+        self.assertEqual(d.total, Decimal('132160'))
+
+    def test_the_dashboard_reports_the_invoiced_value(self):
+        self.client.post('/api/stock-dispatches/', data={
+            'date': str(timezone.localdate()), 'item': self.item.id,
+            'quantity': '10', 'rate': '11200', 'tax_percent': '18',
+        }, content_type='application/json', **self.auth())
+        r = self.client.get('/api/stock-summary/', **self.auth())
+        self.assertEqual(Decimal(r.json()['month_sales']), Decimal('132160'))
+        self.assertEqual(Decimal(r.json()['monthly'][-1]['sales']), Decimal('132160'))
+
+    def test_editing_a_dispatch_can_change_its_tax(self):
+        r = self.client.post('/api/stock-dispatches/', data={
+            'date': str(timezone.localdate()), 'item': self.item.id,
+            'quantity': '10', 'rate': '100', 'tax_percent': '18',
+        }, content_type='application/json', **self.auth())
+        did = r.json()['id']
+        r = self.client.patch(f'/api/stock-dispatches/{did}/', data={'tax_percent': '5'},
+                              content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(Decimal(r.json()['total']), Decimal('1050'))

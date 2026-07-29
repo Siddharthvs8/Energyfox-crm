@@ -282,9 +282,20 @@ class StockDispatch(_StockMovement):
     customer = models.ForeignKey(StockCustomer, on_delete=models.SET_NULL, null=True, blank=True, related_name='dispatches')
     item = models.ForeignKey(StockItem, on_delete=models.PROTECT, related_name='dispatches')
     site = models.CharField(max_length=255, blank=True, default='')
+    # GST on the line. `amount` stays the pre-tax figure so the stock ledger keeps
+    # valuing movements at their goods value; `total` is what the customer pays.
+    tax_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
 
     class Meta(_StockMovement.Meta):
         verbose_name_plural = 'Stock dispatches'
+
+    @property
+    def tax_amount(self):
+        return (self.amount * (self.tax_percent or Decimal('0'))) / Decimal('100')
+
+    @property
+    def total(self):
+        return self.amount + self.tax_amount
 
     def __str__(self):
         return self.invoice_no or f"Dispatch #{self.pk}"

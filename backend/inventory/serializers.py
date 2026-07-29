@@ -239,12 +239,14 @@ class GoodsReceiptSerializer(_MovementSerializer):
 
 class StockDispatchSerializer(_MovementSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True, default=None)
+    tax_amount = serializers.DecimalField(max_digits=16, decimal_places=2, read_only=True)
+    total = serializers.DecimalField(max_digits=16, decimal_places=2, read_only=True)
 
     class Meta:
         model = StockDispatch
         fields = ['id', 'invoice_no', 'date', 'customer', 'customer_name', 'item', 'item_code',
-                  'item_label', 'quantity', 'rate', 'amount', 'site', 'notes',
-                  'created_by', 'created_by_name', 'created_at']
+                  'item_label', 'quantity', 'rate', 'amount', 'tax_percent', 'tax_amount', 'total',
+                  'site', 'notes', 'created_by', 'created_by_name', 'created_at']
         read_only_fields = ['created_by', 'created_at']
 
 

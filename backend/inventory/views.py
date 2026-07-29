@@ -274,8 +274,13 @@ class StockSummaryView(APIView):
         month_start = today.replace(day=1)
 
         def movement_value(model, **filters):
+            """Money moved. For dispatches that is the invoiced figure, tax
+            included; goods receipts carry no tax field."""
+            line = F('quantity') * F('rate')
+            if model is StockDispatch:
+                line = line * (Value(Decimal('1')) + F('tax_percent') / Value(Decimal('100')))
             return model.objects.filter(**filters).aggregate(
-                t=Coalesce(Sum(F('quantity') * F('rate'), output_field=_MONEY),
+                t=Coalesce(Sum(line, output_field=_MONEY),
                            Value(Decimal('0')), output_field=_MONEY))['t']
 
         month_in = movement_value(GoodsReceipt, date__gte=month_start)
@@ -488,6 +493,7 @@ class StockQuoteViewSet(viewsets.ModelViewSet):
             StockDispatch.objects.create(
                 invoice_no=quote.number or '', date=dispatch_date, customer=quote.customer,
                 item=line.item, quantity=line.quantity, rate=line.unit_price,
+                tax_percent=quote.tax_percent or Decimal('0'),
                 site=quote.site, notes=f"From quote {quote.number}",
                 created_by=request.user if request.user.is_authenticated else None,
             )
