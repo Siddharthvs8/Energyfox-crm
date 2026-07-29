@@ -1,4 +1,6 @@
 """Lead-status ownership and the site-visit indicator the Leads list renders."""
+from decimal import Decimal
+
 from django.test import TestCase
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -768,3 +770,112 @@ class OwnerDisplayTests(TestCase):
         d = self.payload(lead)
         self.assertIsNone(d['tele_caller_name'])
         self.assertEqual(d['assigned_to_name'], 'od_admin')
+
+
+class PurchaseQueueTests(TestCase):
+    """Procurement starts on the first payment — part or full — and the queue
+    keeps the two apart."""
+
+    def setUp(self):
+        from decimal import Decimal
+        self.admin = mk('pq_admin', 'admin')
+        self.purchase = mk('pq_staff', 'purchase_staff')
+        self.accounts = mk('pq_acct', 'accounts_staff')
+        self.bde = mk('pq_bde', 'bde')
+
+    def make_lead(self, last, value='100000'):
+        from decimal import Decimal
+        lead = Lead.objects.create(first_name='P', last_name=last, phone=f'99931{last[:5]}',
+                                   status='converted', bde=self.bde, value=Decimal(value),
+                                   pushed_to_accounts=True)
+        return lead
+
+    def verify(self, lead, received, discount=0):
+        """Run the real accounts flow so the hand-off fires as it does live."""
+        from decimal import Decimal
+        from .models import PaymentVerification
+        pv, _ = PaymentVerification.objects.get_or_create(lead=lead)
+        pv.amount_received = Decimal(str(received))
+        pv.discount_value = Decimal(str(discount))
+        pv.payment_mode = 'cash'
+        pv.save()
+        r = self.client.post(f'/api/leads/{lead.id}/complete-payment-verification/',
+                             content_type='application/json',
+                             HTTP_AUTHORIZATION=token_for(self.admin))
+        # Assert here: a wrong URL would 404 and every assertion below would then
+        # be testing nothing.
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return r
+
+    def queue(self, actor=None, query=''):
+        r = self.client.get(f'/api/leads/purchase/{query}',
+                            HTTP_AUTHORIZATION=token_for(actor or self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return r.json()
+
+    def test_a_part_payment_reaches_purchase(self):
+        """This used to wait in accounts until the balance was cleared."""
+        lead = self.make_lead('Part')
+        self.verify(lead, 40000)
+        lead.refresh_from_db()
+        self.assertTrue(lead.pushed_to_purchase)
+        row = next(r for r in self.queue() if r['id'] == lead.id)
+        self.assertEqual(row['payment_state'], 'partially_paid')
+        self.assertEqual(Decimal(str(row['balance_amount'])), Decimal('60000'))
+
+    def test_a_full_payment_still_reaches_purchase(self):
+        lead = self.make_lead('Full')
+        self.verify(lead, 100000)
+        lead.refresh_from_db()
+        self.assertTrue(lead.pushed_to_purchase)
+        row = next(r for r in self.queue() if r['id'] == lead.id)
+        self.assertEqual(row['payment_state'], 'fully_paid')
+
+    def test_verifying_with_no_money_does_not_reach_purchase(self):
+        lead = self.make_lead('Zero')
+        self.verify(lead, 0)
+        lead.refresh_from_db()
+        self.assertFalse(lead.pushed_to_purchase)
+
+    def test_the_queue_filters_by_payment_state(self):
+        part = self.make_lead('FilterPart')
+        full = self.make_lead('FilterFull')
+        self.verify(part, 25000)
+        self.verify(full, 100000)
+
+        partial_ids = [r['id'] for r in self.queue(query='?payment=partially_paid')]
+        self.assertIn(part.id, partial_ids)
+        self.assertNotIn(full.id, partial_ids)
+
+        full_ids = [r['id'] for r in self.queue(query='?payment=fully_paid')]
+        self.assertIn(full.id, full_ids)
+        self.assertNotIn(part.id, full_ids)
+
+        both = [r['id'] for r in self.queue()]
+        self.assertIn(part.id, both)
+        self.assertIn(full.id, both)
+
+    def test_clearing_the_balance_moves_the_row_to_fully_paid(self):
+        lead = self.make_lead('Cleared')
+        self.verify(lead, 40000)
+        row = next(r for r in self.queue() if r['id'] == lead.id)
+        self.assertEqual(row['payment_state'], 'partially_paid')
+
+        from .models import PaymentVerification
+        pv = PaymentVerification.objects.get(lead=lead)
+        pv.amount_received = Decimal('100000')
+        pv.save(update_fields=['amount_received'])
+
+        row = next(r for r in self.queue() if r['id'] == lead.id)
+        self.assertEqual(row['payment_state'], 'fully_paid')
+        self.assertEqual(Decimal(str(row['balance_amount'])), Decimal('0'))
+
+    def test_purchase_staff_see_the_same_buckets(self):
+        lead = self.make_lead('Staff')
+        self.verify(lead, 30000)
+        lead.refresh_from_db()
+        lead.purchase_staff = self.purchase
+        lead.save(update_fields=['purchase_staff'])
+        rows = self.queue(actor=self.purchase)
+        self.assertEqual([r['payment_state'] for r in rows], ['partially_paid'])
+

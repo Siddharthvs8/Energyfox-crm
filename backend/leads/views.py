@@ -1127,6 +1127,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             'stage1_complete': bool(s1 and s1.is_complete),
             'payment_verification': PaymentVerificationSerializer(pv, context={'request': request}).data if pv else None,
             'payment_complete': bool(pv and pv.is_complete),
+            # Which payment bucket this row sits in — drives the queue's filter.
             'balance_amount': pv.balance_amount if pv else None,
             'fully_paid': bool(pv and pv.is_complete and pv.balance_amount <= 0),
             'balance_payments': BalancePaymentSerializer(lead.balance_payments.all(), many=True).data,
@@ -1268,19 +1269,22 @@ class LeadViewSet(viewsets.ModelViewSet):
         return Response(self._completed_project_payload(lead, request))
 
     def _push_to_purchase(self, lead, request):
-        """Hand the lead off to purchase & logistics (idempotent). Triggered once
-        the customer has fully paid."""
+        """Hand the lead off to purchase & logistics (idempotent). Triggered by
+        the first payment, part or full — the queue shows which is which so
+        procurement can weigh a part-paid order accordingly."""
         if lead.pushed_to_purchase:
             return
         lead.pushed_to_purchase = True
         lead.pushed_to_purchase_at = timezone.now()
         lead.save(update_fields=['pushed_to_purchase', 'pushed_to_purchase_at'])
+        pv = getattr(lead, 'payment_verification', None)
+        paid = 'Fully paid' if (pv and (pv.balance_amount or 0) <= 0) else 'Part payment received'
         assignee = auto_assign_purchase(lead)
         if assignee:
             pname = f"{assignee.first_name} {assignee.last_name}".strip() or assignee.username
-            pdesc = f"Fully paid — moved to purchase & logistics. Auto-assigned to {pname}."
+            pdesc = f"{paid} — moved to purchase & logistics. Auto-assigned to {pname}."
         else:
-            pdesc = "Fully paid — moved to purchase & logistics."
+            pdesc = f"{paid} — moved to purchase & logistics."
         ActivityLog.objects.create(
             activity_type='note_added',
             description=pdesc,
@@ -1288,7 +1292,8 @@ class LeadViewSet(viewsets.ModelViewSet):
             lead=lead,
             extra={'auto_generated': True},
         )
-        fire_automation('payment_fully_paid', lead)
+        if pv and (pv.balance_amount or 0) <= 0:
+            fire_automation('payment_fully_paid', lead)
 
     @action(detail=True, methods=['post'], url_path='complete-payment-verification')
     def complete_payment_verification(self, request, pk=None):
@@ -1325,9 +1330,10 @@ class LeadViewSet(viewsets.ModelViewSet):
                       payment_mode=pv.get_payment_mode_display() if pv.payment_mode else '',
                       is_initial=True,
                       created_by=request.user if request.user.is_authenticated else None)
-        # Hand off to purchase & logistics only once the payment is fully received.
-        # (Partially-paid customers wait in accounts until the balance is cleared.)
-        if pv.balance_amount <= 0:
+        # Hand off to purchase & logistics as soon as money has come in —
+        # procurement starts on a part payment; the balance is chased in parallel
+        # rather than holding the order up.
+        if (pv.amount_received or 0) > 0:
             self._push_to_purchase(lead, request)
         else:
             fire_automation('payment_partially_paid', lead, {'balance_amount': float(pv.balance_amount)})
@@ -1675,9 +1681,11 @@ class LeadViewSet(viewsets.ModelViewSet):
             description=f"Balance payment of {amount} recorded by {actor}. Balance due: {pv.balance_amount}.",
             actor=request.user if request.user.is_authenticated else None,
             lead=lead, extra={'auto_generated': True})
-        # Once the balance is cleared, the fully-paid customer moves to purchase & logistics.
+        # The lead is already in purchase (it moved there on the first payment);
+        # clearing the balance is what makes it fully paid.
         if pv.balance_amount <= 0:
-            self._push_to_purchase(lead, request)
+            self._push_to_purchase(lead, request)      # no-op if already pushed
+            fire_automation('payment_fully_paid', lead)
         return Response(summary())
 
     @action(detail=True, methods=['get'], url_path='receipts')
@@ -1851,6 +1859,11 @@ class LeadViewSet(viewsets.ModelViewSet):
             # see both the accounts and the purchase & logistics data together.
             'payment_verification': PaymentVerificationSerializer(pv, context={'request': request}).data if pv else None,
             'payment_complete': bool(pv and pv.is_complete),
+            # Which payment bucket this row sits in — drives the queue's filter.
+            'payment_state': ('fully_paid' if pv and (pv.balance_amount or 0) <= 0
+                              else 'partially_paid') if pv else None,
+            'balance_amount': pv.balance_amount if pv else None,
+            'amount_received': pv.amount_received if pv else None,
             'purchase_logistics': PurchaseLogisticsSerializer(pl, context={'request': request}).data if pl else None,
             'purchase_complete': bool(pl and pl.is_complete),
             'can_edit_purchase': can_edit_purchase_logistics(request.user, lead),
@@ -1874,7 +1887,14 @@ class LeadViewSet(viewsets.ModelViewSet):
         if (not user.is_staff and not getattr(user, 'is_general_manager', False)
                 and getattr(user, 'role', '') == 'purchase_staff'):
             qs = qs.filter(purchase_staff=user)
-        return Response([self._purchase_payload(lead, request) for lead in qs])
+
+        rows = [self._purchase_payload(lead, request) for lead in qs]
+        # ?payment=partially_paid|fully_paid — the balance is derived from the
+        # lead value, so it is filtered on the built rows rather than in SQL.
+        wanted = request.query_params.get('payment')
+        if wanted in ('partially_paid', 'fully_paid'):
+            rows = [r for r in rows if r['payment_state'] == wanted]
+        return Response(rows)
 
     @action(detail=True, methods=['get'], url_path='purchase-detail')
     def purchase_detail(self, request, pk=None):
