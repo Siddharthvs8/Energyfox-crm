@@ -7,6 +7,7 @@
  * column widths and label/value split have to match exactly. Coordinates are in
  * millimetres on A4 portrait; `X` holds the column edges every section aligns to.
  */
+import { BRAND_LOGO } from "./brandLogo";
 import { RUPEE_FONT_BASE64, RUPEE_FONT_FILE, RUPEE_FONT_NAME } from "./rupeeFont";
 
 export type ProformaData = {
@@ -150,7 +151,9 @@ export async function buildProformaPdf(d: ProformaData): Promise<any> {
   const addrLines = doc.splitTextToSize(d.company.address || "", 60).slice(0, 3);
   // 6.5mm for the name, then 3.2mm per address line and per meta row, plus padding.
   const headerH = Math.max(30, 8 + (addrLines.length + 5) * 3.2 + 2.5);
-  const logo = await dataUri(d.company.logo);
+  // A logo uploaded through Settings wins; the bundled one is the floor, so the
+  // document looks the same whether or not the deployment can serve media.
+  const logo = (await dataUri(d.company.logo)) || BRAND_LOGO;
   if (logo) {
     const boxX = L + 2, boxY = y + 2, boxW = 64, boxH = headerH - 4;
     placeImage(logo, boxX, boxY, boxW, boxH);
