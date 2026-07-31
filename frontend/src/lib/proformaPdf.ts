@@ -190,15 +190,13 @@ export async function buildProformaPdf(d: ProformaData): Promise<any> {
   const secH = 6;
   const bandFill = () => { doc.setFillColor(31, 46, 74); };
 
-  bandFill();
-  doc.rect(L, y, W / 2, secH, "F");
-  doc.rect(MID, y, W / 2, secH, "F");
-  doc.setTextColor(255); size(8.5); bold();
+  // Plain, like the detail rows beneath it — in the template only the
+  // "Billed To / Shipped to" band further down is filled.
+  box(L, y, W / 2, secH); box(MID, y, W / 2, secH);
+  size(8.5); bold();
   text("Proforma Invoice Details", L + 3, y + 4);
   text("Customer name:", MID + 3, y + 4);
-  bold(false);
-  text(d.customer.name, MID + 40, y + 4);
-  doc.setTextColor(0);
+  text(d.customer.name, MID + 45, y + 4);
   y += secH;
 
   const detailRows: [string, string, string, string][] = [
