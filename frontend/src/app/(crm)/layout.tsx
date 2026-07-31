@@ -241,6 +241,8 @@ export default function DashboardLayout({
   // reveals still enforces its own access on the server.
   const [bizMode, setBizMode] = useState<"b2c" | "b2b">("b2c");
   const [night, setNight] = useState(false);
+  // Signing out is easy to hit by accident next to the theme toggle, so it asks first.
+  const [confirmLogout, setConfirmLogout] = useState(false);
 
   // Store manager / store keeper / accounts B2B work the wholesale side only.
   const isB2BOnly = B2B_ONLY_ROLES.includes(currentUser?.role);
@@ -284,6 +286,13 @@ export default function DashboardLayout({
     initNightMode();
     setNight(preferredNightMode());
   }, []);
+
+  const doLogout = () => {
+    localStorage.removeItem(`${domain}_access`);
+    localStorage.removeItem(`${domain}_refresh`);
+    setConfirmLogout(false);
+    router.push(`/login`);
+  };
 
   const toggleNight = () => {
     const next = !night;
@@ -925,11 +934,7 @@ export default function DashboardLayout({
               {night ? <Nav.Sun /> : <Nav.Moon />}
             </button>
             <button
-              onClick={() => {
-                localStorage.removeItem(`${domain}_access`);
-                localStorage.removeItem(`${domain}_refresh`);
-                router.push(`/login`);
-              }}
+              onClick={() => setConfirmLogout(true)}
               className="text-slate-600 hover:text-red-400 p-1 transition-colors flex-shrink-0"
               title="Sign out"
             >
@@ -1055,6 +1060,35 @@ export default function DashboardLayout({
                   })}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sign out — confirmed, so a stray click doesn't end the session. */}
+      {confirmLogout && (
+        <div className="popup-overlay">
+          <div className="popup-backdrop" onClick={() => setConfirmLogout(false)} />
+          <div className="popup-card max-w-sm w-full p-6 text-center">
+            <div className="w-14 h-14 mx-auto rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mb-4">
+              <svg width="24" height="24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                <polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
+              </svg>
+            </div>
+            <h3 className="text-lg font-bold text-slate-900">Sign out?</h3>
+            <p className="text-sm text-slate-500 mt-1.5">
+              You&apos;ll be signed out of <b className="text-slate-700">{userName}</b> and returned to the login page.
+            </p>
+            <div className="flex gap-3 mt-6">
+              <button onClick={() => setConfirmLogout(false)} autoFocus
+                className="flex-1 py-2.5 border border-slate-200 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-all">
+                No
+              </button>
+              <button onClick={doLogout}
+                className="flex-1 py-2.5 bg-rose-600 text-white rounded-xl text-sm font-bold hover:bg-rose-700 transition-all shadow-sm">
+                Yes, sign out
+              </button>
             </div>
           </div>
         </div>
