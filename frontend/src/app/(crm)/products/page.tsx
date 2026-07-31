@@ -5,7 +5,7 @@ import { getApiBase } from "@/lib/mock-data";
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 
-const blankForm = { name: "", sku: "", unit: "unit", default_price: "", cost_price: "", stock_quantity: "0", reorder_level: "0" };
+const blankForm = { name: "", sku: "", unit: "unit", hsn: "", default_price: "", cost_price: "", stock_quantity: "0", reorder_level: "0" };
 
 export default function ProductsPage({ params: paramsPromise }: { params: Promise<{ domain: string }> }) {
   const params = React.use(paramsPromise);
@@ -39,7 +39,7 @@ export default function ProductsPage({ params: paramsPromise }: { params: Promis
   const openEditModal = (p: any) => {
     setEditProduct(p);
     setForm({
-      name: p.name || "", sku: p.sku || "", unit: p.unit || "unit",
+      name: p.name || "", sku: p.sku || "", unit: p.unit || "unit", hsn: p.hsn || "",
       default_price: String(p.default_price ?? ""), cost_price: String(p.cost_price ?? ""),
       stock_quantity: String(p.stock_quantity ?? 0), reorder_level: String(p.reorder_level ?? 0),
     });
@@ -51,7 +51,7 @@ export default function ProductsPage({ params: paramsPromise }: { params: Promis
     setSaving(true);
     const token = localStorage.getItem(`${domain}_access`);
     const payload = {
-      name: form.name, sku: form.sku, unit: form.unit,
+      name: form.name, sku: form.sku, unit: form.unit, hsn: form.hsn,
       default_price: form.default_price || 0, cost_price: form.cost_price || 0,
       // Not parseInt: stock is decimal (metres of cable, part sets), and parsing
       // to an integer silently dropped the fraction on the way out.
@@ -107,11 +107,12 @@ export default function ProductsPage({ params: paramsPromise }: { params: Promis
 
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse min-w-[720px]">
+          <table className="w-full text-left border-collapse min-w-[820px]">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200 text-xs uppercase tracking-wider text-slate-500 font-semibold">
                 <th className="py-4 px-6">SKU</th>
                 <th className="py-4 px-6">Name</th>
+                <th className="py-4 px-6">HSN / SAC</th>
                 <th className="py-4 px-6 text-right">Price</th>
                 <th className="py-4 px-6 text-right">Cost</th>
                 <th className="py-4 px-6 text-center">Stock</th>
@@ -121,7 +122,7 @@ export default function ProductsPage({ params: paramsPromise }: { params: Promis
             <tbody className="divide-y divide-slate-100">
               {products.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-12 text-center text-slate-500">
+                  <td colSpan={7} className="py-12 text-center text-slate-500">
                     <div className="mx-auto w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mb-3">
                       <svg width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" /><line x1="7" y1="7" x2="7.01" y2="7" /></svg>
                     </div>
@@ -136,6 +137,7 @@ export default function ProductsPage({ params: paramsPromise }: { params: Promis
                     <tr key={p.id} className="hover:bg-slate-50/50 transition-colors">
                       <td className="py-4 px-6 text-slate-500 font-mono text-xs">{p.sku || "—"}</td>
                       <td className="py-4 px-6 font-medium text-slate-900">{p.name}</td>
+                      <td className="py-4 px-6 text-slate-500 font-mono text-xs">{p.hsn || "—"}</td>
                       <td className="py-4 px-6 text-right text-slate-700">₹{parseFloat(p.default_price || 0).toLocaleString("en-IN")}</td>
                       <td className="py-4 px-6 text-right text-slate-400">₹{parseFloat(p.cost_price || 0).toLocaleString("en-IN")}</td>
                       <td className="py-4 px-6 text-center">
@@ -201,6 +203,10 @@ export default function ProductsPage({ params: paramsPromise }: { params: Promis
                   <div>
                     <label className="block text-sm font-semibold text-slate-700 mb-1.5">Unit</label>
                     <input type="text" value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} className={field} placeholder="unit" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-slate-700 mb-1.5">HSN / SAC</label>
+                    <input type="text" value={form.hsn} onChange={(e) => setForm({ ...form, hsn: e.target.value })} className={field} placeholder="e.g. 85414300" />
                   </div>
                 </div>
               </div>

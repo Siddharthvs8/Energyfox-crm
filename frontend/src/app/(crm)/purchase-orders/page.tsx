@@ -93,17 +93,21 @@ export default function PurchaseOrdersPage({ params: paramsPromise }: { params: 
 
     autoTable(doc, {
       startY: y + 18,
-      head: [["#", "Item", "Qty", "Unit Price (Rs.)", "Amount (Rs.)"]],
+      head: [["#", "Item", "HSN / SAC", "Qty", "Unit Price (Rs.)", "Amount (Rs.)"]],
       body: (o.items || []).map((it: any, i: number) => [
         i + 1,
         it.product_name || it.description || "-",
-        Number(it.quantity || 0).toLocaleString("en-IN"),
+        it.product_hsn || "-",
+        `${Number(it.quantity || 0).toLocaleString("en-IN")} ${it.product_unit || ""}`.trim(),
         fmt(it.unit_price),
         fmt(it.line_total ?? (Number(it.quantity || 0) * Number(it.unit_price || 0))),
       ]),
       headStyles: { fillColor: [79, 70, 229], textColor: 255, fontStyle: "bold" },
       styles: { fontSize: 9, cellPadding: 6 },
-      columnStyles: { 0: { cellWidth: 30 }, 2: { halign: "right" }, 3: { halign: "right" }, 4: { halign: "right" } },
+      columnStyles: {
+        0: { cellWidth: 30 }, 2: { cellWidth: 70 },
+        3: { halign: "right" }, 4: { halign: "right" }, 5: { halign: "right" },
+      },
       margin: { left: 40, right: 40 },
     });
 

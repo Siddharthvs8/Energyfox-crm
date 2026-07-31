@@ -20,6 +20,10 @@ class VendorSerializer(serializers.ModelSerializer):
 # ─── Line-item serializers ──────────────────────────────────────────────────
 class _ItemSerializer(serializers.ModelSerializer):
     product_name = serializers.SerializerMethodField()
+    # Printed against the line on any GST document; default so a line with no
+    # catalogue product behind it still serialises.
+    product_unit = serializers.CharField(source='product.unit', read_only=True, default='')
+    product_hsn = serializers.CharField(source='product.hsn', read_only=True, default='')
     line_total = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
 
     def get_product_name(self, obj):
@@ -29,13 +33,11 @@ class _ItemSerializer(serializers.ModelSerializer):
 class PurchaseOrderItemSerializer(_ItemSerializer):
     class Meta:
         model = PurchaseOrderItem
-        fields = ['id', 'product', 'product_name', 'description', 'quantity', 'unit_price', 'line_total']
+        fields = ['id', 'product', 'product_name', 'product_unit', 'product_hsn',
+                  'description', 'quantity', 'unit_price', 'line_total']
 
 
 class QuoteItemSerializer(_ItemSerializer):
-    product_unit = serializers.CharField(source='product.unit', read_only=True)
-    product_hsn = serializers.CharField(source='product.hsn', read_only=True)
-
     class Meta:
         model = QuoteItem
         fields = ['id', 'product', 'product_name', 'product_unit', 'product_hsn',
@@ -45,7 +47,8 @@ class QuoteItemSerializer(_ItemSerializer):
 class SalesOrderItemSerializer(_ItemSerializer):
     class Meta:
         model = SalesOrderItem
-        fields = ['id', 'product', 'product_name', 'description', 'quantity', 'unit_price', 'line_total']
+        fields = ['id', 'product', 'product_name', 'product_unit', 'product_hsn',
+                  'description', 'quantity', 'unit_price', 'line_total']
 
 
 # ─── Shared nested-items handling ───────────────────────────────────────────
@@ -216,6 +219,7 @@ class StockCustomerSerializer(serializers.ModelSerializer):
 
 class _MovementSerializer(serializers.ModelSerializer):
     item_code = serializers.CharField(source='item.code', read_only=True)
+    item_hsn = serializers.CharField(source='item.hsn', read_only=True, default='')
     item_label = serializers.SerializerMethodField()
     amount = serializers.DecimalField(max_digits=16, decimal_places=2, read_only=True)
     created_by_name = serializers.SerializerMethodField()
@@ -237,7 +241,7 @@ class GoodsReceiptSerializer(_MovementSerializer):
     class Meta:
         model = GoodsReceipt
         fields = ['id', 'grn_no', 'date', 'supplier', 'supplier_name', 'item', 'item_code',
-                  'item_label', 'quantity', 'rate', 'amount', 'notes',
+                  'item_label', 'item_hsn', 'quantity', 'rate', 'amount', 'notes',
                   'created_by', 'created_by_name', 'created_at']
         read_only_fields = ['created_by', 'created_at']
 
@@ -250,7 +254,7 @@ class StockDispatchSerializer(_MovementSerializer):
     class Meta:
         model = StockDispatch
         fields = ['id', 'invoice_no', 'date', 'customer', 'customer_name', 'item', 'item_code',
-                  'item_label', 'quantity', 'rate', 'amount', 'tax_percent', 'tax_amount', 'total',
+                  'item_label', 'item_hsn', 'quantity', 'rate', 'amount', 'tax_percent', 'tax_amount', 'total',
                   'site', 'notes', 'created_by', 'created_by_name', 'created_at']
         read_only_fields = ['created_by', 'created_at']
 

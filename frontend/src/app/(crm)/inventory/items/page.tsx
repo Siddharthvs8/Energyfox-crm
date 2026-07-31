@@ -14,7 +14,7 @@ import {
 } from "../shared";
 
 const blankItem = {
-  code: "", category: CATS[0], brand: "", model_name: "", unit: "Nos",
+  code: "", category: CATS[0], brand: "", model_name: "", unit: "Nos", hsn: "",
   opening_stock: "", unit_cost: "", reorder_level: "", location: "",
 };
 
@@ -33,7 +33,7 @@ export default function StockItemMasterPage() {
     setEditing(r);
     setForm({
       code: r.code, category: r.category, brand: r.brand || "", model_name: r.model_name || "",
-      unit: r.unit || "Nos", opening_stock: r.opening_stock ?? "", unit_cost: r.unit_cost ?? "",
+      unit: r.unit || "Nos", hsn: r.hsn || "", opening_stock: r.opening_stock ?? "", unit_cost: r.unit_cost ?? "",
       reorder_level: r.reorder_level ?? "", location: r.location || "",
     });
     setShow(true);
@@ -55,7 +55,7 @@ export default function StockItemMasterPage() {
 
   const term = search.trim().toLowerCase();
   const filtered = !term ? list : list.filter(r =>
-    `${r.code} ${r.category} ${r.brand} ${r.model_name} ${r.location}`.toLowerCase().includes(term));
+    `${r.code} ${r.category} ${r.brand} ${r.model_name} ${r.hsn} ${r.location}`.toLowerCase().includes(term));
   const lowCount = list.filter(r => r.status === "REORDER").length;
 
   return (
@@ -70,9 +70,9 @@ export default function StockItemMasterPage() {
       <SearchBar value={search} onChange={setSearch} placeholder="Search items..." />
 
       <DataTable
-        minWidth={1040}
+        minWidth={1140}
         columns={[
-          "Code", "Category", "Brand / Model",
+          "Code", "Category", "Brand / Model", "HSN / SAC",
           { label: "Opening", align: "right" }, { label: "In", align: "right" }, { label: "Out", align: "right" },
           { label: "Closing", align: "center" }, { label: "Unit Cost", align: "right" },
           { label: "Stock Value", align: "right" }, "Location", { label: "Actions", align: "right" },
@@ -82,6 +82,7 @@ export default function StockItemMasterPage() {
           <span className="font-mono text-xs font-semibold text-slate-900">{r.code}</span>,
           r.category,
           <span>{`${r.brand} ${r.model_name}`.trim() || "—"}</span>,
+          <span className="font-mono text-xs text-slate-500">{r.hsn || "—"}</span>,
           <span className="tabular-nums text-slate-500">{num(r.opening_stock)}</span>,
           <span className="tabular-nums text-emerald-600">+{num(r.received)}</span>,
           <span className="tabular-nums text-rose-600">−{num(r.dispatched)}</span>,
@@ -133,10 +134,14 @@ export default function StockItemMasterPage() {
               onChange={e => setForm({ ...form, reorder_level: e.target.value })} className={FIELD} />
           </Fld>
         </Row>
-        <Row>
+        <Row cols={3}>
           <Fld label="Unit">
             <input value={form.unit} onChange={e => setForm({ ...form, unit: e.target.value })}
               className={FIELD} placeholder="Nos" />
+          </Fld>
+          <Fld label="HSN / SAC">
+            <input value={form.hsn} onChange={e => setForm({ ...form, hsn: e.target.value })}
+              className={`${FIELD} font-mono`} placeholder="e.g. 85414300" />
           </Fld>
           <Fld label="Warehouse Location">
             <input value={form.location} onChange={e => setForm({ ...form, location: e.target.value })}

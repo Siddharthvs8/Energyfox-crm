@@ -277,6 +277,62 @@ class ProformaSendTests(TestCase):
         self.assertEqual(r.status_code, 403)
 
 
+class HsnPlumbingTests(TestCase):
+    """HSN is entered once in Item Master and has to reach every document."""
+
+    def setUp(self):
+        from leads.models import Product
+        self.admin = mk('hsn_admin', 'admin')
+        self.product = Product.objects.create(name='Waaree 540w', unit='Nos', hsn='85414300')
+        self.item = StockItem.objects.create(code='HSN-1', category='Solar Panel',
+                                             unit='NOS', hsn='85414300')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': token_for(self.admin)}
+
+    def test_item_master_round_trips_hsn(self):
+        """Both catalogues accept and return it, so the field is editable."""
+        r = self.client.patch(f'/api/stock-items/{self.item.id}/',
+                              {'hsn': '85044090'}, content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertEqual(r.json()['hsn'], '85044090')
+
+        r = self.client.patch(f'/api/products/{self.product.id}/',
+                              {'hsn': '85044090'}, content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertEqual(r.json()['hsn'], '85044090')
+
+    def test_purchase_order_lines_carry_hsn_and_unit(self):
+        """The PO print-out is a GST document, so its lines need them too."""
+        from .models import PurchaseOrder, PurchaseOrderItem
+        po = PurchaseOrder.objects.create()
+        PurchaseOrderItem.objects.create(purchase_order=po, product=self.product,
+                                         quantity=Decimal('2'), unit_price=Decimal('100'))
+        r = self.client.get(f'/api/purchase-orders/{po.id}/', **self.auth())
+        self.assertEqual(r.status_code, 200)
+        line = r.json()['items'][0]
+        self.assertEqual(line['product_hsn'], '85414300')
+        self.assertEqual(line['product_unit'], 'Nos')
+
+    def test_a_line_with_no_catalogue_product_still_serialises(self):
+        """Free-text lines have no product behind them; that must not 500."""
+        from .models import PurchaseOrder, PurchaseOrderItem
+        po = PurchaseOrder.objects.create()
+        PurchaseOrderItem.objects.create(purchase_order=po, product=None,
+                                         description='Site labour', quantity=Decimal('1'))
+        r = self.client.get(f'/api/purchase-orders/{po.id}/', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertEqual(r.json()['items'][0]['product_hsn'], '')
+
+    def test_stock_movements_expose_the_item_hsn(self):
+        from .models import StockDispatch
+        d = StockDispatch.objects.create(item=self.item, quantity=Decimal('1'),
+                                         rate=Decimal('10'), date=timezone.localdate())
+        r = self.client.get(f'/api/stock-dispatches/{d.id}/', **self.auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['item_hsn'], '85414300')
+
+
 class RetailProformaTests(TestCase):
     """The B2C module prints the same document off the product catalogue."""
 
