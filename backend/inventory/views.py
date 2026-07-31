@@ -1,3 +1,6 @@
+import base64
+import mimetypes
+
 from django.conf import settings
 from django.core.mail import EmailMessage
 from django.db.models import Q
@@ -89,6 +92,27 @@ def safe_doc_name(number):
     return (number or 'proforma').replace('/', '-')
 
 
+def inline_image(f):
+    """Read an image file into a data: URI.
+
+    The PDF is drawn in the browser, so any artwork it needs has to be readable
+    from there. Handing out a media URL only works while that URL is same-origin
+    — once the app is hosted with media on another host or a CDN, fetching it
+    from the page is a cross-origin request that fails and the logo silently
+    disappears from the document. Inlining the bytes here removes that fetch.
+    """
+    if not f:
+        return None
+    try:
+        f.open('rb')
+        raw = f.read()
+        f.close()
+    except Exception:                       # missing file: draw without artwork
+        return None
+    mime = mimetypes.guess_type(f.name)[0] or 'image/png'
+    return f"data:{mime};base64,{base64.b64encode(raw).decode()}"
+
+
 class ProformaDocumentMixin:
     """Serves a quote's proforma invoice and sends it to the customer.
 
@@ -167,9 +191,10 @@ class ProformaDocumentMixin:
                 'cin': org.warranty_cin,
                 # The PAN is the middle ten characters of the GSTIN.
                 'pan': (org.warranty_gst or '')[2:12],
-                'logo': url(org.logo),
-                'signature': url(org.warranty_signature),
-                'seal': url(org.warranty_seal),
+                # Inlined rather than linked — see inline_image().
+                'logo': inline_image(org.logo) or url(org.logo),
+                'signature': inline_image(org.warranty_signature) or url(org.warranty_signature),
+                'seal': inline_image(org.warranty_seal) or url(org.warranty_seal),
             },
             'bank': {
                 'name': org.receipt_bank_name,

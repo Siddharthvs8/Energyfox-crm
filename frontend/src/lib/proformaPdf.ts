@@ -33,6 +33,12 @@ const inr = (v: any) => {
   return n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
 
+/** Quantities and rates print as entered — "13" and "5", not "13.00" and "5.00". */
+const trim0 = (v: any) => {
+  const s = String(v ?? "").trim();
+  return s.includes(".") ? s.replace(/\.?0+$/, "") : s;
+};
+
 const dmy = (iso: string | null) => {
   if (!iso) return "";
   const [y, m, d] = iso.split("-");
@@ -42,6 +48,9 @@ const dmy = (iso: string | null) => {
 /** Fetch an image as a data URI; returns null so a missing logo never breaks the PDF. */
 async function dataUri(url: string | null): Promise<string | null> {
   if (!url) return null;
+  // The server inlines artwork so the page never has to fetch it cross-origin;
+  // a plain URL is only a fallback, and fetching it may well be blocked.
+  if (url.startsWith("data:")) return url;
   try {
     const r = await fetch(url);
     if (!r.ok) return null;
@@ -66,7 +75,11 @@ export async function buildProformaPdf(d: ProformaData): Promise<any> {
   const line = (x1: number, y1: number, x2: number, y2: number) => doc.line(x1, y1, x2, y2);
   const box = (x: number, yy: number, w: number, h: number) => doc.rect(x, yy, w, h);
   const text = (t: string, x: number, yy: number, opts?: any) => doc.text(String(t ?? ""), x, yy, opts);
-  const bold = (on = true) => doc.setFont("helvetica", on ? "bold" : "normal");
+  // The original sets everything from the title bar down to the address blocks
+  // in a serif face, and the table from "( Amount in INR )" onward in a sans one.
+  let FACE = "helvetica";
+  const face = (f: "times" | "helvetica") => { FACE = f; doc.setFont(f, "normal"); };
+  const bold = (on = true) => doc.setFont(FACE, on ? "bold" : "normal");
   const size = (n: number) => doc.setFontSize(n);
 
   // The standard-14 fonts have no rupee sign, so it gets its own one-glyph font.
@@ -88,13 +101,45 @@ export async function buildProformaPdf(d: ProformaData): Promise<any> {
     doc.setFontSize(start);
   };
 
+  /** Centred counterpart of fitRight, for codes that fill their column. */
+  const fitCentre = (t: string, centre: number, yy: number, maxW: number) => {
+    const str = String(t ?? "");
+    const start = doc.getFontSize();
+    while (doc.getFontSize() > 5 && doc.getTextWidth(str) > maxW) {
+      doc.setFontSize(doc.getFontSize() - 0.25);
+    }
+    text(str, centre, yy, { align: "center" });
+    doc.setFontSize(start);
+  };
+
   /** The Taxable cell prints accounting-style: ₹ flush left, amount flush right. */
   const rupeeAmount = (amount: string, left: number, right: number, yy: number) => {
     const wasBold = doc.getFont().fontStyle === "bold";
     doc.setFont(RUPEE_FONT_NAME, "normal");
     text("₹", left + 2, yy);
-    doc.setFont("helvetica", wasBold ? "bold" : "normal");
-    fitRight(amount, right - 2, yy, right - left - 8);
+    doc.setFont(FACE, wasBold ? "bold" : "normal");
+    fitRight(amount, right - 2, yy, right - left - 6);
+  };
+
+  /**
+   * Draw artwork centred in a box, scaled to fit rather than stretched — the
+   * logo is far wider than it is tall, and filling the box would squash it.
+   * Anything unreadable is skipped so the document still prints.
+   */
+  const placeImage = (uri: string, bx: number, by: number, bw: number, bh: number) => {
+    const padW = bw - 3, padH = bh - 3;
+    let w = padW, h = padH;
+    try {
+      const p = doc.getImageProperties(uri);
+      const scale = Math.min(padW / p.width, padH / p.height);
+      w = p.width * scale;
+      h = p.height * scale;
+    } catch { /* unknown dimensions: fill the box */ }
+    const kind = /^data:image\/(\w+)/.exec(uri)?.[1]?.toUpperCase() || "PNG";
+    try {
+      doc.addImage(uri, kind === "JPG" ? "JPEG" : kind,
+                   bx + (bw - w) / 2, by + (bh - h) / 2, w, h, undefined, "FAST");
+    } catch { /* ignore */ }
   };
 
   doc.setLineWidth(0.2);
@@ -107,9 +152,10 @@ export async function buildProformaPdf(d: ProformaData): Promise<any> {
   const headerH = Math.max(30, 8 + (addrLines.length + 5) * 3.2 + 2.5);
   const logo = await dataUri(d.company.logo);
   if (logo) {
-    try { doc.addImage(logo, "PNG", L + 3, y + 3, 62, headerH - 6, undefined, "FAST"); } catch { /* ignore */ }
+    const boxX = L + 2, boxY = y + 2, boxW = 64, boxH = headerH - 4;
+    placeImage(logo, boxX, boxY, boxW, boxH);
     doc.setDrawColor(180);
-    doc.roundedRect(L + 2, y + 2, 64, headerH - 4, 2, 2);
+    doc.roundedRect(boxX, boxY, boxW, boxH, 2, 2);
     doc.setDrawColor(120);
   }
   size(11); bold();
@@ -128,6 +174,7 @@ export async function buildProformaPdf(d: ProformaData): Promise<any> {
   y += headerH;
 
   /* ── Title bar ── */
+  face("times");
   doc.setFillColor(31, 46, 74);
   doc.rect(L, y, W, 7, "F");
   doc.setTextColor(255); size(12); bold();
@@ -174,18 +221,23 @@ export async function buildProformaPdf(d: ProformaData): Promise<any> {
   doc.setTextColor(0);
   y += secH;
 
-  const addrH = 26;
-  box(L, y, W / 2, addrH); box(MID, y, W / 2, addrH);
   size(8);
+  const wrapAddr = (a: string) => doc.splitTextToSize(a || "", W / 2 - 28).slice(0, 3);
+  const addrRows = Math.max(wrapAddr(d.customer.address).length,
+                            wrapAddr(d.ship_to.address).length, 1);
+  // Name + Address block + State + GST No., with the address free to run to
+  // three lines before it is truncated.
+  const addrH = 9 + addrRows * 3.6 + 2.5 + 4.5 + 4.5 + 2;
+  box(L, y, W / 2, addrH); box(MID, y, W / 2, addrH);
   const addrBlock = (x: number, party: { name: string; address: string; state: string; gstin: string }) => {
     let ry = y + 4.5;
     bold(); text("Name:", x + 3, ry); bold(); text(party.name, x + 22, ry);
     ry += 4.5;
     bold(); text("Address:", x + 3, ry);
     bold();
-    const wrapped = doc.splitTextToSize(party.address || "", W / 2 - 28);
+    const wrapped = wrapAddr(party.address);
     let wy = ry;
-    wrapped.slice(0, 3).forEach((l: string) => { text(l, x + 22, wy); wy += 3.6; });
+    wrapped.forEach((l: string) => { text(l, x + 22, wy); wy += 3.6; });
     ry = Math.max(ry + 4.5, wy + 2.5);
     bold(); text("State:", x + 3, ry); text(party.state || "", x + 22, ry);
     ry += 4.5;
@@ -196,6 +248,7 @@ export async function buildProformaPdf(d: ProformaData): Promise<any> {
   y += addrH;
 
   /* ── "( Amount in INR )" ── */
+  face("helvetica");
   size(7.5); bold(false); doc.setFont("helvetica", "italic");
   text("( Amount in INR)", R - 2, y + 3.5, { align: "right" });
   doc.setFont("helvetica", "normal");
@@ -205,17 +258,15 @@ export async function buildProformaPdf(d: ProformaData): Promise<any> {
   // Column edges, matching the printed proportions.
   // Widths are driven by the money columns: "2,36,000.00" alone needs ~15mm at
   // 8pt, so Taxable / Tax / Total get room rather than overrunning each other.
-  const X = [L, L + 12, L + 64, L + 82, L + 94, L + 106, L + 134, L + 148, L + 168, R];
+  const X = [L, L + 7.6, L + 60, L + 74, L + 85, L + 96, L + 118, L + 131, L + 148, R];
   const heads = ["Sl No", "Particulars", "HSN", "Qty", "Unit", "Taxable", "GST Rate", "Tax", "Total"];
   const headH = 7;
 
-  doc.setFillColor(238, 240, 245);
-  doc.rect(L, y, W, headH, "F");
   size(7.5); bold();
   heads.forEach((h, i) => {
     box(X[i], y, X[i + 1] - X[i], headH);
-    const centre = i === 0 || i === 1 || i >= 2;
-    text(h, (X[i] + X[i + 1]) / 2, y + 4.5, { align: centre ? "center" : "left" });
+    if (i === 1) text(h, X[i] + 1.5, y + 4.5);          // Particulars: flush left
+    else text(h, (X[i] + X[i + 1]) / 2, y + 4.5, { align: "center" });
   });
   y += headH;
 
@@ -237,18 +288,19 @@ export async function buildProformaPdf(d: ProformaData): Promise<any> {
       desc.forEach((ln: string, n: number) =>
         text(ln, (X[1] + X[2]) / 2, top + n * 3.2, { align: "center" }));
       bold(false);
-      text(li.hsn || "", (X[2] + X[3]) / 2, mid, { align: "center" });
-      text(li.qty, (X[3] + X[4]) / 2, mid, { align: "center" });
+      fitCentre(li.hsn || "", (X[2] + X[3]) / 2, mid, X[3] - X[2] - 2);
+      text(trim0(li.qty), (X[3] + X[4]) / 2, mid, { align: "center" });
       text(li.unit || "", (X[4] + X[5]) / 2, mid, { align: "center" });
       rupeeAmount(inr(li.taxable), X[5], X[6], mid);
-      text(li.gst_rate, (X[6] + X[7]) / 2, mid, { align: "center" });
+      text(trim0(li.gst_rate), X[7] - 2, mid, { align: "right" });
       fitRight(inr(li.tax), X[8] - 2, mid, X[8] - X[7] - 3);
       fitRight(inr(li.total), X[9] - 2, mid, X[9] - X[8] - 3);
     } else {
       const mid = y + rowH / 2 + 1;
       text(String(r + 1), (X[0] + X[1]) / 2, mid, { align: "center" });
-      [3, 4, 6].forEach(n => text("-", (X[n] + X[n + 1]) / 2, mid, { align: "center" }));
+      text("-", (X[3] + X[4]) / 2, mid, { align: "center" });
       rupeeAmount("-", X[5], X[6], mid);          // the template shows "₹ -" here
+      text("-", X[7] - 2, mid, { align: "right" });
       text("-", X[8] - 2, mid, { align: "right" });
       text("-", X[9] - 2, mid, { align: "right" });
     }
@@ -267,10 +319,13 @@ export async function buildProformaPdf(d: ProformaData): Promise<any> {
   /* ── HSN details ── */
   // The strip right of the HSN columns carries the Round Off / Grand Total
   // labels beside their amounts, so it needs room for both.
-  const H = [L, L + 28, L + 72, L + 90, L + 112, L + 134, R];
+  const H = [L, L + 29, L + 71, L + 84, L + 107, L + 127, R];
+  const LBL = L + 148;                 // labels end here, amounts sit to the right
   bold(); size(8.5);
   box(L, y, W, 6);
-  text("HSN DETAILS", L + W / 2, y + 4.2, { align: "center" });
+  const cap = "HSN DETAILS", capW = doc.getTextWidth(cap), capX = L + W / 2;
+  text(cap, capX, y + 4.2, { align: "center" });
+  line(capX - capW / 2, y + 5, capX + capW / 2, y + 5);      // underlined in the original
   y += 6;
 
   doc.setFillColor(31, 46, 74);
@@ -291,9 +346,9 @@ export async function buildProformaPdf(d: ProformaData): Promise<any> {
     for (let i = 0; i < 5; i++) box(H[i], y, H[i + 1] - H[i], 6);
     box(H[5], y, R - H[5], 6);
     if (row) {
-      text(row.hsn, (H[0] + H[1]) / 2, y + 4, { align: "center" });
+      fitCentre(row.hsn, (H[0] + H[1]) / 2, y + 4, H[1] - H[0] - 2);
       fitRight(inr(row.taxable), H[2] - 2, y + 4, H[2] - H[1] - 3);
-      text(Number(row.rate).toFixed(2), (H[2] + H[3]) / 2, y + 4, { align: "center" });
+      text(trim0(row.rate), (H[3] - 2), y + 4, { align: "right" });
       fitRight(inr(row.cgst), H[4] - 2, y + 4, H[4] - H[3] - 3);
       fitRight(inr(row.sgst), H[5] - 2, y + 4, H[5] - H[4] - 3);
     }
@@ -303,9 +358,11 @@ export async function buildProformaPdf(d: ProformaData): Promise<any> {
   // Round-off row, then the grand total, both right-labelled as in the original.
   for (let i = 0; i < 5; i++) box(H[i], y, H[i + 1] - H[i], 6);
   box(H[5], y, R - H[5], 6);
-  bold(); text("Round Off :", H[5] + 3, y + 4);
-  const labelW = doc.getTextWidth("Round Off :") + 4;
-  bold(false); fitRight(inr(d.totals.round_off), R - 2, y + 4, R - H[5] - labelW - 3);
+  text("-", H[4] - 2, y + 4, { align: "right" });
+  text("-", H[5] - 2, y + 4, { align: "right" });
+  line(LBL, y, LBL, y + 6);
+  bold(); text("Round Off :", LBL - 2, y + 4, { align: "right" });
+  bold(false); fitRight(inr(d.totals.round_off), R - 2, y + 4, R - LBL - 3);
   y += 6;
 
   for (let i = 0; i < 5; i++) box(H[i], y, H[i + 1] - H[i], 7);
@@ -313,12 +370,13 @@ export async function buildProformaPdf(d: ProformaData): Promise<any> {
   bold(); size(8);
   text("-", (H[0] + H[1]) / 2, y + 4.7, { align: "center" });
   text("-", H[2] - 2, y + 4.7, { align: "right" });
-  text("0.00", (H[2] + H[3]) / 2, y + 4.7, { align: "center" });
+  text("0.00", H[3] - 2, y + 4.7, { align: "right" });
   text("-", H[4] - 2, y + 4.7, { align: "right" });
-  text("Grand Total :", H[5] + 3, y + 4.7);
-  const gtLabelW = doc.getTextWidth("Grand Total :") + 4;
-  doc.setTextColor(200, 30, 30); size(11);
-  fitRight(inr(d.totals.grand_total), R - 2, y + 5, R - H[5] - gtLabelW - 3);
+  line(LBL, y, LBL, y + 7);
+  text("Grand Total :", LBL - 2, y + 4.7, { align: "right" });
+  doc.setTextColor(226, 24, 115);      // the magenta the original prints it in
+  size(11);
+  fitRight(inr(d.totals.grand_total), R - 2, y + 5, R - LBL - 3);
   doc.setTextColor(0);
   y += 7;
 
@@ -357,8 +415,8 @@ export async function buildProformaPdf(d: ProformaData): Promise<any> {
   doc.setFont("helvetica", "normal");
 
   const [sig, seal] = await Promise.all([dataUri(d.company.signature), dataUri(d.company.seal)]);
-  if (sig) { try { doc.addImage(sig, "PNG", MID + 12, y + 13, 30, 14, undefined, "FAST"); } catch { /* ignore */ } }
-  if (seal) { try { doc.addImage(seal, "PNG", MID + 52, y + 12, 20, 20, undefined, "FAST"); } catch { /* ignore */ } }
+  if (sig) placeImage(sig, MID + 12, y + 13, 32, 15);
+  if (seal) placeImage(seal, MID + 50, y + 12, 22, 22);
   size(8); bold();
   text("AUTHORISED SIGNATORY", MID + W / 4, y + footH - 2.5, { align: "center" });
 

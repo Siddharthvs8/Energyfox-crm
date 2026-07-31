@@ -72,6 +72,21 @@ class ProformaNumberingTests(TestCase):
 class ProformaDocumentTests(TestCase):
     """The figures the PDF prints come from the server, so they can't drift."""
 
+    @classmethod
+    def setUpClass(cls):
+        # This class writes a logo onto the org record; keep it out of the
+        # project's media directory.
+        cls._media = tempfile.mkdtemp(prefix='proforma-doc-')
+        cls._override = override_settings(MEDIA_ROOT=cls._media)
+        cls._override.enable()
+        super().setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        cls._override.disable()
+        shutil.rmtree(cls._media, ignore_errors=True)
+
     def setUp(self):
         self.admin = mk('pf_admin', 'admin')
         self.customer = StockCustomer.objects.create(
@@ -142,6 +157,36 @@ class ProformaDocumentTests(TestCase):
         self.assertEqual(d['company']['pan'], d['company']['gst'][2:12])
         self.assertTrue(d['bank']['ifsc'])
         self.assertEqual(d['invoice']['efc_ref_no'], 'REF-1')
+
+    def test_artwork_is_inlined_not_linked(self):
+        """The PDF is drawn in the browser, so a media URL would be a
+        cross-origin fetch once hosted — and the logo would vanish."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from organization.utils import get_org_settings
+        png = (b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01'
+               b'\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00'
+               b'\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82')
+        org = get_org_settings()
+        org.logo.save('logo.png', SimpleUploadedFile('logo.png', png, content_type='image/png'),
+                      save=True)
+        try:
+            logo = self.get()['company']['logo']
+            self.assertTrue(logo.startswith('data:image/png;base64,'), logo[:40])
+        finally:
+            org.logo.delete(save=True)
+
+    def test_a_missing_logo_file_does_not_break_the_document(self):
+        """A record pointing at a file that isn't there must still render."""
+        from organization.utils import get_org_settings
+        org = get_org_settings()
+        org.logo.name = 'org/does-not-exist.png'
+        org.save(update_fields=['logo'])
+        try:
+            r = self.client.get(f'/api/stock-quotes/{self.quote.id}/proforma/', **self.auth())
+            self.assertEqual(r.status_code, 200)
+        finally:
+            org.logo.name = ''
+            org.save(update_fields=['logo'])
 
     def test_a_blank_document_still_renders(self):
         """An invoice with no lines must not 500 — the PDF draws empty rows."""
