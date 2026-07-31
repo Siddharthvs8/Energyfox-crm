@@ -113,6 +113,164 @@ def inline_image(f):
     return f"data:{mime};base64,{base64.b64encode(raw).decode()}"
 
 
+def money(v):
+    return str(Decimal(v or 0).quantize(Decimal('0.01')))
+
+
+def document_chrome(request):
+    """Company header and bank block — identical on every document printed."""
+    from organization.utils import get_org_settings
+    org = get_org_settings()
+
+    def url(f):
+        return request.build_absolute_uri(f.url) if f else None
+
+    return {
+        'company': {
+            'name': org.warranty_company_name,
+            'address': org.receipt_address,
+            'phone': org.receipt_phone,
+            'email': org.receipt_email,
+            'gst': org.warranty_gst,
+            'cin': org.warranty_cin,
+            # The PAN is the middle ten characters of the GSTIN.
+            'pan': (org.warranty_gst or '')[2:12],
+            # Inlined rather than linked — see inline_image().
+            'logo': inline_image(org.logo) or url(org.logo),
+            'signature': inline_image(org.warranty_signature) or url(org.warranty_signature),
+            'seal': inline_image(org.warranty_seal) or url(org.warranty_seal),
+        },
+        'bank': {
+            'name': org.receipt_bank_name,
+            'account_name': org.warranty_company_name,
+            'ifsc': org.receipt_bank_ifsc,
+            'account_number': org.receipt_bank_account,
+            'branch': org.receipt_bank_branch,
+        },
+    }
+
+
+def summarise_lines(rows):
+    """Number the printed lines and group them into the HSN/GST summary.
+
+    `rows` are dicts of particulars / serials / hsn / qty / unit / taxable /
+    gst_rate. Returns (lines, hsn_summary); GST splits evenly into CGST and SGST,
+    which is what an intra-state supply shows.
+    """
+    lines, hsn_rows = [], {}
+    for n, r in enumerate(rows, start=1):
+        taxable = r['taxable'] or Decimal('0')
+        rate = r['gst_rate'] or Decimal('0')
+        tax = (taxable * rate) / Decimal('100')
+        hsn = r.get('hsn') or ''
+        lines.append({
+            'sl_no': n,
+            'particulars': r.get('particulars') or '',
+            'serials': r.get('serials') or '',
+            'hsn': hsn,
+            'qty': str(r.get('qty') or 0),
+            'unit': r.get('unit') or '',
+            'taxable': money(taxable),
+            'gst_rate': str(rate),
+            'tax': money(tax),
+            'total': money(taxable + tax),
+        })
+        row = hsn_rows.setdefault(hsn or '-', {
+            'hsn': hsn or '-', 'rate': str(rate),
+            'taxable': Decimal('0'), 'cgst': Decimal('0'), 'sgst': Decimal('0'),
+        })
+        row['taxable'] += taxable
+        row['cgst'] += tax / 2
+        row['sgst'] += tax / 2
+
+    summary = [{
+        'hsn': r['hsn'], 'rate': r['rate'],
+        'taxable': money(r['taxable']), 'cgst': money(r['cgst']), 'sgst': money(r['sgst']),
+    } for r in hsn_rows.values()]
+    return lines, summary
+
+
+def totals_block(taxable, discount, tax, grand):
+    """The figures under the table, with the rounding the document prints."""
+    from leads.receipts import amount_in_words
+    grand = grand or Decimal('0')
+    rounded = grand.quantize(Decimal('1'))
+    return {
+        'taxable': money(taxable),
+        'discount': money(discount),
+        'tax': money(tax),
+        'invoice_value': money(grand),
+        'round_off': money(rounded - grand),
+        'grand_total': money(rounded),
+        'in_words': amount_in_words(rounded),
+    }
+
+
+def deliver_document(request, *, holder, number, amount, party, noun):
+    """Store the posted PDF against `holder` and send it out.
+
+    Shared by the proforma invoice and the dispatch invoice: the client renders
+    the document (it owns the template) and posts it back, the file is kept so
+    email can attach it and WhatsApp can link to it — the Cloud API fetches
+    documents by URL rather than by upload.
+
+    Returns (payload, http_status).
+    """
+    pdf = request.FILES.get('pdf')
+    if pdf:
+        holder.pdf.save(f"{safe_doc_name(number)}.pdf", pdf, save=True)
+    if not holder.pdf:
+        return {'error': 'No document to send. Generate the PDF first.'}, status.HTTP_400_BAD_REQUEST
+
+    channels = [c.strip() for c in str(request.data.get('channels', 'email')).split(',') if c.strip()]
+    results, failures = {}, []
+
+    if 'email' in channels:
+        raw = request.data.get('email') or party.get('email') or ''
+        recipients = [a.strip() for a in str(raw).split(',') if a.strip()]
+        if not recipients:
+            failures.append('No email address given for this customer.')
+        else:
+            from messaging.email import send_and_log
+            holder.pdf.open('rb')
+            data = holder.pdf.read()
+            holder.pdf.close()
+            log = send_and_log(
+                to=recipients,
+                subject=f"{noun} {number}",
+                body=(f"Dear {party.get('name') or 'Customer'},\n\nPlease find attached "
+                      f"{noun} {number} for Rs. {amount}.\n\nRegards,\nEnergyFox"),
+                kind=noun.lower().replace(' ', '_'),
+                attachments=[(f"{safe_doc_name(number)}.pdf", data, 'application/pdf')],
+                created_by=request.user if request.user.is_authenticated else None,
+            )
+            results['email'] = log.status
+            if log.status != 'sent':
+                failures.append(f"Email failed: {log.error}")
+
+    if 'whatsapp' in channels:
+        to = request.data.get('phone') or party.get('contact_number') or ''
+        if not to:
+            failures.append('No WhatsApp number given for this customer.')
+        else:
+            from messaging import whatsapp
+            try:
+                whatsapp.send_document(
+                    to=to,
+                    link=request.build_absolute_uri(holder.pdf.url),
+                    filename=f"{safe_doc_name(number)}.pdf",
+                    caption=f"{noun} {number}",
+                )
+                results['whatsapp'] = 'sent'
+            except Exception as exc:                         # surfaced to the user
+                failures.append(f"WhatsApp failed: {exc}")
+
+    if failures and not results:
+        return {'error': ' '.join(failures)}, status.HTTP_502_BAD_GATEWAY
+    return ({'sent': results, 'warnings': failures,
+             'pdf': request.build_absolute_uri(holder.pdf.url)}, status.HTTP_200_OK)
+
+
 class ProformaDocumentMixin:
     """Serves a quote's proforma invoice and sends it to the customer.
 
@@ -140,69 +298,19 @@ class ProformaDocumentMixin:
         Assembled here rather than in the client so the printed figures and the
         stored ones can never disagree.
         """
-        from leads.receipts import amount_in_words
-        from organization.utils import get_org_settings
-        org = get_org_settings()
         quote = self.get_object()
         party = self.proforma_party(quote)
-
-        def url(f):
-            return request.build_absolute_uri(f.url) if f else None
-
-        def money(v):
-            return str(Decimal(v or 0).quantize(Decimal('0.01')))
-
-        lines, hsn_rows = [], {}
-        for n, li in enumerate(quote.items.all(), start=1):
-            taxable = li.line_total or Decimal('0')
-            rate = quote.tax_percent or Decimal('0')
-            tax = (taxable * rate) / Decimal('100')
-            label, hsn, unit = self.proforma_line(li)
-            lines.append({
-                'sl_no': n,
-                'particulars': label,
-                'hsn': hsn,
-                'qty': str(li.quantity or 0),
-                'unit': unit,
-                'taxable': money(taxable),
-                'gst_rate': str(rate),
-                'tax': money(tax),
-                'total': money(taxable + tax),
-            })
-            # The HSN summary groups lines and splits GST evenly into CGST/SGST.
-            row = hsn_rows.setdefault(hsn or '-', {
-                'hsn': hsn or '-', 'rate': str(rate),
-                'taxable': Decimal('0'), 'cgst': Decimal('0'), 'sgst': Decimal('0'),
-            })
-            row['taxable'] += taxable
-            row['cgst'] += tax / 2
-            row['sgst'] += tax / 2
-
-        grand = quote.total or Decimal('0')
-        rounded = grand.quantize(Decimal('1'))
+        lines, hsn_summary = summarise_lines([
+            dict(zip(('particulars', 'hsn', 'unit'), self.proforma_line(li)),
+                 qty=li.quantity or 0, taxable=li.line_total or Decimal('0'),
+                 gst_rate=quote.tax_percent or Decimal('0'))
+            for li in quote.items.all()
+        ])
 
         return Response({
-            'company': {
-                'name': org.warranty_company_name,
-                'address': org.receipt_address,
-                'phone': org.receipt_phone,
-                'email': org.receipt_email,
-                'gst': org.warranty_gst,
-                'cin': org.warranty_cin,
-                # The PAN is the middle ten characters of the GSTIN.
-                'pan': (org.warranty_gst or '')[2:12],
-                # Inlined rather than linked — see inline_image().
-                'logo': inline_image(org.logo) or url(org.logo),
-                'signature': inline_image(org.warranty_signature) or url(org.warranty_signature),
-                'seal': inline_image(org.warranty_seal) or url(org.warranty_seal),
-            },
-            'bank': {
-                'name': org.receipt_bank_name,
-                'account_name': org.warranty_company_name,
-                'ifsc': org.receipt_bank_ifsc,
-                'account_number': org.receipt_bank_account,
-                'branch': org.receipt_bank_branch,
-            },
+            **document_chrome(request),
+            'title': 'PROFORMA INVOICE',
+            'label': 'Proforma Invoice',
             'invoice': {
                 'number': quote.number,
                 'date': quote.quote_date.isoformat() if quote.quote_date else None,
@@ -210,94 +318,33 @@ class ProformaDocumentMixin:
                 'status': quote.status,
             },
             'customer': party,
-            'ship_to': {**party, 'address': quote.site or party['address']},
-            'lines': lines,
-            'hsn_summary': [{
-                'hsn': r['hsn'], 'rate': r['rate'],
-                'taxable': money(r['taxable']), 'cgst': money(r['cgst']), 'sgst': money(r['sgst']),
-            } for r in hsn_rows.values()],
-            'totals': {
-                'taxable': money(quote.taxable_amount),
-                'discount': money(quote.discount_amount),
-                'tax': money(quote.tax_amount),
-                'invoice_value': money(grand),
-                'round_off': money(rounded - grand),
-                'grand_total': money(rounded),
-                'in_words': amount_in_words(rounded),
+            # The delivery block prefers what was entered on the invoice and
+            # falls back to the customer's own details.
+            'ship_to': {
+                **party,
+                'address': quote.site or party['address'],
+                'state': quote.ship_to_state or party['state'],
+                'gstin': quote.ship_to_gstin or party['gstin'],
             },
+            'lines': lines,
+            'hsn_summary': hsn_summary,
+            'totals': totals_block(quote.taxable_amount, quote.discount_amount,
+                                   quote.tax_amount, quote.total),
             'terms': ['This Proforma Invoice is valid upto 15 days'],
         })
 
     @action(detail=True, methods=['post'], parser_classes=[parsers.MultiPartParser, parsers.FormParser])
     def send(self, request, pk=None):
-        """Store the generated PDF and send it to the customer.
-
-        The client renders the document (it owns the template) and posts it back;
-        the file is kept on the record so email can attach it and WhatsApp can
-        link to it — the Cloud API fetches documents by URL rather than upload.
-        """
+        """Store the generated PDF and send it to the customer."""
         quote = self.get_object()
-        party = self.proforma_party(quote)
-        pdf = request.FILES.get('pdf')
-        if pdf:
-            quote.pdf.save(f"{safe_doc_name(quote.number)}.pdf", pdf, save=True)
-        if not quote.pdf:
-            return Response({'error': 'No document to send. Generate the PDF first.'},
-                            status=status.HTTP_400_BAD_REQUEST)
-
-        channels = [c.strip() for c in str(request.data.get('channels', 'email')).split(',') if c.strip()]
-        results, failures = {}, []
-
-        if 'email' in channels:
-            raw = request.data.get('email') or party.get('email') or ''
-            recipients = [a.strip() for a in str(raw).split(',') if a.strip()]
-            if not recipients:
-                failures.append('No email address given for this customer.')
-            else:
-                from messaging.email import send_and_log
-                quote.pdf.open('rb')
-                data = quote.pdf.read()
-                quote.pdf.close()
-                who = party['name'] or 'Customer'
-                log = send_and_log(
-                    to=recipients,
-                    subject=f"Proforma Invoice {quote.number}",
-                    body=(f"Dear {who},\n\nPlease find attached Proforma Invoice "
-                          f"{quote.number} for Rs. {quote.total}.\n\nRegards,\nEnergyFox"),
-                    kind='proforma_invoice',
-                    attachments=[(f"{safe_doc_name(quote.number)}.pdf", data, 'application/pdf')],
-                    created_by=request.user if request.user.is_authenticated else None,
-                )
-                results['email'] = log.status
-                if log.status != 'sent':
-                    failures.append(f"Email failed: {log.error}")
-
-        if 'whatsapp' in channels:
-            number = request.data.get('phone') or party.get('contact_number') or ''
-            if not number:
-                failures.append('No WhatsApp number given for this customer.')
-            else:
-                from messaging import whatsapp
-                try:
-                    whatsapp.send_document(
-                        to=number,
-                        link=request.build_absolute_uri(quote.pdf.url),
-                        filename=f"{safe_doc_name(quote.number)}.pdf",
-                        caption=f"Proforma Invoice {quote.number}",
-                    )
-                    results['whatsapp'] = 'sent'
-                except Exception as exc:                     # surfaced to the user
-                    failures.append(f"WhatsApp failed: {exc}")
-
+        payload, code = deliver_document(
+            request, holder=quote, number=quote.number, amount=quote.total,
+            party=self.proforma_party(quote), noun='Proforma Invoice')
         # Raising the document to the customer moves it out of draft.
-        if quote.status == 'draft' and results:
+        if code == status.HTTP_200_OK and quote.status == 'draft' and payload.get('sent'):
             quote.status = 'sent'
             quote.save(update_fields=['status', 'updated_at'])
-
-        if failures and not results:
-            return Response({'error': ' '.join(failures)}, status=status.HTTP_502_BAD_GATEWAY)
-        return Response({'sent': results, 'warnings': failures,
-                         'pdf': request.build_absolute_uri(quote.pdf.url)})
+        return Response(payload, status=code)
 
 
 class QuoteViewSet(ProformaDocumentMixin, viewsets.ModelViewSet):
@@ -492,6 +539,88 @@ class StockDispatchViewSet(_MovementViewSet):
 
     def get_queryset(self):
         return StockDispatch.objects.select_related('item', 'customer', 'created_by')
+
+    # ── The invoice for a dispatch ──
+    def _document_rows(self, dispatch):
+        """Every row that belongs to this dispatch's invoice.
+
+        A dispatch is one row per item, so a delivery of four products is four
+        rows sharing one invoice number — that grouping is what the printed
+        invoice covers. Without a number the row stands alone.
+        """
+        if not dispatch.invoice_no:
+            return [dispatch]
+        return list(StockDispatch.objects
+                    .filter(invoice_no=dispatch.invoice_no)
+                    .select_related('item', 'customer')
+                    .order_by('id'))
+
+    @staticmethod
+    def _party(customer):
+        if not customer:
+            return dict(BLANK_PARTY)
+        return {
+            'name': customer.name, 'gstin': customer.gstin,
+            'contact_person': customer.contact_person,
+            'contact_number': customer.contact_number or customer.phone,
+            'address': customer.site_address, 'state': customer.state,
+            'email': getattr(customer, 'email', '') or '',
+        }
+
+    @action(detail=True, methods=['get'])
+    def invoice(self, request, pk=None):
+        """The tax invoice for this dispatch, in the proforma's layout.
+
+        Same blocks and the same figures — it is the same printed form with the
+        wording changed, because this document is the sale rather than the offer.
+        """
+        dispatch = self.get_object()
+        rows = self._document_rows(dispatch)
+        party = self._party(dispatch.customer)
+
+        lines, hsn_summary = summarise_lines([{
+            'particulars': (f"{r.item.brand} {r.item.model_name}".strip() or r.item.code),
+            'serials': r.serial_numbers,
+            'hsn': r.item.hsn,
+            'qty': r.quantity or 0,
+            'unit': r.item.unit,
+            'taxable': r.amount or Decimal('0'),
+            'gst_rate': r.tax_percent or Decimal('0'),
+        } for r in rows])
+
+        taxable = sum((r.amount or Decimal('0') for r in rows), Decimal('0'))
+        tax = sum((r.tax_amount or Decimal('0') for r in rows), Decimal('0'))
+
+        return Response({
+            **document_chrome(request),
+            'title': 'INVOICE',
+            'label': 'Invoice',
+            'invoice': {
+                'number': dispatch.invoice_no or f'DSP-{dispatch.pk}',
+                'date': dispatch.date.isoformat() if dispatch.date else None,
+                'efc_ref_no': '',
+                'status': 'dispatched',
+            },
+            'customer': party,
+            'ship_to': {**party, 'address': dispatch.site or party['address']},
+            'lines': lines,
+            'hsn_summary': hsn_summary,
+            'totals': totals_block(taxable, Decimal('0'), tax, taxable + tax),
+            'terms': ['Goods once dispatched will not be taken back.'],
+        })
+
+    @action(detail=True, methods=['post'], parser_classes=[parsers.MultiPartParser, parsers.FormParser])
+    def send(self, request, pk=None):
+        """Store the generated invoice and send it to the customer."""
+        dispatch = self.get_object()
+        rows = self._document_rows(dispatch)
+        amount = sum((r.total or Decimal('0') for r in rows), Decimal('0'))
+        # The file lives on the first row of the group, so re-sending any row of
+        # a multi-item delivery finds the same document.
+        payload, code = deliver_document(
+            request, holder=rows[0], number=dispatch.invoice_no or f'DSP-{dispatch.pk}',
+            amount=amount, party=self._party(dispatch.customer), noun='Invoice')
+        return Response(payload, status=code)
 
 
 class StockSummaryView(APIView):

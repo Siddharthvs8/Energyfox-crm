@@ -315,7 +315,8 @@ export function StatusPill({ status }: { status: string }) {
 
 /* ── Suppliers / Customers: one whole screen, different columns ───────────── */
 
-export type PartyCol = { key: string; label: string; required?: boolean; placeholder?: string; mono?: boolean };
+export type PartyCol = { key: string; label: string; required?: boolean; placeholder?: string;
+                         mono?: boolean; defaultValue?: string; options?: string[] };
 
 export function PartyScreen({ title, subtitle, noun, columns, rows, loading, denied, onSave, onDelete }: {
   title: string; subtitle: string; noun: string; columns: PartyCol[]; rows: any[];
@@ -323,7 +324,7 @@ export function PartyScreen({ title, subtitle, noun, columns, rows, loading, den
   onSave: (body: any, id?: number | null) => Promise<boolean>;
   onDelete: (id: number) => void;
 }) {
-  const blank = Object.fromEntries(columns.map(c => [c.key, ""]));
+  const blank = Object.fromEntries(columns.map(c => [c.key, c.defaultValue ?? ""]));
   const [form, setForm] = useState<any>(blank);
   const [editing, setEditing] = useState<any>(null);
   const [show, setShow] = useState(false);
@@ -333,7 +334,7 @@ export function PartyScreen({ title, subtitle, noun, columns, rows, loading, den
   const openCreate = () => { setEditing(null); setForm(blank); setShow(true); };
   const openEdit = (r: any) => {
     setEditing(r);
-    setForm(Object.fromEntries(columns.map(c => [c.key, r[c.key] ?? ""])));
+    setForm(Object.fromEntries(columns.map(c => [c.key, r[c.key] || c.defaultValue || ""])));
     setShow(true);
   };
 
@@ -373,8 +374,15 @@ export function PartyScreen({ title, subtitle, noun, columns, rows, loading, den
         onSubmit={submit} saving={saving} submitLabel={`Save ${noun}`}>
         {columns.map(c => (
           <Fld key={c.key} label={c.required ? `${c.label} *` : c.label}>
-            <input required={c.required} value={form[c.key]} placeholder={c.placeholder}
-              onChange={e => setForm({ ...form, [c.key]: e.target.value })} className={FIELD} />
+            {c.options ? (
+              <select value={form[c.key]} onChange={e => setForm({ ...form, [c.key]: e.target.value })}
+                className={FIELD}>
+                {c.options.map(o => <option key={o} value={o}>{o}</option>)}
+              </select>
+            ) : (
+              <input required={c.required} value={form[c.key]} placeholder={c.placeholder}
+                onChange={e => setForm({ ...form, [c.key]: e.target.value })} className={FIELD} />
+            )}
           </Fld>
         ))}
       </Modal>

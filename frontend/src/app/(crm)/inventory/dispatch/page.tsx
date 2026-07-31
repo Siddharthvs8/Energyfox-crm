@@ -1,16 +1,276 @@
 "use client";
-import React from "react";
-import { useStock, MovementScreen } from "../shared";
+/**
+ * Inventory → Sales / Dispatches (wholesale).
+ *
+ * A dispatch is stored as one row per item — that is what the stock ledger
+ * values — so a delivery of several products is several rows sharing one
+ * invoice number. This screen writes that whole set in one save and prints the
+ * invoice for it, using the same template the proforma does with the wording
+ * changed, because a dispatch is the sale rather than the offer.
+ */
+import React, { useState } from "react";
+import { APP_SLUG } from "@/lib/config";
+import { getApiBase } from "@/lib/mock-data";
+import { buildProformaPdf, proformaFileName } from "@/lib/proformaPdf";
+import {
+  FIELD, rupee, num, todayISO, useStock, StockPage, AddButton, SearchBar,
+  DataTable, Modal, Fld, Row, RowActions, I,
+} from "../shared";
+
+type Line = { item: string; serial_numbers: string; quantity: string; rate: string };
+
+const blankLine = (): Line => ({ item: "", serial_numbers: "", quantity: "", rate: "" });
+const blankForm = () => ({
+  invoice_no: "", date: todayISO(), customer: "", tax_percent: "", site: "", notes: "",
+  lines: [blankLine()],
+});
 
 export default function StockDispatchPage() {
-  const { dispatches, items, customers, loading, denied, save, remove } =
+  const { dispatches, items, customers, loading, denied, save, remove, reload } =
     useStock(["dispatches", "items", "customers"]);
+  const itemList: any[] = items || [];
+  const customerList: any[] = customers || [];
+  const list: any[] = dispatches || [];
+
+  const [form, setForm] = useState<any>(blankForm());
+  const [editing, setEditing] = useState<any>(null);
+  const [show, setShow] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [search, setSearch] = useState("");
+  const [busy, setBusy] = useState<number | null>(null);
+
+  const lines: Line[] = form.lines;
+  const setLine = (i: number, patch: Partial<Line>) =>
+    setForm((f: any) => ({ ...f, lines: f.lines.map((l: Line, n: number) => (n === i ? { ...l, ...patch } : l)) }));
+
+  // Live totals, mirroring the server: goods value, then tax on top.
+  const goods = lines.reduce((s, l) => s + (Number(l.quantity) || 0) * (Number(l.rate) || 0), 0);
+  const taxValue = goods * (Number(form.tax_percent) || 0) / 100;
+  const grand = goods + taxValue;
+
+  const openCreate = () => { setEditing(null); setForm(blankForm()); setShow(true); };
+
+  /** Editing touches the one row that was clicked, not the whole delivery. */
+  const openEdit = (r: any) => {
+    setEditing(r);
+    setForm({
+      invoice_no: r.invoice_no || "", date: r.date || todayISO(),
+      customer: r.customer || "", tax_percent: r.tax_percent ?? "",
+      site: r.site || "", notes: r.notes || "",
+      lines: [{
+        item: String(r.item || ""), serial_numbers: r.serial_numbers || "",
+        quantity: String(r.quantity ?? ""), rate: String(r.rate ?? ""),
+      }],
+    });
+    setShow(true);
+  };
+
+  const pickItem = (i: number, itemId: string) => {
+    const it = itemList.find(x => String(x.id) === String(itemId));
+    setLine(i, { item: itemId, rate: lines[i].rate || String(it?.unit_cost ?? "") });
+  };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const valid = lines.filter(l => l.item && Number(l.quantity) > 0);
+    if (!valid.length) { alert("Add at least one product with a quantity."); return; }
+    setSaving(true);
+    // One row per product, all carrying the same header so they print as one
+    // invoice. Editing stays a single-row update.
+    const header = {
+      invoice_no: form.invoice_no, date: form.date, customer: form.customer || null,
+      tax_percent: form.tax_percent || 0, site: form.site, notes: form.notes,
+    };
+    let ok = true;
+    for (const l of valid) {
+      const body = {
+        ...header, item: l.item, serial_numbers: l.serial_numbers,
+        quantity: l.quantity, rate: l.rate || 0,
+      };
+      ok = (await save("dispatches", body, editing?.id)) && ok;
+      if (editing) break;                      // an edit is one row, not a set
+    }
+    setSaving(false);
+    if (ok) { setShow(false); setEditing(null); setForm(blankForm()); }
+  };
+
+  const api = getApiBase(APP_SLUG);
+  const authHeader = () => ({ Authorization: `Bearer ${localStorage.getItem(`${APP_SLUG}_access`)}` });
+
+  const docName = (r: any) => proformaFileName(r.invoice_no || `DSP-${r.id}`);
+
+  /** Pull the printed figures from the server and render the invoice. */
+  const render = async (r: any) => {
+    const res = await fetch(`${api}/api/stock-dispatches/${r.id}/invoice/`, { headers: authHeader() });
+    if (!res.ok) { alert("Could not build the invoice."); return null; }
+    return buildProformaPdf(await res.json());
+  };
+
+  const download = async (r: any) => {
+    setBusy(r.id);
+    try {
+      const pdf = await render(r);
+      if (pdf) pdf.save(docName(r));
+    } finally { setBusy(null); }
+  };
+
+  /** Render, hand the file to the server, and let it email / WhatsApp it. */
+  const sendTo = async (r: any, channel: "email" | "whatsapp") => {
+    const cust = customerList.find(c => c.id === r.customer);
+    const label = channel === "email" ? "email address" : "WhatsApp number";
+    const fallback = channel === "email" ? "" : (cust?.contact_number || cust?.phone || "");
+    const to = window.prompt(`Send invoice ${r.invoice_no || `DSP-${r.id}`} to which ${label}?`, fallback);
+    if (!to) return;
+
+    setBusy(r.id);
+    try {
+      const pdf = await render(r);
+      if (!pdf) return;
+      const body = new FormData();
+      body.append("pdf", new File([pdf.output("blob")], docName(r), { type: "application/pdf" }));
+      body.append("channels", channel);
+      body.append(channel === "email" ? "email" : "phone", to);
+      const res = await fetch(`${api}/api/stock-dispatches/${r.id}/send/`, {
+        method: "POST", headers: authHeader(), body,
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) { alert(d.error || "Could not send the invoice."); return; }
+      alert((d.warnings || []).length
+        ? `Sent, with warnings:\n${d.warnings.join("\n")}`
+        : `Invoice sent by ${channel === "email" ? "email" : "WhatsApp"}.`);
+      reload();
+    } catch { alert("Network error while sending."); }
+    finally { setBusy(null); }
+  };
+
+  const term = search.trim().toLowerCase();
+  const filtered = !term ? list : list.filter(r =>
+    `${r.invoice_no || ""} ${r.item_code || ""} ${r.item_label || ""} ${r.customer_name || ""} ${r.serial_numbers || ""}`
+      .toLowerCase().includes(term));
 
   return (
-    <MovementScreen
-      kind="dispatch" rows={dispatches} items={items} parties={customers}
-      loading={loading} denied={denied}
-      onSave={(body, id) => save("dispatches", body, id)}
-      onDelete={(id) => remove("dispatches", id, "dispatch")} />
+    <StockPage
+      title="Sales / Dispatches" loading={loading} denied={denied}
+      subtitle="Goods going out to customers — raise the invoice, send it, and the stock ledger follows."
+      action={<AddButton label="New Dispatch" onClick={openCreate} />}>
+
+      <SearchBar value={search} onChange={setSearch} placeholder="Search dispatches..." />
+
+      <DataTable
+        minWidth={1180}
+        columns={[
+          "Invoice No.", "Customer", "Date", "Item", "Serial No.",
+          { label: "Qty", align: "right" }, { label: "Total", align: "right" },
+          { label: "Actions", align: "right" },
+        ]}
+        empty={{ title: "No dispatches yet", hint: "Record your first dispatch to a customer." }}
+        rows={filtered.map(r => [
+          <span className="font-mono text-xs font-semibold text-slate-900">{r.invoice_no || "—"}</span>,
+          r.customer_name || "—",
+          <span className="font-mono text-xs text-slate-500">{r.date || "—"}</span>,
+          <span><span className="font-mono text-xs">{r.item_code}</span>{" "}
+            <span className="text-slate-400">— {r.item_label}</span></span>,
+          <span className="font-mono text-[10px] text-slate-500">{r.serial_numbers || "—"}</span>,
+          <span className="tabular-nums">{num(r.quantity)}</span>,
+          <span className="tabular-nums font-semibold">{rupee(r.total)}</span>,
+          <span className="whitespace-nowrap">
+            <button onClick={() => download(r)} disabled={busy === r.id}
+              className="text-slate-600 hover:text-slate-900 text-sm font-medium mr-3 disabled:opacity-40">
+              {busy === r.id ? "…" : "PDF"}
+            </button>
+            <button onClick={() => sendTo(r, "email")} disabled={busy === r.id}
+              className="text-indigo-600 hover:text-indigo-900 text-sm font-medium mr-3 disabled:opacity-40">
+              Email
+            </button>
+            <button onClick={() => sendTo(r, "whatsapp")} disabled={busy === r.id}
+              className="text-emerald-600 hover:text-emerald-800 text-sm font-medium mr-3 disabled:opacity-40">
+              WhatsApp
+            </button>
+            <RowActions onEdit={() => openEdit(r)} onDelete={() => remove("dispatches", r.id, "dispatch")} />
+          </span>,
+        ])} />
+
+      <Modal show={show} wide title={editing ? "Edit Dispatch" : "New Dispatch"}
+        onClose={() => setShow(false)} onSubmit={submit} saving={saving} submitLabel="Save Dispatch">
+        <Row>
+          <Fld label="Invoice No.">
+            <input value={form.invoice_no} onChange={e => setForm({ ...form, invoice_no: e.target.value })}
+              className={`${FIELD} font-mono`} placeholder="INV-S001" />
+          </Fld>
+          <Fld label="Date *">
+            <input type="date" required value={form.date}
+              onChange={e => setForm({ ...form, date: e.target.value })} className={FIELD} />
+          </Fld>
+        </Row>
+        <Row>
+          <Fld label="Customer">
+            <select value={form.customer} onChange={e => setForm({ ...form, customer: e.target.value })} className={FIELD}>
+              <option value="">—</option>
+              {customerList.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </Fld>
+          <Fld label="Tax %">
+            <input type="number" step="any" min="0" max="100" value={form.tax_percent}
+              onChange={e => setForm({ ...form, tax_percent: e.target.value })} className={FIELD} placeholder="e.g. 18" />
+          </Fld>
+        </Row>
+
+        <div>
+          <label className="block text-sm font-semibold text-slate-700 mb-1.5">Products</label>
+          <div className="space-y-2">
+            {lines.map((l, i) => (
+              <div key={i} className="grid grid-cols-[1.8fr_1.4fr_80px_110px_32px] gap-2 items-center">
+                <select value={l.item} onChange={e => pickItem(i, e.target.value)} className={FIELD}>
+                  <option value="">Select item…</option>
+                  {itemList.map(it => (
+                    <option key={it.id} value={it.id}>{it.code} — {`${it.brand} ${it.model_name}`.trim()}</option>
+                  ))}
+                </select>
+                <input placeholder="Serial no(s)" value={l.serial_numbers}
+                  onChange={e => setLine(i, { serial_numbers: e.target.value })} className={FIELD} />
+                <input type="number" step="any" min="0" placeholder="Qty" value={l.quantity}
+                  onChange={e => setLine(i, { quantity: e.target.value })} className={FIELD} />
+                <input type="number" step="any" min="0" placeholder="Rate ₹" value={l.rate}
+                  onChange={e => setLine(i, { rate: e.target.value })} className={FIELD} />
+                {lines.length > 1 && !editing ? (
+                  <button type="button" aria-label="Remove product"
+                    onClick={() => setForm((f: any) => ({ ...f, lines: f.lines.filter((_: Line, n: number) => n !== i) }))}
+                    className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-all">
+                    <I.Trash />
+                  </button>
+                ) : <span />}
+              </div>
+            ))}
+          </div>
+          {editing ? (
+            <p className="mt-2 text-xs text-slate-400">
+              A dispatch is stored per product, so editing changes this row only.
+              Add another product as a new dispatch on the same invoice number.
+            </p>
+          ) : (
+            <button type="button"
+              onClick={() => setForm((f: any) => ({ ...f, lines: [...f.lines, blankLine()] }))}
+              className="mt-2 text-xs font-semibold text-indigo-600 hover:text-indigo-800">
+              + Add product
+            </button>
+          )}
+        </div>
+
+        <Fld label="Site Address">
+          <input value={form.site} onChange={e => setForm({ ...form, site: e.target.value })} className={FIELD} />
+        </Fld>
+        <Fld label="Notes">
+          <textarea rows={2} value={form.notes}
+            onChange={e => setForm({ ...form, notes: e.target.value })} className={FIELD} />
+        </Fld>
+
+        <div className="flex items-center justify-between gap-4 pt-3 border-t border-slate-100 text-sm">
+          <span className="text-xs text-slate-400 tabular-nums">
+            Goods {rupee(goods)} · Tax {rupee(taxValue)}
+          </span>
+          <span className="font-bold text-slate-900 tabular-nums">Total {rupee(grand)}</span>
+        </div>
+      </Modal>
+    </StockPage>
   );
 }

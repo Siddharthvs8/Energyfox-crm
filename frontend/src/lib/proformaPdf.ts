@@ -17,11 +17,16 @@ export type ProformaData = {
     logo: string | null; signature: string | null; seal: string | null;
   };
   bank: { name: string; account_name: string; ifsc: string; account_number: string; branch: string };
+  /** Banner text — "PROFORMA INVOICE" for an offer, "INVOICE" for a dispatch. */
+  title?: string;
+  /** How the detail rows name it: "Proforma Invoice No.:" vs "Invoice No.:". */
+  label?: string;
   invoice: { number: string; date: string | null; efc_ref_no: string; status: string };
   customer: { name: string; gstin: string; contact_person: string; contact_number: string; address: string; state: string };
   ship_to: { name: string; address: string; state: string; gstin: string };
-  lines: { sl_no: number; particulars: string; hsn: string; qty: string; unit: string;
-           taxable: string; gst_rate: string; tax: string; total: string }[];
+  lines: { sl_no: number; particulars: string; serials?: string; hsn: string;
+           qty: string; unit: string; taxable: string; gst_rate: string;
+           tax: string; total: string }[];
   hsn_summary: { hsn: string; rate: string; taxable: string; cgst: string; sgst: string }[];
   totals: { taxable: string; discount: string; tax: string; invoice_value: string;
             round_off: string; grand_total: string; in_words: string };
@@ -181,7 +186,9 @@ export async function buildProformaPdf(d: ProformaData): Promise<any> {
   doc.setFillColor(31, 46, 74);
   doc.rect(L, y, W, 7, "F");
   doc.setTextColor(255); size(12); bold();
-  text("PROFORMA INVOICE", L + W / 2, y + 5, { align: "center" });
+  const TITLE = d.title || "PROFORMA INVOICE";
+  const LABEL = d.label || "Proforma Invoice";
+  text(TITLE, L + W / 2, y + 5, { align: "center" });
   doc.setTextColor(0);
   y += 7;
 
@@ -194,14 +201,14 @@ export async function buildProformaPdf(d: ProformaData): Promise<any> {
   // "Billed To / Shipped to" band further down is filled.
   box(L, y, W / 2, secH); box(MID, y, W / 2, secH);
   size(8.5); bold();
-  text("Proforma Invoice Details", L + 3, y + 4);
+  text(`${LABEL} Details`, L + 3, y + 4);
   text("Customer name:", MID + 3, y + 4);
   text(d.customer.name, MID + 45, y + 4);
   y += secH;
 
   const detailRows: [string, string, string, string][] = [
-    ["Proforma Invoice No.:", d.invoice.number, "GSTIN:", d.customer.gstin],
-    ["Proforma Invoice Date:", dmy(d.invoice.date), "Contact Person:", d.customer.contact_person],
+    [`${LABEL} No.:`, d.invoice.number, "GSTIN:", d.customer.gstin],
+    [`${LABEL} Date:`, dmy(d.invoice.date), "Contact Person:", d.customer.contact_person],
     ["EFC Ref No.:", d.invoice.efc_ref_no, "Contact Number:", d.customer.contact_number],
   ];
   size(8);
@@ -271,40 +278,48 @@ export async function buildProformaPdf(d: ProformaData): Promise<any> {
   });
   y += headH;
 
-  // Always draw at least two body rows, as the blank second row in the template.
-  const bodyRows = Math.max(d.lines.length, 2);
-  const rowH = 12;
+  // One row per line — no filler. The sample document happened to carry a blank
+  // second row; that was its data, not part of the form.
+  const rowH = d.lines.some(l => l.serials) ? 14 : 12;
   bold(false); size(8);
-  for (let r = 0; r < bodyRows; r++) {
-    const li = d.lines[r];
+  for (const li of d.lines) {
     for (let i = 0; i < heads.length; i++) box(X[i], y, X[i + 1] - X[i], rowH);
-    if (li) {
-      const mid = y + rowH / 2 + 1;
-      text(String(li.sl_no), (X[0] + X[1]) / 2, mid, { align: "center" });
-      // A long description wraps inside its column rather than running over
-      // the HSN cell; three lines is all the row height allows.
-      bold();
-      const desc = doc.splitTextToSize(li.particulars || "", X[2] - X[1] - 4).slice(0, 3);
-      const top = mid - ((desc.length - 1) * 3.2) / 2;
-      desc.forEach((ln: string, n: number) =>
-        text(ln, (X[1] + X[2]) / 2, top + n * 3.2, { align: "center" }));
-      bold(false);
-      fitCentre(li.hsn || "", (X[2] + X[3]) / 2, mid, X[3] - X[2] - 2);
-      text(trim0(li.qty), (X[3] + X[4]) / 2, mid, { align: "center" });
-      text(li.unit || "", (X[4] + X[5]) / 2, mid, { align: "center" });
-      rupeeAmount(inr(li.taxable), X[5], X[6], mid);
-      text(trim0(li.gst_rate), X[7] - 2, mid, { align: "right" });
-      fitRight(inr(li.tax), X[8] - 2, mid, X[8] - X[7] - 3);
-      fitRight(inr(li.total), X[9] - 2, mid, X[9] - X[8] - 3);
-    } else {
-      const mid = y + rowH / 2 + 1;
-      text(String(r + 1), (X[0] + X[1]) / 2, mid, { align: "center" });
-      text("-", (X[3] + X[4]) / 2, mid, { align: "center" });
-      rupeeAmount("-", X[5], X[6], mid);          // the template shows "₹ -" here
-      text("-", X[7] - 2, mid, { align: "right" });
-      text("-", X[8] - 2, mid, { align: "right" });
-      text("-", X[9] - 2, mid, { align: "right" });
+    const mid = y + rowH / 2 + 1;
+    text(String(li.sl_no), (X[0] + X[1]) / 2, mid, { align: "center" });
+    // A long description wraps inside its column rather than running over
+    // the HSN cell; three lines is all the row height allows.
+    bold();
+    const desc = doc.splitTextToSize(li.particulars || "", X[2] - X[1] - 4).slice(0, 2);
+    // Serials sit under the description in smaller, lighter type — they identify
+    // the units that shipped, not what was sold.
+    size(6.5); bold(false);
+    const sn = li.serials
+      ? doc.splitTextToSize(`S/N: ${li.serials.split(/[\r\n,]+/).map(t => t.trim()).filter(Boolean).join(", ")}`,
+                            X[2] - X[1] - 4).slice(0, 2)
+      : [];
+    size(8); bold();
+    const block = desc.length * 3.2 + sn.length * 2.8;
+    let ty = mid - block / 2 + 1.6;
+    desc.forEach((ln: string) => { text(ln, (X[1] + X[2]) / 2, ty, { align: "center" }); ty += 3.2; });
+    bold(false);
+    if (sn.length) {
+      size(6.5); doc.setTextColor(90);
+      sn.forEach((ln: string) => { text(ln, (X[1] + X[2]) / 2, ty, { align: "center" }); ty += 2.8; });
+      doc.setTextColor(0); size(8);
     }
+    fitCentre(li.hsn || "", (X[2] + X[3]) / 2, mid, X[3] - X[2] - 2);
+    text(trim0(li.qty), (X[3] + X[4]) / 2, mid, { align: "center" });
+    text(li.unit || "", (X[4] + X[5]) / 2, mid, { align: "center" });
+    rupeeAmount(inr(li.taxable), X[5], X[6], mid);
+    text(trim0(li.gst_rate), X[7] - 2, mid, { align: "right" });
+    fitRight(inr(li.tax), X[8] - 2, mid, X[8] - X[7] - 3);
+    fitRight(inr(li.total), X[9] - 2, mid, X[9] - X[8] - 3);
+    y += rowH;
+  }
+  // An invoice with nothing on it still needs a body, or the table collapses
+  // into two stacked header strips.
+  if (!d.lines.length) {
+    for (let i = 0; i < heads.length; i++) box(X[i], y, X[i + 1] - X[i], rowH);
     y += rowH;
   }
 

@@ -1,4 +1,5 @@
 """Proforma invoice: numbering, the printed figures, and sending it out."""
+import json
 import shutil
 import tempfile
 from decimal import Decimal
@@ -148,6 +149,39 @@ class ProformaDocumentTests(TestCase):
         self.quote.site = 'Site B, Kollam'
         self.quote.save(update_fields=['site'])
         self.assertEqual(self.get()['ship_to']['address'], 'Site B, Kollam')
+
+    def test_the_customers_state_and_address_reach_both_blocks(self):
+        """Entered once on the customer, printed on Billed To and Shipped to."""
+        r = self.client.patch(f'/api/stock-customers/{self.customer.id}/',
+                              {'state': 'Tamil Nadu', 'site_address': 'Hosur Road, Salem'},
+                              content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        d = self.get()
+        self.assertEqual(d['customer']['state'], 'Tamil Nadu')
+        self.assertEqual(d['customer']['address'], 'Hosur Road, Salem')
+        self.assertEqual(d['ship_to']['state'], 'Tamil Nadu')
+        self.assertEqual(d['ship_to']['address'], 'Hosur Road, Salem')
+
+    def test_ship_to_state_and_gstin_can_be_overridden_per_invoice(self):
+        """Goods often go somewhere other than the registered address, so the
+        delivery block is captured on the invoice and wins over the customer."""
+        r = self.client.patch(f'/api/stock-quotes/{self.quote.id}/', {
+            'site': 'Plot 4, Hosur Road', 'ship_to_state': 'Tamil Nadu',
+            'ship_to_gstin': '33AAWFD1840P1ZZ',
+        }, content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        d = self.get()
+        self.assertEqual(d['ship_to']['address'], 'Plot 4, Hosur Road')
+        self.assertEqual(d['ship_to']['state'], 'Tamil Nadu')
+        self.assertEqual(d['ship_to']['gstin'], '33AAWFD1840P1ZZ')
+        # Billed To is untouched by the delivery override.
+        self.assertEqual(d['customer']['state'], 'Kerala')
+        self.assertEqual(d['customer']['gstin'], '32AAWFD1840P1ZZ')
+
+    def test_a_blank_ship_to_falls_back_to_the_customer(self):
+        d = self.get()
+        self.assertEqual(d['ship_to']['state'], self.customer.state)
+        self.assertEqual(d['ship_to']['gstin'], self.customer.gstin)
 
     def test_company_and_bank_blocks_come_from_settings(self):
         d = self.get()
@@ -333,6 +367,122 @@ class HsnPlumbingTests(TestCase):
         self.assertEqual(r.json()['item_hsn'], '85414300')
 
 
+class DispatchInvoiceTests(TestCase):
+    """The dispatch invoice is the proforma's form with the wording changed."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._media = tempfile.mkdtemp(prefix='invoice-test-')
+        cls._override = override_settings(MEDIA_ROOT=cls._media)
+        cls._override.enable()
+        super().setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        cls._override.disable()
+        shutil.rmtree(cls._media, ignore_errors=True)
+
+    def setUp(self):
+        from .models import StockDispatch
+        self.admin = mk('di_admin', 'admin')
+        self.customer = StockCustomer.objects.create(
+            name='Adya Global', gstin='32AAWFD1840P1ZZ', state='Kerala',
+            site_address='Kowdiar, Thiruvananthapuram', contact_number='9876543210')
+        self.panel = StockItem.objects.create(code='DI-PANEL', category='Solar Panel',
+                                              brand='Adani', model_name='545 wp',
+                                              unit='NOS', hsn='85414300')
+        self.inv = StockItem.objects.create(code='DI-INV', category='Inverter',
+                                            brand='Deye', model_name='10kW',
+                                            unit='NOS', hsn='85044090')
+        # One delivery of two products: two rows sharing an invoice number.
+        common = dict(invoice_no='INV-S001', date=timezone.localdate(),
+                      customer=self.customer, tax_percent=Decimal('18'), site='Site A')
+        self.row1 = StockDispatch.objects.create(
+            item=self.panel, quantity=Decimal('2'), rate=Decimal('100'),
+            serial_numbers='SN-001, SN-002', **common)
+        self.row2 = StockDispatch.objects.create(
+            item=self.inv, quantity=Decimal('1'), rate=Decimal('500'), **common)
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': token_for(self.admin)}
+
+    def get(self, row=None):
+        r = self.client.get(f'/api/stock-dispatches/{(row or self.row1).id}/invoice/', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        return r.json()
+
+    def test_it_is_titled_invoice_not_proforma(self):
+        d = self.get()
+        self.assertEqual(d['title'], 'INVOICE')
+        self.assertEqual(d['label'], 'Invoice')
+        self.assertNotIn('Proforma', json.dumps(d))
+
+    def test_every_product_on_the_invoice_number_is_billed_once(self):
+        """Two rows sharing a number are one document, whichever row is asked."""
+        for row in (self.row1, self.row2):
+            d = self.get(row)
+            self.assertEqual(len(d['lines']), 2, f'from row {row.id}')
+            self.assertEqual([l['particulars'] for l in d['lines']],
+                             ['Adani 545 wp', 'Deye 10kW'])
+
+    def test_serial_numbers_reach_the_printed_line(self):
+        d = self.get()
+        self.assertEqual(d['lines'][0]['serials'], 'SN-001, SN-002')
+        self.assertEqual(d['lines'][1]['serials'], '')
+
+    def test_the_figures_match_the_dispatched_rows(self):
+        d = self.get()
+        self.assertEqual(Decimal(d['lines'][0]['taxable']), Decimal('200.00'))   # 2 × 100
+        self.assertEqual(Decimal(d['lines'][1]['taxable']), Decimal('500.00'))
+        self.assertEqual(Decimal(d['totals']['taxable']), Decimal('700.00'))
+        self.assertEqual(Decimal(d['totals']['tax']), Decimal('126.00'))         # 18%
+        self.assertEqual(Decimal(d['totals']['invoice_value']), Decimal('826.00'))
+
+    def test_the_hsn_summary_splits_per_code(self):
+        rows = {r['hsn']: r for r in self.get()['hsn_summary']}
+        self.assertEqual(set(rows), {'85414300', '85044090'})
+        self.assertEqual(Decimal(rows['85414300']['cgst']), Decimal('18.00'))    # 36 / 2
+        self.assertEqual(Decimal(rows['85044090']['cgst']), Decimal('45.00'))    # 90 / 2
+
+    def test_a_row_with_no_invoice_number_stands_alone(self):
+        from .models import StockDispatch
+        loose = StockDispatch.objects.create(item=self.panel, quantity=Decimal('1'),
+                                             rate=Decimal('10'), date=timezone.localdate())
+        d = self.get(loose)
+        self.assertEqual(len(d['lines']), 1)
+        self.assertEqual(d['invoice']['number'], f'DSP-{loose.pk}')
+
+    def test_the_customer_fills_both_address_blocks(self):
+        d = self.get()
+        self.assertEqual(d['customer']['name'], 'Adya Global')
+        self.assertEqual(d['customer']['state'], 'Kerala')
+        self.assertEqual(d['ship_to']['address'], 'Site A')      # the delivery site
+
+    def test_sending_stores_the_invoice_against_the_group(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        with patch('messaging.email.send_and_log') as send:
+            send.return_value = type('L', (), {'status': 'sent', 'error': ''})()
+            r = self.client.post(f'/api/stock-dispatches/{self.row2.id}/send/', {
+                'pdf': SimpleUploadedFile('i.pdf', b'%PDF-1.4 x', content_type='application/pdf'),
+                'channels': 'email', 'email': 'buyer@example.com',
+            }, **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(send.call_args.kwargs['subject'], 'Invoice INV-S001')
+        # Stored on the first row of the group, so either row finds it again.
+        self.row1.refresh_from_db()
+        self.assertTrue(self.row1.pdf)
+
+    def test_sending_without_an_address_is_reported(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        r = self.client.post(f'/api/stock-dispatches/{self.row1.id}/send/', {
+            'pdf': SimpleUploadedFile('i.pdf', b'%PDF', content_type='application/pdf'),
+            'channels': 'email', 'email': '',
+        }, **self.auth())
+        self.assertEqual(r.status_code, 502)
+        self.assertIn('No email address', r.json()['error'])
+
+
 class RetailProformaTests(TestCase):
     """The B2C module prints the same document off the product catalogue."""
 
@@ -399,6 +549,17 @@ class RetailProformaTests(TestCase):
         d = self.get()
         self.assertEqual(Decimal(d['totals']['grand_total']), Decimal('236000'))
         self.assertIn('Two Lakh Thirty Six Thousand', d['totals']['in_words'])
+
+    def test_retail_ship_to_details_are_kept_on_the_invoice(self):
+        """A retail lead carries no state or GSTIN, so the delivery block is
+        typed on the invoice and has to survive the round trip."""
+        r = self.client.patch(f'/api/quotes/{self.quote.id}/', {
+            'ship_to_state': 'Kerala', 'ship_to_gstin': '32AAWFD1840P1ZZ',
+        }, content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        d = self.get()
+        self.assertEqual(d['ship_to']['state'], 'Kerala')
+        self.assertEqual(d['ship_to']['gstin'], '32AAWFD1840P1ZZ')
 
     def test_a_quote_with_no_lead_still_renders(self):
         orphan = Quote.objects.create(quote_date=timezone.localdate())

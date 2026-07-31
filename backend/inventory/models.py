@@ -143,6 +143,12 @@ class _ProformaDoc(_TaxedDoc):
     efc_ref_no = models.CharField(max_length=60, blank=True, default='')
     # The generated PDF, kept so it can be emailed and linked to on WhatsApp.
     pdf = models.FileField(upload_to='proforma/', null=True, blank=True)
+    # "Shipped to" overrides. Goods often go to a site that is not the customer's
+    # registered address, so the delivery block is captured per invoice; blank
+    # falls back to the customer's own details. `site` holds the address.
+    ship_to_state = models.CharField(max_length=80, blank=True, default='')
+    ship_to_gstin = models.CharField(max_length=20, blank=True, default='',
+                                     verbose_name='Ship-to GSTIN')
 
     class Meta(_TaxedDoc.Meta):
         abstract = True
@@ -342,6 +348,13 @@ class StockDispatch(_StockMovement):
     # GST on the line. `amount` stays the pre-tax figure so the stock ledger keeps
     # valuing movements at their goods value; `total` is what the customer pays.
     tax_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    # Serials of the units that went out on this line, printed on the invoice.
+    # Free text so a range ("SN001-SN010") reads as well as a list.
+    serial_numbers = models.TextField(blank=True, default='')
+    # The generated invoice, kept so it can be emailed and linked to on WhatsApp.
+    # A dispatch document is the set of rows sharing an invoice_no; the file is
+    # stored against the first of them.
+    pdf = models.FileField(upload_to='invoices/', null=True, blank=True)
 
     class Meta(_StockMovement.Meta):
         verbose_name_plural = 'Stock dispatches'

@@ -5,9 +5,11 @@ import { getApiBase } from "@/lib/mock-data";
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { buildProformaPdf, proformaFileName } from "@/lib/proformaPdf";
+import { STATES, HOME_STATE } from "@/lib/states";
 
 type Item = { product: string; quantity: string; unit_price: string };
 const blankItem: Item = { product: "", quantity: "1", unit_price: "0" };
+
 
 const STATUS: Record<string, { label: string; cls: string }> = {
   draft:     { label: "Draft",     cls: "bg-slate-100 text-slate-600" },
@@ -30,7 +32,7 @@ export default function QuotesPage({ params: paramsPromise }: { params: Promise<
   const [saving, setSaving] = useState(false);
   const [editQuote, setEditQuote] = useState<any>(null);
   const [busy, setBusy] = useState<number | null>(null);
-  const [form, setForm] = useState({ lead: "", status: "draft", quote_date: "", expiry_date: "", site: "", efc_ref_no: "", discount_percent: "0", tax_percent: "0", notes: "" });
+  const [form, setForm] = useState({ lead: "", status: "draft", quote_date: "", expiry_date: "", site: "", ship_to_state: HOME_STATE, ship_to_gstin: "", efc_ref_no: "", discount_percent: "0", tax_percent: "0", notes: "" });
   const [items, setItems] = useState<Item[]>([{ ...blankItem }]);
 
   const token = () => localStorage.getItem(`${domain}_access`);
@@ -56,13 +58,13 @@ export default function QuotesPage({ params: paramsPromise }: { params: Promise<
 
   const openCreate = () => {
     setEditQuote(null);
-    setForm({ lead: "", status: "draft", quote_date: new Date().toISOString().slice(0, 10), expiry_date: "", site: "", efc_ref_no: "", discount_percent: "0", tax_percent: "0", notes: "" });
+    setForm({ lead: "", status: "draft", quote_date: new Date().toISOString().slice(0, 10), expiry_date: "", site: "", ship_to_state: HOME_STATE, ship_to_gstin: "", efc_ref_no: "", discount_percent: "0", tax_percent: "0", notes: "" });
     setItems([{ ...blankItem }]);
     setShowModal(true);
   };
   const openEdit = (q: any) => {
     setEditQuote(q);
-    setForm({ lead: q.lead || "", status: q.status, quote_date: q.quote_date || "", expiry_date: q.expiry_date || "", site: q.site || "", efc_ref_no: q.efc_ref_no || "", discount_percent: String(q.discount_percent ?? 0), tax_percent: String(q.tax_percent ?? 0), notes: q.notes || "" });
+    setForm({ lead: q.lead || "", status: q.status, quote_date: q.quote_date || "", expiry_date: q.expiry_date || "", site: q.site || "", ship_to_state: q.ship_to_state || HOME_STATE, ship_to_gstin: q.ship_to_gstin || "", efc_ref_no: q.efc_ref_no || "", discount_percent: String(q.discount_percent ?? 0), tax_percent: String(q.tax_percent ?? 0), notes: q.notes || "" });
     const its = (q.items || []).map((it: any) => ({ product: String(it.product || ""), quantity: String(it.quantity), unit_price: String(it.unit_price) }));
     setItems(its.length ? its : [{ ...blankItem }]);
     setShowModal(true);
@@ -87,7 +89,8 @@ export default function QuotesPage({ params: paramsPromise }: { params: Promise<
     setSaving(true);
     const payload = {
       lead: form.lead || null, status: form.status, quote_date: form.quote_date || null, expiry_date: form.expiry_date || null,
-      site: form.site, efc_ref_no: form.efc_ref_no,
+      site: form.site, ship_to_state: form.ship_to_state, ship_to_gstin: form.ship_to_gstin,
+      efc_ref_no: form.efc_ref_no,
       discount_percent: form.discount_percent || 0, tax_percent: form.tax_percent || 0, notes: form.notes,
       items: items.filter(it => it.product).map(it => ({ product: parseInt(it.product), quantity: it.quantity || 0, unit_price: it.unit_price || 0 })),
     };
@@ -240,6 +243,12 @@ export default function QuotesPage({ params: paramsPromise }: { params: Promise<
                 <div><label className="block text-sm font-semibold text-slate-700 mb-1.5">Expiry Date</label><input type="date" value={form.expiry_date} onChange={e => setForm({ ...form, expiry_date: e.target.value })} className={field} /></div>
                 <div><label className="block text-sm font-semibold text-slate-700 mb-1.5">EFC Ref No.</label><input value={form.efc_ref_no} onChange={e => setForm({ ...form, efc_ref_no: e.target.value })} className={field} placeholder="Printed on the invoice" /></div>
                 <div><label className="block text-sm font-semibold text-slate-700 mb-1.5">Site address</label><input value={form.site} onChange={e => setForm({ ...form, site: e.target.value })} className={field} placeholder="Shipped-to, if different" /></div>
+                <div><label className="block text-sm font-semibold text-slate-700 mb-1.5">State (shipped to)</label>
+                  <select value={form.ship_to_state} onChange={e => setForm({ ...form, ship_to_state: e.target.value })} className={field}>
+                    {STATES.map(st => <option key={st} value={st}>{st}</option>)}
+                  </select>
+                </div>
+                <div><label className="block text-sm font-semibold text-slate-700 mb-1.5">GST No. (shipped to)</label><input value={form.ship_to_gstin} onChange={e => setForm({ ...form, ship_to_gstin: e.target.value })} className={field} placeholder="e.g. 32AAWFD1840P1ZZ" /></div>
               </div>
 
               <label className="block text-sm font-semibold text-slate-700 mb-2">Items</label>

@@ -7,11 +7,19 @@ import django.db.models.deletion
 
 def backfill_tele_caller(apps, schema_editor):
     """Existing leads already owned by a tele caller keep that person on record,
-    so a hand-off after this deploy doesn't drop the lead out of their list."""
+    so a hand-off after this deploy doesn't drop the lead out of their list.
+
+    The role is looked up first rather than joined through `assigned_to__role`:
+    the user model is swappable, so in migration state that FK cannot be walked
+    and the join raises FieldError on a database built from scratch.
+    """
     Lead = apps.get_model('leads', 'Lead')
-    Lead.objects.filter(tele_caller__isnull=True,
-                        assigned_to__role='tele_caller').update(
-        tele_caller=models.F('assigned_to'))
+    User = apps.get_model(*settings.AUTH_USER_MODEL.split('.'))
+    callers = list(User.objects.filter(role='tele_caller').values_list('id', flat=True))
+    if callers:
+        Lead.objects.filter(tele_caller__isnull=True,
+                            assigned_to_id__in=callers).update(
+            tele_caller=models.F('assigned_to'))
 
 
 def unbackfill(apps, schema_editor):
@@ -22,6 +30,9 @@ class Migration(migrations.Migration):
 
     dependencies = [
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
+        # The backfill reads User.role, which arrives in this migration; without
+        # naming it the field is absent when the database is built from scratch.
+        ('users', '0002_branch_user_role_user_branch'),
         ('leads', '0044_lead_archived_at_lead_is_archived_and_more'),
     ]
 

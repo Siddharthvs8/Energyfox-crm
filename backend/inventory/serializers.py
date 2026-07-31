@@ -150,7 +150,8 @@ class QuoteSerializer(_TaxedDocSerializer):
         model = Quote
         fields = [
             'id', 'number', 'lead', 'lead_name', 'status', 'quote_date', 'expiry_date',
-            'site', 'efc_ref_no', 'discount_percent', 'tax_percent', 'notes', 'pdf',
+            'site', 'ship_to_state', 'ship_to_gstin',
+            'efc_ref_no', 'discount_percent', 'tax_percent', 'notes', 'pdf',
             'created_by', 'created_at',
             'items', 'subtotal', 'discount_amount', 'taxable_amount', 'tax_amount', 'total',
         ]
@@ -255,8 +256,9 @@ class StockDispatchSerializer(_MovementSerializer):
         model = StockDispatch
         fields = ['id', 'invoice_no', 'date', 'customer', 'customer_name', 'item', 'item_code',
                   'item_label', 'item_hsn', 'quantity', 'rate', 'amount', 'tax_percent', 'tax_amount', 'total',
-                  'site', 'notes', 'created_by', 'created_by_name', 'created_at']
-        read_only_fields = ['created_by', 'created_at']
+                  'serial_numbers', 'site', 'notes', 'pdf',
+                  'created_by', 'created_by_name', 'created_at']
+        read_only_fields = ['created_by', 'created_at', 'pdf']
 
 
 class StockQuoteItemSerializer(serializers.ModelSerializer):
@@ -294,7 +296,8 @@ class StockQuoteSerializer(_DocSerializer):
         model = StockQuote
         fields = [
             'id', 'number', 'customer', 'customer_name', 'status', 'quote_date', 'expiry_date',
-            'site', 'efc_ref_no', 'discount_percent', 'tax_percent', 'notes', 'pdf',
+            'site', 'ship_to_state', 'ship_to_gstin',
+            'efc_ref_no', 'discount_percent', 'tax_percent', 'notes', 'pdf',
             'created_by', 'created_by_name', 'created_at', 'converted_at',
             'items', 'subtotal', 'discount_amount', 'taxable_amount', 'tax_amount', 'total',
         ]

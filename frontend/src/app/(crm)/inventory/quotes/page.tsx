@@ -10,6 +10,7 @@ import React, { useState } from "react";
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
 import { buildProformaPdf, proformaFileName } from "@/lib/proformaPdf";
+import { STATES, HOME_STATE } from "@/lib/states";
 import {
   FIELD, rupee, num, todayISO, useStock, StockPage, AddButton, SearchBar,
   DataTable, Modal, Fld, Row, RowActions, I,
@@ -20,6 +21,7 @@ type Line = { item: string; description: string; quantity: string; unit_price: s
 const blankLine = (): Line => ({ item: "", description: "", quantity: "1", unit_price: "" });
 const blankForm = () => ({
   customer: "", quote_date: todayISO(), expiry_date: "", site: "", status: "draft",
+  ship_to_state: HOME_STATE, ship_to_gstin: "",
   efc_ref_no: "", discount_percent: "", tax_percent: "", notes: "",
   items: [blankLine()],
 });
@@ -65,6 +67,7 @@ export default function StockQuotesPage() {
     setForm({
       customer: q.customer || "", quote_date: q.quote_date || todayISO(),
       expiry_date: q.expiry_date || "", site: q.site || "", status: q.status,
+      ship_to_state: q.ship_to_state || HOME_STATE, ship_to_gstin: q.ship_to_gstin || "",
       efc_ref_no: q.efc_ref_no || "",
       discount_percent: q.discount_percent ?? "", tax_percent: q.tax_percent ?? "",
       notes: q.notes || "",
@@ -94,6 +97,20 @@ export default function StockQuotesPage() {
     }, editing?.id);
     setSaving(false);
     if (ok) { setShow(false); setEditing(null); setForm(blankForm()); }
+  };
+
+  /** Selecting a customer pulls their delivery details across. */
+  const pickCustomer = (id: string) => {
+    const c = customerList.find(x => String(x.id) === String(id));
+    setForm((f: any) => ({
+      ...f,
+      customer: id,
+      // Only fill what has not been typed over, so a deliberate override stands.
+      ship_to_state: f.ship_to_state && f.ship_to_state !== HOME_STATE
+        ? f.ship_to_state : (c?.state || HOME_STATE),
+      ship_to_gstin: f.ship_to_gstin || c?.gstin || "",
+      site: f.site || c?.site_address || "",
+    }));
   };
 
   const api = getApiBase(APP_SLUG);
@@ -168,24 +185,22 @@ export default function StockQuotesPage() {
           <SearchBar value={search} onChange={setSearch} placeholder="Search proforma invoices..." />
 
           <DataTable
-            minWidth={1180}
+            minWidth={1080}
             columns={[
-              "Invoice No.", "Date", "Customer", { label: "Lines", align: "center" },
-              { label: "Total", align: "right" }, { label: "Status", align: "center" },
-              "Raised by", { label: "Actions", align: "right" },
+              "Invoice No.", "Customer", "Date", { label: "Status", align: "center" },
+              { label: "Total", align: "right" }, { label: "Actions", align: "right" },
             ]}
             empty={{ title: "No proforma invoices yet", hint: "Raise your first proforma invoice." }}
             rows={filtered.map(q => [
               <button onClick={() => setOpen(open === q.id ? null : q.id)}
-                className="font-mono text-xs font-semibold text-indigo-600 hover:text-indigo-900">{q.number}</button>,
-              <span className="font-mono text-xs text-slate-500">{q.quote_date || "—"}</span>,
+                className="font-mono text-xs font-semibold text-indigo-600 hover:text-indigo-900"
+                title="Show the lines on this invoice">{q.number}</button>,
               q.customer_name || "—",
-              <span className="tabular-nums">{q.items.length}</span>,
-              <span className="tabular-nums font-semibold">{rupee(q.total)}</span>,
+              <span className="font-mono text-xs text-slate-500">{q.quote_date || "—"}</span>,
               <span className={`inline-flex text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full ${STATUS_STYLE[q.status] || "bg-slate-100 text-slate-600"}`}>
                 {q.status}
               </span>,
-              <span className="text-xs text-slate-400">{q.created_by_name || "—"}</span>,
+              <span className="tabular-nums font-semibold">{rupee(q.total)}</span>,
               <span className="whitespace-nowrap">
                 <button onClick={() => download(q)} disabled={busy === q.id}
                   className="text-slate-600 hover:text-slate-900 text-sm font-medium mr-3 disabled:opacity-40">
@@ -240,25 +255,15 @@ export default function StockQuotesPage() {
         );
       })()}
 
-      <Modal show={show} wide title={editing ? `Edit ${editing.number}` : "New Quote"}
+      <Modal show={show} wide title={editing ? `Edit ${editing.number}` : "New Proforma Invoice"}
         onClose={() => setShow(false)} onSubmit={submit} saving={saving} submitLabel="Save Proforma Invoice">
-        <Row cols={3}>
+        <Row>
           <Fld label="Customer">
-            <select value={form.customer} onChange={e => setForm({ ...form, customer: e.target.value })} className={FIELD}>
+            <select value={form.customer} onChange={e => pickCustomer(e.target.value)} className={FIELD}>
               <option value="">—</option>
               {customerList.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </Fld>
-          <Fld label="Date *">
-            <input type="date" required value={form.quote_date}
-              onChange={e => setForm({ ...form, quote_date: e.target.value })} className={FIELD} />
-          </Fld>
-          <Fld label="Valid Until">
-            <input type="date" value={form.expiry_date}
-              onChange={e => setForm({ ...form, expiry_date: e.target.value })} className={FIELD} />
-          </Fld>
-        </Row>
-        <Row cols={3}>
           <Fld label="Status">
             <select value={form.status} onChange={e => setForm({ ...form, status: e.target.value })} className={FIELD}>
               <option value="draft">Draft</option>
@@ -267,13 +272,31 @@ export default function StockQuotesPage() {
               <option value="declined">Declined</option>
             </select>
           </Fld>
-          <Fld label="Discount %">
-            <input type="number" step="any" min="0" max="100" value={form.discount_percent}
-              onChange={e => setForm({ ...form, discount_percent: e.target.value })} className={FIELD} />
+        </Row>
+        <Row>
+          <Fld label="Invoice Date *">
+            <input type="date" required value={form.quote_date}
+              onChange={e => setForm({ ...form, quote_date: e.target.value })} className={FIELD} />
           </Fld>
-          <Fld label="Tax %">
-            <input type="number" step="any" min="0" max="100" value={form.tax_percent}
-              onChange={e => setForm({ ...form, tax_percent: e.target.value })} className={FIELD} />
+          <Fld label="Expiry Date">
+            <input type="date" value={form.expiry_date}
+              onChange={e => setForm({ ...form, expiry_date: e.target.value })} className={FIELD} />
+          </Fld>
+        </Row>
+        <Row cols={3}>
+          <Fld label="EFC Ref No.">
+            <input value={form.efc_ref_no} onChange={e => setForm({ ...form, efc_ref_no: e.target.value })}
+              className={FIELD} placeholder="Printed on the invoice" />
+          </Fld>
+          <Fld label="State (shipped to)">
+            <select value={form.ship_to_state} onChange={e => setForm({ ...form, ship_to_state: e.target.value })}
+              className={FIELD}>
+              {STATES.map(st => <option key={st} value={st}>{st}</option>)}
+            </select>
+          </Fld>
+          <Fld label="GST No. (shipped to)">
+            <input value={form.ship_to_gstin} onChange={e => setForm({ ...form, ship_to_gstin: e.target.value })}
+              className={`${FIELD} font-mono`} placeholder="Auto-filled from the customer" />
           </Fld>
         </Row>
         <Fld label="Site Address">
@@ -281,7 +304,7 @@ export default function StockQuotesPage() {
         </Fld>
 
         <div>
-          <label className="block text-sm font-semibold text-slate-700 mb-1.5">Lines</label>
+          <label className="block text-sm font-semibold text-slate-700 mb-1.5">Items</label>
           <div className="space-y-2">
             {lines.map((l, i) => (
               <div key={i} className="grid grid-cols-[2fr_1.4fr_80px_110px_32px] gap-2 items-center">
@@ -309,9 +332,20 @@ export default function StockQuotesPage() {
           </div>
           <button type="button" onClick={() => setForm(f => ({ ...f, items: [...f.items, blankLine()] }))}
             className="mt-2 text-xs font-semibold text-indigo-600 hover:text-indigo-800">
-            + Add line
+            + Add item
           </button>
         </div>
+
+        <Row>
+          <Fld label="Discount %">
+            <input type="number" step="any" min="0" max="100" value={form.discount_percent}
+              onChange={e => setForm({ ...form, discount_percent: e.target.value })} className={FIELD} />
+          </Fld>
+          <Fld label="Tax %">
+            <input type="number" step="any" min="0" max="100" value={form.tax_percent}
+              onChange={e => setForm({ ...form, tax_percent: e.target.value })} className={FIELD} />
+          </Fld>
+        </Row>
 
         <div className="flex items-center justify-between gap-4 pt-3 border-t border-slate-100 text-sm">
           <span className="text-xs text-slate-400 tabular-nums">
