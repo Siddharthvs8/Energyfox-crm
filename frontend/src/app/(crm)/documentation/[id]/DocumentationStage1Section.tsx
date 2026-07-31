@@ -201,6 +201,7 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
   const docsUrl = `${apiBase}/api/leads/${leadId}/documentation-stage1/documents/`;
   const authHeader = () => ({ Authorization: `Bearer ${localStorage.getItem(`${APP_SLUG}_access`)}` });
 
+  const [feasibilityWarning, setFeasibilityWarning] = useState(false);
   const [bools, setBools] = useState<Record<string, boolean>>({});
   const [texts, setTexts] = useState<Record<string, string>>({});
   const [sectionAt, setSectionAt] = useState<Record<string, string | null>>({});
@@ -346,8 +347,17 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
   const hasDoc = (dt: string) => documents.some(d => d.doc_type === dt);
   const mnreReady = MNRE_REQUIRED_DOC_TYPES.every(hasDoc) && !!(texts["mnre_plant_capacity"] || "").trim();
 
+  // Read-only mirror of the BDE's KSEB Feasibility section — accounts price the
+  // job off the sanctioned capacity, so the hand-off waits for it.
+  const feasibilityDone = !!siteVisit?.kseb_feasibility_complete;
+  const feasibilityDate = siteVisit?.kseb_feasibility_date || null;
+  const feasibilityDue = siteVisit?.kseb_feasibility_due_date || null;
+
   const complete = async () => {
     if (!mnreReady) { alert("Fill the mandatory For-MNRE section (all documents + plant capacity) before completing."); return; }
+    // The button stays live so the reason can be explained, rather than leaving a
+    // disabled control with no clue why.
+    if (!feasibilityDone) { setFeasibilityWarning(true); return; }
     setCompleting(true);
     try {
       const latest = await saveScalars(); // persist plant capacity / checkboxes first
@@ -360,9 +370,10 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
         if (d.documentation_stage1) load(d.documentation_stage1);
         else { load(latest); setIsComplete(true); }
         onChanged?.();
-        alert("Documentation Stage 1 completed. A summary note was added to the lead history.");
+        alert("Stage 1 completed — the customer has been pushed to accounts. A summary note was added to the lead history.");
       } else {
         const d = await r.json().catch(() => ({}));
+        if (d.kseb_feasibility_pending) { setFeasibilityWarning(true); return; }
         alert(d.error || "Could not complete Stage 1.");
       }
     } catch { alert("Network error while completing."); }
@@ -538,6 +549,32 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
         </div>
       )}
 
+      {/* KSEB feasibility — mirrored read-only from the BDE's own section, since
+          the hand-off to accounts depends on it. */}
+      {canEdit && !isComplete && (
+        <div className="mt-6 mb-4 bg-white border border-slate-200 rounded-2xl px-5 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-xs font-bold text-indigo-600 uppercase tracking-wide">KSEB Feasibility</h3>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                Filled by the BDE in the KSEB Feasibility module — read-only here.
+              </p>
+            </div>
+            <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide ${
+              feasibilityDone ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                              : "bg-amber-50 text-amber-700 border border-amber-200"}`}>
+              {feasibilityDone ? "✓ Completed" : "● Pending"}
+            </span>
+          </div>
+          <p className="text-[11px] text-slate-400 mt-2">
+            {feasibilityDone
+              ? <>Taken on <b className="text-slate-600">{feasibilityDate ? new Date(feasibilityDate).toLocaleDateString("en-IN") : "—"}</b>.</>
+              : <>The customer can only be pushed to accounts once this is completed
+                  {feasibilityDue ? <> · due {new Date(feasibilityDue).toLocaleDateString("en-IN")}</> : null}.</>}
+          </p>
+        </div>
+      )}
+
       {/* Actions */}
       {canEdit && !isComplete && (
         <div className="flex flex-wrap items-center gap-3">
@@ -545,11 +582,42 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
             className="px-5 py-2.5 bg-slate-800 text-white rounded-xl text-sm font-semibold hover:bg-slate-900 disabled:opacity-50 transition">
             {saving ? "Saving…" : saved ? "Saved ✓" : "Save"}
           </button>
-          <button onClick={complete} disabled={completing || saving || !mnreReady} title={!mnreReady ? "Complete the mandatory For-MNRE section first" : ""}
+          {/* Completing Stage 1 is what sets pushed_to_accounts server-side, so
+              the button is named for the hand-off it performs. */}
+          <button onClick={complete} disabled={completing || saving || !mnreReady}
+            title={!mnreReady ? "Complete the mandatory For-MNRE section first"
+                              : "Completes Stage 1 and hands the customer to accounts"}
             className="px-5 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition">
-            {completing ? "Completing…" : "Documentation Stage 1 completed"}
+            {completing ? "Pushing…" : "Push to Accounts"}
           </button>
-          {!mnreReady && <span className="text-xs text-slate-400">Add all For-MNRE documents + plant capacity to enable completion.</span>}
+          {!mnreReady && <span className="text-xs text-slate-400">Add all For-MNRE documents + plant capacity to enable the push.</span>}
+          {mnreReady && !feasibilityDone && (
+            <span className="text-xs text-amber-600">KSEB feasibility is still pending.</span>
+          )}
+        </div>
+      )}
+
+      {/* Push blocked: say why, and where to fix it. */}
+      {feasibilityWarning && (
+        <div className="popup-overlay">
+          <div className="popup-backdrop" onClick={() => setFeasibilityWarning(false)} />
+          <div className="popup-card max-w-md w-full p-6 text-center">
+            <div className="w-14 h-14 mx-auto rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mb-4">
+              <svg width="26" height="26" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+                <path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3z" />
+                <path d="M12 9v4" /><path d="M12 17h.01" />
+              </svg>
+            </div>
+            <h3 className="text-base font-bold text-slate-900">KSEB feasibility pending</h3>
+            <p className="text-sm text-slate-500 mt-2">
+              This customer can&apos;t be pushed to accounts yet. The BDE has to complete the
+              KSEB feasibility first — it&apos;s recorded in the <b className="text-slate-700">KSEB Feasibility</b> module.
+            </p>
+            <button onClick={() => setFeasibilityWarning(false)}
+              className="mt-6 w-full py-2.5 bg-slate-800 text-white rounded-xl text-sm font-semibold hover:bg-slate-900 transition-all">
+              OK
+            </button>
+          </div>
         </div>
       )}
     </div>

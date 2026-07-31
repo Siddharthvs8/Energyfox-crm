@@ -948,6 +948,16 @@ class LeadViewSet(viewsets.ModelViewSet):
             return Response(
                 {'error': 'Complete the mandatory MNRE section first.', 'missing': missing},
                 status=status.HTTP_400_BAD_REQUEST)
+        # Accounts price the job off the sanctioned capacity, so the BDE's KSEB
+        # feasibility has to be signed off before the customer can be handed over.
+        sv = getattr(lead, 'site_visit', None)
+        if not (sv and sv.kseb_feasibility_complete):
+            return Response(
+                {'error': 'KSEB feasibility is still pending. The BDE must complete it '
+                          'in the KSEB Feasibility module before this customer can be '
+                          'pushed to accounts.',
+                 'kseb_feasibility_pending': True},
+                status=status.HTTP_400_BAD_REQUEST)
         stage1.is_complete = True
         stage1.completed_at = timezone.now()
         stage1.completed_by = request.user if request.user.is_authenticated else None

@@ -879,3 +879,80 @@ class PurchaseQueueTests(TestCase):
         rows = self.queue(actor=self.purchase)
         self.assertEqual([r['payment_state'] for r in rows], ['partially_paid'])
 
+
+
+class Stage1NeedsFeasibilityTests(TestCase):
+    """Documentation Stage 1 hands the customer to accounts, so it waits for the
+    BDE's KSEB feasibility sign-off."""
+
+    def setUp(self):
+        from .models import DocumentationStage1, LeadDocument, SiteVisit
+        self.doc = mk('s1_doc', 'documentation_staff')
+        self.bde = mk('s1_bde', 'bde')
+        self.lead = Lead.objects.create(first_name='S', last_name='One', phone='9994100001',
+                                        status='converted', bde=self.bde, value=100000,
+                                        pushed_to_documentation=True,
+                                        documentation_staff=self.doc)
+        self.stage1 = DocumentationStage1.objects.create(lead=self.lead)
+        self.sv = SiteVisit.objects.create(lead=self.lead)
+        # Everything the MNRE gate needs, so feasibility is the only thing left.
+        self.stage1.mnre_plant_capacity = '5 kW'
+        self.stage1.save()
+        # Every mandatory MNRE slot is a shared *kind*, satisfied from the lead's
+        # shared document pool rather than a stage-local row.
+        from .document_kinds import SLOT_TO_KIND
+        for slot in ('mnre_aadhaar', 'mnre_pan', 'mnre_passbook',
+                     'mnre_kseb_bill', 'mnre_purchase_order'):
+            LeadDocument.objects.create(lead=self.lead, kind=SLOT_TO_KIND[slot],
+                                        file=f'lead_documents/{slot}.pdf')
+        self.assertEqual(self.stage1.missing_mandatory_fields(), [])   # only feasibility left
+
+    def push(self):
+        return self.client.post(f'/api/leads/{self.lead.id}/complete-documentation-stage1/',
+                                HTTP_AUTHORIZATION=token_for(self.doc))
+
+    def test_push_is_refused_while_feasibility_is_pending(self):
+        r = self.push()
+        self.assertEqual(r.status_code, 400, r.content[:300])
+        self.assertTrue(r.json().get('kseb_feasibility_pending'))
+        self.lead.refresh_from_db(); self.stage1.refresh_from_db()
+        self.assertFalse(self.stage1.is_complete)
+        self.assertFalse(self.lead.pushed_to_accounts)
+
+    def test_push_works_once_feasibility_is_complete(self):
+        self.sv.kseb_feasibility_complete = True
+        self.sv.save(update_fields=['kseb_feasibility_complete'])
+        r = self.push()
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.lead.refresh_from_db(); self.stage1.refresh_from_db()
+        self.assertTrue(self.stage1.is_complete)
+        self.assertTrue(self.lead.pushed_to_accounts)
+
+    def test_a_lead_with_no_site_visit_at_all_is_refused(self):
+        self.sv.delete()
+        r = self.push()
+        self.assertEqual(r.status_code, 400)
+        self.assertTrue(r.json().get('kseb_feasibility_pending'))
+
+    def test_the_mnre_gate_still_comes_first(self):
+        """A missing MNRE field is reported as such, not as a feasibility problem."""
+        self.stage1.mnre_plant_capacity = ''
+        self.stage1.save(update_fields=['mnre_plant_capacity'])
+        r = self.push()
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('missing', r.json())
+        self.assertNotIn('kseb_feasibility_pending', r.json())
+
+    def test_the_documentation_payload_carries_the_feasibility_status(self):
+        """The read-only card on Stage 1 reads this off the site visit."""
+        r = self.client.get(f'/api/leads/{self.lead.id}/documentation-detail/',
+                            HTTP_AUTHORIZATION=token_for(self.doc))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        sv = r.json()['site_visit']
+        self.assertIs(sv['kseb_feasibility_complete'], False)
+
+        self.sv.kseb_feasibility_complete = True
+        self.sv.save(update_fields=['kseb_feasibility_complete'])
+        r = self.client.get(f'/api/leads/{self.lead.id}/documentation-detail/',
+                            HTTP_AUTHORIZATION=token_for(self.doc))
+        self.assertIs(r.json()['site_visit']['kseb_feasibility_complete'], True)
