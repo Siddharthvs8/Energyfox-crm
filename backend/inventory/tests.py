@@ -278,7 +278,7 @@ class StockQuoteTests(TestCase):
         self.assertEqual(Decimal(d['discount_amount']), Decimal('11700'))
         self.assertEqual(Decimal(d['tax_amount']), Decimal('18954'))
         self.assertEqual(Decimal(d['total']), Decimal('124254'))
-        self.assertTrue(d['number'].startswith('SQ-'))
+        self.assertTrue(d['number'].startswith('EF/') and '/PI' in d['number'], d['number'])
         self.assertEqual(len(d['items']), 2)
 
     def test_a_quote_alone_does_not_move_stock(self):
@@ -301,7 +301,7 @@ class StockQuoteTests(TestCase):
         self.assertEqual(d.customer_id, self.customer.id)
         self.assertEqual(d.site, 'Kollam')
         self.assertEqual(d.rate, Decimal('11200'))
-        self.assertTrue(d.invoice_no.startswith('SQ-'))
+        self.assertTrue(d.invoice_no.startswith('EF/'), d.invoice_no)
 
     def test_converting_twice_is_refused(self):
         """A second convert would take the same goods out of stock again."""

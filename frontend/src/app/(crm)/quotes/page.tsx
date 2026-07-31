@@ -4,6 +4,7 @@ import { getApiBase } from "@/lib/mock-data";
 
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { buildProformaPdf, proformaFileName } from "@/lib/proformaPdf";
 
 type Item = { product: string; quantity: string; unit_price: string };
 const blankItem: Item = { product: "", quantity: "1", unit_price: "0" };
@@ -28,7 +29,8 @@ export default function QuotesPage({ params: paramsPromise }: { params: Promise<
   const [showModal, setShowModal] = useState(false);
   const [saving, setSaving] = useState(false);
   const [editQuote, setEditQuote] = useState<any>(null);
-  const [form, setForm] = useState({ lead: "", status: "draft", quote_date: "", expiry_date: "", discount_percent: "0", tax_percent: "0", notes: "" });
+  const [busy, setBusy] = useState<number | null>(null);
+  const [form, setForm] = useState({ lead: "", status: "draft", quote_date: "", expiry_date: "", site: "", efc_ref_no: "", discount_percent: "0", tax_percent: "0", notes: "" });
   const [items, setItems] = useState<Item[]>([{ ...blankItem }]);
 
   const token = () => localStorage.getItem(`${domain}_access`);
@@ -54,13 +56,13 @@ export default function QuotesPage({ params: paramsPromise }: { params: Promise<
 
   const openCreate = () => {
     setEditQuote(null);
-    setForm({ lead: "", status: "draft", quote_date: new Date().toISOString().slice(0, 10), expiry_date: "", discount_percent: "0", tax_percent: "0", notes: "" });
+    setForm({ lead: "", status: "draft", quote_date: new Date().toISOString().slice(0, 10), expiry_date: "", site: "", efc_ref_no: "", discount_percent: "0", tax_percent: "0", notes: "" });
     setItems([{ ...blankItem }]);
     setShowModal(true);
   };
   const openEdit = (q: any) => {
     setEditQuote(q);
-    setForm({ lead: q.lead || "", status: q.status, quote_date: q.quote_date || "", expiry_date: q.expiry_date || "", discount_percent: String(q.discount_percent ?? 0), tax_percent: String(q.tax_percent ?? 0), notes: q.notes || "" });
+    setForm({ lead: q.lead || "", status: q.status, quote_date: q.quote_date || "", expiry_date: q.expiry_date || "", site: q.site || "", efc_ref_no: q.efc_ref_no || "", discount_percent: String(q.discount_percent ?? 0), tax_percent: String(q.tax_percent ?? 0), notes: q.notes || "" });
     const its = (q.items || []).map((it: any) => ({ product: String(it.product || ""), quantity: String(it.quantity), unit_price: String(it.unit_price) }));
     setItems(its.length ? its : [{ ...blankItem }]);
     setShowModal(true);
@@ -85,6 +87,7 @@ export default function QuotesPage({ params: paramsPromise }: { params: Promise<
     setSaving(true);
     const payload = {
       lead: form.lead || null, status: form.status, quote_date: form.quote_date || null, expiry_date: form.expiry_date || null,
+      site: form.site, efc_ref_no: form.efc_ref_no,
       discount_percent: form.discount_percent || 0, tax_percent: form.tax_percent || 0, notes: form.notes,
       items: items.filter(it => it.product).map(it => ({ product: parseInt(it.product), quantity: it.quantity || 0, unit_price: it.unit_price || 0 })),
     };
@@ -93,6 +96,50 @@ export default function QuotesPage({ params: paramsPromise }: { params: Promise<
       const res = await fetch(url, { method: editQuote ? "PATCH" : "POST", headers: headers(), body: JSON.stringify(payload) });
       if (res.ok) { setShowModal(false); fetchAll(); } else alert("Failed to save quote.");
     } catch { alert("Network error."); } finally { setSaving(false); }
+  };
+
+  /** Pull the printed figures from the server and render the template. */
+  const render = async (q: any) => {
+    const r = await fetch(`${getApiBase(domain)}/api/quotes/${q.id}/proforma/`, { headers: headers() });
+    if (!r.ok) { alert("Could not build the document."); return null; }
+    return buildProformaPdf(await r.json());
+  };
+
+  const download = async (q: any) => {
+    setBusy(q.id);
+    try {
+      const pdf = await render(q);
+      if (pdf) pdf.save(proformaFileName(q.number));
+    } finally { setBusy(null); }
+  };
+
+  /** Render, hand the file to the server, and let it email / WhatsApp it. */
+  const sendTo = async (q: any, channel: "email" | "whatsapp") => {
+    const lead = leads.find(l => l.id === q.lead);
+    const label = channel === "email" ? "email address" : "WhatsApp number";
+    const to = window.prompt(`Send ${q.number} to which ${label}?`,
+      channel === "email" ? (lead?.email || "") : (lead?.phone || ""));
+    if (!to) return;
+
+    setBusy(q.id);
+    try {
+      const pdf = await render(q);
+      if (!pdf) return;
+      const body = new FormData();
+      body.append("pdf", new File([pdf.output("blob")], proformaFileName(q.number), { type: "application/pdf" }));
+      body.append("channels", channel);
+      body.append(channel === "email" ? "email" : "phone", to);
+      const res = await fetch(`${getApiBase(domain)}/api/quotes/${q.id}/send/`, {
+        method: "POST", headers: { Authorization: `Bearer ${token()}` }, body,
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) { alert(d.error || "Could not send the document."); return; }
+      alert((d.warnings || []).length
+        ? `Sent, with warnings:\n${d.warnings.join("\n")}`
+        : `${q.number} sent by ${channel === "email" ? "email" : "WhatsApp"}.`);
+      fetchAll();
+    } catch { alert("Network error while sending."); }
+    finally { setBusy(null); }
   };
 
   const convert = async (q: any) => {
@@ -104,7 +151,7 @@ export default function QuotesPage({ params: paramsPromise }: { params: Promise<
   };
 
   const handleDelete = async (id: number) => {
-    if (!confirm("Delete this quote?")) return;
+    if (!confirm("Delete this proforma invoice?")) return;
     try {
       const res = await fetch(`${getApiBase(domain)}/api/quotes/${id}/`, { method: "DELETE", headers: headers() });
       if (res.ok) fetchAll(); else alert("Failed to delete.");
@@ -120,27 +167,27 @@ export default function QuotesPage({ params: paramsPromise }: { params: Promise<
     <div className="max-w-6xl mx-auto p-4 sm:p-6 lg:p-8">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Quotes</h1>
-          <p className="text-sm text-slate-500 mt-1">Create price quotes for leads and convert them to sales orders.</p>
+          <h1 className="text-2xl font-bold text-slate-900">Proforma Invoice</h1>
+          <p className="text-sm text-slate-500 mt-1">Raise a proforma invoice for a lead — download it, send it, and convert it to a sales order.</p>
         </div>
         <button onClick={openCreate} className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl text-sm font-semibold transition-colors flex items-center gap-2 shadow-sm">
           <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>
-          New Quote
+          New Proforma Invoice
         </button>
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse min-w-[760px]">
+          <table className="w-full text-left border-collapse min-w-[1080px]">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200 text-xs uppercase tracking-wider text-slate-500 font-semibold">
-                <th className="py-4 px-6">Quote #</th><th className="py-4 px-6">Customer</th><th className="py-4 px-6">Date</th>
+                <th className="py-4 px-6">Invoice No.</th><th className="py-4 px-6">Customer</th><th className="py-4 px-6">Date</th>
                 <th className="py-4 px-6 text-center">Status</th><th className="py-4 px-6 text-right">Total</th><th className="py-4 px-6 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {quotes.length === 0 ? (
-                <tr><td colSpan={6} className="py-12 text-center text-slate-500"><p className="font-medium text-slate-900">No quotes yet</p><p className="text-sm mt-1">Create a quote for a lead.</p></td></tr>
+                <tr><td colSpan={6} className="py-12 text-center text-slate-500"><p className="font-medium text-slate-900">No proforma invoices yet</p><p className="text-sm mt-1">Raise a proforma invoice for a lead.</p></td></tr>
               ) : quotes.map(q => {
                 const st = STATUS[q.status] || STATUS.draft;
                 return (
@@ -151,6 +198,9 @@ export default function QuotesPage({ params: paramsPromise }: { params: Promise<
                     <td className="py-4 px-6 text-center"><span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-semibold ${st.cls}`}>{st.label}</span></td>
                     <td className="py-4 px-6 text-right font-semibold text-slate-700">₹{parseFloat(q.total || 0).toLocaleString("en-IN")}</td>
                     <td className="py-4 px-6 text-right whitespace-nowrap">
+                      <button onClick={() => download(q)} disabled={busy === q.id} className="text-slate-600 hover:text-slate-900 text-sm font-medium mr-3 disabled:opacity-40">{busy === q.id ? "…" : "PDF"}</button>
+                      <button onClick={() => sendTo(q, "email")} disabled={busy === q.id} className="text-indigo-600 hover:text-indigo-900 text-sm font-medium mr-3 disabled:opacity-40">Email</button>
+                      <button onClick={() => sendTo(q, "whatsapp")} disabled={busy === q.id} className="text-emerald-600 hover:text-emerald-800 text-sm font-medium mr-3 disabled:opacity-40">WhatsApp</button>
                       {q.status !== "converted" && <button onClick={() => convert(q)} className="text-violet-600 hover:text-violet-800 text-sm font-medium mr-4">Convert</button>}
                       <button onClick={() => openEdit(q)} className="text-indigo-600 hover:text-indigo-900 text-sm font-medium mr-4">Edit</button>
                       <button onClick={() => handleDelete(q.id)} className="text-rose-600 hover:text-rose-900 text-sm font-medium">Delete</button>
@@ -168,7 +218,7 @@ export default function QuotesPage({ params: paramsPromise }: { params: Promise<
           <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={() => setShowModal(false)} />
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl relative z-10 max-h-[90vh] overflow-hidden flex flex-col">
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between flex-shrink-0">
-              <h3 className="font-bold text-lg text-slate-900">{editQuote ? `Edit ${editQuote.number}` : "New Quote"}</h3>
+              <h3 className="font-bold text-lg text-slate-900">{editQuote ? `Edit ${editQuote.number}` : "New Proforma Invoice"}</h3>
               <button onClick={() => setShowModal(false)} className="text-slate-400 hover:text-slate-600"><svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" /></svg></button>
             </div>
             <form onSubmit={handleSave} className="p-6 overflow-y-auto flex-1">
@@ -186,8 +236,10 @@ export default function QuotesPage({ params: paramsPromise }: { params: Promise<
                     {Object.entries(STATUS).filter(([k]) => k !== "converted").map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
                   </select>
                 </div>
-                <div><label className="block text-sm font-semibold text-slate-700 mb-1.5">Quote Date</label><input type="date" value={form.quote_date} onChange={e => setForm({ ...form, quote_date: e.target.value })} className={field} /></div>
+                <div><label className="block text-sm font-semibold text-slate-700 mb-1.5">Invoice Date</label><input type="date" value={form.quote_date} onChange={e => setForm({ ...form, quote_date: e.target.value })} className={field} /></div>
                 <div><label className="block text-sm font-semibold text-slate-700 mb-1.5">Expiry Date</label><input type="date" value={form.expiry_date} onChange={e => setForm({ ...form, expiry_date: e.target.value })} className={field} /></div>
+                <div><label className="block text-sm font-semibold text-slate-700 mb-1.5">EFC Ref No.</label><input value={form.efc_ref_no} onChange={e => setForm({ ...form, efc_ref_no: e.target.value })} className={field} placeholder="Printed on the invoice" /></div>
+                <div><label className="block text-sm font-semibold text-slate-700 mb-1.5">Site address</label><input value={form.site} onChange={e => setForm({ ...form, site: e.target.value })} className={field} placeholder="Shipped-to, if different" /></div>
               </div>
 
               <label className="block text-sm font-semibold text-slate-700 mb-2">Items</label>
@@ -230,7 +282,7 @@ export default function QuotesPage({ params: paramsPromise }: { params: Promise<
 
               <div className="flex gap-3">
                 <button type="button" onClick={() => setShowModal(false)} className="flex-1 px-4 py-2.5 text-slate-600 font-medium hover:bg-slate-50 rounded-xl transition-colors">Cancel</button>
-                <button type="submit" disabled={saving} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 rounded-xl transition shadow-sm disabled:opacity-50">{saving ? "Saving..." : "Save Quote"}</button>
+                <button type="submit" disabled={saving} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 rounded-xl transition shadow-sm disabled:opacity-50">{saving ? "Saving..." : "Save Proforma Invoice"}</button>
               </div>
             </form>
           </div>

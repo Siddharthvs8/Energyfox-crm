@@ -7,6 +7,9 @@
  * goods out of stock — so a converted quote is locked from then on.
  */
 import React, { useState } from "react";
+import { APP_SLUG } from "@/lib/config";
+import { getApiBase } from "@/lib/mock-data";
+import { buildProformaPdf, proformaFileName } from "@/lib/proformaPdf";
 import {
   FIELD, rupee, num, todayISO, useStock, StockPage, AddButton, SearchBar,
   DataTable, Modal, Fld, Row, RowActions, I,
@@ -17,7 +20,7 @@ type Line = { item: string; description: string; quantity: string; unit_price: s
 const blankLine = (): Line => ({ item: "", description: "", quantity: "1", unit_price: "" });
 const blankForm = () => ({
   customer: "", quote_date: todayISO(), expiry_date: "", site: "", status: "draft",
-  discount_percent: "", tax_percent: "", notes: "",
+  efc_ref_no: "", discount_percent: "", tax_percent: "", notes: "",
   items: [blankLine()],
 });
 
@@ -30,7 +33,7 @@ const STATUS_STYLE: Record<string, string> = {
 };
 
 export default function StockQuotesPage() {
-  const { quotes, items, customers, loading, denied, save, remove, act } =
+  const { quotes, items, customers, loading, denied, save, remove, act, reload } =
     useStock(["quotes", "items", "customers"]);
   // StockPage's children are evaluated before it swaps in the spinner, so every
   // collection has to be safe on the first render.
@@ -44,6 +47,7 @@ export default function StockQuotesPage() {
   const [saving, setSaving] = useState(false);
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState<number | null>(null);
+  const [busy, setBusy] = useState<number | null>(null);
 
   const lines = form.items;
   const setLine = (i: number, patch: Partial<Line>) =>
@@ -61,6 +65,7 @@ export default function StockQuotesPage() {
     setForm({
       customer: q.customer || "", quote_date: q.quote_date || todayISO(),
       expiry_date: q.expiry_date || "", site: q.site || "", status: q.status,
+      efc_ref_no: q.efc_ref_no || "",
       discount_percent: q.discount_percent ?? "", tax_percent: q.tax_percent ?? "",
       notes: q.notes || "",
       items: (q.items || []).map((l: any) => ({
@@ -91,6 +96,54 @@ export default function StockQuotesPage() {
     if (ok) { setShow(false); setEditing(null); setForm(blankForm()); }
   };
 
+  const api = getApiBase(APP_SLUG);
+  const authHeader = () => ({ Authorization: `Bearer ${localStorage.getItem(`${APP_SLUG}_access`)}` });
+
+  /** Pull the printed figures from the server and render the template. */
+  const render = async (q: any) => {
+    const r = await fetch(`${api}/api/stock-quotes/${q.id}/proforma/`, { headers: authHeader() });
+    if (!r.ok) { alert("Could not build the document."); return null; }
+    return buildProformaPdf(await r.json());
+  };
+
+  const download = async (q: any) => {
+    setBusy(q.id);
+    try {
+      const pdf = await render(q);
+      if (pdf) pdf.save(proformaFileName(q.number));
+    } finally { setBusy(null); }
+  };
+
+  /** Render, hand the file to the server, and let it email / WhatsApp it. */
+  const sendTo = async (q: any, channel: "email" | "whatsapp") => {
+    const cust = customerList.find(c => c.id === q.customer);
+    const label = channel === "email" ? "email address" : "WhatsApp number";
+    const fallback = channel === "email" ? "" : (cust?.contact_number || cust?.phone || "");
+    const to = window.prompt(`Send ${q.number} to which ${label}?`, fallback);
+    if (!to) return;
+
+    setBusy(q.id);
+    try {
+      const pdf = await render(q);
+      if (!pdf) return;
+      const body = new FormData();
+      body.append("pdf", new File([pdf.output("blob")], proformaFileName(q.number),
+                                  { type: "application/pdf" }));
+      body.append("channels", channel);
+      body.append(channel === "email" ? "email" : "phone", to);
+      const r = await fetch(`${api}/api/stock-quotes/${q.id}/send/`, {
+        method: "POST", headers: authHeader(), body,
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(d.error || "Could not send the document."); return; }
+      alert((d.warnings || []).length
+        ? `Sent, with warnings:\n${d.warnings.join("\n")}`
+        : `${q.number} sent by ${channel === "email" ? "email" : "WhatsApp"}.`);
+      reload();
+    } catch { alert("Network error while sending."); }
+    finally { setBusy(null); }
+  };
+
   const convert = async (q: any) => {
     if (!confirm(`Dispatch ${q.number}? This takes ${q.items.length} line(s) out of stock.`)) return;
     const d = await act(`stock-quotes/${q.id}/convert`);
@@ -103,25 +156,25 @@ export default function StockQuotesPage() {
 
   return (
     <StockPage
-      title="Quotes" loading={loading} denied={denied}
-      subtitle="Quote your wholesale customers from stock; converting one dispatches it."
-      action={itemList.length > 0 ? <AddButton label="New Quote" onClick={openCreate} /> : undefined}>
+      title="Proforma Invoice" loading={loading} denied={denied}
+      subtitle="Raise a proforma invoice from stock — download it, send it, and dispatch when accepted."
+      action={itemList.length > 0 ? <AddButton label="New Proforma Invoice" onClick={openCreate} /> : undefined}>
 
       {itemList.length === 0 ? (
         <DataTable columns={["Quote"]} rows={[]}
-          empty={{ title: "No items yet", hint: "Add an item in Item Master first — a quote is priced off stock items." }} />
+          empty={{ title: "No items yet", hint: "Add an item in Item Master first — a proforma invoice is priced off stock items." }} />
       ) : (
         <>
-          <SearchBar value={search} onChange={setSearch} placeholder="Search quotes..." />
+          <SearchBar value={search} onChange={setSearch} placeholder="Search proforma invoices..." />
 
           <DataTable
-            minWidth={940}
+            minWidth={1180}
             columns={[
-              "Quote", "Date", "Customer", { label: "Lines", align: "center" },
+              "Invoice No.", "Date", "Customer", { label: "Lines", align: "center" },
               { label: "Total", align: "right" }, { label: "Status", align: "center" },
               "Raised by", { label: "Actions", align: "right" },
             ]}
-            empty={{ title: "No quotes yet", hint: "Raise your first wholesale quote." }}
+            empty={{ title: "No proforma invoices yet", hint: "Raise your first proforma invoice." }}
             rows={filtered.map(q => [
               <button onClick={() => setOpen(open === q.id ? null : q.id)}
                 className="font-mono text-xs font-semibold text-indigo-600 hover:text-indigo-900">{q.number}</button>,
@@ -133,14 +186,28 @@ export default function StockQuotesPage() {
                 {q.status}
               </span>,
               <span className="text-xs text-slate-400">{q.created_by_name || "—"}</span>,
-              q.status === "converted" ? (
-                <span className="text-xs text-slate-400 whitespace-nowrap">Dispatched</span>
-              ) : (
-                <span className="whitespace-nowrap">
-                  <button onClick={() => convert(q)} className="text-emerald-600 hover:text-emerald-800 text-sm font-medium mr-4">Dispatch</button>
-                  <RowActions onEdit={() => openEdit(q)} onDelete={() => remove("quotes", q.id, "quote")} />
-                </span>
-              ),
+              <span className="whitespace-nowrap">
+                <button onClick={() => download(q)} disabled={busy === q.id}
+                  className="text-slate-600 hover:text-slate-900 text-sm font-medium mr-3 disabled:opacity-40">
+                  {busy === q.id ? "…" : "PDF"}
+                </button>
+                <button onClick={() => sendTo(q, "email")} disabled={busy === q.id}
+                  className="text-indigo-600 hover:text-indigo-900 text-sm font-medium mr-3 disabled:opacity-40">
+                  Email
+                </button>
+                <button onClick={() => sendTo(q, "whatsapp")} disabled={busy === q.id}
+                  className="text-emerald-600 hover:text-emerald-800 text-sm font-medium mr-3 disabled:opacity-40">
+                  WhatsApp
+                </button>
+                {q.status === "converted" ? (
+                  <span className="text-xs text-slate-400">Dispatched</span>
+                ) : (
+                  <>
+                    <button onClick={() => convert(q)} className="text-amber-600 hover:text-amber-800 text-sm font-medium mr-3">Dispatch</button>
+                    <RowActions onEdit={() => openEdit(q)} onDelete={() => remove("quotes", q.id, "proforma invoice")} />
+                  </>
+                )}
+              </span>,
             ])} />
         </>
       )}
@@ -174,7 +241,7 @@ export default function StockQuotesPage() {
       })()}
 
       <Modal show={show} wide title={editing ? `Edit ${editing.number}` : "New Quote"}
-        onClose={() => setShow(false)} onSubmit={submit} saving={saving} submitLabel="Save Quote">
+        onClose={() => setShow(false)} onSubmit={submit} saving={saving} submitLabel="Save Proforma Invoice">
         <Row cols={3}>
           <Fld label="Customer">
             <select value={form.customer} onChange={e => setForm({ ...form, customer: e.target.value })} className={FIELD}>

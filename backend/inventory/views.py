@@ -1,7 +1,7 @@
 from django.conf import settings
 from django.core.mail import EmailMessage
 from django.db.models import Q
-from rest_framework import viewsets, permissions, status
+from rest_framework import viewsets, permissions, status, parsers
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -80,10 +80,226 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
         return Response({'status': 'sent', 'to': recipients})
 
 
-class QuoteViewSet(viewsets.ModelViewSet):
+BLANK_PARTY = {'name': '', 'gstin': '', 'contact_person': '', 'contact_number': '',
+               'address': '', 'state': '', 'email': ''}
+
+
+def safe_doc_name(number):
+    """Document numbers contain slashes (EF/26-27/PI009); filenames can't."""
+    return (number or 'proforma').replace('/', '-')
+
+
+class ProformaDocumentMixin:
+    """Serves a quote's proforma invoice and sends it to the customer.
+
+    Retail and wholesale price off different catalogues and address different
+    kinds of customer; those two differences are the hooks below. Everything the
+    printed document does with them — the GST split, the totals, the wording,
+    storing the PDF and sending it — is shared, so the two modules state the same
+    figures and can't drift apart.
+    """
+
+    def proforma_party(self, quote):
+        """Who the invoice is addressed to: name, gstin, address, state, contacts."""
+        raise NotImplementedError
+
+    def proforma_line(self, item):
+        """(particulars, hsn, unit) for one line of the printed table."""
+        raise NotImplementedError
+
+    @action(detail=True, methods=['get'])
+    def proforma(self, request, pk=None):
+        """Everything the printed proforma invoice needs, in the order the
+        document lays it out: company header, both address blocks, the line
+        table, the HSN/GST summary, and the total in words.
+
+        Assembled here rather than in the client so the printed figures and the
+        stored ones can never disagree.
+        """
+        from leads.receipts import amount_in_words
+        from organization.utils import get_org_settings
+        org = get_org_settings()
+        quote = self.get_object()
+        party = self.proforma_party(quote)
+
+        def url(f):
+            return request.build_absolute_uri(f.url) if f else None
+
+        def money(v):
+            return str(Decimal(v or 0).quantize(Decimal('0.01')))
+
+        lines, hsn_rows = [], {}
+        for n, li in enumerate(quote.items.all(), start=1):
+            taxable = li.line_total or Decimal('0')
+            rate = quote.tax_percent or Decimal('0')
+            tax = (taxable * rate) / Decimal('100')
+            label, hsn, unit = self.proforma_line(li)
+            lines.append({
+                'sl_no': n,
+                'particulars': label,
+                'hsn': hsn,
+                'qty': str(li.quantity or 0),
+                'unit': unit,
+                'taxable': money(taxable),
+                'gst_rate': str(rate),
+                'tax': money(tax),
+                'total': money(taxable + tax),
+            })
+            # The HSN summary groups lines and splits GST evenly into CGST/SGST.
+            row = hsn_rows.setdefault(hsn or '-', {
+                'hsn': hsn or '-', 'rate': str(rate),
+                'taxable': Decimal('0'), 'cgst': Decimal('0'), 'sgst': Decimal('0'),
+            })
+            row['taxable'] += taxable
+            row['cgst'] += tax / 2
+            row['sgst'] += tax / 2
+
+        grand = quote.total or Decimal('0')
+        rounded = grand.quantize(Decimal('1'))
+
+        return Response({
+            'company': {
+                'name': org.warranty_company_name,
+                'address': org.receipt_address,
+                'phone': org.receipt_phone,
+                'email': org.receipt_email,
+                'gst': org.warranty_gst,
+                'cin': org.warranty_cin,
+                # The PAN is the middle ten characters of the GSTIN.
+                'pan': (org.warranty_gst or '')[2:12],
+                'logo': url(org.logo),
+                'signature': url(org.warranty_signature),
+                'seal': url(org.warranty_seal),
+            },
+            'bank': {
+                'name': org.receipt_bank_name,
+                'account_name': org.warranty_company_name,
+                'ifsc': org.receipt_bank_ifsc,
+                'account_number': org.receipt_bank_account,
+                'branch': org.receipt_bank_branch,
+            },
+            'invoice': {
+                'number': quote.number,
+                'date': quote.quote_date.isoformat() if quote.quote_date else None,
+                'efc_ref_no': quote.efc_ref_no,
+                'status': quote.status,
+            },
+            'customer': party,
+            'ship_to': {**party, 'address': quote.site or party['address']},
+            'lines': lines,
+            'hsn_summary': [{
+                'hsn': r['hsn'], 'rate': r['rate'],
+                'taxable': money(r['taxable']), 'cgst': money(r['cgst']), 'sgst': money(r['sgst']),
+            } for r in hsn_rows.values()],
+            'totals': {
+                'taxable': money(quote.taxable_amount),
+                'discount': money(quote.discount_amount),
+                'tax': money(quote.tax_amount),
+                'invoice_value': money(grand),
+                'round_off': money(rounded - grand),
+                'grand_total': money(rounded),
+                'in_words': amount_in_words(rounded),
+            },
+            'terms': ['This Proforma Invoice is valid upto 15 days'],
+        })
+
+    @action(detail=True, methods=['post'], parser_classes=[parsers.MultiPartParser, parsers.FormParser])
+    def send(self, request, pk=None):
+        """Store the generated PDF and send it to the customer.
+
+        The client renders the document (it owns the template) and posts it back;
+        the file is kept on the record so email can attach it and WhatsApp can
+        link to it — the Cloud API fetches documents by URL rather than upload.
+        """
+        quote = self.get_object()
+        party = self.proforma_party(quote)
+        pdf = request.FILES.get('pdf')
+        if pdf:
+            quote.pdf.save(f"{safe_doc_name(quote.number)}.pdf", pdf, save=True)
+        if not quote.pdf:
+            return Response({'error': 'No document to send. Generate the PDF first.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        channels = [c.strip() for c in str(request.data.get('channels', 'email')).split(',') if c.strip()]
+        results, failures = {}, []
+
+        if 'email' in channels:
+            raw = request.data.get('email') or party.get('email') or ''
+            recipients = [a.strip() for a in str(raw).split(',') if a.strip()]
+            if not recipients:
+                failures.append('No email address given for this customer.')
+            else:
+                from messaging.email import send_and_log
+                quote.pdf.open('rb')
+                data = quote.pdf.read()
+                quote.pdf.close()
+                who = party['name'] or 'Customer'
+                log = send_and_log(
+                    to=recipients,
+                    subject=f"Proforma Invoice {quote.number}",
+                    body=(f"Dear {who},\n\nPlease find attached Proforma Invoice "
+                          f"{quote.number} for Rs. {quote.total}.\n\nRegards,\nEnergyFox"),
+                    kind='proforma_invoice',
+                    attachments=[(f"{safe_doc_name(quote.number)}.pdf", data, 'application/pdf')],
+                    created_by=request.user if request.user.is_authenticated else None,
+                )
+                results['email'] = log.status
+                if log.status != 'sent':
+                    failures.append(f"Email failed: {log.error}")
+
+        if 'whatsapp' in channels:
+            number = request.data.get('phone') or party.get('contact_number') or ''
+            if not number:
+                failures.append('No WhatsApp number given for this customer.')
+            else:
+                from messaging import whatsapp
+                try:
+                    whatsapp.send_document(
+                        to=number,
+                        link=request.build_absolute_uri(quote.pdf.url),
+                        filename=f"{safe_doc_name(quote.number)}.pdf",
+                        caption=f"Proforma Invoice {quote.number}",
+                    )
+                    results['whatsapp'] = 'sent'
+                except Exception as exc:                     # surfaced to the user
+                    failures.append(f"WhatsApp failed: {exc}")
+
+        # Raising the document to the customer moves it out of draft.
+        if quote.status == 'draft' and results:
+            quote.status = 'sent'
+            quote.save(update_fields=['status', 'updated_at'])
+
+        if failures and not results:
+            return Response({'error': ' '.join(failures)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response({'sent': results, 'warnings': failures,
+                         'pdf': request.build_absolute_uri(quote.pdf.url)})
+
+
+class QuoteViewSet(ProformaDocumentMixin, viewsets.ModelViewSet):
     serializer_class = QuoteSerializer
     permission_classes = [permissions.IsAuthenticated]
     queryset = Quote.objects.all()
+
+    def proforma_party(self, quote):
+        """A retail invoice is addressed to the lead behind the quote."""
+        lead = quote.lead
+        if not lead:
+            return dict(BLANK_PARTY)
+        name = f"{lead.first_name or ''} {lead.last_name or ''}".strip()
+        return {
+            'name': name or (lead.email or ''),
+            'gstin': '',                    # retail customers are usually unregistered
+            'contact_person': name,
+            'contact_number': lead.phone or '',
+            'address': lead.installation_location or lead.company or '',
+            'state': '',
+            'email': lead.email or '',
+        }
+
+    def proforma_line(self, item):
+        p = item.product
+        return (item.description or (p.name if p else ''),
+                p.hsn if p else '', p.unit if p else '')
 
     def get_queryset(self):
         qs = (Quote.objects.all()
@@ -445,7 +661,8 @@ class InventoryDashboardView(APIView):
         })
 
 
-class StockQuoteViewSet(viewsets.ModelViewSet):
+
+class StockQuoteViewSet(ProformaDocumentMixin, viewsets.ModelViewSet):
     """Wholesale quotations. Accepting one is recorded by converting it, which
     writes the dispatch rows that take the goods out of stock."""
     serializer_class = StockQuoteSerializer
@@ -470,6 +687,22 @@ class StockQuoteViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return super().destroy(request, *args, **kwargs)
+
+    def proforma_party(self, quote):
+        """A wholesale invoice is addressed to the trade customer."""
+        c = quote.customer
+        if not c:
+            return dict(BLANK_PARTY)
+        return {
+            'name': c.name, 'gstin': c.gstin, 'contact_person': c.contact_person,
+            'contact_number': c.contact_number or c.phone, 'address': c.site_address,
+            'state': c.state, 'email': getattr(c, 'email', '') or '',
+        }
+
+    def proforma_line(self, item):
+        it = item.item
+        label = item.description or f"{it.brand} {it.model_name}".strip() or it.code
+        return label, it.hsn, it.unit
 
     @action(detail=True, methods=['post'])
     def convert(self, request, pk=None):

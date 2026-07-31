@@ -33,9 +33,13 @@ class PurchaseOrderItemSerializer(_ItemSerializer):
 
 
 class QuoteItemSerializer(_ItemSerializer):
+    product_unit = serializers.CharField(source='product.unit', read_only=True)
+    product_hsn = serializers.CharField(source='product.hsn', read_only=True)
+
     class Meta:
         model = QuoteItem
-        fields = ['id', 'product', 'product_name', 'description', 'quantity', 'unit_price', 'line_total']
+        fields = ['id', 'product', 'product_name', 'product_unit', 'product_hsn',
+                  'description', 'quantity', 'unit_price', 'line_total']
 
 
 class SalesOrderItemSerializer(_ItemSerializer):
@@ -143,10 +147,11 @@ class QuoteSerializer(_TaxedDocSerializer):
         model = Quote
         fields = [
             'id', 'number', 'lead', 'lead_name', 'status', 'quote_date', 'expiry_date',
-            'discount_percent', 'tax_percent', 'notes', 'created_by', 'created_at',
+            'site', 'efc_ref_no', 'discount_percent', 'tax_percent', 'notes', 'pdf',
+            'created_by', 'created_at',
             'items', 'subtotal', 'discount_amount', 'taxable_amount', 'tax_amount', 'total',
         ]
-        read_only_fields = ['number', 'created_by']
+        read_only_fields = ['number', 'created_by', 'pdf']
 
 
 class SalesOrderSerializer(_TaxedDocSerializer):
@@ -192,7 +197,7 @@ class StockItemSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = StockItem
-        fields = ['id', 'code', 'category', 'brand', 'model_name', 'unit',
+        fields = ['id', 'code', 'category', 'brand', 'model_name', 'unit', 'hsn',
                   'opening_stock', 'unit_cost', 'reorder_level', 'location', 'is_active',
                   'received', 'dispatched', 'closing_stock', 'stock_value', 'status',
                   'created_at']
@@ -255,10 +260,13 @@ class StockQuoteItemSerializer(serializers.ModelSerializer):
     item_label = serializers.SerializerMethodField()
     line_total = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
 
+    item_unit = serializers.CharField(source='item.unit', read_only=True)
+    item_hsn = serializers.CharField(source='item.hsn', read_only=True)
+
     class Meta:
         model = StockQuoteItem
-        fields = ['id', 'item', 'item_code', 'item_label', 'description',
-                  'quantity', 'unit_price', 'line_total']
+        fields = ['id', 'item', 'item_code', 'item_label', 'item_unit', 'item_hsn',
+                  'description', 'quantity', 'unit_price', 'line_total']
 
     def get_item_label(self, obj):
         it = obj.item
@@ -282,13 +290,13 @@ class StockQuoteSerializer(_DocSerializer):
         model = StockQuote
         fields = [
             'id', 'number', 'customer', 'customer_name', 'status', 'quote_date', 'expiry_date',
-            'site', 'discount_percent', 'tax_percent', 'notes',
+            'site', 'efc_ref_no', 'discount_percent', 'tax_percent', 'notes', 'pdf',
             'created_by', 'created_by_name', 'created_at', 'converted_at',
             'items', 'subtotal', 'discount_amount', 'taxable_amount', 'tax_amount', 'total',
         ]
         # Status reaches 'converted' only through the convert action, which is what
         # writes the dispatch rows — setting it by hand would skip the stock move.
-        read_only_fields = ['number', 'created_by', 'converted_at']
+        read_only_fields = ['number', 'created_by', 'converted_at', 'pdf']
 
     def get_created_by_name(self, obj):
         u = obj.created_by

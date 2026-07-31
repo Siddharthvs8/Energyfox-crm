@@ -7,6 +7,8 @@ class Product(models.Model):
     # Inventory / stock tracking
     sku = models.CharField(max_length=60, blank=True, default='', db_index=True)
     unit = models.CharField(max_length=20, blank=True, default='unit')
+    hsn = models.CharField(max_length=20, blank=True, default='', verbose_name='HSN / SAC',
+                           help_text='Printed against this product on the proforma invoice')
     cost_price = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     # Decimal, not integer: stock is counted in metres of cable and fractions of
     # a set as often as in whole panels, and an integer field silently truncated

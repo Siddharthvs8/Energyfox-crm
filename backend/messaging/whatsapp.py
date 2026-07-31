@@ -58,6 +58,26 @@ def send_text(to: str, body: str) -> str:
     })
 
 
+def send_document(to: str, link: str, filename: str = '', caption: str = '') -> str:
+    """Send a PDF (or other document) by URL.
+
+    The Cloud API fetches the file itself, so `link` must be reachable from
+    Meta's servers — a public MEDIA_URL in production. On a localhost dev server
+    the send will fail at their end, which is expected.
+    """
+    document = {'link': link}
+    if filename:
+        document['filename'] = filename
+    if caption:
+        document['caption'] = caption
+    return _post({
+        'messaging_product': 'whatsapp',
+        'to': normalize_number(to),
+        'type': 'document',
+        'document': document,
+    })
+
+
 def send_template(to: str, template_name: str, language: str = 'en_US', variables=None) -> str:
     components = []
     if variables:

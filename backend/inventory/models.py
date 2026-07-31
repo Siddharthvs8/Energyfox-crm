@@ -108,9 +108,61 @@ class PurchaseOrderItem(models.Model):
         return (self.quantity or Decimal('0')) * (self.unit_price or Decimal('0'))
 
 
-# ─── Quotes ─────────────────────────────────────────────────────────────────
-class Quote(_TaxedDoc):
-    NUMBER_PREFIX = 'QT'
+# ─── Proforma invoices ──────────────────────────────────────────────────────
+def financial_year(on=None):
+    """Indian FY label for a date: April–March, so 24 Jul 2026 → '26-27'."""
+    from datetime import date
+    d = on or date.today()
+    start = d.year if d.month >= 4 else d.year - 1
+    return f"{start % 100:02d}-{(start + 1) % 100:02d}"
+
+
+def next_proforma_number(on=None):
+    """The next number in the EF/<FY>/PI<seq> series, e.g. EF/26-27/PI009.
+
+    Retail and wholesale both raise proforma invoices, and the number is what the
+    customer and the accountant key on — so the two share one series rather than
+    each counting its own and minting duplicates. Numbers are probed rather than
+    taken straight from a count, because deleting a document in the middle of the
+    year would otherwise hand its successor's number out twice.
+    """
+    prefix = f"EF/{financial_year(on)}/PI"
+    taken = set(
+        list(Quote.objects.filter(number__startswith=prefix).values_list('number', flat=True))
+        + list(StockQuote.objects.filter(number__startswith=prefix).values_list('number', flat=True))
+    )
+    n = len(taken) + 1
+    while f"{prefix}{n:03d}" in taken:
+        n += 1
+    return f"{prefix}{n:03d}"
+
+
+class _ProformaDoc(_TaxedDoc):
+    """Shared behaviour for the two proforma invoice documents."""
+    # Free-text reference printed on the invoice ("EFC Ref No.").
+    efc_ref_no = models.CharField(max_length=60, blank=True, default='')
+    # The generated PDF, kept so it can be emailed and linked to on WhatsApp.
+    pdf = models.FileField(upload_to='proforma/', null=True, blank=True)
+
+    class Meta(_TaxedDoc.Meta):
+        abstract = True
+
+    @staticmethod
+    def financial_year(on=None):
+        return financial_year(on)
+
+    def save(self, *args, **kwargs):
+        creating = self._state.adding
+        # Skip _NumberedDoc's simple QT-0001 numbering; this document has its own.
+        models.Model.save(self, *args, **kwargs)
+        if creating and not self.number:
+            self.number = next_proforma_number(self.quote_date)
+            models.Model.save(self, update_fields=['number'])
+
+
+class Quote(_ProformaDoc):
+    """The retail (B2C) proforma invoice, priced off the product catalogue."""
+    NUMBER_PREFIX = 'PI'
     STATUS_CHOICES = [
         ('draft', 'Draft'),
         ('sent', 'Sent'),
@@ -122,6 +174,7 @@ class Quote(_TaxedDoc):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft', db_index=True)
     quote_date = models.DateField(null=True, blank=True)
     expiry_date = models.DateField(null=True, blank=True)
+    site = models.CharField(max_length=255, blank=True, default='')
 
 
 class QuoteItem(models.Model):
@@ -184,6 +237,8 @@ class StockItem(models.Model):
 
     code = models.CharField(max_length=40, unique=True)
     category = models.CharField(max_length=40, choices=CATEGORY_CHOICES, default='Other', db_index=True)
+    hsn = models.CharField(max_length=20, blank=True, default='', verbose_name='HSN / SAC',
+                           help_text='Printed against this item on the proforma invoice')
     brand = models.CharField(max_length=120, blank=True, default='')
     model_name = models.CharField(max_length=150, blank=True, default='', verbose_name='Model / spec')
     unit = models.CharField(max_length=20, default='Nos')
@@ -238,6 +293,8 @@ class StockCustomer(models.Model):
     contact_person = models.CharField(max_length=150, blank=True, default='')
     phone = models.CharField(max_length=20, blank=True, default='')
     site_address = models.CharField(max_length=255, blank=True, default='')
+    state = models.CharField(max_length=80, blank=True, default='')
+    contact_number = models.CharField(max_length=20, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -301,15 +358,18 @@ class StockDispatch(_StockMovement):
         return self.invoice_no or f"Dispatch #{self.pk}"
 
 
-class StockQuote(_TaxedDoc):
-    """A wholesale quotation over stock items.
+class StockQuote(_ProformaDoc):
+    """A wholesale proforma invoice over stock items.
 
     Reuses the same header maths as the retail Quote (subtotal → discount → tax),
     but priced off StockItem rather than the product catalogue. Accepting one is
     recorded by converting it, which writes the dispatch rows that take the goods
     out of stock — see StockQuoteViewSet.convert.
+
+    Numbering follows the printed document: EF/<financial year>/PI<seq>, e.g.
+    EF/26-27/PI009, restarting each Indian financial year (April–March).
     """
-    NUMBER_PREFIX = 'SQ'
+    NUMBER_PREFIX = 'PI'
     STATUS_CHOICES = [
         ('draft', 'Draft'),
         ('sent', 'Sent'),

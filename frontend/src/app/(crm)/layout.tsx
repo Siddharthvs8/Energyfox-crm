@@ -724,7 +724,7 @@ export default function DashboardLayout({
     { href: `/products`,        label: "Item Master",     Icon: Nav.Products },
     { href: `/vendors`,         label: "Suppliers",       Icon: Nav.Vendor },
     { href: `/customers`,       label: "Customers",       Icon: Nav.Team },
-    { href: `/quotes`,          label: "Quotes",          Icon: Nav.Quote },
+    { href: `/quotes`,          label: "Proforma Invoice", Icon: Nav.Quote },
     { href: `/sales-orders`,    label: "Sales / Dispatches", Icon: Nav.StockOut },
     { href: `/purchase-orders`, label: "Purchases",       Icon: Nav.StockIn },
   ];
@@ -736,7 +736,7 @@ export default function DashboardLayout({
     { href: `/inventory/items`,      label: "Item Master",        Icon: Nav.Products },
     { href: `/inventory/suppliers`,  label: "Suppliers",          Icon: Nav.Vendor },
     { href: `/inventory/customers`,  label: "Customers",          Icon: Nav.Team },
-    { href: `/inventory/quotes`,     label: "Quotes",             Icon: Nav.Quote },
+    { href: `/inventory/quotes`,     label: "Proforma Invoice",   Icon: Nav.Quote },
     { href: `/inventory/dispatch`,   label: "Sales / Dispatches",  Icon: Nav.StockOut },
     { href: `/inventory/purchases`,  label: "Purchases",          Icon: Nav.StockIn },
   ];
