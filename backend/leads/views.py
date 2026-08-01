@@ -3755,6 +3755,10 @@ class LeadViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='archive')
     def archive_lead(self, request, pk=None):
         """Move a lead to the archive (kept, but out of the active lists)."""
+        from .access import can_use_lead_tools
+        if not can_use_lead_tools(request.user):
+            return Response({'error': 'Not available to a BDE.'},
+                            status=status.HTTP_403_FORBIDDEN)
         lead = self.get_object()
         if lead.is_archived:
             return Response({'error': 'This lead is already archived.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -3766,6 +3770,10 @@ class LeadViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='unarchive')
     def unarchive_lead(self, request, pk=None):
         """Restore a lead from the archive back into the active lists."""
+        from .access import can_use_lead_tools
+        if not can_use_lead_tools(request.user):
+            return Response({'error': 'Not available to a BDE.'},
+                            status=status.HTTP_403_FORBIDDEN)
         lead = Lead.objects.filter(pk=pk, is_archived=True).first()
         if lead is None:
             return Response({'error': 'Lead not found in the archive.'}, status=status.HTTP_404_NOT_FOUND)

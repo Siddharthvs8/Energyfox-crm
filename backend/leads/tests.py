@@ -1162,6 +1162,28 @@ class BdeHasNoLeadListToolsTests(TestCase):
                 self.assertEqual(self.get(path, actor).status_code, 200,
                                  f'{actor.role} {path}')
 
+    def test_bde_cannot_archive_or_unarchive(self):
+        lead = Lead.objects.filter(bde=self.bde).first()
+        r = self.client.post(f'/api/leads/{lead.id}/archive/',
+                             HTTP_AUTHORIZATION=token_for(self.bde))
+        self.assertEqual(r.status_code, 403)
+        lead.refresh_from_db()
+        self.assertFalse(lead.is_archived)
+
+        lead.is_archived = True
+        lead.save(update_fields=['is_archived'])
+        r = self.client.post(f'/api/leads/{lead.id}/unarchive/',
+                             HTTP_AUTHORIZATION=token_for(self.bde))
+        self.assertEqual(r.status_code, 403)
+
+    def test_others_can_still_archive(self):
+        lead = Lead.objects.filter(bde=self.bde).first()
+        r = self.client.post(f'/api/leads/{lead.id}/archive/',
+                             HTTP_AUTHORIZATION=token_for(self.caller))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        lead.refresh_from_db()
+        self.assertTrue(lead.is_archived)
+
     def test_the_bde_still_gets_their_lead_list(self):
         r = self.get('/api/leads/?all=true', self.bde)
         self.assertEqual(r.status_code, 200)

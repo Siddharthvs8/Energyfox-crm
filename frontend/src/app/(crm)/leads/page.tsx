@@ -1507,6 +1507,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                               <I.Edit />
                             </button>
                             )}
+                            {canUseLeadTools && (
                             <button onClick={(e) => { e.stopPropagation(); archiveLead(lead.id, !showArchived); }}
                               className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-all"
                               title={showArchived ? "Restore from archive" : "Archive (keep, but hide from active list)"}>
@@ -1516,6 +1517,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                                 <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><polyline points="21 8 21 21 3 21 3 8" /><rect x="1" y="3" width="22" height="5" /><line x1="10" y1="12" x2="14" y2="12" /></svg>
                               )}
                             </button>
+                            )}
                             {!showArchived && canDeleteLeads && (
                             <button onClick={(e) => { e.stopPropagation(); deleteLead(lead.id); }}
                               className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all"
