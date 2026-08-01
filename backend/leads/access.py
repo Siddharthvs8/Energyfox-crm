@@ -181,6 +181,21 @@ def can_delete_leads(user):
     return getattr(user, 'role', '') != 'bde'
 
 
+def can_use_lead_tools(user):
+    """Who gets the list-management tools: CSV template, export, and the
+    Archived / Trash views.
+
+    These manage the lead book rather than work a lead, so they belong to the
+    tele-calling side. A BDE gets the leads handed to them and the site visit.
+    """
+    if not user or not user.is_authenticated:
+        return False
+    granted = custom_grant(user, 'leads.tools')
+    if granted is not None:
+        return granted
+    return getattr(user, 'role', '') != 'bde'
+
+
 def can_edit_lead_status(user):
     """Who may change a lead's status.
 

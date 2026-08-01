@@ -54,6 +54,7 @@ CAPABILITY_PERMISSIONS = [
     ('leads.add', 'Add leads', 'Lead capabilities'),
     ('leads.edit', 'Edit lead details', 'Lead capabilities'),
     ('leads.delete', 'Delete leads (move to Trash)', 'Lead capabilities'),
+    ('leads.tools', 'CSV template / export, Archived and Trash views', 'Lead capabilities'),
     ('leads.assign', 'Assign leads to someone', 'Lead capabilities'),
     ('leads.status', 'Change a lead status', 'Lead capabilities'),
     ('leads.mark_lost', 'Mark a converted deal as lost', 'Lead capabilities'),

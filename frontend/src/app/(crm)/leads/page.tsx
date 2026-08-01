@@ -290,6 +290,9 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   // the site visit. Mirrors can_edit_leads() / can_delete_leads().
   const canEditLeads = !currentUser || currentUser.role !== "bde";
   const canDeleteLeads = !currentUser || currentUser.role !== "bde";
+  // CSV template / export and the Archived + Trash views manage the lead book
+  // rather than work a lead. Mirrors can_use_lead_tools() on the backend.
+  const canUseLeadTools = !currentUser || currentUser.role !== "bde";
   // The site visit is the BDE's job; a tele caller has nothing to do in it, so
   // the shortcut and its completed badge are hidden from them.
   const showSiteVisit = !currentUser || currentUser.role !== "tele_caller";
@@ -931,6 +934,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
               <input type="file" accept=".csv" ref={fileRef} className="hidden" onChange={handleUpload} />
 
               {/* CSV actions grouped */}
+              {canUseLeadTools && (
               <div className="hidden sm:flex items-center border border-slate-200 rounded-xl overflow-hidden divide-x divide-slate-200">
                 <button onClick={downloadTemplate} title="Download Template"
                   className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors">
@@ -948,7 +952,9 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                 </button>
                 )}
               </div>
+              )}
 
+              {canUseLeadTools && (
               <button onClick={() => { setShowArchived(v => !v); setPage(1); }}
                 title="Old, terminal leads kept out of the active list"
                 className={`flex items-center gap-1.5 px-4 py-2 border rounded-xl text-sm font-semibold active:scale-[0.97] transition-all shadow-sm ${showArchived ? "bg-indigo-600 border-indigo-600 text-white" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"}`}>
@@ -956,12 +962,15 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                 <span className="hidden sm:inline">{showArchived ? "Viewing Archived" : "Archived"}</span>
                 {archivedCount > 0 && !showArchived && <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-slate-200 text-slate-600 text-[10px] font-bold flex items-center justify-center">{archivedCount > 99 ? "99+" : archivedCount}</span>}
               </button>
+              )}
 
+              {canUseLeadTools && (
               <button onClick={openTrash}
                 title="Trashed leads — kept for 7 days, then deleted forever"
                 className="flex items-center gap-1.5 px-4 py-2 bg-white border border-slate-200 text-slate-600 rounded-xl text-sm font-semibold hover:bg-slate-50 hover:text-rose-600 active:scale-[0.97] transition-all shadow-sm shadow-slate-50">
                 <I.Trash /> <span className="hidden sm:inline">Trash</span>
               </button>
+              )}
 
               {canAddLeads && (
               <button onClick={openAdd}

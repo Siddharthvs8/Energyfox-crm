@@ -408,6 +408,9 @@ export default function LeadDetailPage({
   // A BDE reports through the site visit; the lead status belongs to the tele
   // caller / managers. Mirrors can_edit_lead_status() on the backend.
   const canEditStatus = !currentUser || currentUser.role !== "bde";
+  // The lead record belongs to the tele-calling side; a BDE reports through the
+  // site visit. Mirrors can_edit_leads() on the backend.
+  const canEditLead = !currentUser || currentUser.role !== "bde";
 
   const initiateCall = async () => {
     if (!lead?.phone) return alert("Lead does not have a phone number.");
@@ -703,7 +706,9 @@ export default function LeadDetailPage({
             {lead.can_assign_documentation && lead.pushed_to_documentation && (
               <button onClick={openDocModal} className="btn btn-sm bg-amber-600 hover:bg-amber-700 text-white font-semibold border border-amber-600">{lead.documentation_staff ? "Reassign Documentation" : "Assign Documentation"}</button>
             )}
-            <button onClick={openEdit} className="btn btn-primary btn-sm">Edit Lead</button>
+            {canEditLead && (
+              <button onClick={openEdit} className="btn btn-primary btn-sm">Edit Lead</button>
+            )}
           </div>
         </div>
       </div>

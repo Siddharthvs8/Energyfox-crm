@@ -1131,3 +1131,37 @@ class BdeCannotEditOrDeleteLeadsTests(TestCase):
         self.assertEqual(r.status_code, 200, r.content[:300])
         self.lead.refresh_from_db()
         self.assertTrue(self.lead.is_lost)
+
+
+class BdeHasNoLeadListToolsTests(TestCase):
+    """CSV template / export and the Archived + Trash views manage the lead
+    book; a BDE works the leads handed to them."""
+
+    def setUp(self):
+        self.bde = mk('tl_bde', 'bde')
+        self.caller = mk('tl_caller', 'tele_caller')
+        self.admin = mk('tl_admin', 'admin')
+        Lead.objects.create(first_name='T', last_name='One', phone='9996000001',
+                            status='new', assigned_to=self.caller, bde=self.bde)
+
+    def get(self, path, actor):
+        return self.client.get(path, HTTP_AUTHORIZATION=token_for(actor))
+
+    def test_bde_cannot_download_the_csv_template(self):
+        self.assertEqual(self.get('/api/leads/csv_template/', self.bde).status_code, 403)
+
+    def test_bde_cannot_export_leads(self):
+        self.assertEqual(self.get('/api/leads/export_csv/', self.bde).status_code, 403)
+
+    def test_bde_cannot_open_the_trash(self):
+        self.assertEqual(self.get('/api/leads/trash/', self.bde).status_code, 403)
+
+    def test_everyone_else_still_has_them(self):
+        for actor in (self.caller, self.admin):
+            for path in ('/api/leads/csv_template/', '/api/leads/export_csv/', '/api/leads/trash/'):
+                self.assertEqual(self.get(path, actor).status_code, 200,
+                                 f'{actor.role} {path}')
+
+    def test_the_bde_still_gets_their_lead_list(self):
+        r = self.get('/api/leads/?all=true', self.bde)
+        self.assertEqual(r.status_code, 200)

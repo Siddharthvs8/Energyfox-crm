@@ -3515,6 +3515,10 @@ class LeadViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def csv_template(self, request):
         """Returns a blank CSV template for lead import."""
+        from .access import can_use_lead_tools
+        if not can_use_lead_tools(request.user):
+            return Response({'error': 'Not available to a BDE.'},
+                            status=status.HTTP_403_FORBIDDEN)
         response = HttpResponse(content_type='text/csv')
         response['Content-Disposition'] = 'attachment; filename="leads_template.csv"'
         writer = csv.writer(response)
@@ -3620,6 +3624,10 @@ class LeadViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def export_csv(self, request):
         """Exports currently filtered leads to CSV."""
+        from .access import can_use_lead_tools
+        if not can_use_lead_tools(request.user):
+            return Response({'error': 'Not available to a BDE.'},
+                            status=status.HTTP_403_FORBIDDEN)
         queryset = self.get_queryset()
         response = HttpResponse(content_type='text/csv')
         response['Content-Disposition'] = 'attachment; filename="leads_export.csv"'
@@ -3700,6 +3708,10 @@ class LeadViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='trash')
     def trash(self, request):
         """The Trash: soft-deleted leads with their days left before purge."""
+        from .access import can_use_lead_tools
+        if not can_use_lead_tools(request.user):
+            return Response({'error': 'Not available to a BDE.'},
+                            status=status.HTTP_403_FORBIDDEN)
         self._purge_expired_trash()
         rows = []
         for lead in self._trash_scope().order_by('-trashed_at'):
