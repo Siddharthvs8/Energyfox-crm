@@ -3330,12 +3330,16 @@ class LeadViewSet(viewsets.ModelViewSet):
         the ownership stamps have to be applied here too. Mirrors Lead.save():
         an owner who is a tele caller is recorded as the tele caller, one who is
         a BDE is recorded as the BDE (without which the lead can never be
-        converted)."""
+        converted).
+
+        The tele caller stamp is sticky; the BDE stamp is replaced, so moving a
+        lead between BDEs takes it out of the previous one's list.
+        """
         role = getattr(target_user, 'role', '') if target_user else ''
         if role == 'tele_caller':
             queryset.filter(tele_caller__isnull=True).update(tele_caller=target_user)
         elif role == 'bde':
-            queryset.filter(bde__isnull=True).update(bde=target_user)
+            queryset.exclude(bde=target_user).update(bde=target_user)
 
     @staticmethod
     def _assignable_user_ids(user):

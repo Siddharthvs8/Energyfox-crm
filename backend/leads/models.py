@@ -229,6 +229,16 @@ class Lead(models.Model):
             return 'site_visit'
         return 'tele_caller'
 
+    # Owner as it was when this row was loaded, so save() can tell a hand-off
+    # from any other edit. None on a row built in memory.
+    _loaded_assigned_to_id = None
+
+    @classmethod
+    def from_db(cls, db, field_names, values):
+        obj = super().from_db(db, field_names, values)
+        obj._loaded_assigned_to_id = obj.assigned_to_id
+        return obj
+
     def save(self, *args, **kwargs):
         """Keep the two ownership roles in step with the current owner.
 
@@ -237,19 +247,29 @@ class Lead(models.Model):
         BDE. Without the BDE half, a lead assigned to a BDE through the owner
         field left `bde` empty and could never be marked Converted.
 
-        Both stamps are sticky, so ownership ends up shared: the tele caller who
-        worked the lead and the BDE who took it on both keep sight of it.
+        The tele caller stamp is sticky, so ownership ends up shared: the tele
+        caller who worked the lead keeps sight of it after handing it on.
+
+        The BDE stamp is not sticky — it names whoever is working the lead now.
+        Handing a lead from one BDE to another has to take it out of the first
+        one's list, and a sticky stamp left it visible to both of them.
+
+        That re-stamp only fires when the owner actually changes. The lead list
+        matches on `bde`, so the field has to follow a hand-off, but re-stamping
+        on every save would undo `assign-bde`, which deliberately names a BDE
+        other than the owner.
 
         Bulk paths use queryset.update() and skip save(), so they stamp these
         themselves — see LeadViewSet._stamp_owner_role.
         """
         owner = self.assigned_to if self.assigned_to_id else None
         role = getattr(owner, 'role', '') if owner else ''
+        owner_changed = self._state.adding or self.assigned_to_id != self._loaded_assigned_to_id
         stamped = []
         if role == 'tele_caller' and not self.tele_caller_id:
             self.tele_caller_id = owner.id
             stamped.append('tele_caller')
-        elif role == 'bde' and not self.bde_id:
+        elif role == 'bde' and (owner_changed or not self.bde_id) and self.bde_id != owner.id:
             self.bde_id = owner.id
             stamped.append('bde')
         if stamped:
@@ -257,6 +277,7 @@ class Lead(models.Model):
             if update_fields is not None:
                 kwargs['update_fields'] = list(update_fields) + stamped
         super().save(*args, **kwargs)
+        self._loaded_assigned_to_id = self.assigned_to_id
 
     def __str__(self):
         return f"{self.first_name} {self.last_name}"

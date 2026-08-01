@@ -692,13 +692,27 @@ class SharedOwnershipTests(TestCase):
         self.lead.refresh_from_db()
         self.assertEqual(self.lead.bde_id, self.bde.id)
 
-    def test_an_existing_bde_is_not_overwritten(self):
-        """The dedicated hand-off stays authoritative over the owner field."""
+    def test_an_existing_bde_stands_until_the_lead_is_handed_to_another(self):
+        """`assign-bde` names the BDE; a later hand-off moves it.
+
+        The two must not disagree once the owner is itself a BDE: the lead list
+        matches on either field, so a lead owned by one BDE while stamped to
+        another showed up for both of them.
+        """
         self.client.post(f'/api/leads/{self.lead.id}/assign-bde/', data={'bde': self.bde2.id},
                          content_type='application/json', HTTP_AUTHORIZATION=token_for(self.caller))
-        self.patch(self.caller, {'assigned_to': self.bde.id})
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.bde_id, self.bde2.id)      # stands on its own
+
+        # Editing something else leaves the hand-off alone.
+        self.patch(self.caller, {'value': 4321})
         self.lead.refresh_from_db()
         self.assertEqual(self.lead.bde_id, self.bde2.id)
+
+        # Handing the lead to another BDE moves it.
+        self.patch(self.caller, {'assigned_to': self.bde.id})
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.bde_id, self.bde.id)
         self.assertEqual(self.lead.assigned_to_id, self.bde.id)
 
     def test_tele_caller_can_still_change_the_bde_after_handing_it_over(self):
@@ -956,3 +970,78 @@ class Stage1NeedsFeasibilityTests(TestCase):
         r = self.client.get(f'/api/leads/{self.lead.id}/documentation-detail/',
                             HTTP_AUTHORIZATION=token_for(self.doc))
         self.assertIs(r.json()['site_visit']['kseb_feasibility_complete'], True)
+
+
+class BdeLeadVisibilityTests(TestCase):
+    """A lead belongs to the BDE working it now — not to whoever held it before."""
+
+    def setUp(self):
+        self.caller = mk('v_caller', 'tele_caller')
+        self.bde1 = mk('v_bde1', 'bde')
+        self.bde2 = mk('v_bde2', 'bde')
+        self.admin = mk('v_admin', 'admin')
+
+    def visible_to(self, user):
+        r = self.client.get('/api/leads/?all=true', HTTP_AUTHORIZATION=token_for(user))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        d = r.json()
+        rows = d if isinstance(d, list) else d.get('results', [])
+        return {row['id'] for row in rows}
+
+    def make(self, owner, **kw):
+        return Lead.objects.create(first_name='V', last_name='One', phone='9994000001',
+                                   status='new', assigned_to=owner, **kw)
+
+    def test_a_lead_is_visible_only_to_the_bde_it_is_assigned_to(self):
+        lead = self.make(self.bde1)
+        self.assertIn(lead.id, self.visible_to(self.bde1))
+        self.assertNotIn(lead.id, self.visible_to(self.bde2))
+
+    def test_moving_it_between_bdes_takes_it_out_of_the_first_ones_list(self):
+        """The reported bug: the old BDE kept seeing a lead handed to another."""
+        lead = self.make(self.bde1)
+        self.assertEqual(lead.bde_id, self.bde1.id)
+
+        lead.assigned_to = self.bde2
+        lead.save()
+
+        lead.refresh_from_db()
+        self.assertEqual(lead.bde_id, self.bde2.id)
+        self.assertIn(lead.id, self.visible_to(self.bde2))
+        self.assertNotIn(lead.id, self.visible_to(self.bde1))
+
+    def test_reassigning_through_the_api_moves_it_too(self):
+        lead = self.make(self.bde1)
+        r = self.client.patch(f'/api/leads/{lead.id}/', data={'assigned_to': self.bde2.id},
+                              content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        lead.refresh_from_db()
+        self.assertEqual(lead.bde_id, self.bde2.id)
+        self.assertNotIn(lead.id, self.visible_to(self.bde1))
+
+    def test_bulk_assignment_moves_it_as_well(self):
+        lead = self.make(self.bde1)
+        r = self.client.post('/api/leads/bulk_assign/',
+                             data={'ids': [lead.id], 'user_id': self.bde2.id},
+                             content_type='application/json',
+                             HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        lead.refresh_from_db()
+        self.assertEqual(lead.bde_id, self.bde2.id)
+        self.assertNotIn(lead.id, self.visible_to(self.bde1))
+
+    def test_the_tele_caller_keeps_sight_of_a_lead_handed_to_a_bde(self):
+        """Shared ownership is unaffected — only the BDE half stops being sticky."""
+        lead = self.make(self.caller)
+        self.assertEqual(lead.tele_caller_id, self.caller.id)
+
+        lead.assigned_to = self.bde1
+        lead.save()
+        lead.refresh_from_db()
+
+        self.assertEqual(lead.tele_caller_id, self.caller.id)
+        self.assertEqual(lead.bde_id, self.bde1.id)
+        self.assertIn(lead.id, self.visible_to(self.caller))
+        self.assertIn(lead.id, self.visible_to(self.bde1))
+        self.assertNotIn(lead.id, self.visible_to(self.bde2))
