@@ -156,6 +156,31 @@ def can_assign_leads(user):
     return getattr(user, 'role', '') != 'bde'
 
 
+def can_edit_leads(user):
+    """Who may edit a lead's details.
+
+    Same audience as can_add_leads: the lead record belongs to the tele-calling
+    side. A BDE reports through the site visit and can still mark a converted
+    deal lost — they just don't edit the lead itself.
+    """
+    if not user or not user.is_authenticated:
+        return False
+    granted = custom_grant(user, 'leads.edit')
+    if granted is not None:
+        return granted
+    return getattr(user, 'role', '') != 'bde'
+
+
+def can_delete_leads(user):
+    """Who may send a lead to Trash. A BDE receives work, they don't discard it."""
+    if not user or not user.is_authenticated:
+        return False
+    granted = custom_grant(user, 'leads.delete')
+    if granted is not None:
+        return granted
+    return getattr(user, 'role', '') != 'bde'
+
+
 def can_edit_lead_status(user):
     """Who may change a lead's status.
 

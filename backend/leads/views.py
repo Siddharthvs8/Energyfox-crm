@@ -3400,6 +3400,14 @@ class LeadViewSet(viewsets.ModelViewSet):
 
 
     def perform_update(self, serializer):
+        # The lead record belongs to the tele-calling side. A BDE reports through
+        # the site visit, so editing the lead itself is closed to them — their
+        # own actions (site visit, mark lost) are separate endpoints.
+        from .access import can_edit_leads
+        if not can_edit_leads(self.request.user):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied('A BDE cannot edit lead details.')
+
         old_status = serializer.instance.status
         old_notes  = serializer.instance.notes or ""
 
@@ -3640,6 +3648,10 @@ class LeadViewSet(viewsets.ModelViewSet):
     def destroy(self, request, *args, **kwargs):
         """Deleting a lead moves it to Trash instead of removing it. It can be
         restored from the Trash view for 7 days, after which it is purged."""
+        from .access import can_delete_leads
+        if not can_delete_leads(request.user):
+            return Response({'error': 'A BDE cannot delete leads.'},
+                            status=status.HTTP_403_FORBIDDEN)
         lead = self.get_object()
         lead.is_trashed = True
         lead.trashed_at = timezone.now()
@@ -3650,6 +3662,10 @@ class LeadViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'])
     def bulk_delete(self, request):
         """Moves multiple leads to Trash at once."""
+        from .access import can_delete_leads
+        if not can_delete_leads(request.user):
+            return Response({'error': 'A BDE cannot delete leads.'},
+                            status=status.HTTP_403_FORBIDDEN)
         ids = request.data.get('ids', [])
         if not ids:
             return Response({'error': 'No lead IDs provided'}, status=status.HTTP_400_BAD_REQUEST)

@@ -286,6 +286,10 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   // Leads are sourced by the tele-calling side — a BDE only receives them.
   // Mirrors can_add_leads() on the backend.
   const canAddLeads = !currentUser || currentUser.role !== "bde";
+  // The lead record belongs to the tele-calling side too: a BDE reports through
+  // the site visit. Mirrors can_edit_leads() / can_delete_leads().
+  const canEditLeads = !currentUser || currentUser.role !== "bde";
+  const canDeleteLeads = !currentUser || currentUser.role !== "bde";
   // The site visit is the BDE's job; a tele caller has nothing to do in it, so
   // the shortcut and its completed badge are hidden from them.
   const showSiteVisit = !currentUser || currentUser.role !== "tele_caller";
@@ -1299,10 +1303,12 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                 className="flex items-center gap-1.5 bg-emerald-500 hover:bg-emerald-600 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all">
                 💬 WhatsApp
               </button>
+              {canDeleteLeads && (
               <button onClick={bulkDelete}
                 className="flex items-center gap-1.5 bg-red-500 hover:bg-red-600 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all">
                 <I.Trash /> Delete
               </button>
+              )}
               <button onClick={() => setSelectedIds([])}
                 className="ml-1 text-white/60 hover:text-white text-xs font-semibold transition-colors px-1">
                 ✕ Clear
@@ -1485,11 +1491,13 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                               title="View Details">
                               <I.Eye />
                             </Link>
+                            {canEditLeads && (
                             <button onClick={(e) => { e.stopPropagation(); openEdit(lead); }}
                               className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-all"
                               title="Edit">
                               <I.Edit />
                             </button>
+                            )}
                             <button onClick={(e) => { e.stopPropagation(); archiveLead(lead.id, !showArchived); }}
                               className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-all"
                               title={showArchived ? "Restore from archive" : "Archive (keep, but hide from active list)"}>
@@ -1499,7 +1507,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                                 <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><polyline points="21 8 21 21 3 21 3 8" /><rect x="1" y="3" width="22" height="5" /><line x1="10" y1="12" x2="14" y2="12" /></svg>
                               )}
                             </button>
-                            {!showArchived && (
+                            {!showArchived && canDeleteLeads && (
                             <button onClick={(e) => { e.stopPropagation(); deleteLead(lead.id); }}
                               className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all"
                               title="Move to Trash">
@@ -1907,10 +1915,12 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 text-slate-700 text-xs font-semibold hover:bg-slate-200 border border-slate-200 transition-all">
                   <I.Eye /> Full Screen
                 </Link>
+                {canEditLeads && (
                 <button onClick={() => { setViewLead(null); openEdit(viewLead); }}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-50 text-indigo-700 text-xs font-semibold hover:bg-indigo-100 transition-all">
                   <I.Edit /> Edit
                 </button>
+                )}
                 <button onClick={() => setViewLead(null)}
                   className="w-8 h-8 flex items-center justify-center rounded-xl bg-slate-100 text-slate-500 hover:bg-slate-200 transition-all">
                   <I.X />
@@ -2022,12 +2032,14 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                   {!tasksLoading && leadTasks.length === 0 && (
                     <div className="border-2 border-dashed border-slate-200 rounded-xl py-4 text-center">
                       <p className="text-[11px] text-slate-400">No tasks linked to this lead</p>
+                      {canEditLeads && (
                       <button
                         onClick={() => { setViewLead(null); openEdit(viewLead); }}
                         className="mt-2 text-[11px] font-semibold text-violet-600 hover:text-violet-700 transition-colors"
                       >
                         + Add tasks via Edit
                       </button>
+                      )}
                     </div>
                   )}
 

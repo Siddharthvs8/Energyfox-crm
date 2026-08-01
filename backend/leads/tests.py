@@ -59,18 +59,13 @@ class BdeCannotEditLeadStatusTests(TestCase):
         self.assertEqual(r.status_code, 403)
         self.assertEqual(Lead.objects.filter(status='interested').count(), 0)
 
-    def test_bde_keeps_every_other_edit(self):
-        """The edit form posts the current status back; that must still save."""
+    def test_bde_cannot_edit_the_lead_at_all(self):
+        """Editing the lead record is closed to a BDE — see
+        BdeCannotEditOrDeleteLeadsTests. Nothing on the form saves for them."""
         r = self.patch_lead(self.bde, {'status': 'new', 'notes': 'Visit booked'})
-        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.status_code, 403)
         self.lead.refresh_from_db()
-        self.assertEqual(self.lead.notes, 'Visit booked')
-
-        r = self.post('/api/leads/bulk_update/', self.bde,
-                      {'ids': [self.lead.id], 'data': {'source': 'referral'}})
-        self.assertEqual(r.status_code, 200)
-        self.lead.refresh_from_db()
-        self.assertEqual(self.lead.source, 'referral')
+        self.assertNotEqual(self.lead.notes, 'Visit booked')
 
     def test_tele_caller_and_admin_still_own_the_status(self):
         self.assertEqual(self.patch_lead(self.caller, {'status': 'interested'}).status_code, 200)
@@ -162,12 +157,12 @@ class BdeCannotAddOrAssignLeadsTests(TestCase):
         r = self.post(f'/api/leads/{owned.id}/assign-bde/', self.bde, {'bde_id': self.bde2.id})
         self.assertEqual(r.status_code, 403)
 
-    def test_bde_editing_a_lead_does_not_trip_the_assign_guard(self):
-        """The edit form posts assigned_to back unchanged — that must still save."""
+    def test_bde_editing_a_lead_is_refused_outright(self):
+        """A BDE has no edit form at all now, so even an unchanged owner is a no."""
         r = self.patch_lead(self.bde, {'assigned_to': self.caller.id, 'notes': 'Reached site'})
-        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.status_code, 403)
         self.lead.refresh_from_db()
-        self.assertEqual(self.lead.notes, 'Reached site')
+        self.assertNotEqual(self.lead.notes, 'Reached site')
 
     def test_tele_caller_can_still_assign(self):
         r = self.post('/api/leads/bulk_assign/', self.caller,
@@ -1045,3 +1040,94 @@ class BdeLeadVisibilityTests(TestCase):
         self.assertIn(lead.id, self.visible_to(self.caller))
         self.assertIn(lead.id, self.visible_to(self.bde1))
         self.assertNotIn(lead.id, self.visible_to(self.bde2))
+
+
+class BdeCannotEditOrDeleteLeadsTests(TestCase):
+    """The lead record belongs to the tele-calling side; a BDE reports through
+    the site visit."""
+
+    def setUp(self):
+        self.bde = mk('e_bde', 'bde')
+        self.caller = mk('e_caller', 'tele_caller')
+        self.admin = mk('e_admin', 'admin')
+        # Owned by the tele caller, handed to the BDE for the visit — the shape
+        # both of them can see.
+        self.lead = Lead.objects.create(first_name='E', last_name='One', phone='9995000001',
+                                        status='new', assigned_to=self.caller,
+                                        bde=self.bde, value=0)
+        # One the BDE owns outright, for the "even their own" case.
+        self.own = Lead.objects.create(first_name='E', last_name='Own', phone='9995000002',
+                                       status='new', assigned_to=self.bde, value=0)
+
+    def patch(self, actor, payload):
+        return self.client.patch(f'/api/leads/{self.lead.id}/', data=payload,
+                                 content_type='application/json',
+                                 HTTP_AUTHORIZATION=token_for(actor))
+
+    # ── editing ──
+    def test_bde_cannot_edit_lead_details(self):
+        r = self.patch(self.bde, {'first_name': 'Changed', 'phone': '9995009999'})
+        self.assertEqual(r.status_code, 403)
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.first_name, 'E')
+
+    def test_bde_cannot_edit_even_a_lead_they_own(self):
+        r = self.client.patch(f'/api/leads/{self.own.id}/', data={'notes': 'mine'},
+                              content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.bde))
+        self.assertEqual(r.status_code, 403)
+
+    def test_others_can_still_edit(self):
+        for actor in (self.caller, self.admin):
+            r = self.patch(actor, {'notes': f'by {actor.username}'})
+            self.assertEqual(r.status_code, 200, r.content[:200])
+
+    # ── deleting ──
+    def test_bde_cannot_delete_a_lead(self):
+        r = self.client.delete(f'/api/leads/{self.lead.id}/',
+                               HTTP_AUTHORIZATION=token_for(self.bde))
+        self.assertEqual(r.status_code, 403)
+        self.lead.refresh_from_db()
+        self.assertFalse(self.lead.is_trashed)
+
+    def test_bde_cannot_bulk_delete_either(self):
+        r = self.client.post('/api/leads/bulk_delete/', data={'ids': [self.lead.id]},
+                             content_type='application/json',
+                             HTTP_AUTHORIZATION=token_for(self.bde))
+        self.assertEqual(r.status_code, 403)
+        self.lead.refresh_from_db()
+        self.assertFalse(self.lead.is_trashed)
+
+    def test_others_can_still_delete(self):
+        r = self.client.delete(f'/api/leads/{self.lead.id}/',
+                               HTTP_AUTHORIZATION=token_for(self.caller))
+        self.assertEqual(r.status_code, 204)
+        self.lead.refresh_from_db()
+        self.assertTrue(self.lead.is_trashed)
+
+    # ── what a BDE keeps ──
+    def test_the_bde_still_sees_the_lead(self):
+        r = self.client.get('/api/leads/?all=true', HTTP_AUTHORIZATION=token_for(self.bde))
+        self.assertEqual(r.status_code, 200)
+        d = r.json()
+        rows = d if isinstance(d, list) else d.get('results', [])
+        self.assertIn(self.lead.id, {row['id'] for row in rows})
+
+    def test_the_bde_can_still_record_the_site_visit(self):
+        """Their own workflow is a separate endpoint and must keep working."""
+        r = self.client.patch(f'/api/leads/{self.lead.id}/site-visit/',
+                              data={'roof_type': 'rcc'}, content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.bde))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(SiteVisit.objects.get(lead=self.lead).roof_type, 'rcc')
+
+    def test_the_bde_can_still_mark_a_converted_deal_lost(self):
+        self.lead.status = 'converted'
+        self.lead.save()
+        r = self.client.post(f'/api/leads/{self.lead.id}/mark-lost/',
+                             data={'reason': 'Customer backed out'},
+                             content_type='application/json',
+                             HTTP_AUTHORIZATION=token_for(self.bde))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.lead.refresh_from_db()
+        self.assertTrue(self.lead.is_lost)
