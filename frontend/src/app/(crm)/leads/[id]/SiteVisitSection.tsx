@@ -409,13 +409,20 @@ ${field}: ${Array.isArray(msg) ? msg[0] : msg}`;
           <YesNo k="transformer_feasibility" label="Transformer Feasibility" />
           <YesNo k="neutral_link" label="Neutral Link" />
 
-          {/* Roof access / structure */}
+          {/* Roof access / structure. A sheet roof has no parapet and takes a
+              custom structure regardless, so only its height is asked for. */}
           <SectionTitle>Roof Access &amp; Structure</SectionTitle>
-          <Text k="roof_access" label="Access to the Roof" />
-          <Text k="parapet_height" label="Parapet Height" />
-          <Select k="structure_type" label="Structure Type" options={[{ value: "table_top", label: "Table top" }, { value: "custom", label: "Custom" }]} />
-          {form.structure_type === "custom" && <Text k="custom_structure_height" label="Custom Structure Height" />}
-          <YesNo k="anchoring_allowed" label="Anchoring in Roof Allowed?" />
+          {form.roof_type === "sheet" ? (
+            <Text k="custom_structure_height" label="Custom Structure Height" />
+          ) : (
+            <>
+              <Text k="roof_access" label="Access to the Roof" />
+              <Text k="parapet_height" label="Parapet Height" />
+              <Select k="structure_type" label="Structure Type" options={[{ value: "table_top", label: "Table top" }, { value: "custom", label: "Custom" }]} />
+              {form.structure_type === "custom" && <Text k="custom_structure_height" label="Custom Structure Height" />}
+              <YesNo k="anchoring_allowed" label="Anchoring in Roof Allowed?" />
+            </>
+          )}
 
           {/* Cabling */}
           <SectionTitle>Cabling Requirements (meters)</SectionTitle>
