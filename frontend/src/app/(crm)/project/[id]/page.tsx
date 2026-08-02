@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import ProjectSection from "./ProjectSection";
 
+import ActivityTimeline from "@/components/ActivityTimeline";
 type ProjectDetail = {
   id: number;
   first_name: string; last_name: string | null;
@@ -83,7 +84,10 @@ export default function ProjectDetailPage({ params: paramsPromise }: { params: P
 
   return (
     <div className="p-6 lg:p-8 max-w-[1100px]">
-      <Link href="/project" className="text-sm text-indigo-600 hover:underline">← Back to Project</Link>
+      <div className="flex items-center justify-between gap-3">
+        <Link href="/project" className="text-sm text-indigo-600 hover:underline">← Back to Project</Link>
+        <ActivityTimeline leadId={params.id} />
+      </div>
 
       <div className="mt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>

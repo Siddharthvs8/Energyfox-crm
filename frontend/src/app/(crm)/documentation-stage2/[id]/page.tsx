@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import DocumentationStage2Section from "./DocumentationStage2Section";
 
+import ActivityTimeline from "@/components/ActivityTimeline";
 type Stage2Detail = {
   id: number;
   first_name: string; last_name: string | null;
@@ -99,7 +100,10 @@ export default function DocumentationStage2DetailPage({ params: paramsPromise }:
 
   return (
     <div className="p-6 lg:p-8 max-w-[1100px]">
-      <Link href="/documentation-stage2" className="text-sm text-indigo-600 hover:underline">← Back to Documentation Stage 2</Link>
+      <div className="flex items-center justify-between gap-3">
+        <Link href="/documentation-stage2" className="text-sm text-indigo-600 hover:underline">← Back to Documentation Stage 2</Link>
+        <ActivityTimeline leadId={params.id} />
+      </div>
 
       <div className="mt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>

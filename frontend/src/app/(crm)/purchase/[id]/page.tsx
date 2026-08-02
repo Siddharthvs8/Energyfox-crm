@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import PurchaseLogisticsSection from "./PurchaseLogisticsSection";
 
+import ActivityTimeline from "@/components/ActivityTimeline";
 type PaymentVerification = {
   deal_value: string | number | null;
   amount_received: string | number | null;
@@ -103,7 +104,10 @@ export default function PurchaseDetailPage({ params: paramsPromise }: { params: 
 
   return (
     <div className="p-6 lg:p-8 max-w-[1100px]">
-      <Link href="/purchase" className="text-sm text-indigo-600 hover:underline">← Back to Purchase &amp; Logistics</Link>
+      <div className="flex items-center justify-between gap-3">
+        <Link href="/purchase" className="text-sm text-indigo-600 hover:underline">← Back to Purchase &amp; Logistics</Link>
+        <ActivityTimeline leadId={params.id} />
+      </div>
 
       {/* Header */}
       <div className="mt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">

@@ -1562,3 +1562,77 @@ class EmptyTrashTests(TestCase):
         r = self.empty(self.superadmin)
         self.assertEqual(r.json()['deleted'], 4)
         self.assertEqual(Lead.objects.filter(is_trashed=True).count(), 0)
+
+
+class ActivityTimelineTests(TestCase):
+    """The whole of a customer's history, for whoever picks the file up."""
+
+    def setUp(self):
+        from .models import ActivityLog
+        self.caller = mk('at_caller', 'tele_caller')
+        self.docstaff = mk('at_doc', 'documentation_staff')
+        self.accounts = mk('at_acc', 'accounts_staff')
+        self.purchase = mk('at_pur', 'purchase_staff')
+        self.project = mk('at_proj', 'project_manager')
+        self.liasoning = mk('at_lia', 'liasoning_officer')
+        self.docman = mk('at_docman', 'documentation_manager')
+        self.bde = mk('at_bde', 'bde')
+        self.stranger = mk('at_stranger', 'bde')
+
+        self.lead = Lead.objects.create(first_name='Sidharth', last_name='V S',
+                                        phone='9997700001', status='new',
+                                        assigned_to=self.caller, bde=self.bde)
+        ActivityLog.objects.create(activity_type='lead_created', lead=self.lead,
+                                   actor=self.caller, description='New lead added: Sidharth')
+        ActivityLog.objects.create(activity_type='lead_status_change', lead=self.lead,
+                                   actor=self.caller, description='Sidharth: New → Converted')
+        ActivityLog.objects.create(activity_type='note_added', lead=self.lead, actor=None,
+                                   description='Auto-assigned to documentation: docstaff',
+                                   extra={'auto_generated': True})
+
+    def timeline(self, actor):
+        return self.client.get(f'/api/leads/{self.lead.id}/activity-timeline/',
+                               HTTP_AUTHORIZATION=token_for(actor))
+
+    def test_every_downstream_role_can_open_it(self):
+        for actor in (self.docstaff, self.docman, self.accounts,
+                      self.purchase, self.project, self.liasoning):
+            r = self.timeline(actor)
+            self.assertEqual(r.status_code, 200, f'{actor.role}: {r.content[:120]}')
+            self.assertEqual(r.json()['count'], 3, actor.role)
+
+    def test_it_names_the_customer(self):
+        d = self.timeline(self.accounts).json()
+        self.assertEqual(d['lead']['name'], 'Sidharth V S')
+        self.assertEqual(d['lead']['phone'], '9997700001')
+
+    def test_entries_are_newest_first(self):
+        entries = self.timeline(self.accounts).json()['entries']
+        stamps = [e['timestamp'] for e in entries]
+        self.assertEqual(stamps, sorted(stamps, reverse=True))
+
+    def test_system_entries_are_marked_auto_generated(self):
+        entries = {e['description']: e for e in self.timeline(self.accounts).json()['entries']}
+        self.assertTrue(entries['Auto-assigned to documentation: docstaff']['auto_generated'])
+        self.assertFalse(entries['New lead added: Sidharth']['auto_generated'])
+
+    def test_a_human_entry_names_its_actor(self):
+        entries = {e['description']: e for e in self.timeline(self.accounts).json()['entries']}
+        self.assertEqual(entries['New lead added: Sidharth']['actor'], 'at_caller')
+
+    def test_the_people_working_the_lead_can_open_it_too(self):
+        for actor in (self.caller, self.bde):
+            self.assertEqual(self.timeline(actor).status_code, 200, actor.role)
+
+    def test_a_bde_who_does_not_hold_the_lead_cannot(self):
+        """Access rides on the lead's own scoping — no separate rule to drift."""
+        self.assertEqual(self.timeline(self.stranger).status_code, 404)
+
+    def test_a_lead_with_no_history_returns_an_empty_list(self):
+        bare = Lead.objects.create(first_name='No', last_name='History',
+                                   phone='9997700002', status='new', assigned_to=self.caller)
+        r = self.client.get(f'/api/leads/{bare.id}/activity-timeline/',
+                            HTTP_AUTHORIZATION=token_for(self.accounts))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['count'], 0)
+        self.assertEqual(r.json()['entries'], [])

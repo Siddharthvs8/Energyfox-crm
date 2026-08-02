@@ -8,6 +8,7 @@ import Link from "next/link";
 import PaymentVerificationSection from "./PaymentVerificationSection";
 import BalancePaymentSection from "./BalancePaymentSection";
 
+import ActivityTimeline from "@/components/ActivityTimeline";
 type AccountsDetail = {
   id: number;
   first_name: string; last_name: string | null;
@@ -87,7 +88,10 @@ export default function AccountsDetailPage({ params: paramsPromise }: { params: 
 
   return (
     <div className="p-6 lg:p-8 max-w-[1100px]">
-      <Link href="/accounts" className="text-sm text-indigo-600 hover:underline">← Back to Accounts</Link>
+      <div className="flex items-center justify-between gap-3">
+        <Link href="/accounts" className="text-sm text-indigo-600 hover:underline">← Back to Accounts</Link>
+        <ActivityTimeline leadId={params.id} />
+      </div>
 
       {/* Header */}
       <div className="mt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">

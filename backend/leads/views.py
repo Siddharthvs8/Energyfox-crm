@@ -450,6 +450,51 @@ class LeadViewSet(viewsets.ModelViewSet):
                 qs = qs.filter(bde=user)
         return Response([self._feasibility_payload(lead, request) for lead in qs])
 
+    @action(detail=True, methods=['get'], url_path='activity-timeline')
+    def activity_timeline(self, request, pk=None):
+        """Everything that has happened to this lead, newest first.
+
+        The downstream modules — documentation, accounts, purchase, project,
+        liasoning — each see one slice of a customer's journey. This is the whole
+        of it in one place, so whoever picks the file up can see how it got here.
+
+        Access falls out of `get_object()`: a user who cannot open the lead
+        cannot read its history either.
+        """
+        lead = self.get_object()
+
+        def actor_name(u):
+            if not u:
+                return None
+            return f"{u.first_name} {u.last_name}".strip() or u.username
+
+        # System-composed entries are labelled rather than attributed to a person.
+        auto_prefixes = ('Documentation Stage 1 completed by', 'Auto-assigned to documentation:')
+
+        logs = (ActivityLog.objects.filter(lead=lead)
+                .select_related('actor').order_by('-created_at'))
+        entries = [{
+            'id': log.id,
+            'type': log.activity_type,
+            'description': log.description,
+            'actor': actor_name(log.actor),
+            'auto_generated': bool((log.extra or {}).get('auto_generated'))
+                              or (log.description or '').startswith(auto_prefixes),
+            'timestamp': timezone.localtime(log.created_at).isoformat(),
+        } for log in logs]
+
+        return Response({
+            'lead': {
+                'id': lead.id,
+                'name': f"{lead.first_name} {lead.last_name or ''}".strip(),
+                'phone': lead.phone or '',
+                'status': lead.status,
+                'created_at': timezone.localtime(lead.created_at).isoformat() if lead.created_at else None,
+            },
+            'count': len(entries),
+            'entries': entries,
+        })
+
     @action(detail=False, methods=['get'], url_path='feasibility-pending')
     def feasibility_pending(self, request):
         """The BDE's outstanding KSEB feasibilities, for the reminder popup.

@@ -6,6 +6,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
+import ActivityTimeline from "@/components/ActivityTimeline";
 type LiasoningDetail = {
   id: number;
   first_name: string; last_name: string | null;
@@ -67,7 +68,10 @@ export default function LiasoningDetailPage({ params: paramsPromise }: { params:
 
   return (
     <div className="p-6 lg:p-8 max-w-[1100px]">
-      <Link href="/liasoning" className="text-sm text-indigo-600 hover:underline">← Back to Liasoning &amp; Service</Link>
+      <div className="flex items-center justify-between gap-3">
+        <Link href="/liasoning" className="text-sm text-indigo-600 hover:underline">← Back to Liasoning &amp; Service</Link>
+        <ActivityTimeline leadId={params.id} />
+      </div>
 
       <div className="mt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>

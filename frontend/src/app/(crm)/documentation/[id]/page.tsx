@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import DocumentationStage1Section from "./DocumentationStage1Section";
 
+import ActivityTimeline from "@/components/ActivityTimeline";
 type Attachment = { label: string; url: string; is_image: boolean };
 type DocDetail = {
   id: number;
@@ -124,7 +125,10 @@ export default function DocumentationDetailPage({ params: paramsPromise }: { par
 
   return (
     <div className="p-6 lg:p-8 max-w-[1100px]">
-      <Link href="/documentation" className="text-sm text-indigo-600 hover:underline">← Back to Documentation Stage 1</Link>
+      <div className="flex items-center justify-between gap-3">
+        <Link href="/documentation" className="text-sm text-indigo-600 hover:underline">← Back to Documentation Stage 1</Link>
+        <ActivityTimeline leadId={params.id} />
+      </div>
 
       {/* Header */}
       <div className="mt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
