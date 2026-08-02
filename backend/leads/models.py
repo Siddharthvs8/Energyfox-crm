@@ -1,3 +1,4 @@
+from django.core.validators import RegexValidator
 from django.db import models
 from django.utils import timezone
 
@@ -301,7 +302,12 @@ class SiteVisit(models.Model):
     # ── Electrical / supply ──
     connection_type = models.CharField(max_length=120, blank=True, default='')  # commercial / residential
     connected_load = models.CharField(max_length=120, blank=True, default='')
-    consumer_number = models.CharField(max_length=120, blank=True, default='')
+    # KSEB consumer numbers are digits and never run past 15 of them; the
+    # length is capped here so a mistyped meter reading can't be saved as one.
+    consumer_number = models.CharField(
+        max_length=15, blank=True, default='',
+        validators=[RegexValidator(r'^\d{0,15}$',
+                                   'Consumer number must be digits only, up to 15.')])
     current_bill = models.CharField(max_length=120, blank=True, default='')
     phase = models.CharField(max_length=10, choices=[('1ph', '1 Phase'), ('3ph', '3 Phase')], blank=True, default='')
     building_height = models.CharField(max_length=120, blank=True, default='')
@@ -329,7 +335,10 @@ class SiteVisit(models.Model):
     lightning_conductor_length = models.CharField(max_length=60, blank=True, default='')
 
     # ── Earthing / anchoring ──
-    earthing_surface = models.CharField(max_length=120, blank=True, default='')
+    EARTHING_SURFACES = [('soil', 'Soil'), ('concrete', 'Concrete'),
+                         ('tile', 'Tile'), ('interlock', 'Interlock')]
+    earthing_surface = models.CharField(max_length=20, choices=EARTHING_SURFACES,
+                                        blank=True, default='')
     anchoring_allowed = models.CharField(max_length=3, choices=YES_NO, blank=True, default='')
 
     # ── Customer documents (yes/no flags + uploads) ──
@@ -598,8 +607,10 @@ class PaymentVerification(models.Model):
     """
     PAYMENT_MODES = [
         ('cash', 'Cash'), ('cheque', 'Cheque'), ('card', 'Card'), ('upi', 'UPI'),
+        ('loan', 'Loan'),
     ]
-    # Modes that need a UTR / transaction reference (everything except cash).
+    # Modes that need a UTR / transaction reference. Cash has none, and a loan
+    # disbursement is evidenced by the sanction rather than a transaction id.
     UTR_MODES = ('cheque', 'card', 'upi')
 
     lead = models.OneToOneField(Lead, on_delete=models.CASCADE, related_name='payment_verification')
@@ -613,6 +624,8 @@ class PaymentVerification(models.Model):
     discount_given_by = models.CharField(
         max_length=255, blank=True, default='',
         help_text="Authorised personnel who approved the discount")
+    remarks = models.TextField(blank=True, default='',
+                               help_text="Free notes on this payment, for accounts' own record")
 
     # ── Registration fee (RF) tracking ──
     # RF is due 30 days from the KSEB feasibility date; a reminder fires on day 29,
@@ -1077,6 +1090,10 @@ class ReceiptVoucher(models.Model):
 
     received_from = models.CharField(max_length=255, blank=True, default='')   # snapshot
     address = models.TextField(blank=True, default='')                         # snapshot
+
+    # The rendered receipt, stored when it is first sent so email can attach it
+    # and WhatsApp can link to it — the Cloud API fetches documents by URL.
+    pdf = models.FileField(upload_to='receipts/', null=True, blank=True)
 
     created_by = models.ForeignKey('users.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     created_at = models.DateTimeField(auto_now_add=True)

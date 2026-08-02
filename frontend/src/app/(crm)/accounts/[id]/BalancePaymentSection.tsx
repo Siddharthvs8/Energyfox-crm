@@ -1,7 +1,7 @@
 "use client";
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase, formatCurrency } from "@/lib/mock-data";
-import { downloadLeadReceipt } from "@/lib/receipt-pdf";
+import { downloadLeadReceipt, sendLeadReceipt } from "@/lib/receipt-pdf";
 import React, { useCallback, useEffect, useState } from "react";
 
 const PAYMENT_MODES = [
@@ -31,6 +31,18 @@ export default function BalancePaymentSection({ leadId, canEdit, onChanged }: {
 
   const [summary, setSummary] = useState<Summary | null>(null);
   const [loading, setLoading] = useState(true);
+
+  /** Ask where this receipt should go, then render and hand it to the server. */
+  const sendReceipt = async (channel: "email" | "whatsapp", receiptId: number) => {
+    const label = channel === "email" ? "email address" : "WhatsApp number";
+    const to = window.prompt(`Send the receipt to which ${label}?`, "");
+    if (!to) return;
+    try {
+      await sendLeadReceipt(leadId, channel, to, { receiptId });
+    } catch {
+      alert("Network error while sending the receipt.");
+    }
+  };
   const [amount, setAmount] = useState("");
   const [mode, setMode] = useState("");
   const [utr, setUtr] = useState("");
@@ -176,12 +188,18 @@ export default function BalancePaymentSection({ leadId, canEdit, onChanged }: {
                       <td className="py-2 pr-4 text-slate-600">{p.recorded_by_name || "—"}</td>
                       <td className="py-2 pr-4">
                         {p.receipt_id ? (
-                          <button onClick={() => downloadLeadReceipt(leadId, { receiptId: p.receipt_id! })}
-                            title={p.receipt_number || "Download receipt"}
-                            className="inline-flex items-center gap-1 text-[12px] font-semibold text-indigo-600 hover:text-indigo-800">
-                            <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
-                            Receipt
-                          </button>
+                          <span className="inline-flex items-center gap-3 whitespace-nowrap">
+                            <button onClick={() => downloadLeadReceipt(leadId, { receiptId: p.receipt_id! })}
+                              title={p.receipt_number || "Download receipt"}
+                              className="inline-flex items-center gap-1 text-[12px] font-semibold text-indigo-600 hover:text-indigo-800">
+                              <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+                              Receipt
+                            </button>
+                            <button onClick={() => sendReceipt("email", p.receipt_id!)}
+                              className="text-[12px] font-semibold text-slate-500 hover:text-slate-800">Email</button>
+                            <button onClick={() => sendReceipt("whatsapp", p.receipt_id!)}
+                              className="text-[12px] font-semibold text-emerald-600 hover:text-emerald-800">WhatsApp</button>
+                          </span>
                         ) : <span className="text-slate-300">—</span>}
                       </td>
                     </tr>

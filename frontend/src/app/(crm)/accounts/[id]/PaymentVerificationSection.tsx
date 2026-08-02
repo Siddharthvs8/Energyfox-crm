@@ -1,7 +1,7 @@
 "use client";
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase, formatCurrency } from "@/lib/mock-data";
-import { downloadLeadReceipt } from "@/lib/receipt-pdf";
+import { downloadLeadReceipt, sendLeadReceipt } from "@/lib/receipt-pdf";
 import React, { useCallback, useEffect, useState } from "react";
 
 const PAYMENT_MODES = [
@@ -9,8 +9,10 @@ const PAYMENT_MODES = [
   { value: "cheque", label: "Cheque" },
   { value: "card", label: "Card" },
   { value: "upi", label: "UPI" },
+  { value: "loan", label: "Loan" },
 ];
-// Modes that need a UTR / transaction reference (everything except cash).
+// Modes that need a UTR / transaction reference. Cash has none, and a loan
+// disbursement is evidenced by the sanction rather than a transaction id.
 const UTR_MODES = ["cheque", "card", "upi"];
 
 const inputCls =
@@ -35,6 +37,7 @@ export default function PaymentVerificationSection({ leadId, canEdit, canReopen,
   const [utrDetails, setUtrDetails] = useState("");
   const [onAccountOf, setOnAccountOf] = useState("");
   const [discountGivenBy, setDiscountGivenBy] = useState("");
+  const [remarks, setRemarks] = useState("");
   const [isComplete, setIsComplete] = useState(false);
   const [completedByName, setCompletedByName] = useState<string | null>(null);
   const [completedAt, setCompletedAt] = useState<string | null>(null);
@@ -42,6 +45,7 @@ export default function PaymentVerificationSection({ leadId, canEdit, canReopen,
   const [saving, setSaving] = useState(false);
   const [completing, setCompleting] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [sending, setSending] = useState(false);
 
   const load = useCallback((d: any) => {
     setAmountReceived(d.amount_received != null ? String(d.amount_received) : "");
@@ -50,6 +54,7 @@ export default function PaymentVerificationSection({ leadId, canEdit, canReopen,
     setUtrDetails(d.utr_details || "");
     setOnAccountOf(d.on_account_of || "");
     setDiscountGivenBy(d.discount_given_by || "");
+    setRemarks(d.remarks || "");
     setIsComplete(!!d.is_complete);
     setCompletedByName(d.completed_by_name ?? null);
     setCompletedAt(d.completed_at ?? null);
@@ -82,6 +87,7 @@ export default function PaymentVerificationSection({ leadId, canEdit, canReopen,
         utr_details: needsUtr ? utrDetails : "",
         on_account_of: onAccountOf,
         discount_given_by: discountGivenBy,
+        remarks,
       }),
     });
     if (!r.ok) { const e = await r.json().catch(() => ({})); alert(e.error || "Failed to save payment verification."); return null; }
@@ -137,6 +143,21 @@ export default function PaymentVerificationSection({ leadId, canEdit, canReopen,
     } catch { alert("Network error while reopening."); }
   };
 
+  /** Ask where it should go, then render and hand it to the server. */
+  const askAndSend = async (channel: "email" | "whatsapp") => {
+    const label = channel === "email" ? "email address" : "WhatsApp number";
+    const to = window.prompt(`Send the receipt to which ${label}?`, "");
+    if (!to) return;
+    setSending(true);
+    try {
+      await sendLeadReceipt(leadId, channel, to, { initial: true });
+    } catch {
+      alert("Network error while sending the receipt.");
+    } finally {
+      setSending(false);
+    }
+  };
+
   const cardCls = "bg-white border border-slate-200 rounded-2xl shadow-sm p-5";
 
   if (loading) {
@@ -159,6 +180,14 @@ export default function PaymentVerificationSection({ leadId, canEdit, canReopen,
               className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-semibold hover:bg-indigo-700 transition">
               <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
               Download Receipt
+            </button>
+            <button onClick={() => askAndSend("email")} disabled={sending}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-300 text-slate-700 rounded-lg text-xs font-semibold hover:bg-slate-50 transition disabled:opacity-40">
+              {sending ? "Sending…" : "Email Receipt"}
+            </button>
+            <button onClick={() => askAndSend("whatsapp")} disabled={sending}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-semibold hover:bg-emerald-700 transition disabled:opacity-40">
+              {sending ? "Sending…" : "WhatsApp Receipt"}
             </button>
             {canReopen && (
               <button onClick={reopen} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-300 text-slate-700 rounded-lg text-xs font-semibold hover:bg-slate-50 transition">
@@ -225,6 +254,14 @@ export default function PaymentVerificationSection({ leadId, canEdit, canReopen,
             <label className={labelCls}>Discount Given By</label>
             <input value={discountGivenBy} disabled={readOnly} onChange={e => change(setDiscountGivenBy)(e.target.value)}
               placeholder="Name of authorised personnel" className={inputCls} />
+          </div>
+
+          <div className="sm:col-span-2 lg:col-span-3">
+            <label className={labelCls}>Remarks</label>
+            <textarea value={remarks} disabled={readOnly} rows={2}
+              onChange={e => change(setRemarks)(e.target.value)}
+              placeholder="Anything worth recording about this payment"
+              className={inputCls} />
           </div>
 
           {/* Balance — derived: deal value − amount received − discount */}

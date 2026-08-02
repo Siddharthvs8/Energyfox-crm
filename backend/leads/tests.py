@@ -1187,3 +1187,199 @@ class BdeHasNoLeadListToolsTests(TestCase):
     def test_the_bde_still_gets_their_lead_list(self):
         r = self.get('/api/leads/?all=true', self.bde)
         self.assertEqual(r.status_code, 200)
+
+
+class ConsumerNumberLimitTests(TestCase):
+    """A KSEB consumer number is digits, at most fifteen of them."""
+
+    def setUp(self):
+        self.bde = mk('cn_bde', 'bde')
+        self.caller = mk('cn_caller', 'tele_caller')
+        self.lead = Lead.objects.create(first_name='C', last_name='Num', phone='9997000001',
+                                        status='new', assigned_to=self.caller, bde=self.bde)
+
+    def save(self, value):
+        return self.client.patch(f'/api/leads/{self.lead.id}/site-visit/',
+                                 data={'consumer_number': value},
+                                 content_type='application/json',
+                                 HTTP_AUTHORIZATION=token_for(self.bde))
+
+    def test_fifteen_digits_is_accepted(self):
+        r = self.save('123456789012345')
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertEqual(SiteVisit.objects.get(lead=self.lead).consumer_number,
+                         '123456789012345')
+
+    def test_a_sixteenth_digit_is_refused(self):
+        r = self.save('1234567890123456')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('consumer_number', r.json())
+
+    def test_letters_are_refused(self):
+        r = self.save('12345ABC')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('consumer_number', r.json())
+
+    def test_blank_is_still_allowed(self):
+        """The field is optional — the visit may happen before the number is known."""
+        self.assertEqual(self.save('').status_code, 200)
+
+
+class EarthingSurfaceChoiceTests(TestCase):
+    """Earthing surface is one of four surfaces, not free text."""
+
+    def setUp(self):
+        self.bde = mk('es_bde', 'bde')
+        self.caller = mk('es_caller', 'tele_caller')
+        self.lead = Lead.objects.create(first_name='E', last_name='Surface', phone='9999000001',
+                                        status='new', assigned_to=self.caller, bde=self.bde)
+
+    def save(self, value):
+        return self.client.patch(f'/api/leads/{self.lead.id}/site-visit/',
+                                 data={'earthing_surface': value},
+                                 content_type='application/json',
+                                 HTTP_AUTHORIZATION=token_for(self.bde))
+
+    def test_each_surface_is_accepted(self):
+        for value in ('soil', 'concrete', 'tile', 'interlock'):
+            r = self.save(value)
+            self.assertEqual(r.status_code, 200, f'{value}: {r.content[:120]}')
+            self.assertEqual(SiteVisit.objects.get(lead=self.lead).earthing_surface, value)
+
+    def test_free_text_is_refused(self):
+        r = self.save('gravel')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('earthing_surface', r.json())
+
+    def test_blank_is_still_allowed(self):
+        self.assertEqual(self.save('').status_code, 200)
+
+
+class LoanRemarksAndReceiptSendTests(TestCase):
+    """Accounts: the Loan mode, the remarks note, and sending a receipt out."""
+
+    @classmethod
+    def setUpClass(cls):
+        import shutil, tempfile
+        from django.test import override_settings
+        cls._media = tempfile.mkdtemp(prefix='receipt-test-')
+        cls._override = override_settings(MEDIA_ROOT=cls._media)
+        cls._override.enable()
+        cls._rmtree = shutil.rmtree
+        super().setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        cls._override.disable()
+        cls._rmtree(cls._media, ignore_errors=True)
+
+    def setUp(self):
+        from decimal import Decimal
+        self.admin = mk('lr_admin', 'admin')
+        self.admin.is_staff = True
+        self.admin.save()
+        self.lead = Lead.objects.create(first_name='L', last_name='Loan', phone='9993100001',
+                                        email='buyer@example.com', status='converted',
+                                        value=Decimal('100000'), pushed_to_accounts=True)
+
+    def patch_pv(self, payload):
+        return self.client.patch(f'/api/leads/{self.lead.id}/payment-verification/',
+                                 data=payload, content_type='application/json',
+                                 HTTP_AUTHORIZATION=token_for(self.admin))
+
+    # ── Loan mode ──
+    def test_loan_is_an_accepted_payment_mode(self):
+        r = self.patch_pv({'payment_mode': 'loan'})
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertEqual(r.json()['payment_mode'], 'loan')
+
+    def test_loan_does_not_demand_a_utr(self):
+        """Cash aside, the other modes need a reference; a loan is evidenced by
+        the sanction, so it must not block verification."""
+        from .models import PaymentVerification
+        pv, _ = PaymentVerification.objects.get_or_create(lead=self.lead)
+        pv.payment_mode = 'loan'
+        pv.save()
+        self.assertEqual(pv.missing_required_fields(), [])
+
+    def test_an_unknown_mode_is_still_refused(self):
+        self.assertEqual(self.patch_pv({'payment_mode': 'barter'}).status_code, 400)
+
+    # ── Remarks ──
+    def test_remarks_round_trip(self):
+        r = self.patch_pv({'remarks': 'Cheque cleared on the 3rd.'})
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertEqual(r.json()['remarks'], 'Cheque cleared on the 3rd.')
+        r = self.client.get(f'/api/leads/{self.lead.id}/payment-verification/',
+                            HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.json()['remarks'], 'Cheque cleared on the 3rd.')
+
+    # ── Sending the receipt ──
+    def _receipt(self):
+        from decimal import Decimal
+        from .receipts import issue_receipt
+        return issue_receipt(self.lead, Decimal('50000'), on_account_of='Margin Money',
+                             payment_mode='loan')
+
+    @staticmethod
+    def _pdf():
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        return SimpleUploadedFile('r.pdf', b'%PDF-1.4 x', content_type='application/pdf')
+
+    def test_sending_by_email_stores_the_receipt(self):
+        from unittest.mock import patch
+        voucher = self._receipt()
+        with patch('messaging.email.send_and_log') as send:
+            send.return_value = type('L', (), {'status': 'sent', 'error': ''})()
+            r = self.client.post(f'/api/leads/{self.lead.id}/send-receipt/', {
+                'pdf': self._pdf(), 'channels': 'email', 'receipt_id': voucher.id,
+            }, HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(r.json()['sent']['email'], 'sent')
+        # Falls back to the lead's own address when none is given.
+        self.assertEqual(send.call_args.kwargs['to'], ['buyer@example.com'])
+        self.assertEqual(send.call_args.kwargs['subject'], f'Receipt {voucher.number}')
+        voucher.refresh_from_db()
+        self.assertTrue(voucher.pdf)
+        self.assertNotIn('/', voucher.pdf.name.split('/')[-1])
+
+    def test_sending_by_whatsapp_sends_a_document_link(self):
+        from unittest.mock import patch
+        voucher = self._receipt()
+        with patch('messaging.whatsapp.send_document') as send:
+            send.return_value = 'wamid.1'
+            r = self.client.post(f'/api/leads/{self.lead.id}/send-receipt/', {
+                'pdf': self._pdf(), 'channels': 'whatsapp', 'phone': '9876543210',
+                'receipt_id': voucher.id,
+            }, HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        kwargs = send.call_args.kwargs
+        self.assertEqual(kwargs['to'], '9876543210')
+        self.assertTrue(kwargs['link'].startswith('http'))
+        self.assertTrue(kwargs['filename'].endswith('.pdf'))
+
+    def test_sending_without_a_receipt_says_so(self):
+        r = self.client.post(f'/api/leads/{self.lead.id}/send-receipt/',
+                             {'pdf': self._pdf(), 'channels': 'email'},
+                             HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 404)
+        self.assertIn('No receipt', r.json()['error'])
+
+    def test_a_missing_address_is_reported(self):
+        self.lead.email = ''
+        self.lead.save(update_fields=['email'])
+        voucher = self._receipt()
+        r = self.client.post(f'/api/leads/{self.lead.id}/send-receipt/', {
+            'pdf': self._pdf(), 'channels': 'email', 'receipt_id': voucher.id,
+        }, HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 502)
+        self.assertIn('No email address', r.json()['error'])
+
+    def test_accounts_access_still_gates_it(self):
+        bde = mk('lr_bde', 'bde')
+        voucher = self._receipt()
+        r = self.client.post(f'/api/leads/{self.lead.id}/send-receipt/', {
+            'pdf': self._pdf(), 'channels': 'email', 'receipt_id': voucher.id,
+        }, HTTP_AUTHORIZATION=token_for(bde))
+        self.assertIn(r.status_code, (403, 404))

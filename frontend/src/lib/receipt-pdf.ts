@@ -55,7 +55,18 @@ const money = (n: number | string) => {
   return v.toLocaleString("en-IN");
 };
 
+/** Render the voucher and hand back the jsPDF doc (no download). */
+export async function buildReceiptPdf(rec: ReceiptData, org: ReceiptOrg) {
+  return renderReceipt(rec, org);
+}
+
 export async function generateReceiptPdf(rec: ReceiptData, org: ReceiptOrg) {
+  const doc = await renderReceipt(rec, org);
+  const safe = (rec.number || "receipt").replace(/[^\w-]+/g, "_");
+  doc.save(`Receipt_${safe}.pdf`);
+}
+
+async function renderReceipt(rec: ReceiptData, org: ReceiptOrg) {
   const { jsPDF } = await import("jspdf");
   const doc = new jsPDF("p", "pt", "a4");
   const W = doc.internal.pageSize.getWidth();
@@ -167,21 +178,18 @@ export async function generateReceiptPdf(rec: ReceiptData, org: ReceiptOrg) {
   doc.text(org.website || "", W / 2, H - 28, { align: "center" });
   doc.text(org.email || "", W - 60, H - 28, { align: "right" });
 
-  const safe = (rec.number || "receipt").replace(/[^\w-]+/g, "_");
-  doc.save(`Receipt_${safe}.pdf`);
+  return doc;
 }
 
-/** Fetch a lead's receipts and render one as a PDF. Selects by receiptId, else
- *  the initial (verification) receipt. Returns false if nothing matched. */
-export async function downloadLeadReceipt(
-  leadId: number | string,
-  opts: { receiptId?: number; initial?: boolean } = {},
-): Promise<boolean> {
+type ReceiptPick = { receiptId?: number; initial?: boolean };
+
+/** Load a lead's receipts and pick the one asked for, with its org details. */
+async function fetchReceipt(leadId: number | string, opts: ReceiptPick) {
   const token = localStorage.getItem(`${APP_SLUG}_access`);
   const r = await fetch(`${getApiBase(APP_SLUG)}/api/leads/${leadId}/receipts/`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!r.ok) { alert("Could not load the receipt."); return false; }
+  if (!r.ok) { alert("Could not load the receipt."); return null; }
   const data = await r.json();
   const list: (ReceiptData & { id: number; is_initial: boolean })[] = data.receipts || [];
   const rec = opts.receiptId != null
@@ -189,7 +197,51 @@ export async function downloadLeadReceipt(
     : opts.initial
       ? list.find(x => x.is_initial)
       : list[0];
-  if (!rec) { alert("No receipt has been generated for this payment yet."); return false; }
-  await generateReceiptPdf(rec, data.org || {});
+  if (!rec) { alert("No receipt has been generated for this payment yet."); return null; }
+  return { rec, org: data.org || {} };
+}
+
+/** Fetch a lead's receipts and render one as a PDF. Selects by receiptId, else
+ *  the initial (verification) receipt. Returns false if nothing matched. */
+export async function downloadLeadReceipt(
+  leadId: number | string,
+  opts: ReceiptPick = {},
+): Promise<boolean> {
+  const found = await fetchReceipt(leadId, opts);
+  if (!found) return false;
+  await generateReceiptPdf(found.rec, found.org);
+  return true;
+}
+
+/** Render the receipt and let the server email it / send it on WhatsApp.
+ *  The file goes with the request so it is stored once and reused. */
+export async function sendLeadReceipt(
+  leadId: number | string,
+  channel: "email" | "whatsapp",
+  to: string,
+  opts: ReceiptPick = {},
+): Promise<boolean> {
+  const found = await fetchReceipt(leadId, opts);
+  if (!found) return false;
+  const doc = await buildReceiptPdf(found.rec, found.org);
+  const safe = (found.rec.number || "receipt").replace(/[^\w-]+/g, "_");
+
+  const body = new FormData();
+  body.append("pdf", new File([doc.output("blob")], `Receipt_${safe}.pdf`,
+                              { type: "application/pdf" }));
+  body.append("receipt_id", String((found.rec as any).id));
+  body.append("channels", channel);
+  body.append(channel === "email" ? "email" : "phone", to);
+
+  const token = localStorage.getItem(`${APP_SLUG}_access`);
+  const res = await fetch(`${getApiBase(APP_SLUG)}/api/leads/${leadId}/send-receipt/`, {
+    method: "POST", headers: { Authorization: `Bearer ${token}` }, body,
+  });
+  const d = await res.json().catch(() => ({}));
+  if (!res.ok) { alert(d.error || "Could not send the receipt."); return false; }
+  const warnings: string[] = d.warnings || [];
+  alert(warnings.length
+    ? ["Sent, with warnings:", ...warnings].join("\n")
+    : `Receipt ${d.number || ""} sent by ${channel === "email" ? "email" : "WhatsApp"}.`);
   return true;
 }

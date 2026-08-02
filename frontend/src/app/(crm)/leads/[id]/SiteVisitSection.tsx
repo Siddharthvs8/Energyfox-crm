@@ -74,12 +74,22 @@ const useSV = () => {
   return c;
 };
 
-function Text({ k, label, placeholder }: { k: TextKey; label: string; placeholder?: string }) {
+function Text({ k, label, placeholder, digits, maxLength }: {
+  k: TextKey; label: string; placeholder?: string; digits?: boolean; maxLength?: number;
+}) {
   const { form, set, canEdit } = useSV();
+  // A digits-only field drops anything else as it is typed, so a pasted value
+  // with spaces or dashes lands clean rather than failing on save.
+  const clean = (v: string) => {
+    const t = digits ? v.replace(/\D/g, "") : v;
+    return maxLength ? t.slice(0, maxLength) : t;
+  };
   return (
     <div>
       <label className={labelCls}>{label}</label>
-      <input value={form[k]} onChange={e => set(k, e.target.value)} placeholder={placeholder} disabled={!canEdit} className={`${inputCls} disabled:opacity-70 disabled:cursor-not-allowed`} />
+      <input value={form[k]} onChange={e => set(k, clean(e.target.value))} placeholder={placeholder}
+        maxLength={maxLength} inputMode={digits ? "numeric" : undefined}
+        disabled={!canEdit} className={`${inputCls} disabled:opacity-70 disabled:cursor-not-allowed`} />
     </div>
   );
 }
@@ -399,7 +409,7 @@ ${field}: ${Array.isArray(msg) ? msg[0] : msg}`;
           <SectionTitle>Electrical &amp; Supply</SectionTitle>
           <Select k="connection_type" label="Connection Type" options={[{ value: "commercial", label: "Commercial" }, { value: "residential", label: "Residential" }]} />
           <Text k="connected_load" label="Connected Load" />
-          <Text k="consumer_number" label="Consumer Number" />
+          <Text k="consumer_number" label="Consumer Number" digits maxLength={15} />
           <Select k="phase" label="Phase" options={[{ value: "1ph", label: "1 Phase" }, { value: "3ph", label: "3 Phase" }]} />
           <Text k="building_height" label="Building Height" />
           <Text k="panel_to_inverter_distance" label="Solar Panel to Inverter Distance" />
@@ -433,7 +443,10 @@ ${field}: ${Array.isArray(msg) ? msg[0] : msg}`;
 
           {/* Earthing */}
           <SectionTitle>Earthing</SectionTitle>
-          <Text k="earthing_surface" label="Earthing Surface" />
+          <Select k="earthing_surface" label="Earthing Surface" options={[
+            { value: "soil", label: "Soil" }, { value: "concrete", label: "Concrete" },
+            { value: "tile", label: "Tile" }, { value: "interlock", label: "Interlock" },
+          ]} />
 
           {/* Customer details */}
           <SectionTitle>Customer Details</SectionTitle>

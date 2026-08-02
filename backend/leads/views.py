@@ -1,4 +1,4 @@
-from rest_framework import viewsets, status, permissions
+from rest_framework import viewsets, status, permissions, parsers
 from core.permissions import IsAdminOnly
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -1732,6 +1732,89 @@ class LeadViewSet(viewsets.ModelViewSet):
                 'email': org.receipt_email,
             },
         })
+
+    @action(detail=True, methods=['post'], url_path='send-receipt',
+            parser_classes=[parsers.MultiPartParser, parsers.FormParser])
+    def send_receipt(self, request, pk=None):
+        """Store a rendered receipt against its voucher and send it to the customer.
+
+        The client draws the voucher (it owns that template) and posts the PDF
+        back; keeping the file means email can attach it and WhatsApp can link to
+        it — the Cloud API fetches documents by URL rather than by upload.
+        """
+        from .access import can_access_accounts
+        lead = self.get_object()
+        if not can_access_accounts(request.user):
+            return Response({'error': 'You do not have access to accounts.'},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        receipt_id = request.data.get('receipt_id')
+        voucher = (lead.receipt_vouchers.filter(pk=receipt_id).first() if receipt_id
+                   else lead.receipt_vouchers.order_by('-created_at').first())
+        if voucher is None:
+            return Response({'error': 'No receipt has been generated for this payment yet.'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        pdf = request.FILES.get('pdf')
+        if pdf:
+            safe = (voucher.number or 'receipt').replace('/', '-')
+            voucher.pdf.save(f'{safe}.pdf', pdf, save=True)
+        if not voucher.pdf:
+            return Response({'error': 'No document to send. Generate the receipt first.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        channels = [c.strip() for c in str(request.data.get('channels', 'email')).split(',') if c.strip()]
+        results, failures = {}, []
+        who = voucher.received_from or f"{lead.first_name} {lead.last_name or ''}".strip()
+        filename = f"Receipt_{(voucher.number or 'receipt').replace('/', '_')}.pdf"
+
+        if 'email' in channels:
+            raw = request.data.get('email') or lead.email or ''
+            recipients = [a.strip() for a in str(raw).split(',') if a.strip()]
+            if not recipients:
+                failures.append('No email address given for this customer.')
+            else:
+                from messaging.email import send_and_log
+                voucher.pdf.open('rb')
+                data = voucher.pdf.read()
+                voucher.pdf.close()
+                log = send_and_log(
+                    to=recipients,
+                    subject=f"Receipt {voucher.number}",
+                    body=(f"Dear {who or 'Customer'},\n\nPlease find attached receipt "
+                          f"{voucher.number} for Rs. {voucher.amount}"
+                          f"{' towards ' + voucher.on_account_of if voucher.on_account_of else ''}."
+                          f"\n\nRegards,\nEnergyFox"),
+                    kind='receipt',
+                    attachments=[(filename, data, 'application/pdf')],
+                    created_by=request.user if request.user.is_authenticated else None,
+                )
+                results['email'] = log.status
+                if log.status != 'sent':
+                    failures.append(f'Email failed: {log.error}')
+
+        if 'whatsapp' in channels:
+            to = request.data.get('phone') or lead.phone or ''
+            if not to:
+                failures.append('No WhatsApp number given for this customer.')
+            else:
+                from messaging import whatsapp
+                try:
+                    whatsapp.send_document(
+                        to=to,
+                        link=request.build_absolute_uri(voucher.pdf.url),
+                        filename=filename,
+                        caption=f"Receipt {voucher.number}",
+                    )
+                    results['whatsapp'] = 'sent'
+                except Exception as exc:                     # surfaced to the user
+                    failures.append(f'WhatsApp failed: {exc}')
+
+        if failures and not results:
+            return Response({'error': ' '.join(failures)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response({'sent': results, 'warnings': failures,
+                         'number': voucher.number,
+                         'pdf': request.build_absolute_uri(voucher.pdf.url)})
 
     # ── Completed projects (accounts RF stage) ──
     def _completed_project_payload(self, lead, request):
