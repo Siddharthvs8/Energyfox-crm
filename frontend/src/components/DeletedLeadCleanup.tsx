@@ -17,7 +17,7 @@ import { getApiBase } from "@/lib/mock-data";
 
 export type ModuleKey =
   | "documentation" | "documentation-stage2" | "accounts"
-  | "purchase" | "project" | "liasoning";
+  | "purchase" | "project" | "liasoning" | "warranty" | "feasibility";
 
 /** The amber "deleted" chip shown next to the customer's name. */
 export function DeletedLeadBadge() {

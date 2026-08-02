@@ -261,16 +261,20 @@ def reporting_scope(user):
     they work. The dashboard and the converted-leads analytics both read this,
     so a figure can never disagree with the rows behind it.
     """
+    # Deleted leads are excluded everywhere: a lead in the Trash is gone as far
+    # as the customer is concerned, so counting its value as won revenue — or in
+    # any other figure — overstates the business.
+    live = Lead.objects.filter(is_trashed=False)
     if user.sees_all_leads:
-        return Lead.objects.all()
+        return live
     if user.is_manager:
         # Their people hold leads as BDE / tele caller too, not only as owner.
         managed = user.managed_user_ids()
-        return Lead.objects.filter(
+        return live.filter(
             Q(assigned_to__id__in=managed) | Q(bde__id__in=managed)
             | Q(tele_caller__id__in=managed) | Q(assigned_to__isnull=True)
         ).distinct()
-    return Lead.objects.filter(own_leads_q(user)).distinct()
+    return live.filter(own_leads_q(user)).distinct()
 
 
 def own_leads_q(user):
@@ -414,6 +418,13 @@ class LeadViewSet(viewsets.ModelViewSet):
                 sv.documents.filter(doc_type='kseb_feasibility_receipt'), many=True).data
         return {
             'id': lead.id,
+            # A trashed lead leaves this row behind and its detail page will
+            # not open, so the list flags it and offers admins the broom.
+            'lead_deleted': lead.is_trashed,
+            'can_cleanup': lead.is_trashed and bool(
+                getattr(request, 'user', None)
+                and (request.user.is_staff
+                     or getattr(request.user, 'is_general_manager', False))),
             'first_name': lead.first_name,
             'last_name': lead.last_name,
             'phone': lead.phone,
@@ -465,7 +476,14 @@ class LeadViewSet(viewsets.ModelViewSet):
                                  'project_manager', 'project'),
         'liasoning':            ('pushed_to_liasoning', 'pushed_to_liasoning_at',
                                  None, 'liasoning_service'),
+        'warranty':             ('pushed_to_warranty', 'pushed_to_warranty_at',
+                                 None, 'warranty'),
     }
+    # KSEB feasibility has no push flag of its own — the queue is every lead with
+    # a signed PO plus anything in documentation — so its data lives on the site
+    # visit and is cleared field by field.
+    FEASIBILITY_FIELDS = ('po_signed_date', 'kseb_feasibility_taken',
+                          'kseb_feasibility_date', 'kseb_feasibility_complete')
 
     @action(detail=True, methods=['delete'], url_path='remove-from-module')
     def remove_from_module(self, request, pk=None):
@@ -485,11 +503,10 @@ class LeadViewSet(viewsets.ModelViewSet):
                             status=status.HTTP_403_FORBIDDEN)
 
         module = (request.data.get('module') or request.query_params.get('module') or '').strip()
-        spec = self.MODULE_CLEANUP.get(module)
-        if not spec:
-            return Response(
-                {'error': f"Unknown module. Expected one of: {', '.join(sorted(self.MODULE_CLEANUP))}."},
-                status=status.HTTP_400_BAD_REQUEST)
+        known = sorted(list(self.MODULE_CLEANUP) + ['feasibility'])
+        if module not in known:
+            return Response({'error': f"Unknown module. Expected one of: {', '.join(known)}."},
+                            status=status.HTTP_400_BAD_REQUEST)
 
         # Trashed leads are outside the normal queryset, so look it up directly.
         lead = Lead.objects.filter(pk=pk).first()
@@ -501,7 +518,34 @@ class LeadViewSet(viewsets.ModelViewSet):
                           'then its leftover module data can be removed.'},
                 status=status.HTTP_400_BAD_REQUEST)
 
-        flag, stamp, staff_field, related = spec
+        if module == 'feasibility':
+            sv = getattr(lead, 'site_visit', None)
+            if sv is None or not sv.po_signed_date:
+                return Response({'error': 'This lead has no KSEB feasibility data.'},
+                                status=status.HTTP_404_NOT_FOUND)
+            sv.po_signed_date = None
+            sv.kseb_feasibility_taken = ''
+            sv.kseb_feasibility_date = None
+            sv.kseb_feasibility_complete = False
+            sv.save(update_fields=list(self.FEASIBILITY_FIELDS))
+            ActivityLog.objects.create(
+                activity_type='note_added', lead=lead, actor=user,
+                description=f'Deleted lead removed from feasibility by {user.username}',
+                extra={'auto_generated': True, 'module_cleanup': 'feasibility'},
+            )
+            # The queue is "PO signed OR in documentation", so a lead still in
+            # documentation keeps its row until that is cleared too — say so
+            # rather than let the button look like it did nothing.
+            return Response({
+                'removed': 'feasibility', 'lead': lead.id,
+                'still_listed': lead.pushed_to_documentation,
+                'message': ('Feasibility data cleared. This lead is still in '
+                            'documentation, so it stays on the feasibility list '
+                            'until it is removed from there too.')
+                           if lead.pushed_to_documentation else 'Feasibility data cleared.',
+            })
+
+        flag, stamp, staff_field, related = self.MODULE_CLEANUP[module]
         if not getattr(lead, flag, False):
             return Response({'error': f'This lead is not in {module}.'},
                             status=status.HTTP_404_NOT_FOUND)
@@ -948,6 +992,11 @@ class LeadViewSet(viewsets.ModelViewSet):
             s1 = getattr(lead, 'documentation_stage1', None)
             rows.append({
                 'id': lead.id,
+                # A trashed lead leaves this row behind and its detail page will
+                # not open, so the tracker flags it and offers admins the broom.
+                'lead_deleted': lead.is_trashed,
+                'can_cleanup': lead.is_trashed and bool(
+                    user.is_staff or getattr(user, 'is_general_manager', False)),
                 'name': f"{lead.first_name} {lead.last_name or ''}".strip(),
                 'phone': lead.phone,
                 'location': lead.company,
@@ -2906,6 +2955,13 @@ class LeadViewSet(viewsets.ModelViewSet):
 
         return {
             'id': lead.id,
+            # A trashed lead leaves this row behind and its detail page will
+            # not open, so the list flags it and offers admins the broom.
+            'lead_deleted': lead.is_trashed,
+            'can_cleanup': lead.is_trashed and bool(
+                getattr(request, 'user', None)
+                and (request.user.is_staff
+                     or getattr(request.user, 'is_general_manager', False))),
             'first_name': lead.first_name,
             'last_name': lead.last_name,
             'phone': lead.phone,
@@ -4310,8 +4366,6 @@ class DashboardStatsView(APIView):
         user = request.user
         
         base_qs = reporting_scope(user)
-
-        base_qs = base_qs.filter(is_trashed=False)
         
         total_leads = base_qs.count()
         new_today = base_qs.filter(created_at__date=today).count()

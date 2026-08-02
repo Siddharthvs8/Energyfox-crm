@@ -1741,3 +1741,195 @@ class DeletedLeadModuleCleanupTests(TestCase):
         self.remove(self.admin)
         self.assertTrue(ActivityLog.objects.filter(
             lead=self.lead, description__icontains='removed from accounts').exists())
+
+
+class DeletedLeadsAreOutOfTheFiguresTests(TestCase):
+    """A lead in the Trash is gone as far as the customer is concerned, so its
+    value must not count towards won revenue or any other reported figure."""
+
+    def setUp(self):
+        from decimal import Decimal
+        self.admin = mk('df_admin', 'admin')
+        self.admin.is_staff = True
+        self.admin.save()
+        self.caller = mk('df_caller', 'tele_caller')
+
+        self.live = Lead.objects.create(first_name='D', last_name='Live', phone='9993300001',
+                                        status='converted', assigned_to=self.caller,
+                                        value=Decimal('100000'))
+        self.deleted = Lead.objects.create(first_name='D', last_name='Deleted',
+                                           phone='9993300002', status='converted',
+                                           assigned_to=self.caller, value=Decimal('900000'),
+                                           is_trashed=True, trashed_at=timezone.now())
+
+    def converted(self, actor):
+        r = self.client.get('/api/converted-analytics/', HTTP_AUTHORIZATION=token_for(actor))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return r.json()
+
+    def stats(self, actor):
+        r = self.client.get('/api/dashboard-stats/', HTTP_AUTHORIZATION=token_for(actor))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return r.json()
+
+    def test_won_revenue_leaves_out_the_deleted_deal(self):
+        d = self.converted(self.admin)
+        self.assertEqual(float(d['total_revenue']), 100000.0)
+
+    def test_the_conversion_count_leaves_it_out_too(self):
+        self.assertEqual(self.converted(self.admin)['total_conversions'], 1)
+
+    def test_the_dashboard_agrees(self):
+        d = self.stats(self.admin)
+        self.assertEqual(d['total_leads'], 1)
+        self.assertEqual(float(d['total_revenue']), 100000.0)
+
+    def test_restoring_it_brings_the_money_back(self):
+        self.deleted.is_trashed = False
+        self.deleted.trashed_at = None
+        self.deleted.save(update_fields=['is_trashed', 'trashed_at'])
+        self.assertEqual(float(self.converted(self.admin)['total_revenue']), 1000000.0)
+        self.assertEqual(self.converted(self.admin)['total_conversions'], 2)
+
+    def test_it_holds_for_a_plain_user_too(self):
+        self.assertEqual(float(self.converted(self.caller)['total_revenue']), 100000.0)
+
+
+class DeletedLeadFlaggedOnTheDocumentationTrackerTests(TestCase):
+    """The admin-facing documentation tracker flags dead rows like the module
+    queues do."""
+
+    def setUp(self):
+        self.admin = mk('dt_admin', 'admin')
+        self.admin.is_staff = True
+        self.admin.save()
+        self.caller = mk('dt_caller', 'tele_caller')
+        self.lead = Lead.objects.create(first_name='Sidharth1', last_name='',
+                                        phone='9993400001', status='new',
+                                        assigned_to=self.caller,
+                                        pushed_to_documentation=True,
+                                        pushed_to_documentation_at=timezone.now())
+
+    def rows(self, actor):
+        r = self.client.get('/api/leads/documentation-overview/',
+                            HTTP_AUTHORIZATION=token_for(actor))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return r.json()
+
+    def test_a_live_lead_is_not_flagged(self):
+        row = next(r for r in self.rows(self.admin) if r['id'] == self.lead.id)
+        self.assertFalse(row['lead_deleted'])
+        self.assertFalse(row['can_cleanup'])
+
+    def test_a_deleted_lead_is_flagged_for_the_admin(self):
+        self.lead.is_trashed = True
+        self.lead.trashed_at = timezone.now()
+        self.lead.save(update_fields=['is_trashed', 'trashed_at'])
+        row = next(r for r in self.rows(self.admin) if r['id'] == self.lead.id)
+        self.assertTrue(row['lead_deleted'])
+        self.assertTrue(row['can_cleanup'])
+
+    def test_a_non_admin_sees_the_flag_but_gets_no_button(self):
+        self.lead.is_trashed = True
+        self.lead.trashed_at = timezone.now()
+        self.lead.save(update_fields=['is_trashed', 'trashed_at'])
+        row = next(r for r in self.rows(self.caller) if r['id'] == self.lead.id)
+        self.assertTrue(row['lead_deleted'])
+        self.assertFalse(row['can_cleanup'])
+
+
+class WarrantyAndFeasibilityCleanupTests(TestCase):
+    """The same broom on the warranty and KSEB feasibility queues."""
+
+    def setUp(self):
+        from datetime import date
+        from .models import SiteVisit, Warranty
+        self.admin = mk('wf_admin', 'admin')
+        self.admin.is_staff = True
+        self.admin.save()
+        self.caller = mk('wf_caller', 'tele_caller')
+        self.bde = mk('wf_bde', 'bde')
+
+        self.lead = Lead.objects.create(
+            first_name='W', last_name='Gone', phone='9993500001', status='new',
+            assigned_to=self.caller, bde=self.bde,
+            pushed_to_warranty=True, pushed_to_warranty_at=timezone.now())
+        Warranty.objects.create(lead=self.lead)
+        self.sv = SiteVisit.objects.create(lead=self.lead, po_signed_date=date(2026, 7, 27),
+                                           kseb_feasibility_taken='yes',
+                                           kseb_feasibility_complete=True)
+        self.lead.is_trashed = True
+        self.lead.trashed_at = timezone.now()
+        self.lead.save(update_fields=['is_trashed', 'trashed_at'])
+
+    def remove(self, module, actor=None):
+        return self.client.delete(
+            f'/api/leads/{self.lead.id}/remove-from-module/?module={module}',
+            HTTP_AUTHORIZATION=token_for(actor or self.admin))
+
+    # ── warranty ──
+    def test_warranty_rows_are_flagged(self):
+        r = self.client.get('/api/leads/warranty/', HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        row = next(x for x in r.json() if x['id'] == self.lead.id)
+        self.assertTrue(row['lead_deleted'])
+        self.assertTrue(row['can_cleanup'])
+
+    def test_warranty_data_can_be_cleared(self):
+        from .models import Warranty
+        r = self.remove('warranty')
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.lead.refresh_from_db()
+        self.assertFalse(self.lead.pushed_to_warranty)
+        self.assertFalse(Warranty.objects.filter(lead=self.lead).exists())
+
+    # ── KSEB feasibility ──
+    def test_feasibility_rows_are_flagged(self):
+        r = self.client.get('/api/leads/bde-feasibility/',
+                            HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        row = next(x for x in r.json() if x['id'] == self.lead.id)
+        self.assertTrue(row['lead_deleted'])
+        self.assertTrue(row['can_cleanup'])
+
+    def test_feasibility_data_can_be_cleared(self):
+        r = self.remove('feasibility')
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.sv.refresh_from_db()
+        self.assertIsNone(self.sv.po_signed_date)
+        self.assertEqual(self.sv.kseb_feasibility_taken, '')
+        self.assertFalse(self.sv.kseb_feasibility_complete)
+
+    def test_clearing_feasibility_drops_it_from_the_queue(self):
+        self.remove('feasibility')
+        r = self.client.get('/api/leads/bde-feasibility/',
+                            HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertNotIn(self.lead.id, [x['id'] for x in r.json()])
+
+    def test_a_lead_still_in_documentation_is_told_it_stays_listed(self):
+        """The queue is 'PO signed OR in documentation', so the button would
+        otherwise look like it did nothing."""
+        self.lead.pushed_to_documentation = True
+        self.lead.save(update_fields=['pushed_to_documentation'])
+        r = self.remove('feasibility')
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()['still_listed'])
+        self.assertIn('still in documentation', r.json()['message'])
+
+    def test_feasibility_with_no_data_says_so(self):
+        self.sv.po_signed_date = None
+        self.sv.save(update_fields=['po_signed_date'])
+        self.assertEqual(self.remove('feasibility').status_code, 404)
+
+    # ── the guards still hold ──
+    def test_non_admins_are_refused_on_both(self):
+        for module in ('warranty', 'feasibility'):
+            self.assertEqual(self.remove(module, self.caller).status_code, 403, module)
+
+    def test_a_live_lead_is_refused_on_both(self):
+        self.lead.is_trashed = False
+        self.lead.save(update_fields=['is_trashed'])
+        for module in ('warranty', 'feasibility'):
+            r = self.remove(module)
+            self.assertEqual(r.status_code, 400, module)
+            self.assertIn('still active', r.json()['error'])

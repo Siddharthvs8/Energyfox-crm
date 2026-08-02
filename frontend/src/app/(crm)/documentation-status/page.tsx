@@ -5,8 +5,13 @@ import { getApiBase, formatCurrency } from "@/lib/mock-data";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
+import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCleanup";
 type Row = {
   id: number;
+  // Set when the lead behind this row has been deleted; the row is then
+  // unopenable, and an admin gets a control to clear it out.
+  lead_deleted?: boolean;
+  can_cleanup?: boolean;
   name: string;
   phone: string | null;
   location: string | null;
@@ -149,6 +154,15 @@ export default function DocumentationStatusPage() {
                       className="border-b border-slate-100 hover:bg-indigo-50/40 transition cursor-pointer">
                       <td className="px-5 py-3.5">
                         <span className="font-semibold text-slate-800">{r.name || "—"}</span>
+                        {r.lead_deleted && (
+                          <span className="ml-2 inline-flex align-middle"><DeletedLeadBadge /></span>
+                        )}
+                        {r.can_cleanup && (
+                          <span className="ml-2 inline-flex align-middle">
+                            <DeletedLeadCleanup leadId={r.id} module="documentation" name={r.name}
+                              onRemoved={() => setRows(prev => prev.filter(x => x.id !== r.id))} />
+                          </span>
+                        )}
                         <div className="text-[11px] text-slate-400">
                           {r.phone || "—"}{r.location ? ` · ${r.location}` : ""}{r.value ? ` · ₹${formatCurrency(r.value)}` : ""}
                         </div>

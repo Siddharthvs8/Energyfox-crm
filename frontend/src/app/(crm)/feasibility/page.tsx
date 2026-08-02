@@ -5,8 +5,13 @@ import { getApiBase } from "@/lib/mock-data";
 import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
+import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCleanup";
 type Receipt = { id: number; doc_type: string; file: string };
 type Feasibility = {
+  // Set when the lead behind this row has been deleted; the row is then
+  // unopenable, and an admin gets a control to clear it out.
+  lead_deleted?: boolean;
+  can_cleanup?: boolean;
   id: number;
   first_name: string; last_name: string | null;
   phone: string | null; location: string | null; product_name: string | null;
@@ -101,16 +106,26 @@ export default function FeasibilityPage() {
             const open = openId === l.id;
             return (
               <div key={l.id} className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-                <button onClick={() => setOpenId(open ? null : l.id)} className="w-full flex items-center justify-between gap-4 px-5 py-4 hover:bg-slate-50/60 transition-colors text-left">
+                <div className="flex items-center">
+                <button onClick={() => setOpenId(open ? null : l.id)} className="flex-1 min-w-0 flex items-center justify-between gap-4 px-5 py-4 hover:bg-slate-50/60 transition-colors text-left">
                   <div className="min-w-0">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <p className="text-sm font-bold text-slate-900 truncate">{l.first_name} {l.last_name}</p>
                       <span className={`text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${b.cls}`}>{b.label}</span>
+                      {l.lead_deleted && <DeletedLeadBadge />}
                     </div>
                     <p className="text-xs text-slate-500 mt-0.5 truncate">{l.phone || "—"} · {l.location || "No location"}{l.product_name ? ` · ${l.product_name}` : ""}</p>
                   </div>
                   <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" className={`text-slate-300 flex-shrink-0 transition-transform ${open ? "rotate-90" : ""}`}><polyline points="9 18 15 12 9 6" /></svg>
                 </button>
+                {l.can_cleanup && (
+                  <div className="pr-5 flex-shrink-0">
+                    <DeletedLeadCleanup leadId={l.id} module="feasibility"
+                      name={`${l.first_name} ${l.last_name || ""}`.trim()}
+                      onRemoved={loadRows} />
+                  </div>
+                )}
+                </div>
                 {open && (
                   <div className="border-t border-slate-100 p-5">
                     <FeasibilityForm lead={l} apiBase={apiBase} authHeader={authHeader} onChanged={loadRows} />
