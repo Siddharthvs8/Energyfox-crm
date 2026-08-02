@@ -532,7 +532,11 @@ class MyPerformanceView(APIView):
         month_meetings_data = MeetingSerializer(month_meetings, many=True).data
 
         # ── Lead stats ──
-        my_leads = Lead.objects.filter(assigned_to=user)
+        # The shared scope, so this page agrees with the Leads list and the
+        # dashboard: a BDE's handed-over leads count (they stay owned by the tele
+        # caller), and deleted leads do not.
+        from leads.scopes import my_leads as leads_for
+        my_leads = leads_for(user)
         total_leads = my_leads.count()
         active_leads = my_leads.exclude(
             status__in=['converted', 'not_interested']

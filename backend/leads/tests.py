@@ -1933,3 +1933,69 @@ class WarrantyAndFeasibilityCleanupTests(TestCase):
             r = self.remove(module)
             self.assertEqual(r.status_code, 400, module)
             self.assertIn('still active', r.json()['error'])
+
+
+class LeaderboardAndPerformanceIgnoreDeletedTests(TestCase):
+    """A deleted deal is not a closed sale, and a BDE's handed-over leads are
+    still theirs — both boards have to agree with the Leads page."""
+
+    def setUp(self):
+        from decimal import Decimal
+        self.bde = mk('lb_bde', 'bde')
+        self.caller = mk('lb_caller', 'tele_caller')
+        self.admin = mk('lb_admin', 'admin')
+        self.admin.is_staff = True
+        self.admin.save()
+
+        # Owned by the tele caller, closed by the BDE — the normal shape.
+        self.won = Lead.objects.create(first_name='L', last_name='Won', phone='9993600001',
+                                       status='converted', assigned_to=self.caller,
+                                       bde=self.bde, value=Decimal('100000'))
+        self.deleted = Lead.objects.create(first_name='L', last_name='Deleted',
+                                           phone='9993600002', status='converted',
+                                           assigned_to=self.caller, bde=self.bde,
+                                           value=Decimal('900000'),
+                                           is_trashed=True, trashed_at=timezone.now())
+
+    def board(self, actor=None):
+        r = self.client.get('/api/leaderboard/?period=all_time',
+                            HTTP_AUTHORIZATION=token_for(actor or self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return {row['name']: row for row in r.json()['leaderboard']}
+
+    def performance(self, actor):
+        r = self.client.get('/api/ai-manager/my-performance/',
+                            HTTP_AUTHORIZATION=token_for(actor))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return r.json()['lead_stats']
+
+    # ── leaderboard ──
+    def test_a_deleted_deal_is_off_the_board(self):
+        row = self.board()['lb_bde']
+        self.assertEqual(row['closed_sales'], 1)
+        self.assertEqual(float(row['revenue']), 100000.0)
+
+    def test_restoring_it_puts_it_back(self):
+        self.deleted.is_trashed = False
+        self.deleted.save(update_fields=['is_trashed'])
+        row = self.board()['lb_bde']
+        self.assertEqual(row['closed_sales'], 2)
+        self.assertEqual(float(row['revenue']), 1000000.0)
+
+    # ── my performance ──
+    def test_a_bde_sees_the_leads_handed_to_them(self):
+        """They are owned by the tele caller, so scoping on the owner lost them."""
+        self.assertEqual(self.performance(self.bde)['total_leads'], 1)
+
+    def test_my_performance_leaves_the_deleted_lead_out(self):
+        d = self.performance(self.bde)
+        self.assertEqual(d['total_leads'], 1)
+        self.assertEqual(d['status_breakdown'].get('converted'), 1)
+
+    def test_the_tele_caller_still_sees_their_own(self):
+        self.assertEqual(self.performance(self.caller)['total_leads'], 1)
+
+    def test_the_two_boards_agree_on_the_bde(self):
+        board = self.board()['lb_bde']['closed_sales']
+        perf = self.performance(self.bde)['status_breakdown'].get('converted', 0)
+        self.assertEqual(board, perf)

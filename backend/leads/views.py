@@ -252,6 +252,9 @@ def auto_assign_project(lead):
     return assignee
 
 
+from .scopes import live_leads, own_leads_q  # noqa: E402
+
+
 def reporting_scope(user):
     """The leads a user's own figures are drawn from.
 
@@ -261,10 +264,7 @@ def reporting_scope(user):
     they work. The dashboard and the converted-leads analytics both read this,
     so a figure can never disagree with the rows behind it.
     """
-    # Deleted leads are excluded everywhere: a lead in the Trash is gone as far
-    # as the customer is concerned, so counting its value as won revenue — or in
-    # any other figure — overstates the business.
-    live = Lead.objects.filter(is_trashed=False)
+    live = live_leads()
     if user.sees_all_leads:
         return live
     if user.is_manager:
@@ -275,18 +275,6 @@ def reporting_scope(user):
             | Q(tele_caller__id__in=managed) | Q(assigned_to__isnull=True)
         ).distinct()
     return live.filter(own_leads_q(user)).distinct()
-
-
-def own_leads_q(user):
-    """The leads a plain user works: theirs to own, plus the two shared-ownership
-    roles.
-
-    A lead handed to a BDE keeps the tele caller as `assigned_to` and records the
-    BDE separately, so scoping on `assigned_to` alone reports nothing for a BDE.
-    The lead list and the dashboard both read this, so the count on one always
-    matches the rows on the other.
-    """
-    return Q(assigned_to=user) | Q(bde=user) | Q(tele_caller=user)
 
 
 class LeadViewSet(viewsets.ModelViewSet):
@@ -4506,7 +4494,10 @@ class LeaderboardView(APIView):
         # lead over and the BDE closes it (a lead cannot even reach Converted
         # until a BDE is assigned — see LeadSerializer.validate), so `bde` is the
         # relation that actually carries the sale.
-        won_filter = Q(bde_leads__status__in=['converted'])
+        # A deleted lead is not a closed sale — its value must not sit on
+        # anyone's board. Restoring it from the Trash puts it back.
+        won_filter = Q(bde_leads__status__in=['converted'],
+                       bde_leads__is_trashed=False)
 
         if period == 'daily':
             won_filter &= (
