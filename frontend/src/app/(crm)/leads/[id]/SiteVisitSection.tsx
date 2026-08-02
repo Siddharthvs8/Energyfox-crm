@@ -494,6 +494,10 @@ ${field}: ${Array.isArray(msg) ? msg[0] : msg}`;
             </>
           )}
 
+          {/* Site visit photos */}
+          <SectionTitle>Site Visit Photos</SectionTitle>
+          {PHOTO_FIELDS.map(f => <MultiFileField key={f.key} docType={f.key} label={f.label} />)}
+
           {/* Purchase order — captured once here; Documentation Stage 1 inherits it
               into its For MNRE and For Loan slots. */}
           <SectionTitle>Purchase Order</SectionTitle>
@@ -515,10 +519,6 @@ ${field}: ${Array.isArray(msg) ? msg[0] : msg}`;
               Saves immediately and adds this lead to KSEB Feasibility.
             </p>
           </div>
-
-          {/* Site visit photos */}
-          <SectionTitle>Site Visit Photos</SectionTitle>
-          {PHOTO_FIELDS.map(f => <MultiFileField key={f.key} docType={f.key} label={f.label} />)}
         </div>
         </SiteVisitCtx.Provider>
 

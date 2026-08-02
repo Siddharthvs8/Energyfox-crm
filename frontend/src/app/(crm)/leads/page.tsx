@@ -252,8 +252,6 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
 
   // Pending tasks to create when saving a lead
   const [pendingTasks,   setPendingTasks]   = useState<PendingTask[]>([]);
-  const [invoiceFile, setInvoiceFile] = useState<File | null>(null);
-  const invoiceFileRef = useRef<HTMLInputElement>(null);
   const blankPendingTask: Omit<PendingTask, "_key"> = { title: "", priority: "medium", due_date: "", due_time: "", assignee_id: "" };
 
   const blank = { first_name: "", last_name: "", email: "", phone: "", company: "", installation_location: "", source: "manual", status: "new", value: "0", notes: "", assigned_to: "", product: "" };
@@ -669,17 +667,11 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
     const method = editingLead ? "PATCH" : "POST";
     const url    = editingLead ? `${getApiBase(domain)}/api/leads/${editingLead.id}/` : `${getApiBase(domain)}/api/leads/`;
     try {
-      let r;
-      if (payload.status === 'converted' && invoiceFile) {
-        const fd = new FormData();
-        Object.keys(payload).forEach(k => {
-          if ((payload as any)[k] !== null) fd.append(k, (payload as any)[k]);
-        });
-        fd.append("invoice", invoiceFile);
-        r = await fetch(url, { method, headers: { Authorization: `Bearer ${token}` }, body: fd });
-      } else {
-        r = await fetch(url, { method, headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) });
-      }
+      const r = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(payload),
+      });
       
       if (r.ok) {
         const savedLead = await r.json();
@@ -708,7 +700,6 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
         }
         setShowModal(false);
         setPendingTasks([]);
-        setInvoiceFile(null);
         fetchLeads();
       } else {
         const err = await r.json();
@@ -728,12 +719,11 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   const removePendingTask = (key: string) =>
     setPendingTasks(prev => prev.filter(t => t._key !== key));
 
-  const openAdd  = () => { setEditingLead(null); setForm(blank); setPendingTasks([]); setInvoiceFile(null); setNewEditNote(""); setShowModal(true); };
+  const openAdd  = () => { setEditingLead(null); setForm(blank); setPendingTasks([]); setNewEditNote(""); setShowModal(true); };
   const openEdit = (lead: any) => {
     setEditingLead(lead);
     setForm({ first_name: lead.first_name || "", last_name: lead.last_name || "", email: lead.email || "", phone: lead.phone || "", company: lead.company || "", installation_location: lead.installation_location || "", source: lead.source || "manual", status: lead.status || "new", value: (lead.value || 0).toString(), notes: lead.notes || "", assigned_to: lead.assigned_to?.toString() || "", product: lead.product?.toString() || "" });
     setPendingTasks([]);
-    setInvoiceFile(null);
     setNewEditNote("");
     setShowModal(true);
   };
@@ -1734,26 +1724,6 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                 </div>
               </div>
               
-              {(form.status === 'converted') && (
-                <div className="bg-fuchsia-50/50 border border-fuchsia-100 rounded-xl p-4 space-y-4">
-                  <div>
-                    <label className="block text-[11px] font-bold text-fuchsia-700 uppercase tracking-wide mb-1.5">
-                      Invoice File <span className="text-fuchsia-400 normal-case font-normal">(optional)</span>
-                    </label>
-                    <p className="text-xs text-fuchsia-600/80 mb-3">Optionally attach an invoice for this converted lead.</p>
-                    <input
-                      type="file"
-                      ref={invoiceFileRef}
-                      onChange={e => setInvoiceFile(e.target.files?.[0] || null)}
-                      className="block w-full text-sm text-fuchsia-600 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-fuchsia-100 file:text-fuchsia-700 hover:file:bg-fuchsia-200 transition cursor-pointer"
-                    />
-                    {editingLead?.invoice && !invoiceFile && (
-                       <p className="text-xs text-slate-500 mt-2">Current invoice on file. Upload a new one to replace it.</p>
-                    )}
-                  </div>
-                </div>
-              )}
-
               {canAssign && (
                 <div>
                   <label className={LABEL}>Assigned To</label>
