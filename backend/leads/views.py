@@ -3908,6 +3908,30 @@ class LeadViewSet(viewsets.ModelViewSet):
         lead.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+    @action(detail=False, methods=['delete'], url_path='empty-trash')
+    def empty_trash(self, request):
+        """Permanently delete everything in the Trash, now.
+
+        Irreversible and workspace-wide, so it is a super admin's call alone —
+        not an admin's, and not scoped to what the caller happens to see. The
+        client asks for confirmation; this is the guard that actually holds.
+        """
+        user = request.user
+        if getattr(user, 'role', '') != 'superadmin':
+            return Response(
+                {'error': 'Only a super admin can empty the Trash.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        qs = Lead.objects.filter(is_trashed=True)
+        count = qs.count()
+        if not count:
+            return Response({'deleted': 0, 'message': 'The Trash is already empty.'})
+        qs.delete()
+        return Response({
+            'deleted': count,
+            'message': f'Permanently deleted {count} lead{"" if count == 1 else "s"}.',
+        })
+
     # ── Archive (old, terminal leads kept out of the hot working set) ──
     @action(detail=True, methods=['post'], url_path='archive')
     def archive_lead(self, request, pk=None):

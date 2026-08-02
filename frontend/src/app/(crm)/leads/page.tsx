@@ -641,6 +641,33 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
     loadTrash(); fetchLeads();
   };
 
+  // Emptying the Trash is irreversible and covers the whole workspace, so it is
+  // a super admin's call — mirrors the check on the endpoint.
+  const canEmptyTrash = currentUser?.role === "superadmin";
+  const [emptying, setEmptying] = useState(false);
+
+  const emptyTrash = async () => {
+    const n = trashRows.length;
+    // Two steps on purpose: the second names the count, so a mis-click on a full
+    // Trash cannot slip through on muscle memory.
+    if (!confirm(`Permanently delete all ${n} lead${n === 1 ? "" : "s"} in the Trash?
+
+This cannot be undone.`)) return;
+    if (!confirm(`Last check — ${n} lead${n === 1 ? "" : "s"} will be deleted forever.`)) return;
+    setEmptying(true);
+    try {
+      const token = localStorage.getItem(`${domain}_access`);
+      const r = await fetch(`${getApiBase(domain)}/api/leads/empty-trash/`, {
+        method: "DELETE", headers: { Authorization: `Bearer ${token}` },
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(d.error || "Could not empty the Trash."); return; }
+      alert(d.message || "Trash emptied.");
+      loadTrash(); fetchLeads();
+    } catch { alert("Network error while emptying the Trash."); }
+    finally { setEmptying(false); }
+  };
+
   const purgeFromTrash = async (id: number) => {
     if (!confirm("Delete this lead forever? This cannot be undone.")) return;
     const token = localStorage.getItem(`${domain}_access`);
@@ -1594,7 +1621,16 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
                 <h2 className="text-base font-bold text-slate-900">Trash</h2>
                 <p className="text-[11px] text-slate-400 mt-0.5">Trashed leads are kept for 7 days, then deleted forever automatically.</p>
               </div>
-              <button onClick={() => setShowTrash(false)} className="w-8 h-8 flex items-center justify-center rounded-xl bg-slate-100 text-slate-500 hover:bg-slate-200 transition text-sm">✕</button>
+              <div className="flex items-center gap-2">
+                {canEmptyTrash && trashRows.length > 0 && (
+                  <button onClick={emptyTrash} disabled={emptying}
+                    title="Permanently delete every lead in the Trash"
+                    className="px-3 py-1.5 rounded-xl bg-rose-600 text-white text-xs font-bold hover:bg-rose-700 transition disabled:opacity-40">
+                    {emptying ? "Emptying…" : "Empty Trash"}
+                  </button>
+                )}
+                <button onClick={() => setShowTrash(false)} className="w-8 h-8 flex items-center justify-center rounded-xl bg-slate-100 text-slate-500 hover:bg-slate-200 transition text-sm">✕</button>
+              </div>
             </div>
             <div className="overflow-y-auto flex-1">
               {trashLoading ? (

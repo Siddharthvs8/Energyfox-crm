@@ -2,6 +2,7 @@
 from decimal import Decimal
 
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from users.models import User
@@ -1494,3 +1495,70 @@ class FeasibilityPendingReminderTests(TestCase):
         SiteVisit.objects.create(lead=pushed)
         names = {i['name'] for i in self.pending(self.bde)['items']}
         self.assertIn('F Pushed', names)
+
+
+class EmptyTrashTests(TestCase):
+    """Emptying the Trash is irreversible and workspace-wide — super admin only."""
+
+    def setUp(self):
+        self.superadmin = mk('et_super', 'superadmin')
+        self.superadmin.is_superuser = True
+        self.superadmin.is_staff = True
+        self.superadmin.save()
+        self.admin = mk('et_admin', 'admin')
+        self.admin.is_staff = True
+        self.admin.save()
+        self.caller = mk('et_caller', 'tele_caller')
+        self.bde = mk('et_bde', 'bde')
+
+        self.trashed = [
+            Lead.objects.create(first_name='T', last_name=f'Gone{n}', phone=f'999600000{n}',
+                                status='new', assigned_to=self.caller, is_trashed=True,
+                                trashed_at=timezone.now())
+            for n in range(3)
+        ]
+        self.kept = Lead.objects.create(first_name='T', last_name='Kept', phone='9996000099',
+                                        status='new', assigned_to=self.caller)
+
+    def empty(self, actor):
+        return self.client.delete('/api/leads/empty-trash/',
+                                  HTTP_AUTHORIZATION=token_for(actor))
+
+    def test_a_super_admin_can_empty_it(self):
+        r = self.empty(self.superadmin)
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertEqual(r.json()['deleted'], 3)
+        self.assertEqual(Lead.objects.filter(is_trashed=True).count(), 0)
+
+    def test_active_leads_are_untouched(self):
+        self.empty(self.superadmin)
+        self.kept.refresh_from_db()
+        self.assertFalse(self.kept.is_trashed)
+        self.assertTrue(Lead.objects.filter(pk=self.kept.pk).exists())
+
+    def test_an_admin_cannot(self):
+        """Deleting the workspace's trash outright is above an admin."""
+        r = self.empty(self.admin)
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(Lead.objects.filter(is_trashed=True).count(), 3)
+
+    def test_other_roles_cannot_either(self):
+        for actor in (self.caller, self.bde):
+            self.assertEqual(self.empty(actor).status_code, 403, actor.role)
+        self.assertEqual(Lead.objects.filter(is_trashed=True).count(), 3)
+
+    def test_emptying_an_empty_trash_is_harmless(self):
+        self.empty(self.superadmin)
+        r = self.empty(self.superadmin)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['deleted'], 0)
+
+    def test_it_clears_the_whole_workspace_not_just_what_the_caller_owns(self):
+        """Trash from another user's leads goes too — it is a workspace action."""
+        other = mk('et_other', 'tele_caller')
+        Lead.objects.create(first_name='T', last_name='Theirs', phone='9996000050',
+                            status='new', assigned_to=other, is_trashed=True,
+                            trashed_at=timezone.now())
+        r = self.empty(self.superadmin)
+        self.assertEqual(r.json()['deleted'], 4)
+        self.assertEqual(Lead.objects.filter(is_trashed=True).count(), 0)
