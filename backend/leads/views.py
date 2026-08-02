@@ -450,6 +450,48 @@ class LeadViewSet(viewsets.ModelViewSet):
                 qs = qs.filter(bde=user)
         return Response([self._feasibility_payload(lead, request) for lead in qs])
 
+    @action(detail=False, methods=['get'], url_path='feasibility-pending')
+    def feasibility_pending(self, request):
+        """The BDE's outstanding KSEB feasibilities, for the reminder popup.
+
+        A lead is outstanding once it joins the queue (PO signed, or pushed to
+        documentation) and its feasibility has not been marked complete. The
+        client nags on login and every few hours until this comes back empty.
+        """
+        user = request.user
+        if not user or not user.is_authenticated:
+            return Response({'error': 'Authentication required.'},
+                            status=status.HTTP_401_UNAUTHORIZED)
+
+        qs = (Lead.objects
+              .filter(Q(pushed_to_documentation=True)
+                      | Q(site_visit__po_signed_date__isnull=False))
+              .filter(is_trashed=False)
+              .exclude(site_visit__kseb_feasibility_complete=True)
+              .select_related('bde', 'site_visit')
+              .distinct())
+        # Only a BDE is nagged — this is their task. Everyone else gets an empty
+        # list, so the popup never fires at someone who cannot act on it.
+        if getattr(user, 'role', '') != 'bde':
+            qs = qs.none()
+        else:
+            qs = qs.filter(bde=user)
+
+        today = timezone.localdate()
+        items = []
+        for lead in qs.order_by('id'):
+            sv = getattr(lead, 'site_visit', None)
+            due = sv.kseb_feasibility_due_date if sv else None
+            items.append({
+                'id': lead.id,
+                'name': f"{lead.first_name} {lead.last_name or ''}".strip(),
+                'phone': lead.phone or '',
+                'po_signed_date': sv.po_signed_date.isoformat() if sv and sv.po_signed_date else None,
+                'due_date': due.isoformat() if due else None,
+                'overdue': bool(due and due < today),
+            })
+        return Response({'count': len(items), 'items': items})
+
     @action(detail=True, methods=['get', 'patch'], url_path='kseb-feasibility')
     def kseb_feasibility(self, request, pk=None):
         """Get or update a lead's KSEB feasibility (PO date, taken, feasibility date)."""

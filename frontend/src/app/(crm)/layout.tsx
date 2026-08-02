@@ -502,6 +502,49 @@ export default function DashboardLayout({
     return () => clearInterval(interval);
   }, [fetchModuleCounts]);
 
+  // ── KSEB feasibility reminder ──
+  // The BDE's own task, and it is time-bound (due 2 days after the PO is
+  // signed), so it is nagged rather than badged: once on arrival and every few
+  // hours after, until nothing is outstanding.
+  const FEASIBILITY_NAG_MS = 4 * 60 * 60 * 1000;
+  const [feasibilityDue, setFeasibilityDue] = useState<any>(null);
+  // Last time this user was shown it, kept per user so a shared browser does not
+  // let one person's dismissal silence another's reminder.
+  const nagKey = currentUser?.id ? `${domain}_feasibility_nagged_${currentUser.id}` : null;
+
+  const checkFeasibility = useCallback(async () => {
+    const tk = localStorage.getItem(`${domain}_access`);
+    if (!tk || !nagKey || currentUser?.role !== "bde") return;
+    try {
+      const r = await fetch(`${getApiBase(domain)}/api/leads/feasibility-pending/`, {
+        headers: { Authorization: `Bearer ${tk}` },
+      });
+      if (!r.ok) return;
+      const d = await r.json();
+      if (!d.count) {
+        // Nothing outstanding — clear the clock so the next one nags at once.
+        localStorage.removeItem(nagKey);
+        setFeasibilityDue(null);
+        return;
+      }
+      const last = Number(localStorage.getItem(nagKey) || 0);
+      if (Date.now() - last >= FEASIBILITY_NAG_MS) setFeasibilityDue(d);
+    } catch { /* offline: try again on the next tick */ }
+  }, [domain, nagKey, currentUser?.role]);
+
+  useEffect(() => {
+    checkFeasibility();
+    // Re-checked on the hour rather than only every 4h, so the popup appears
+    // promptly once the window opens even on a tab left running all day.
+    const t = setInterval(checkFeasibility, 15 * 60 * 1000);
+    return () => clearInterval(t);
+  }, [checkFeasibility]);
+
+  const dismissFeasibility = () => {
+    if (nagKey) localStorage.setItem(nagKey, String(Date.now()));
+    setFeasibilityDue(null);
+  };
+
   // Opening a customer inside a module marks it seen, so it stops counting
   // towards that module's badge; then refresh the badges.
   useEffect(() => {
@@ -1097,6 +1140,58 @@ export default function DashboardLayout({
       {/* Global Popup Alert Modal */}
       {/* New work assigned to this user by name — same treatment as the AI
           Manager popups so it can't be missed. */}
+      {feasibilityDue && (
+        <div className="popup-overlay">
+          {/* No click-through dismiss: this has to be acknowledged. */}
+          <div className="popup-backdrop" />
+          <div className="popup-card max-w-lg">
+            <div className="h-40 bg-gradient-to-br from-amber-400 via-orange-500 to-rose-500 w-full flex items-center justify-center text-white relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-bl-full" />
+              <div className="absolute bottom-0 left-0 w-24 h-24 bg-black/10 rounded-tr-full" />
+              <svg width="56" height="56" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24" className="relative">
+                <path d="M12 9v4" /><path d="M12 17h.01" />
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+              </svg>
+            </div>
+            <div className="px-10 pb-10 pt-8 text-center flex flex-col items-center">
+              <h2 className="text-2xl font-black text-slate-800 mb-3 tracking-tight">
+                KSEB feasibility pending
+              </h2>
+              <p className="text-slate-500 text-base mb-5 leading-relaxed">
+                <b className="text-slate-700">{feasibilityDue.count}</b>{" "}
+                {feasibilityDue.count === 1 ? "customer is" : "customers are"} waiting on their
+                feasibility. It is due within 2 days of the PO date.
+              </p>
+              <ul className="w-full max-w-sm mb-8 text-left space-y-1.5 max-h-40 overflow-y-auto">
+                {feasibilityDue.items.slice(0, 6).map((it: any) => (
+                  <li key={it.id} className="flex items-center justify-between gap-3 text-sm">
+                    <span className="font-semibold text-slate-700 truncate">{it.name || `Lead #${it.id}`}</span>
+                    <span className={`text-xs font-bold whitespace-nowrap ${it.overdue ? "text-rose-600" : "text-slate-400"}`}>
+                      {it.overdue ? "Overdue" : it.due_date ? `Due ${it.due_date}` : "Pending"}
+                    </span>
+                  </li>
+                ))}
+                {feasibilityDue.items.length > 6 && (
+                  <li className="text-xs text-slate-400 pt-1">
+                    +{feasibilityDue.items.length - 6} more
+                  </li>
+                )}
+              </ul>
+              <div className="flex gap-3 w-full max-w-sm">
+                <button onClick={dismissFeasibility}
+                  className="flex-1 py-3.5 bg-slate-100 text-slate-600 text-base font-bold rounded-2xl hover:bg-slate-200 transition-all active:scale-[0.98]">
+                  Later
+                </button>
+                <button onClick={() => { dismissFeasibility(); router.push(`/feasibility`); }}
+                  className="flex-1 py-3.5 bg-gradient-to-br from-amber-500 to-orange-600 text-white text-base font-black rounded-2xl hover:from-amber-600 hover:to-orange-700 transition-all shadow-lg shadow-amber-200 hover:-translate-y-0.5 active:translate-y-0">
+                  Open
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {assignAlert && (
         <div className="popup-overlay">
           {/* No click-through dismiss: this has to be acknowledged. */}

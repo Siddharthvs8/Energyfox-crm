@@ -1428,3 +1428,69 @@ class DashboardMatchesTheLeadListTests(TestCase):
     def test_another_bde_still_sees_nothing(self):
         self.assertEqual(self.stats(self.other)['total_leads'], 0)
         self.assertEqual(self.listed(self.other), [])
+
+
+class FeasibilityPendingReminderTests(TestCase):
+    """What the reminder popup polls: the BDE's outstanding feasibilities."""
+
+    def setUp(self):
+        from datetime import date, timedelta
+        self.bde = mk('fp_bde', 'bde')
+        self.other = mk('fp_other', 'bde')
+        self.caller = mk('fp_caller', 'tele_caller')
+        self.admin = mk('fp_admin', 'admin')
+        self.today = date.today()
+
+        # On the queue (PO signed), feasibility not taken.
+        self.lead = Lead.objects.create(first_name='F', last_name='Pending', phone='9995500001',
+                                        status='new', assigned_to=self.caller, bde=self.bde)
+        self.sv = SiteVisit.objects.create(lead=self.lead,
+                                           po_signed_date=self.today - timedelta(days=5))
+
+    def pending(self, actor):
+        r = self.client.get('/api/leads/feasibility-pending/',
+                            HTTP_AUTHORIZATION=token_for(actor))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return r.json()
+
+    def test_the_bde_is_told_what_is_outstanding(self):
+        d = self.pending(self.bde)
+        self.assertEqual(d['count'], 1)
+        self.assertEqual(d['items'][0]['name'], 'F Pending')
+
+    def test_it_reports_the_due_date_and_overdue_flag(self):
+        """Feasibility is due 2 days after the PO; this one was signed 5 days ago."""
+        item = self.pending(self.bde)['items'][0]
+        self.assertIsNotNone(item['due_date'])
+        self.assertTrue(item['overdue'])
+
+    def test_a_completed_feasibility_stops_the_reminder(self):
+        self.sv.kseb_feasibility_complete = True
+        self.sv.save(update_fields=['kseb_feasibility_complete'])
+        self.assertEqual(self.pending(self.bde)['count'], 0)
+
+    def test_a_lead_not_yet_on_the_queue_is_not_counted(self):
+        self.sv.po_signed_date = None
+        self.sv.save(update_fields=['po_signed_date'])
+        self.assertEqual(self.pending(self.bde)['count'], 0)
+
+    def test_another_bde_is_not_nagged_about_it(self):
+        self.assertEqual(self.pending(self.other)['count'], 0)
+
+    def test_nobody_but_a_bde_is_nagged(self):
+        """The popup is the BDE's task; other roles must never see it."""
+        for actor in (self.caller, self.admin):
+            self.assertEqual(self.pending(actor)['count'], 0, actor.role)
+
+    def test_a_trashed_lead_drops_off(self):
+        self.lead.is_trashed = True
+        self.lead.save(update_fields=['is_trashed'])
+        self.assertEqual(self.pending(self.bde)['count'], 0)
+
+    def test_a_lead_pushed_to_documentation_also_counts(self):
+        """Those join the queue without a PO date, and were already on it."""
+        pushed = Lead.objects.create(first_name='F', last_name='Pushed', phone='9995500002',
+                                     status='new', bde=self.bde, pushed_to_documentation=True)
+        SiteVisit.objects.create(lead=pushed)
+        names = {i['name'] for i in self.pending(self.bde)['items']}
+        self.assertIn('F Pushed', names)
