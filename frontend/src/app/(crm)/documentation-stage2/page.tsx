@@ -6,7 +6,12 @@ import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
+import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCleanup";
 type Stage2Lead = {
+  // Set when the lead behind this row has been deleted; the row is then
+  // unopenable, and an admin gets a control to clear it out.
+  lead_deleted?: boolean;
+  can_cleanup?: boolean;
   id: number;
   first_name: string;
   last_name: string | null;
@@ -99,6 +104,7 @@ export default function DocumentationStage2Page() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-bold text-slate-900 truncate">{l.first_name} {l.last_name}</p>
+                    {l.lead_deleted && <DeletedLeadBadge />}
                     <span className={`text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${l.is_complete ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
                       {l.is_complete ? "Done" : "In Progress"}
                     </span>
@@ -110,6 +116,11 @@ export default function DocumentationStage2Page() {
                     <p className="text-[10px] text-slate-400 uppercase tracking-wide">Stage 2 Staff</p>
                     <p className={`text-xs font-semibold ${l.doc_stage2_staff_name ? "text-slate-600" : "text-amber-600"}`}>{l.doc_stage2_staff_name || "Unassigned"}</p>
                   </div>
+                  {l.can_cleanup && (
+                    <DeletedLeadCleanup leadId={l.id} module="documentation-stage2"
+                      name={`${l.first_name} ${l.last_name || ""}`.trim()}
+                      onRemoved={() => setLeads(prev => prev.filter(x => x.id !== l.id))} />
+                  )}
                   <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" className="text-slate-300"><polyline points="9 18 15 12 9 6" /></svg>
                 </div>
               </div>

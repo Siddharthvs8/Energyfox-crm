@@ -6,7 +6,12 @@ import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
+import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCleanup";
 type ProjectLead = {
+  // Set when the lead behind this row has been deleted; the row is then
+  // unopenable, and an admin gets a control to clear it out.
+  lead_deleted?: boolean;
+  can_cleanup?: boolean;
   id: number;
   first_name: string;
   last_name: string | null;
@@ -98,6 +103,7 @@ export default function ProjectPage() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-bold text-slate-900 truncate">{l.first_name} {l.last_name}</p>
+                    {l.lead_deleted && <DeletedLeadBadge />}
                     <span className={`text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${l.project_complete ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
                       {l.project_complete ? "Done" : "In Progress"}
                     </span>
@@ -113,6 +119,11 @@ export default function ProjectPage() {
                     <p className="text-[10px] text-slate-400 uppercase tracking-wide">Project Manager</p>
                     <p className="text-xs font-semibold text-slate-600">{l.project_manager_name || "Unassigned"}</p>
                   </div>
+                  {l.can_cleanup && (
+                    <DeletedLeadCleanup leadId={l.id} module="project"
+                      name={`${l.first_name} ${l.last_name || ""}`.trim()}
+                      onRemoved={() => setLeads(prev => prev.filter(x => x.id !== l.id))} />
+                  )}
                   <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" className="text-slate-300"><polyline points="9 18 15 12 9 6" /></svg>
                 </div>
               </div>

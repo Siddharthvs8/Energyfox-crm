@@ -1636,3 +1636,108 @@ class ActivityTimelineTests(TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()['count'], 0)
         self.assertEqual(r.json()['entries'], [])
+
+
+class DeletedLeadModuleCleanupTests(TestCase):
+    """Trashing a lead leaves its rows in the modules it had reached; an admin
+    clears those out module by module."""
+
+    def setUp(self):
+        from .models import PaymentVerification
+        self.admin = mk('dc_admin', 'admin')
+        self.admin.is_staff = True
+        self.admin.save()
+        self.accounts = mk('dc_acc', 'accounts_staff')
+        self.caller = mk('dc_caller', 'tele_caller')
+
+        self.lead = Lead.objects.create(
+            first_name='Sidharth1', last_name='', phone='9998800001', status='new',
+            assigned_to=self.caller, pushed_to_accounts=True,
+            pushed_to_accounts_at=timezone.now(), accounts_staff=self.accounts)
+        PaymentVerification.objects.create(lead=self.lead)
+
+    def trash(self):
+        self.lead.is_trashed = True
+        self.lead.trashed_at = timezone.now()
+        self.lead.save(update_fields=['is_trashed', 'trashed_at'])
+
+    def remove(self, actor, module='accounts'):
+        return self.client.delete(
+            f'/api/leads/{self.lead.id}/remove-from-module/?module={module}',
+            HTTP_AUTHORIZATION=token_for(actor))
+
+    def listed(self, actor):
+        r = self.client.get('/api/leads/accounts/', HTTP_AUTHORIZATION=token_for(actor))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return r.json()
+
+    # ── the symptom ──
+    def test_a_deleted_lead_is_flagged_in_the_module_list(self):
+        """It still lists — the flag is what tells the screen it is a dead row."""
+        self.trash()
+        row = next(r for r in self.listed(self.admin) if r['id'] == self.lead.id)
+        self.assertTrue(row['lead_deleted'])
+        self.assertTrue(row['can_cleanup'])
+
+    def test_a_live_lead_is_not_flagged(self):
+        row = next(r for r in self.listed(self.admin) if r['id'] == self.lead.id)
+        self.assertFalse(row['lead_deleted'])
+        self.assertFalse(row['can_cleanup'])
+
+    def test_only_an_admin_is_offered_the_cleanup(self):
+        self.trash()
+        row = next(r for r in self.listed(self.accounts) if r['id'] == self.lead.id)
+        self.assertTrue(row['lead_deleted'])
+        self.assertFalse(row['can_cleanup'])
+
+    # ── the cleanup ──
+    def test_an_admin_removes_it_from_the_module(self):
+        from .models import PaymentVerification
+        self.trash()
+        r = self.remove(self.admin)
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.lead.refresh_from_db()
+        self.assertFalse(self.lead.pushed_to_accounts)
+        self.assertIsNone(self.lead.accounts_staff_id)
+        self.assertFalse(PaymentVerification.objects.filter(lead=self.lead).exists())
+        self.assertNotIn(self.lead.id, [x['id'] for x in self.listed(self.admin)])
+
+    def test_the_lead_itself_survives_in_the_trash(self):
+        """Only the module residue goes — the lead can still be restored."""
+        self.trash()
+        self.remove(self.admin)
+        self.lead.refresh_from_db()
+        self.assertTrue(self.lead.is_trashed)
+
+    def test_a_live_lead_cannot_be_pulled_out_of_a_module(self):
+        """The guard that stops this becoming a way to disrupt live work."""
+        r = self.remove(self.admin)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('still active', r.json()['error'])
+        self.lead.refresh_from_db()
+        self.assertTrue(self.lead.pushed_to_accounts)
+
+    def test_non_admins_are_refused(self):
+        self.trash()
+        for actor in (self.accounts, self.caller):
+            self.assertEqual(self.remove(actor).status_code, 403, actor.role)
+        self.lead.refresh_from_db()
+        self.assertTrue(self.lead.pushed_to_accounts)
+
+    def test_an_unknown_module_is_refused(self):
+        self.trash()
+        r = self.remove(self.admin, module='nowhere')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('Unknown module', r.json()['error'])
+
+    def test_a_module_the_lead_never_reached_says_so(self):
+        self.trash()
+        r = self.remove(self.admin, module='project')
+        self.assertEqual(r.status_code, 404)
+
+    def test_the_cleanup_is_recorded_on_the_timeline(self):
+        from .models import ActivityLog
+        self.trash()
+        self.remove(self.admin)
+        self.assertTrue(ActivityLog.objects.filter(
+            lead=self.lead, description__icontains='removed from accounts').exists())

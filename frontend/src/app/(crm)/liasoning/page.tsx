@@ -6,6 +6,7 @@ import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
+import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCleanup";
 type LiasoningRecord = {
   feasibility_completed: boolean; feasibility_remark: string;
   annexure3_completed: boolean; annexure3_remark: string;
@@ -13,6 +14,10 @@ type LiasoningRecord = {
   is_complete: boolean;
 };
 type LiasoningLead = {
+  // Set when the lead behind this row has been deleted; the row is then
+  // unopenable, and an admin gets a control to clear it out.
+  lead_deleted?: boolean;
+  can_cleanup?: boolean;
   id: number;
   first_name: string;
   last_name: string | null;
@@ -200,9 +205,17 @@ export default function LiasoningPage() {
                       return (
                         <tr key={l.id} className="border-b border-slate-50 hover:bg-slate-50/60 align-middle">
                           <td className="px-5 py-3">
-                            <Link href={`/liasoning/${l.id}`} className="font-semibold text-slate-800 hover:text-indigo-600 transition">
-                              {l.first_name} {l.last_name}
-                            </Link>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <Link href={`/liasoning/${l.id}`} className="font-semibold text-slate-800 hover:text-indigo-600 transition">
+                                {l.first_name} {l.last_name}
+                              </Link>
+                              {l.lead_deleted && <DeletedLeadBadge />}
+                              {l.can_cleanup && (
+                                <DeletedLeadCleanup leadId={l.id} module="liasoning"
+                                  name={`${l.first_name} ${l.last_name || ""}`.trim()}
+                                  onRemoved={() => setLeads(prev => prev.filter(x => x.id !== l.id))} />
+                              )}
+                            </div>
                             <p className="text-[11px] text-slate-400">{l.phone || "—"}{l.location ? ` · ${l.location}` : ""}</p>
                           </td>
                           <td className="px-5 py-3">
