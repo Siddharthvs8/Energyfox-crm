@@ -1383,3 +1383,48 @@ class LoanRemarksAndReceiptSendTests(TestCase):
             'pdf': self._pdf(), 'channels': 'email', 'receipt_id': voucher.id,
         }, HTTP_AUTHORIZATION=token_for(bde))
         self.assertIn(r.status_code, (403, 404))
+
+
+class DashboardMatchesTheLeadListTests(TestCase):
+    """The dashboard counts what the Leads page lists. A BDE's leads are owned by
+    the tele caller who handed them over, so scoping on the owner alone reported
+    nothing for them."""
+
+    def setUp(self):
+        from decimal import Decimal
+        self.bde = mk('dm_bde', 'bde')
+        self.caller = mk('dm_caller', 'tele_caller')
+        self.other = mk('dm_other', 'bde')
+        # Owned by the tele caller, handed to the BDE — the shape from the report.
+        for n in range(2):
+            Lead.objects.create(first_name='D', last_name=f'Handed{n}',
+                                phone=f'999400000{n}', status='new',
+                                assigned_to=self.caller, bde=self.bde,
+                                value=Decimal('50000'))
+
+    def stats(self, actor):
+        r = self.client.get('/api/dashboard-stats/', HTTP_AUTHORIZATION=token_for(actor))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return r.json()
+
+    def listed(self, actor):
+        r = self.client.get('/api/leads/?all=true', HTTP_AUTHORIZATION=token_for(actor))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        d = r.json()
+        return d if isinstance(d, list) else d.get('results', [])
+
+    def test_the_bde_sees_their_leads_counted(self):
+        self.assertEqual(self.stats(self.bde)['total_leads'], 2)
+
+    def test_the_count_equals_the_rows_on_the_leads_page(self):
+        for actor in (self.bde, self.caller):
+            self.assertEqual(self.stats(actor)['total_leads'], len(self.listed(actor)),
+                             f'{actor.username} dashboard and list disagree')
+
+    def test_pipeline_value_is_counted_too(self):
+        """Revenue / pipeline read the same queryset, so they were zero as well."""
+        self.assertEqual(float(self.stats(self.bde)['pipeline_value']), 100000.0)
+
+    def test_another_bde_still_sees_nothing(self):
+        self.assertEqual(self.stats(self.other)['total_leads'], 0)
+        self.assertEqual(self.listed(self.other), [])

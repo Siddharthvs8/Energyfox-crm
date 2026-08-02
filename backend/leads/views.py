@@ -252,6 +252,39 @@ def auto_assign_project(lead):
     return assignee
 
 
+def reporting_scope(user):
+    """The leads a user's own figures are drawn from.
+
+    Mirrors the Leads list: all-access roles (admins plus the downstream
+    documentation / accounts / purchase / project / liasoning modules) see the
+    whole book, a manager sees their people's, and everyone else sees the leads
+    they work. The dashboard and the converted-leads analytics both read this,
+    so a figure can never disagree with the rows behind it.
+    """
+    if user.sees_all_leads:
+        return Lead.objects.all()
+    if user.is_manager:
+        # Their people hold leads as BDE / tele caller too, not only as owner.
+        managed = user.managed_user_ids()
+        return Lead.objects.filter(
+            Q(assigned_to__id__in=managed) | Q(bde__id__in=managed)
+            | Q(tele_caller__id__in=managed) | Q(assigned_to__isnull=True)
+        ).distinct()
+    return Lead.objects.filter(own_leads_q(user)).distinct()
+
+
+def own_leads_q(user):
+    """The leads a plain user works: theirs to own, plus the two shared-ownership
+    roles.
+
+    A lead handed to a BDE keeps the tele caller as `assigned_to` and records the
+    BDE separately, so scoping on `assigned_to` alone reports nothing for a BDE.
+    The lead list and the dashboard both read this, so the count on one always
+    matches the rows on the other.
+    """
+    return Q(assigned_to=user) | Q(bde=user) | Q(tele_caller=user)
+
+
 class LeadViewSet(viewsets.ModelViewSet):
     queryset = Lead.objects.all()
     serializer_class = LeadSerializer
@@ -3180,7 +3213,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             # Branch manager: everything their branch works on — leads owned by
             # branch staff, handled by a branch BDE, plus their own + unassigned.
             from django.db.models import Q
-            scope = Q(assigned_to=user) | Q(bde=user) | Q(tele_caller=user) | Q(assigned_to__isnull=True)
+            scope = own_leads_q(user) | Q(assigned_to__isnull=True)
             if user.branch_id:
                 scope |= Q(assigned_to__branch_id=user.branch_id) | Q(bde__branch_id=user.branch_id)
             queryset = base.filter(scope).distinct().order_by('-created_at')
@@ -3189,8 +3222,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             # moves assigned_to, and it must not disappear from their list).
             # BDE: leads handed off to them as BDE.
             from django.db.models import Q
-            queryset = (base.filter(Q(assigned_to=user) | Q(bde=user) | Q(tele_caller=user))
-                        .distinct().order_by('-created_at'))
+            queryset = base.filter(own_leads_q(user)).distinct().order_by('-created_at')
 
         # Trashed leads live only in the Trash view (and are purged after 7 days).
         queryset = queryset.filter(is_trashed=False)
@@ -4037,15 +4069,7 @@ class DashboardStatsView(APIView):
         today = timezone.localdate()
         user = request.user
         
-        if user.is_staff or user.is_general_manager:
-            base_qs = Lead.objects.all()
-        elif user.is_manager:
-            # Teams they head + (branch managers) everyone in their branch.
-            base_qs = Lead.objects.filter(
-                Q(assigned_to__id__in=user.managed_user_ids()) | Q(assigned_to__isnull=True)
-            ).distinct()
-        else:
-            base_qs = Lead.objects.filter(assigned_to=user)
+        base_qs = reporting_scope(user)
 
         base_qs = base_qs.filter(is_trashed=False)
         
@@ -4240,17 +4264,7 @@ class ConvertedAnalyticsView(APIView):
         from django.db.models import F, Avg, ExpressionWrapper, DurationField
         user = request.user
         
-        # Consistent permission scoping
-        if user.is_staff or user.is_general_manager:
-            base_qs = Lead.objects.all()
-        elif user.is_manager:
-            from django.db.models import Q
-            # Teams they head + (branch managers) everyone in their branch.
-            base_qs = Lead.objects.filter(
-                Q(assigned_to__id__in=user.managed_user_ids()) | Q(assigned_to__isnull=True)
-            ).distinct()
-        else:
-            base_qs = Lead.objects.filter(assigned_to=user)
+        base_qs = reporting_scope(user)
 
         # Base QS for converted leads
         won_qs = base_qs.filter(status__in=['converted'])
