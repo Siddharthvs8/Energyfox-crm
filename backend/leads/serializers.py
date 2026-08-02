@@ -265,7 +265,10 @@ class PurchaseLogisticsSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseLogistics
         fields = '__all__'
-        read_only_fields = ['lead', 'created_at', 'updated_at', 'is_complete', 'completed_at', 'completed_by']
+        # The override flags are written by the completion action, never by a PATCH.
+        read_only_fields = ['lead', 'created_at', 'updated_at', 'is_complete',
+                            'completed_at', 'completed_by',
+                            'completed_with_override', 'override_reason']
 
     def get_completed_by_name(self, obj):
         if obj.completed_by:

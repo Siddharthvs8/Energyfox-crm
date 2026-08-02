@@ -2284,7 +2284,11 @@ class LeadViewSet(viewsets.ModelViewSet):
         if not can_edit_purchase_logistics(request.user, lead):
             return Response({'error': 'You do not have permission to edit this purchase & logistics.'},
                             status=status.HTTP_403_FORBIDDEN)
-        if pl.is_complete:
+        # Completing locks the record for purchase staff. An admin keeps editing —
+        # they are the ones who signed it off, sometimes on an override, and have
+        # to be able to correct it afterwards.
+        if pl.is_complete and not (request.user.is_staff
+                                   or getattr(request.user, 'is_general_manager', False)):
             return Response({'error': 'Purchase & logistics is already completed and locked.'},
                             status=status.HTTP_400_BAD_REQUEST)
         serializer = PurchaseLogisticsSerializer(pl, data=request.data, partial=True,
@@ -2305,22 +2309,37 @@ class LeadViewSet(viewsets.ModelViewSet):
         if pl.is_complete:
             return Response({'error': 'Purchase & logistics is already completed.'},
                             status=status.HTTP_400_BAD_REQUEST)
-        missing = pl.missing_required_fields()
-        if missing:
-            return Response({'error': 'Set the structure material and BOM delivery status first.',
-                             'missing': missing}, status=status.HTTP_400_BAD_REQUEST)
+        # Everything has to have arrived and nothing be outstanding. An admin may
+        # sign off regardless, but the exception is recorded rather than hidden.
+        unmet = pl.unmet_conditions()
+        is_admin = bool(request.user.is_staff
+                        or getattr(request.user, 'is_general_manager', False))
+        override = str(request.data.get('override', '')).lower() in ('1', 'true', 'yes')
+        if unmet and not (override and is_admin):
+            return Response({
+                'error': 'Not ready to complete: ' + ', '.join(label for _f, label in unmet) + '.',
+                'unmet': [{'field': f, 'label': label} for f, label in unmet],
+                'can_override': is_admin,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
         pl.is_complete = True
         pl.completed_at = timezone.now()
         pl.completed_by = request.user if request.user.is_authenticated else None
-        pl.save(update_fields=['is_complete', 'completed_at', 'completed_by', 'updated_at'])
+        pl.completed_with_override = bool(unmet)
+        pl.override_reason = (', '.join(label for _f, label in unmet))[:255] if unmet else ''
+        pl.save(update_fields=['is_complete', 'completed_at', 'completed_by',
+                               'completed_with_override', 'override_reason', 'updated_at'])
         actor = (f"{request.user.first_name} {request.user.last_name}".strip()
                  or request.user.username) if request.user.is_authenticated else 'purchase'
+        note = f"Purchase & logistics completed by {actor}."
+        if pl.completed_with_override:
+            note += f" Conditions overridden: {pl.override_reason}."
         ActivityLog.objects.create(
             activity_type='note_added',
-            description=f"Purchase & logistics completed by {actor}.",
+            description=note,
             actor=request.user if request.user.is_authenticated else None,
             lead=lead,
-            extra={'auto_generated': True},
+            extra={'auto_generated': True, 'override': pl.completed_with_override},
         )
         # Hand the lead off to the project (installation) stage.
         if not lead.pushed_to_project:

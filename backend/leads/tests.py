@@ -1999,3 +1999,129 @@ class LeaderboardAndPerformanceIgnoreDeletedTests(TestCase):
         board = self.board()['lb_bde']['closed_sales']
         perf = self.performance(self.bde)['status_breakdown'].get('converted', 0)
         self.assertEqual(board, perf)
+
+
+class PurchaseCompletionConditionsTests(TestCase):
+    """Purchase & logistics signs off only when everything has arrived and
+    nothing is outstanding — unless an admin overrides it."""
+
+    def setUp(self):
+        from .models import PurchaseLogistics
+        self.admin = mk('pc_admin', 'admin')
+        self.admin.is_staff = True
+        self.admin.save()
+        self.staff = mk('pc_staff', 'purchase_staff')
+        self.lead = Lead.objects.create(first_name='P', last_name='Cond', phone='9993700001',
+                                        status='converted', pushed_to_purchase=True,
+                                        pushed_to_purchase_at=timezone.now(),
+                                        purchase_staff=self.staff)
+        self.pl = PurchaseLogistics.objects.create(lead=self.lead)
+
+    def patch(self, payload, actor=None):
+        return self.client.patch(f'/api/leads/{self.lead.id}/purchase-logistics/',
+                                 data=payload, content_type='application/json',
+                                 HTTP_AUTHORIZATION=token_for(actor or self.staff))
+
+    def complete(self, actor=None, override=None):
+        body = {} if override is None else {'override': override}
+        return self.client.post(f'/api/leads/{self.lead.id}/complete-purchase-logistics/',
+                                data=body, content_type='application/json',
+                                HTTP_AUTHORIZATION=token_for(actor or self.staff))
+
+    def satisfy(self):
+        self.pl.panel_delivered = 'delivered'
+        self.pl.structure_material = 'delivered'
+        self.pl.bom = 'delivered'
+        self.pl.pending_item = 'no'
+        self.pl.save()
+
+    # ── the new field ──
+    def test_panel_delivered_round_trips(self):
+        r = self.patch({'panel_delivered': 'delivered'})
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertEqual(r.json()['panel_delivered'], 'delivered')
+
+    def test_only_the_two_delivery_values_are_accepted(self):
+        self.assertEqual(self.patch({'panel_delivered': 'maybe'}).status_code, 400)
+
+    # ── the gate ──
+    def test_nothing_answered_lists_all_four_conditions(self):
+        r = self.complete()
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(len(r.json()['unmet']), 4)
+
+    def test_answering_is_not_enough_it_has_to_be_delivered(self):
+        """The old rule only checked the fields were filled in."""
+        self.pl.panel_delivered = 'not_delivered'
+        self.pl.structure_material = 'delivered'
+        self.pl.bom = 'delivered'
+        self.pl.pending_item = 'no'
+        self.pl.save()
+        r = self.complete()
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual([u['field'] for u in r.json()['unmet']], ['panel_delivered'])
+
+    def test_a_pending_item_blocks_it(self):
+        self.satisfy()
+        self.pl.pending_item = 'yes'
+        self.pl.save()
+        r = self.complete()
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual([u['field'] for u in r.json()['unmet']], ['pending_item'])
+
+    def test_all_four_met_completes(self):
+        self.satisfy()
+        r = self.complete()
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.pl.refresh_from_db()
+        self.assertTrue(self.pl.is_complete)
+        self.assertFalse(self.pl.completed_with_override)
+
+    # ── the override ──
+    def test_purchase_staff_cannot_override(self):
+        r = self.complete(override=True)
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(r.json()['can_override'])
+        self.pl.refresh_from_db()
+        self.assertFalse(self.pl.is_complete)
+
+    def test_an_admin_can_override(self):
+        r = self.complete(self.admin, override=True)
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.pl.refresh_from_db()
+        self.assertTrue(self.pl.is_complete)
+        self.assertTrue(self.pl.completed_with_override)
+        self.assertIn('Panel delivered', self.pl.override_reason)
+
+    def test_an_admin_without_ticking_override_is_still_blocked(self):
+        r = self.complete(self.admin)
+        self.assertEqual(r.status_code, 400)
+        self.assertTrue(r.json()['can_override'])
+
+    def test_the_override_is_recorded_on_the_timeline(self):
+        from .models import ActivityLog
+        self.complete(self.admin, override=True)
+        self.assertTrue(ActivityLog.objects.filter(
+            lead=self.lead, description__icontains='overridden').exists())
+
+    # ── editing afterwards ──
+    def test_purchase_staff_cannot_edit_once_complete(self):
+        self.satisfy()
+        self.complete()
+        r = self.patch({'remark': 'late note'})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('locked', r.json()['error'])
+
+    def test_an_admin_can_still_edit_after_completion(self):
+        """They signed it off, sometimes on an override, so they can correct it."""
+        self.complete(self.admin, override=True)
+        r = self.patch({'remark': 'panel arrived later'}, actor=self.admin)
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.pl.refresh_from_db()
+        self.assertEqual(self.pl.remark, 'panel arrived later')
+
+    def test_the_override_flag_cannot_be_set_by_a_plain_patch(self):
+        r = self.patch({'completed_with_override': True})
+        self.assertEqual(r.status_code, 200)
+        self.pl.refresh_from_db()
+        self.assertFalse(self.pl.completed_with_override)

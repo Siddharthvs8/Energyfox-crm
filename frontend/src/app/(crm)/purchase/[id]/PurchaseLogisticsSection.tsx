@@ -23,6 +23,7 @@ export default function PurchaseLogisticsSection({ leadId, canEdit, canReopen, o
   const url = `${apiBase}/api/leads/${leadId}/purchase-logistics/`;
   const authHeader = () => ({ Authorization: `Bearer ${localStorage.getItem(`${APP_SLUG}_access`)}` });
 
+  const [panelDelivered, setPanelDelivered] = useState("");
   const [structureMaterial, setStructureMaterial] = useState("");
   const [bom, setBom] = useState("");
   const [pendingItem, setPendingItem] = useState("");
@@ -34,8 +35,13 @@ export default function PurchaseLogisticsSection({ leadId, canEdit, canReopen, o
   const [saving, setSaving] = useState(false);
   const [completing, setCompleting] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [overrideChecked, setOverrideChecked] = useState(false);
+  const [completedWithOverride, setCompletedWithOverride] = useState(false);
+  const [overrideReasonText, setOverrideReasonText] = useState("");
+  const [isAdmin, setIsAdmin] = useState(false);
 
   const load = useCallback((d: any) => {
+    setPanelDelivered(d.panel_delivered || "");
     setStructureMaterial(d.structure_material || "");
     setBom(d.bom || "");
     setPendingItem(d.pending_item || "");
@@ -43,7 +49,19 @@ export default function PurchaseLogisticsSection({ leadId, canEdit, canReopen, o
     setIsComplete(!!d.is_complete);
     setCompletedByName(d.completed_by_name ?? null);
     setCompletedAt(d.completed_at ?? null);
+    setCompletedWithOverride(!!d.completed_with_override);
+    setOverrideReasonText(d.override_reason || "");
   }, []);
+
+  // The override is an admin's call, and an admin keeps editing after sign-off.
+  useEffect(() => {
+    const tk = localStorage.getItem(`${APP_SLUG}_access`);
+    if (!tk) return;
+    fetch(`${apiBase}/api/users/me/`, { headers: authHeader() })
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (d) setIsAdmin(!!(d.is_staff || d.is_general_manager)); })
+      .catch(() => {});
+  }, [apiBase]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!localStorage.getItem(`${APP_SLUG}_access`)) { setLoading(false); return; }
@@ -54,15 +72,27 @@ export default function PurchaseLogisticsSection({ leadId, canEdit, canReopen, o
       .finally(() => setLoading(false));
   }, [leadId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const readOnly = !canEdit || isComplete;
-  const ready = !!structureMaterial && !!bom;
+  const readOnly = !canEdit || (isComplete && !isAdmin);
+
+  // Answering the questions is not enough — the goods have to have arrived and
+  // nothing be outstanding. Mirrors PurchaseLogistics.COMPLETION_RULES.
+  const conditions = [
+    { label: "Panel delivered", met: panelDelivered === "delivered" },
+    { label: "Structure material delivered", met: structureMaterial === "delivered" },
+    { label: "BOM delivered", met: bom === "delivered" },
+    { label: "No pending item", met: pendingItem === "no" },
+  ];
+  const unmet = conditions.filter(c => !c.met);
+  const ready = unmet.length === 0;
+  const canComplete = ready || (isAdmin && overrideChecked);
   const change = (setter: (v: string) => void) => (v: string) => { setter(v); setSaved(false); };
 
   const saveScalars = async (): Promise<any | null> => {
     const r = await fetch(url, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...authHeader() },
-      body: JSON.stringify({ structure_material: structureMaterial, bom, pending_item: pendingItem, remark }),
+      body: JSON.stringify({ panel_delivered: panelDelivered, structure_material: structureMaterial,
+                             bom, pending_item: pendingItem, remark }),
     });
     if (!r.ok) { const e = await r.json().catch(() => ({})); alert(e.error || "Failed to save purchase & logistics."); return null; }
     return r.json();
@@ -78,12 +108,24 @@ export default function PurchaseLogisticsSection({ leadId, canEdit, canReopen, o
   };
 
   const complete = async () => {
-    if (!ready) { alert("Set the structure material and BOM delivery status first."); return; }
+    const bullets = unmet.map(c => `• ${c.label}`).join("\n");
+    if (!canComplete) {
+      alert(["Not ready to complete:", bullets].join("\n"));
+      return;
+    }
+    if (!ready && !confirm(
+      ["These conditions are not met:", bullets, "",
+       "Complete anyway? The override is recorded against this record."].join("\n")
+    )) return;
     setCompleting(true);
     try {
       const latest = await saveScalars();
       if (!latest) return;
-      const r = await fetch(`${apiBase}/api/leads/${leadId}/complete-purchase-logistics/`, { method: "POST", headers: authHeader() });
+      const r = await fetch(`${apiBase}/api/leads/${leadId}/complete-purchase-logistics/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeader() },
+        body: JSON.stringify({ override: !ready && isAdmin && overrideChecked }),
+      });
       if (r.ok) {
         const d = await r.json();
         if (d.purchase_logistics) load(d.purchase_logistics);
@@ -146,6 +188,14 @@ export default function PurchaseLogisticsSection({ leadId, canEdit, canReopen, o
       <div className={cardCls}>
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-4">
           <div>
+            <label className={labelCls}>Panel Delivered</label>
+            <select value={panelDelivered} disabled={readOnly} onChange={e => change(setPanelDelivered)(e.target.value)} className={inputCls}>
+              <option value="">—</option>
+              {DELIVERY.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+
+          <div>
             <label className={labelCls}>Structure Material</label>
             <select value={structureMaterial} disabled={readOnly} onChange={e => change(setStructureMaterial)(e.target.value)} className={inputCls}>
               <option value="">—</option>
@@ -177,17 +227,67 @@ export default function PurchaseLogisticsSection({ leadId, canEdit, canReopen, o
         </div>
       </div>
 
+      {isComplete && completedWithOverride && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+          <b>Completed on override.</b> Not met at sign-off: {overrideReasonText || "—"}.
+        </div>
+      )}
+
       {canEdit && !isComplete && (
+        <div className="space-y-3">
+          {/* What still stands between this record and sign-off. */}
+          {!ready && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2">
+                Needed to complete
+              </p>
+              <ul className="space-y-1">
+                {conditions.map(c => (
+                  <li key={c.label} className={`text-xs flex items-center gap-2 ${c.met ? "text-emerald-600" : "text-slate-500"}`}>
+                    <span>{c.met ? "✓" : "○"}</span>{c.label}
+                  </li>
+                ))}
+              </ul>
+              {isAdmin && (
+                <label className="mt-3 flex items-center gap-2 text-xs font-semibold text-amber-700 cursor-pointer">
+                  <input type="checkbox" checked={overrideChecked}
+                    onChange={e => setOverrideChecked(e.target.checked)}
+                    className="w-4 h-4 rounded accent-amber-600" />
+                  Override these conditions and complete anyway (admin)
+                </label>
+              )}
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center gap-3">
+            <button onClick={save} disabled={saving || completing}
+              className="px-5 py-2.5 bg-slate-800 text-white rounded-xl text-sm font-semibold hover:bg-slate-900 disabled:opacity-50 transition">
+              {saving ? "Saving…" : saved ? "Saved ✓" : "Save"}
+            </button>
+            <button onClick={complete} disabled={completing || saving || !canComplete}
+              title={canComplete ? "" : `Not met: ${unmet.map(c => c.label).join(", ")}`}
+              className="px-5 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition">
+              {completing ? "Completing…" : "Mark Complete"}
+            </button>
+            {!ready && !canComplete && (
+              <span className="text-xs text-slate-400">
+                {unmet.length} condition{unmet.length === 1 ? "" : "s"} still to meet.
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* An admin keeps editing after sign-off — they may have overridden it. */}
+      {canEdit && isComplete && isAdmin && (
         <div className="flex flex-wrap items-center gap-3">
-          <button onClick={save} disabled={saving || completing}
+          <button onClick={save} disabled={saving}
             className="px-5 py-2.5 bg-slate-800 text-white rounded-xl text-sm font-semibold hover:bg-slate-900 disabled:opacity-50 transition">
-            {saving ? "Saving…" : saved ? "Saved ✓" : "Save"}
+            {saving ? "Saving…" : saved ? "Saved ✓" : "Save changes"}
           </button>
-          <button onClick={complete} disabled={completing || saving || !ready} title={!ready ? "Set structure material and BOM status first" : ""}
-            className="px-5 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition">
-            {completing ? "Completing…" : "Mark Complete"}
-          </button>
-          {!ready && <span className="text-xs text-slate-400">Set structure material and BOM delivery status to complete.</span>}
+          <span className="text-xs text-slate-400">
+            This record is completed. As an admin you can still correct it.
+          </span>
         </div>
       )}
     </div>

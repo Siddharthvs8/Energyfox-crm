@@ -713,12 +713,17 @@ class PurchaseLogistics(models.Model):
     YES_NO = [('yes', 'Yes'), ('no', 'No')]
 
     lead = models.OneToOneField(Lead, on_delete=models.CASCADE, related_name='purchase_logistics')
+    panel_delivered = models.CharField(max_length=15, choices=DELIVERY, blank=True, default='')
     structure_material = models.CharField(max_length=15, choices=DELIVERY, blank=True, default='')
     bom = models.CharField(max_length=15, choices=DELIVERY, blank=True, default='')
     pending_item = models.CharField(max_length=3, choices=YES_NO, blank=True, default='')
     remark = models.TextField(blank=True, default='')
 
     is_complete = models.BooleanField(default=False, db_index=True)
+    # Set when an admin completed this despite the conditions not being met, so
+    # the exception is visible afterwards rather than looking like a clean pass.
+    completed_with_override = models.BooleanField(default=False)
+    override_reason = models.CharField(max_length=255, blank=True, default='')
     completed_at = models.DateTimeField(null=True, blank=True)
     completed_by = models.ForeignKey(
         'users.User', on_delete=models.SET_NULL, null=True, blank=True,
@@ -726,15 +731,28 @@ class PurchaseLogistics(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # What each field has to read before this stage can be signed off. Answering
+    # them is not enough — the goods have to have actually arrived.
+    COMPLETION_RULES = (
+        ('panel_delivered', 'delivered', 'Panel delivered'),
+        ('structure_material', 'delivered', 'Structure material delivered'),
+        ('bom', 'delivered', 'BOM delivered'),
+        ('pending_item', 'no', 'No pending item'),
+    )
+
+    def unmet_conditions(self):
+        """Which completion conditions this record does not yet satisfy.
+
+        Returns [(field, label)] — empty when everything has arrived and nothing
+        is outstanding, which is the only state that completes without an
+        admin override.
+        """
+        return [(field, label) for field, wanted, label in self.COMPLETION_RULES
+                if getattr(self, field, '') != wanted]
+
     def missing_required_fields(self):
-        """Structure material and BOM delivery status must be answered before
-        the purchase & logistics stage can be marked complete."""
-        missing = []
-        if not self.structure_material:
-            missing.append('structure_material')
-        if not self.bom:
-            missing.append('bom')
-        return missing
+        """Kept for callers that only ask "is it ready?"."""
+        return [field for field, _label in self.unmet_conditions()]
 
     def __str__(self):
         return f"Purchase & logistics — {self.lead}"
