@@ -13,7 +13,7 @@ import { buildProformaPdf, proformaFileName } from "@/lib/proformaPdf";
 import { STATES, HOME_STATE } from "@/lib/states";
 import {
   FIELD, rupee, num, todayISO, useStock, StockPage, AddButton, SearchBar,
-  DataTable, Modal, Fld, Row, RowActions, I,
+  DataTable, Modal, Fld, Row, RowActions, DocumentPreview, I,
 } from "../shared";
 
 type Line = { item: string; description: string; quantity: string; unit_price: string };
@@ -50,6 +50,7 @@ export default function StockQuotesPage() {
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState<number | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
+  const [preview, setPreview] = useState<any>(null);
 
   const lines = form.items;
   const setLine = (i: number, patch: Partial<Line>) =>
@@ -191,8 +192,10 @@ export default function StockQuotesPage() {
               { label: "Total", align: "right" }, { label: "Actions", align: "right" },
             ]}
             empty={{ title: "No proforma invoices yet", hint: "Raise your first proforma invoice." }}
+            onRowClick={i => setPreview(filtered[i])}
+            rowTitle="Open the proforma invoice"
             rows={filtered.map(q => [
-              <button onClick={() => setOpen(open === q.id ? null : q.id)}
+              <button onClick={e => { e.stopPropagation(); setOpen(open === q.id ? null : q.id); }}
                 className="font-mono text-xs font-semibold text-indigo-600 hover:text-indigo-900"
                 title="Show the lines on this invoice">{q.number}</button>,
               q.customer_name || "—",
@@ -201,7 +204,7 @@ export default function StockQuotesPage() {
                 {q.status}
               </span>,
               <span className="tabular-nums font-semibold">{rupee(q.total)}</span>,
-              <span className="whitespace-nowrap">
+              <span className="whitespace-nowrap" onClick={e => e.stopPropagation()}>
                 <button onClick={() => download(q)} disabled={busy === q.id}
                   className="text-slate-600 hover:text-slate-900 text-sm font-medium mr-3 disabled:opacity-40">
                   {busy === q.id ? "…" : "PDF"}
@@ -254,6 +257,23 @@ export default function StockQuotesPage() {
           </div>
         );
       })()}
+
+      <DocumentPreview
+        open={!!preview}
+        title={preview ? `Proforma Invoice ${preview.number}` : ""}
+        fileName={preview ? proformaFileName(preview.number) : ""}
+        render={() => render(preview)}
+        onClose={() => setPreview(null)}
+        actions={preview && (
+          <>
+            <button onClick={() => download(preview)}
+              className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-semibold hover:bg-indigo-700">Download</button>
+            <button onClick={() => sendTo(preview, "email")}
+              className="text-xs font-semibold text-slate-500 hover:text-slate-800">Email</button>
+            <button onClick={() => sendTo(preview, "whatsapp")}
+              className="text-xs font-semibold text-emerald-600 hover:text-emerald-800">WhatsApp</button>
+          </>
+        )} />
 
       <Modal show={show} wide title={editing ? `Edit ${editing.number}` : "New Proforma Invoice"}
         onClose={() => setShow(false)} onSubmit={submit} saving={saving} submitLabel="Save Proforma Invoice">

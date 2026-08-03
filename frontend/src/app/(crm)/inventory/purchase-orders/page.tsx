@@ -13,7 +13,7 @@ import { getApiBase } from "@/lib/mock-data";
 import { buildPurchaseOrderPdf, purchaseOrderFileName } from "@/lib/purchaseOrderPdf";
 import {
   FIELD, rupee, num, todayISO, useStock, StockPage, AddButton, SearchBar,
-  DataTable, Modal, Fld, Row, RowActions, I,
+  DataTable, Modal, Fld, Row, RowActions, DocumentPreview, I,
 } from "../shared";
 
 type Line = {
@@ -54,6 +54,7 @@ export default function StockPurchaseOrderPage() {
   const [saving, setSaving] = useState(false);
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState<number | null>(null);
+  const [preview, setPreview] = useState<any>(null);
 
   const api = getApiBase(APP_SLUG);
   const authHeader = () => ({ Authorization: `Bearer ${localStorage.getItem(`${APP_SLUG}_access`)}` });
@@ -187,6 +188,8 @@ export default function StockPurchaseOrderPage() {
           { label: "Total", align: "right" }, "Status", { label: "Actions", align: "right" },
         ]}
         empty={{ title: "No purchase orders yet", hint: "Raise your first order on a supplier." }}
+        onRowClick={i => setPreview(filtered[i])}
+        rowTitle="Open the purchase order"
         rows={filtered.map(r => [
           <span className="font-mono text-xs font-semibold text-slate-900">
             {r.number || "—"}<span className="text-slate-400"> / {r.fy}</span>
@@ -198,7 +201,8 @@ export default function StockPurchaseOrderPage() {
           <span className={`text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${STATUS_TONE[r.status] || STATUS_TONE.draft}`}>
             {r.status}
           </span>,
-          <span className="inline-flex items-center gap-3 whitespace-nowrap">
+          // The row itself opens the preview, so these stop the click reaching it.
+          <span className="inline-flex items-center gap-3 whitespace-nowrap" onClick={e => e.stopPropagation()}>
             <button onClick={() => download(r)} disabled={busy === r.id}
               className="text-[12px] font-semibold text-indigo-600 hover:text-indigo-800 disabled:opacity-40">
               {busy === r.id ? "…" : "PDF"}
@@ -210,6 +214,23 @@ export default function StockPurchaseOrderPage() {
             <RowActions onEdit={() => openEdit(r)} onDelete={() => remove("purchaseOrders", r.id, "purchase order")} />
           </span>,
         ])} />
+
+      <DocumentPreview
+        open={!!preview}
+        title={preview ? `Purchase Order ${preview.number} / ${preview.fy}` : ""}
+        fileName={preview ? docName(preview) : ""}
+        render={() => render(preview)}
+        onClose={() => setPreview(null)}
+        actions={preview && (
+          <>
+            <button onClick={() => download(preview)}
+              className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-semibold hover:bg-indigo-700">Download</button>
+            <button onClick={() => sendTo(preview, "email")}
+              className="text-xs font-semibold text-slate-500 hover:text-slate-800">Email</button>
+            <button onClick={() => sendTo(preview, "whatsapp")}
+              className="text-xs font-semibold text-emerald-600 hover:text-emerald-800">WhatsApp</button>
+          </>
+        )} />
 
       <Modal show={show} xl title={`${editing ? `Edit Purchase Order ${editing.number}` : "New Purchase Order"}`}
         onClose={() => setShow(false)} onSubmit={submit} saving={saving} submitLabel="Save Purchase Order">

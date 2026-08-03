@@ -249,9 +249,12 @@ export function RowActions({ onEdit, onDelete }: { onEdit?: () => void; onDelete
 export type Col = { label: string; align?: "left" | "right" | "center" };
 
 /** Card table with the retail look: grey header, roomy cells, illustrated empty state. */
-export function DataTable({ columns, rows, empty, minWidth = 720 }: {
+export function DataTable({ columns, rows, empty, minWidth = 720, onRowClick, rowTitle }: {
   columns: (string | Col)[]; rows: React.ReactNode[][];
   empty?: { title: string; hint?: string }; minWidth?: number;
+  // Opening a row is a read action (a document preview); the buttons inside the
+  // Actions cell stop the event so they never trigger it by accident.
+  onRowClick?: (index: number) => void; rowTitle?: string;
 }) {
   const cols: Col[] = columns.map(c => (typeof c === "string" ? { label: c } : c));
   const align = (a?: string) => (a === "right" ? "text-right" : a === "center" ? "text-center" : "text-left");
@@ -275,7 +278,10 @@ export function DataTable({ columns, rows, empty, minWidth = 720 }: {
                 </td>
               </tr>
             ) : rows.map((row, ri) => (
-              <tr key={ri} className="hover:bg-slate-50/50 transition-colors">
+              <tr key={ri}
+                onClick={onRowClick ? () => onRowClick(ri) : undefined}
+                title={onRowClick ? rowTitle : undefined}
+                className={`hover:bg-slate-50/50 transition-colors ${onRowClick ? "cursor-pointer" : ""}`}>
                 {row.map((cell, ci) => (
                   <td key={ci} className={`py-4 px-6 text-sm text-slate-700 ${align(cols[ci]?.align)}`}>{cell}</td>
                 ))}
@@ -391,5 +397,83 @@ export function PartyScreen({ title, subtitle, noun, columns, rows, loading, den
         ))}
       </Modal>
     </StockPage>
+  );
+}
+
+/**
+ * Preview a generated document without leaving the list.
+ *
+ * The PDF is built in the browser (the client owns the template), so the
+ * preview is that same file shown in an object frame rather than a second
+ * rendering that could drift from what downloads. `render` is called when the
+ * viewer opens and the blob URL is revoked when it closes, so a long session
+ * browsing documents doesn't leak them.
+ */
+export function DocumentPreview({ open, title, fileName, render, onClose, actions }: {
+  open: boolean; title: string; fileName: string;
+  render: () => Promise<any | null>;
+  onClose: () => void;
+  actions?: React.ReactNode;
+}) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let revoked = false;
+    let made: string | null = null;
+    setUrl(null); setFailed(false);
+    (async () => {
+      try {
+        const doc = await render();
+        if (!doc) { setFailed(true); return; }
+        made = URL.createObjectURL(doc.output("blob"));
+        if (revoked) { URL.revokeObjectURL(made); return; }
+        setUrl(made);
+      } catch { setFailed(true); }
+    })();
+    return () => { revoked = true; if (made) URL.revokeObjectURL(made); };
+  }, [open]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+      <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-5xl relative z-10 overflow-hidden max-h-[94vh] flex flex-col">
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between gap-4 flex-shrink-0">
+          <div className="min-w-0">
+            <h3 className="font-bold text-lg text-slate-900 truncate">{title}</h3>
+            <p className="text-xs text-slate-400 truncate">{fileName}</p>
+          </div>
+          <div className="flex items-center gap-3 flex-shrink-0">
+            {actions}
+            <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600"><I.X /></button>
+          </div>
+        </div>
+        <div className="flex-1 bg-slate-100 min-h-[60vh]">
+          {failed ? (
+            <div className="h-full flex items-center justify-center text-sm text-slate-500">
+              Could not build this document.
+            </div>
+          ) : !url ? (
+            <div className="h-full flex items-center justify-center gap-3 text-sm text-slate-500">
+              <span className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+              Rendering…
+            </div>
+          ) : (
+            <object data={url} type="application/pdf" className="w-full h-[74vh]">
+              {/* Browsers without an inline PDF viewer still get the file. */}
+              <div className="h-full flex flex-col items-center justify-center gap-3 text-sm text-slate-500">
+                This browser can&apos;t show PDFs inline.
+                <a href={url} download={fileName}
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-semibold hover:bg-indigo-700">
+                  Download instead
+                </a>
+              </div>
+            </object>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

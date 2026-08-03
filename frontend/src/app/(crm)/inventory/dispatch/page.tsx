@@ -14,7 +14,7 @@ import { getApiBase } from "@/lib/mock-data";
 import { buildProformaPdf, proformaFileName } from "@/lib/proformaPdf";
 import {
   FIELD, rupee, num, todayISO, useStock, StockPage, AddButton, SearchBar,
-  DataTable, Modal, Fld, Row, RowActions, I,
+  DataTable, Modal, Fld, Row, RowActions, DocumentPreview, I,
 } from "../shared";
 
 type Line = { item: string; serial_numbers: string; quantity: string; rate: string };
@@ -38,6 +38,7 @@ export default function StockDispatchPage() {
   const [saving, setSaving] = useState(false);
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState<number | null>(null);
+  const [preview, setPreview] = useState<any>(null);
 
   const lines: Line[] = form.lines;
   const setLine = (i: number, patch: Partial<Line>) =>
@@ -164,6 +165,8 @@ export default function StockDispatchPage() {
           { label: "Actions", align: "right" },
         ]}
         empty={{ title: "No dispatches yet", hint: "Record your first dispatch to a customer." }}
+        onRowClick={i => setPreview(filtered[i])}
+        rowTitle="Open the invoice"
         rows={filtered.map(r => [
           <span className="font-mono text-xs font-semibold text-slate-900">{r.invoice_no || "—"}</span>,
           r.customer_name || "—",
@@ -173,7 +176,7 @@ export default function StockDispatchPage() {
           <span className="font-mono text-[10px] text-slate-500">{r.serial_numbers || "—"}</span>,
           <span className="tabular-nums">{num(r.quantity)}</span>,
           <span className="tabular-nums font-semibold">{rupee(r.total)}</span>,
-          <span className="whitespace-nowrap">
+          <span className="whitespace-nowrap" onClick={e => e.stopPropagation()}>
             <button onClick={() => download(r)} disabled={busy === r.id}
               className="text-slate-600 hover:text-slate-900 text-sm font-medium mr-3 disabled:opacity-40">
               {busy === r.id ? "…" : "PDF"}
@@ -189,6 +192,23 @@ export default function StockDispatchPage() {
             <RowActions onEdit={() => openEdit(r)} onDelete={() => remove("dispatches", r.id, "dispatch")} />
           </span>,
         ])} />
+
+      <DocumentPreview
+        open={!!preview}
+        title={preview ? `Invoice ${preview.invoice_no || `DSP-${preview.id}`}` : ""}
+        fileName={preview ? docName(preview) : ""}
+        render={() => render(preview)}
+        onClose={() => setPreview(null)}
+        actions={preview && (
+          <>
+            <button onClick={() => download(preview)}
+              className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-semibold hover:bg-indigo-700">Download</button>
+            <button onClick={() => sendTo(preview, "email")}
+              className="text-xs font-semibold text-slate-500 hover:text-slate-800">Email</button>
+            <button onClick={() => sendTo(preview, "whatsapp")}
+              className="text-xs font-semibold text-emerald-600 hover:text-emerald-800">WhatsApp</button>
+          </>
+        )} />
 
       <Modal show={show} wide title={editing ? "Edit Dispatch" : "New Dispatch"}
         onClose={() => setShow(false)} onSubmit={submit} saving={saving} submitLabel="Save Dispatch">
