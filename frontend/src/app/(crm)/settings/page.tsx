@@ -3,6 +3,7 @@ import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
 import { THEMES, applyTheme } from "@/lib/themes";
 import RolesSection from "./RolesSection";
+import InventoryDocumentsSection from "./InventoryDocumentsSection";
 
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
@@ -13,7 +14,7 @@ const TABS: { key: SettingsTab; label: string; blurb: string }[] = [
   { key: "general", label: "General", blurb: "Company profile, branding and plan." },
   { key: "integrations", label: "Integrations", blurb: "Payments, telephony, WhatsApp and email." },
   { key: "automation", label: "Automation", blurb: "Target reminders and your own lead statuses." },
-  { key: "documents", label: "Documents", blurb: "Invoices and the warranty certificate." },
+  { key: "documents", label: "Documents", blurb: "Inventory document letterheads, invoices and the warranty certificate." },
   { key: "roles", label: "Roles & Permissions", blurb: "Build your own user types and choose what each one can reach." },
 ];
 
@@ -850,6 +851,10 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
             </>)}
 
             {tab === "documents" && (<>
+            <div className="pt-6 border-t border-slate-100">
+              <InventoryDocumentsSection domain={domain} isAdmin={isAdmin} />
+            </div>
+
             <div className="pt-6 border-t border-slate-100">
               <h3 className="text-lg font-bold text-slate-900 mb-4">Invoice Generation</h3>
               <p className="text-sm text-slate-500 mb-6">Upload a DOCX invoice template. The system will use this template to automatically generate PDF invoices when a lead completes payment.</p>

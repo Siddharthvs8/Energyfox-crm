@@ -582,3 +582,98 @@ class RetailProformaTests(TestCase):
         self.assertEqual(send.call_args.kwargs['to'], ['anil@example.com'])
         self.quote.refresh_from_db()
         self.assertEqual(self.quote.status, 'sent')
+
+
+class InventoryDocumentProfileTests(TestCase):
+    """Settings → Inventory Documents: retail and wholesale print their own
+    letterhead, and a blank field falls back to the organisation's setting."""
+
+    def setUp(self):
+        from organization.models import InventoryDocumentProfile
+        from organization.utils import get_org_settings
+        self.admin = mk('doc_admin', 'admin')
+        self.org = get_org_settings()
+        self.org.warranty_company_name = 'Energyfox Consultants Pvt. Ltd.'
+        self.org.warranty_gst = '32AAHCE8716F1ZR'
+        self.org.warranty_cin = 'U35105KL2023PTC084535'
+        self.org.receipt_address = '4th Floor, Pattom, Thiruvananthapuram'
+        self.org.receipt_phone = '9526 396 823'
+        self.org.save()
+        self.Profile = InventoryDocumentProfile
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': token_for(self.admin)}
+
+    def get_profiles(self):
+        r = self.client.get('/api/inventory-documents/', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        return r.json()
+
+    def test_both_sides_default_to_the_organisation_settings(self):
+        d = self.get_profiles()
+        for side in ('b2c', 'b2b'):
+            eff = d[side]['effective']
+            self.assertEqual(eff['name'], 'Energyfox Consultants Pvt. Ltd.')
+            self.assertEqual(eff['gst'], '32AAHCE8716F1ZR')
+            self.assertEqual(eff['phone'], '9526 396 823')
+            # The PAN is the middle ten characters of the GSTIN.
+            self.assertEqual(eff['pan'], 'AAHCE8716F')
+
+    def test_a_side_can_be_configured_on_its_own(self):
+        r = self.client.patch('/api/inventory-documents/',
+                              data={'side': 'b2b', 'company_name': 'Renewfox Wholesale LLP',
+                                    'gst': '32XXXXX1111Z1Z9'},
+                              content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        d = self.get_profiles()
+        self.assertEqual(d['b2b']['effective']['name'], 'Renewfox Wholesale LLP')
+        self.assertEqual(d['b2b']['effective']['pan'], 'XXXXX1111Z')   # from the new GSTIN
+        # Retail is untouched.
+        self.assertEqual(d['b2c']['effective']['name'], 'Energyfox Consultants Pvt. Ltd.')
+
+    def test_a_blank_field_keeps_falling_back(self):
+        self.client.patch('/api/inventory-documents/',
+                          data={'side': 'b2b', 'company_name': 'Renewfox Wholesale LLP'},
+                          content_type='application/json', **self.auth())
+        eff = self.get_profiles()['b2b']['effective']
+        self.assertEqual(eff['name'], 'Renewfox Wholesale LLP')   # set
+        self.assertEqual(eff['phone'], '9526 396 823')            # not set → org's
+
+    def test_only_an_admin_may_change_them(self):
+        staff = mk('doc_staff', 'accounts_staff')
+        r = self.client.patch('/api/inventory-documents/',
+                              data={'side': 'b2b', 'company_name': 'Nope'},
+                              content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(staff))
+        self.assertEqual(r.status_code, 403)
+
+    def test_an_unknown_side_is_refused(self):
+        r = self.client.patch('/api/inventory-documents/',
+                              data={'side': 'b2x', 'company_name': 'Nope'},
+                              content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 400)
+
+    def test_the_wholesale_documents_print_the_b2b_profile(self):
+        """The three B2B documents read the wholesale letterhead; the retail
+        proforma keeps the B2C one."""
+        from .models import StockQuote, StockQuoteItem, StockCustomer, StockItem, StockPurchaseOrder, Vendor
+        self.Profile.objects.update_or_create(side='b2b',
+                                              defaults={'company_name': 'Renewfox Wholesale LLP'})
+        customer = StockCustomer.objects.create(name='Adya Global')
+        item = StockItem.objects.create(code='DP-1', category='Solar Panel', opening_stock=10)
+        quote = StockQuote.objects.create(customer=customer, quote_date=timezone.localdate())
+        StockQuoteItem.objects.create(quote=quote, item=item, quantity=1, unit_price=Decimal('100'))
+        vendor = Vendor.objects.create(name='Ensun')
+        po = StockPurchaseOrder.objects.create(supplier=vendor, po_date=timezone.localdate())
+
+        for url in (f'/api/stock-quotes/{quote.id}/proforma/',
+                    f'/api/stock-purchase-orders/{po.id}/document/'):
+            d = self.client.get(url, **self.auth()).json()
+            self.assertEqual(d['company']['name'], 'Renewfox Wholesale LLP', url)
+
+        from leads.models import Lead
+        from .models import Quote, QuoteItem
+        lead = Lead.objects.create(first_name='Retail', last_name='Buyer', phone='9990004321')
+        rq = Quote.objects.create(lead=lead, quote_date=timezone.localdate())
+        d = self.client.get(f'/api/quotes/{rq.id}/proforma/', **self.auth()).json()
+        self.assertEqual(d['company']['name'], 'Energyfox Consultants Pvt. Ltd.')

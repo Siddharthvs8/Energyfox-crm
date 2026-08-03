@@ -138,3 +138,82 @@ class OrgSettings(models.Model):
         """Return the singleton instance, creating it on first access."""
         obj, _ = cls.objects.get_or_create(pk=1)
         return obj
+
+
+class InventoryDocumentProfile(models.Model):
+    """The letterhead and sign-off printed on the inventory documents.
+
+    Retail and wholesale trade under their own identity — different address,
+    registration numbers, bank and seal — so each side keeps its own profile and
+    the documents read from the one that raised them: the B2C proforma from
+    'b2c', and the wholesale proforma, dispatch invoice and purchase order from
+    'b2b'.
+
+    A blank field falls back to the organisation's own settings, so a side that
+    has not been filled in still prints exactly what it printed before.
+    """
+    B2C, B2B = 'b2c', 'b2b'
+    SIDE_CHOICES = [(B2C, 'B2C (retail)'), (B2B, 'B2B (wholesale)')]
+
+    side = models.CharField(max_length=3, choices=SIDE_CHOICES, unique=True, db_index=True)
+
+    # ── Letterhead ──
+    company_name = models.CharField(max_length=120, blank=True, default='')
+    address = models.CharField(max_length=255, blank=True, default='')
+    phone = models.CharField(max_length=40, blank=True, default='')
+    email = models.CharField(max_length=80, blank=True, default='')
+    gst = models.CharField(max_length=40, blank=True, default='')
+    cin = models.CharField(max_length=40, blank=True, default='')
+    # Blank derives it from the GSTIN, whose middle ten characters are the PAN.
+    pan = models.CharField(max_length=20, blank=True, default='')
+
+    # ── Artwork ──
+    logo = models.ImageField(upload_to='documents/', null=True, blank=True)
+    signature = models.ImageField(upload_to='documents/', null=True, blank=True)
+    seal = models.ImageField(upload_to='documents/', null=True, blank=True)
+
+    # ── Bank block (printed on the proforma / invoice) ──
+    bank_name = models.CharField(max_length=80, blank=True, default='')
+    bank_account_name = models.CharField(max_length=120, blank=True, default='')
+    bank_account_number = models.CharField(max_length=40, blank=True, default='')
+    bank_ifsc = models.CharField(max_length=20, blank=True, default='')
+    bank_branch = models.CharField(max_length=80, blank=True, default='')
+
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['side']
+        verbose_name = 'Inventory Document Profile'
+
+    def __str__(self):
+        return f"{self.get_side_display()} document profile"
+
+    @classmethod
+    def load(cls, side):
+        """The profile for a side, created on first access."""
+        obj, _ = cls.objects.get_or_create(side=side)
+        return obj
+
+    def resolved(self, org):
+        """What the document actually prints: this profile's value where it has one,
+        the organisation's own settings where it doesn't."""
+        gst = self.gst or org.warranty_gst or ''
+        return {
+            'name': self.company_name or org.warranty_company_name,
+            'address': self.address or org.receipt_address,
+            'phone': self.phone or org.receipt_phone,
+            'email': self.email or org.receipt_email,
+            'gst': gst,
+            'cin': self.cin or org.warranty_cin,
+            'pan': self.pan or gst[2:12],
+            'logo': self.logo or org.logo,
+            'signature': self.signature or org.warranty_signature,
+            'seal': self.seal or org.warranty_seal,
+            'bank': {
+                'name': self.bank_name or org.receipt_bank_name,
+                'account_name': self.bank_account_name or org.warranty_company_name,
+                'account_number': self.bank_account_number or org.receipt_bank_account,
+                'ifsc': self.bank_ifsc or org.receipt_bank_ifsc,
+                'branch': self.bank_branch or org.receipt_bank_branch,
+            },
+        }

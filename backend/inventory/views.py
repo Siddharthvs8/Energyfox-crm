@@ -117,36 +117,36 @@ def money(v):
     return str(Decimal(v or 0).quantize(Decimal('0.01')))
 
 
-def document_chrome(request):
-    """Company header and bank block — identical on every document printed."""
+def document_chrome(request, side='b2c'):
+    """Company header and bank block for a printed document.
+
+    Retail and wholesale each have their own profile (Settings → Inventory
+    Documents), so the two sides can trade under different identities; a field
+    left blank there falls back to the organisation's own settings.
+    """
+    from organization.models import InventoryDocumentProfile
     from organization.utils import get_org_settings
+
     org = get_org_settings()
+    printed = InventoryDocumentProfile.load(side).resolved(org)
 
     def url(f):
         return request.build_absolute_uri(f.url) if f else None
 
+    def art(f):
+        # Inlined rather than linked — see inline_image().
+        return inline_image(f) or url(f)
+
     return {
         'company': {
-            'name': org.warranty_company_name,
-            'address': org.receipt_address,
-            'phone': org.receipt_phone,
-            'email': org.receipt_email,
-            'gst': org.warranty_gst,
-            'cin': org.warranty_cin,
-            # The PAN is the middle ten characters of the GSTIN.
-            'pan': (org.warranty_gst or '')[2:12],
-            # Inlined rather than linked — see inline_image().
-            'logo': inline_image(org.logo) or url(org.logo),
-            'signature': inline_image(org.warranty_signature) or url(org.warranty_signature),
-            'seal': inline_image(org.warranty_seal) or url(org.warranty_seal),
+            'name': printed['name'], 'address': printed['address'],
+            'phone': printed['phone'], 'email': printed['email'],
+            'gst': printed['gst'], 'cin': printed['cin'], 'pan': printed['pan'],
+            'logo': art(printed['logo']),
+            'signature': art(printed['signature']),
+            'seal': art(printed['seal']),
         },
-        'bank': {
-            'name': org.receipt_bank_name,
-            'account_name': org.warranty_company_name,
-            'ifsc': org.receipt_bank_ifsc,
-            'account_number': org.receipt_bank_account,
-            'branch': org.receipt_bank_branch,
-        },
+        'bank': printed['bank'],
     }
 
 
@@ -286,6 +286,8 @@ class ProformaDocumentMixin:
     # Which messaging account these documents go out on. Retail keeps the shared
     # one; the wholesale viewsets override this to 'b2b'.
     SEND_CHANNEL = None
+    # Which Settings → Inventory Documents profile the printed form uses.
+    DOC_SIDE = 'b2c'
 
     def proforma_party(self, quote):
         """Who the invoice is addressed to: name, gstin, address, state, contacts."""
@@ -314,7 +316,7 @@ class ProformaDocumentMixin:
         ])
 
         return Response({
-            **document_chrome(request),
+            **document_chrome(request, self.DOC_SIDE),
             'title': 'PROFORMA INVOICE',
             'label': 'Proforma Invoice',
             'invoice': {
@@ -601,7 +603,7 @@ class StockDispatchViewSet(_MovementViewSet):
         tax = sum((r.tax_amount or Decimal('0') for r in rows), Decimal('0'))
 
         return Response({
-            **document_chrome(request),
+            **document_chrome(request, 'b2b'),
             'title': 'INVOICE',
             'label': 'Invoice',
             'invoice': {
@@ -829,6 +831,7 @@ class InventoryDashboardView(APIView):
 class StockQuoteViewSet(ProformaDocumentMixin, viewsets.ModelViewSet):
     # Wholesale trades under its own identity — see OrgSettings.b2b_email_*.
     SEND_CHANNEL = 'b2b'
+    DOC_SIDE = 'b2b'
     """Wholesale quotations. Accepting one is recorded by converting it, which
     writes the dispatch rows that take the goods out of stock."""
     serializer_class = StockQuoteSerializer
@@ -980,7 +983,7 @@ class StockPurchaseOrderViewSet(viewsets.ModelViewSet):
         stored ones can never disagree.
         """
         po = self.get_object()
-        chrome = document_chrome(request)
+        chrome = document_chrome(request, 'b2b')
         company = chrome['company']
         lines = [{
             'sl': n,

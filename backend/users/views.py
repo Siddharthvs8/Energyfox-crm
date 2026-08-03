@@ -1,4 +1,4 @@
-from rest_framework import viewsets, permissions, parsers
+from rest_framework import viewsets, permissions, parsers, status
 from rest_framework.decorators import action
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -887,3 +887,82 @@ class TenantSettingsView(APIView):
             "warranty_seal": tenant.warranty_seal.url if tenant.warranty_seal else None,
         })
 
+
+
+class InventoryDocumentProfileView(APIView):
+    """Settings → Inventory Documents.
+
+    The letterhead, artwork and bank block printed on the inventory documents,
+    kept separately for retail and wholesale so the two sides can trade under
+    their own identity. GET returns both; PATCH updates one, named by `side`.
+
+    Every field is optional — what is left blank falls back to the
+    organisation's own settings, which is what these documents printed before
+    this screen existed.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [parsers.MultiPartParser, parsers.FormParser, parsers.JSONParser]
+
+    TEXT_FIELDS = [
+        'company_name', 'address', 'phone', 'email', 'gst', 'cin', 'pan',
+        'bank_name', 'bank_account_name', 'bank_account_number', 'bank_ifsc', 'bank_branch',
+    ]
+    IMAGE_FIELDS = ['logo', 'signature', 'seal']
+
+    def check_permissions(self, request):
+        super().check_permissions(request)
+        if request.method in ('PATCH', 'PUT') and not request.user.is_staff:
+            self.permission_denied(request, message='Only admins can update document settings.')
+
+    def _payload(self, request, profile):
+        from organization.utils import get_org_settings
+
+        def url(f):
+            return request.build_absolute_uri(f.url) if f else None
+
+        data = {'side': profile.side}
+        for f in self.TEXT_FIELDS:
+            data[f] = getattr(profile, f)
+        for f in self.IMAGE_FIELDS:
+            data[f] = url(getattr(profile, f))
+        # What the document prints today, so the screen can show the fallback in
+        # place rather than an empty box that looks like nothing is configured.
+        printed = profile.resolved(get_org_settings())
+        data['effective'] = {
+            'name': printed['name'], 'address': printed['address'], 'phone': printed['phone'],
+            'email': printed['email'], 'gst': printed['gst'], 'cin': printed['cin'],
+            'pan': printed['pan'],
+            'logo': url(printed['logo']), 'signature': url(printed['signature']),
+            'seal': url(printed['seal']),
+            **{f'bank_{k}': v for k, v in printed['bank'].items()},
+        }
+        return data
+
+    def get(self, request):
+        from organization.models import InventoryDocumentProfile
+        return Response({
+            side: self._payload(request, InventoryDocumentProfile.load(side))
+            for side, _ in InventoryDocumentProfile.SIDE_CHOICES
+        })
+
+    def patch(self, request):
+        from organization.models import InventoryDocumentProfile
+        sides = {s for s, _ in InventoryDocumentProfile.SIDE_CHOICES}
+        side = (request.data.get('side') or request.query_params.get('side') or '').strip()
+        if side not in sides:
+            return Response({'error': f"Pass side as one of {', '.join(sorted(sides))}."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        profile = InventoryDocumentProfile.load(side)
+        for f in self.TEXT_FIELDS:
+            v = request.data.get(f)
+            if v is not None:
+                setattr(profile, f, v)
+        for f in self.IMAGE_FIELDS:
+            if request.FILES.get(f):
+                setattr(profile, f, request.FILES[f])
+            # An explicit empty string clears the artwork back to the fallback.
+            elif request.data.get(f) == '':
+                setattr(profile, f, None)
+        profile.save()
+        return Response(self._payload(request, profile))

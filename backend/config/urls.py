@@ -12,7 +12,8 @@ from leads.views import LeadViewSet
 from leads.webhooks import meta_leads_webhook
 from tasks.views import TaskViewSet
 from users.views import (UserViewSet, SubscriptionStatusView, WorkspaceTeamViewSet,
-                         TenantSettingsView, BranchViewSet, CustomRoleViewSet)
+                         TenantSettingsView, BranchViewSet, CustomRoleViewSet,
+                         InventoryDocumentProfileView)
 from leads.views import LeadViewSet, IntegrationSettingsViewSet, DashboardStatsView, LeaderboardView, ConvertedAnalyticsView, ProductViewSet, ServiceEntryViewSet, EmergencyServiceViewSet
 from inventory.views import (VendorViewSet, PurchaseOrderViewSet, QuoteViewSet, SalesOrderViewSet,
                             StockItemViewSet, StockCustomerViewSet, GoodsReceiptViewSet,
@@ -51,6 +52,7 @@ urlpatterns = [
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('api/subscription/', SubscriptionStatusView.as_view(), name='subscription-status'),
     path('api/org-settings/', TenantSettingsView.as_view(), name='org-settings'),
+    path('api/inventory-documents/', InventoryDocumentProfileView.as_view(), name='inventory-documents'),
     path('api/ai-manager/', include('ai_manager.urls')),
     path('api/calls/', include('calls.urls')),
     path('api/dashboard-stats/', DashboardStatsView.as_view(), name='dashboard-stats'),
