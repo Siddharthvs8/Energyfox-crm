@@ -1,12 +1,18 @@
 """Lead-status ownership and the site-visit indicator the Leads list renders."""
+from datetime import timedelta
 from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from django.core.files.uploadedfile import SimpleUploadedFile
 
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from users.models import User
-from .models import Lead, SiteVisit
+from .models import (DocumentationStage2, Lead, LiasoningService, SiteVisit,
+                     Warranty, WarrantyDocument)
 
 
 def token_for(user):
@@ -375,12 +381,13 @@ class ModuleCountsCoverageTests(TestCase):
     EXPECTED = {
         'tele_caller': ['leads'],
         'bde': ['leads'],
-        'documentation_staff': ['documentation', 'documentation-stage2', 'discom-followup', 'warranty'],
-        'documentation_manager': ['documentation', 'documentation-stage2', 'discom-followup', 'warranty'],
+        'documentation_staff': ['documentation', 'documentation-stage2', 'warranty'],
+        'documentation_manager': ['documentation', 'documentation-stage2', 'warranty'],
         'accounts_staff': ['accounts', 'accounts/partially-paid', 'accounts/fully-paid', 'accounts/completed'],
         'purchase_staff': ['purchase'],
         'project_manager': ['project'],
-        'liasoning_officer': ['liasoning', 'periodic-maintenance'],
+        # Chasing the approval is the officer's job, so the follow-up queue is theirs.
+        'liasoning_officer': ['liasoning', 'periodic-maintenance', 'discom-followup'],
         'admin': ['leads', 'documentation', 'accounts', 'purchase', 'project', 'liasoning'],
         'superadmin': ['leads', 'documentation', 'accounts', 'purchase', 'project', 'liasoning'],
         'coo': ['leads', 'documentation', 'accounts', 'purchase', 'project', 'liasoning'],
@@ -413,10 +420,12 @@ class ModuleCountsCoverageTests(TestCase):
     def test_shared_queues_still_report_a_count(self):
         """No named assignee, so no `assigned` bucket — the modal falls back to
         "new work in your queue" and must still have a count to trigger on."""
-        body = self.counts(mk('s_doc', 'documentation_staff'))
-        for module in ('warranty', 'discom-followup'):
-            self.assertIn(module, body['counts'])
-            self.assertNotIn(module, body['assigned'])
+        for username, role, modules in (('s_doc', 'documentation_staff', ('warranty',)),
+                                        ('s_lia', 'liasoning_officer', ('discom-followup',))):
+            body = self.counts(mk(username, role))
+            for module in modules:
+                self.assertIn(module, body['counts'])
+                self.assertNotIn(module, body['assigned'])
 
     def test_a_newly_assigned_lead_moves_the_count(self):
         """The popup fires off a rising count, so the count has to move."""
@@ -2125,3 +2134,206 @@ class PurchaseCompletionConditionsTests(TestCase):
         self.assertEqual(r.status_code, 200)
         self.pl.refresh_from_db()
         self.assertFalse(self.pl.completed_with_override)
+
+
+class LiasoningAnnexure3Tests(TestCase):
+    """Liasoning is Annexure 3 only — feasibility belongs to the KSEB Feasibility
+    module, so nothing here waits on it."""
+
+    def setUp(self):
+        self.officer = mk('lia_officer', 'liasoning_officer')
+        self.lead = Lead.objects.create(first_name='Siddharth', last_name='V.S',
+                                        phone='9954471855', status='converted',
+                                        pushed_to_liasoning=True,
+                                        pushed_to_liasoning_at=timezone.now())
+
+    def patch(self, payload):
+        return self.client.patch(f'/api/leads/{self.lead.id}/liasoning-record/',
+                                 data=payload, content_type='application/json',
+                                 HTTP_AUTHORIZATION=token_for(self.officer))
+
+    def test_annexure3_saves_without_any_feasibility_sign_off(self):
+        r = self.patch({'annexure3_completed': True, 'annexure3_remark': 'submitted'})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        rec = LiasoningService.objects.get(lead=self.lead)
+        self.assertTrue(rec.annexure3_completed)
+        self.assertFalse(rec.feasibility_completed)      # never touched here
+
+    def test_it_still_syncs_through_to_documentation_stage_2(self):
+        self.patch({'annexure3_completed': True, 'annexure3_remark': 'submitted'})
+        s2 = DocumentationStage2.objects.get(lead=self.lead)
+        self.assertTrue(s2.annexure3_completed)
+        self.assertEqual(s2.annexure3_remark, 'submitted')
+        # Discom approval is Stage 2's own — Annexure 3 does not carry it.
+        self.assertEqual(s2.discom_approval, 'pending')
+
+
+class DiscomApprovalDirectionTests(TestCase):
+    """Documentation Stage 2 owns the discom approval; Liasoning displays it."""
+
+    def setUp(self):
+        self.docstaff = mk('disc_doc', 'documentation_staff')
+        self.officer = mk('disc_officer', 'liasoning_officer')
+        self.lead = Lead.objects.create(first_name='Rahul', last_name='aa', phone='9849394940',
+                                        status='converted',
+                                        pushed_to_doc_stage2=True, pushed_to_doc_stage2_at=timezone.now(),
+                                        pushed_to_liasoning=True, pushed_to_liasoning_at=timezone.now(),
+                                        # Stage 2 staff only work their assigned leads.
+                                        doc_stage2_staff=self.docstaff)
+
+    def stage2(self, payload, who=None):
+        return self.client.patch(f'/api/leads/{self.lead.id}/documentation-stage2-record/',
+                                 data=payload, content_type='application/json',
+                                 HTTP_AUTHORIZATION=token_for(who or self.docstaff))
+
+    def liasoning(self, payload):
+        return self.client.patch(f'/api/leads/{self.lead.id}/liasoning-record/',
+                                 data=payload, content_type='application/json',
+                                 HTTP_AUTHORIZATION=token_for(self.officer))
+
+    def test_stage2_sets_the_approval_and_it_reaches_liasoning(self):
+        r = self.stage2({'discom_approval': 'yes'})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(LiasoningService.objects.get(lead=self.lead).discom_approval, 'yes')
+
+    def test_liasoning_cannot_change_it(self):
+        self.stage2({'discom_approval': 'yes'})
+        r = self.liasoning({'discom_approval': 'no', 'annexure3_remark': 'filed'})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        rec = LiasoningService.objects.get(lead=self.lead)
+        self.assertEqual(rec.discom_approval, 'yes')     # ignored, not applied
+        self.assertEqual(rec.annexure3_remark, 'filed')  # the rest still saves
+        # And nothing leaked back the other way.
+        self.assertEqual(DocumentationStage2.objects.get(lead=self.lead).discom_approval, 'yes')
+
+    def test_an_approval_still_lands_after_stage2_is_signed_off(self):
+        rec, _ = DocumentationStage2.objects.get_or_create(lead=self.lead)
+        rec.is_complete = True
+        rec.save(update_fields=['is_complete'])
+        # Only the approval gets through the lock.
+        self.assertEqual(self.stage2({'mnre_remark': 'late edit'}).status_code, 400)
+        self.assertEqual(self.stage2({'discom_approval': 'yes'}).status_code, 200)
+        self.assertEqual(LiasoningService.objects.get(lead=self.lead).discom_approval, 'yes')
+
+    def test_it_reaches_a_locked_liasoning_record_too(self):
+        lia, _ = LiasoningService.objects.get_or_create(lead=self.lead)
+        lia.is_complete = True
+        lia.save(update_fields=['is_complete'])
+        self.stage2({'discom_approval': 'yes'})
+        lia.refresh_from_db()
+        self.assertEqual(lia.discom_approval, 'yes')
+
+    def test_approval_hands_the_customer_to_warranty(self):
+        self.stage2({'discom_approval': 'yes'})
+        self.lead.refresh_from_db()
+        self.assertTrue(self.lead.pushed_to_warranty)
+
+
+class DiscomFollowupBelongsToLiasoningTests(TestCase):
+    """The follow-up queue moved to Liasoning — the officer can work it without
+    holding documentation access."""
+
+    def setUp(self):
+        self.officer = mk('foll_officer', 'liasoning_officer')
+        self.docstaff = mk('foll_doc', 'documentation_staff')
+        self.lead = Lead.objects.create(first_name='new', last_name='test', phone='7673873828',
+                                        status='converted', pushed_to_doc_stage2=True,
+                                        pushed_to_doc_stage2_at=timezone.now() - timedelta(days=10))
+
+    def test_the_officer_can_read_the_queue(self):
+        r = self.client.get('/api/leads/discom-followup/',
+                            HTTP_AUTHORIZATION=token_for(self.officer))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual([x['id'] for x in r.json()], [self.lead.id])
+
+    def test_the_officer_can_tick_their_own_visit(self):
+        r = self.client.patch(f'/api/leads/{self.lead.id}/discom-followup-sent/',
+                              data={'sent_to_liasoning': True}, content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.officer))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertTrue(DocumentationStage2.objects.get(lead=self.lead).sent_to_liasoning)
+
+    def test_documentation_staff_no_longer_hold_the_queue(self):
+        r = self.client.get('/api/leads/discom-followup/',
+                            HTTP_AUTHORIZATION=token_for(self.docstaff))
+        self.assertEqual(r.status_code, 403)
+
+    def test_an_approved_customer_drops_off_the_queue(self):
+        rec, _ = DocumentationStage2.objects.get_or_create(lead=self.lead)
+        rec.discom_approval = 'yes'
+        rec.save(update_fields=['discom_approval'])
+        r = self.client.get('/api/leads/discom-followup/',
+                            HTTP_AUTHORIZATION=token_for(self.officer))
+        self.assertEqual(r.json(), [])
+
+
+class WarrantySendTests(TestCase):
+    """The warranty goes out over the configured integrations, not the staff
+    member's own WhatsApp or mail client."""
+
+    def setUp(self):
+        self.docstaff = mk('war_doc', 'documentation_staff')
+        self.lead = Lead.objects.create(first_name='mini', last_name='A', phone='9526396823',
+                                        email='mini@example.com', status='converted',
+                                        pushed_to_warranty=True)
+        self.rec, _ = Warranty.objects.get_or_create(lead=self.lead)
+
+    def attach(self, name):
+        return WarrantyDocument.objects.create(
+            warranty=self.rec, doc_type='warranty',
+            file=SimpleUploadedFile(name, b'%PDF-1.4 warranty', content_type='application/pdf'))
+
+    def send(self, payload):
+        return self.client.post(f'/api/leads/{self.lead.id}/send-warranty/', data=payload,
+                                HTTP_AUTHORIZATION=token_for(self.docstaff))
+
+    def test_it_refuses_before_the_certificate_exists(self):
+        r = self.send({'channels': 'email'})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('Generate the certificate', r.json()['error'])
+
+    def test_email_goes_through_the_configured_account_with_the_pdf_attached(self):
+        self.attach('Warranty_Certificate_mini_A.pdf')
+        with patch('messaging.email.send_and_log') as send:
+            send.return_value = SimpleNamespace(status='sent', error='')
+            r = self.send({'channels': 'email'})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        kwargs = send.call_args[1]
+        self.assertEqual(kwargs['to'], ['mini@example.com'])
+        self.assertEqual(kwargs['kind'], 'warranty')
+        self.assertEqual(kwargs['attachments'][0][2], 'application/pdf')
+        self.assertEqual(kwargs['lead'], self.lead)
+
+    def test_whatsapp_sends_the_document_by_link(self):
+        self.attach('Warranty_Certificate_mini_A.pdf')
+        with patch('messaging.whatsapp.send_document') as send:
+            r = self.send({'channels': 'whatsapp'})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(send.call_args[1]['to'], '9526396823')
+        self.assertIn('.pdf', send.call_args[1]['link'])
+
+    def test_a_delivered_warranty_marks_itself_sent(self):
+        self.attach('Warranty_Certificate_mini_A.pdf')
+        self.assertFalse(self.rec.sent)
+        with patch('messaging.email.send_and_log') as send:
+            send.return_value = SimpleNamespace(status='sent', error='')
+            self.send({'channels': 'email'})
+        self.rec.refresh_from_db()
+        self.assertTrue(self.rec.sent)
+
+    def test_the_certificate_wins_over_later_attachments(self):
+        self.attach('Warranty_Certificate_mini_A.pdf')
+        self.attach('some_other_scan.pdf')
+        with patch('messaging.whatsapp.send_document') as send:
+            self.send({'channels': 'whatsapp'})
+        self.assertIn('Warranty_Certificate', send.call_args[1]['filename'])
+
+    def test_a_failed_send_is_reported_not_swallowed(self):
+        self.attach('Warranty_Certificate_mini_A.pdf')
+        with patch('messaging.email.send_and_log') as send:
+            send.return_value = SimpleNamespace(status='failed', error='SMTP refused')
+            r = self.send({'channels': 'email'})
+        self.assertEqual(r.status_code, 502)
+        self.assertIn('SMTP refused', r.json()['error'])
+        self.rec.refresh_from_db()
+        self.assertFalse(self.rec.sent)

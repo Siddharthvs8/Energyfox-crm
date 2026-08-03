@@ -50,6 +50,7 @@ export default function WarrantySection({ leadId, canEdit, phone, email, custome
   const [cert, setCert] = useState<CertForm>({ ...BLANK_CERT });
   const [org, setOrg] = useState<OrgInfo | null>(null);
   const [generating, setGenerating] = useState(false);
+  const [sending, setSending] = useState<"whatsapp" | "email" | null>(null);
   const [documents, setDocuments] = useState<Doc[]>([]);
   const [isComplete, setIsComplete] = useState(false);
   const [completedByName, setCompletedByName] = useState<string | null>(null);
@@ -98,28 +99,32 @@ export default function WarrantySection({ leadId, canEdit, phone, email, custome
 
   const readOnly = !canEdit || isComplete;
 
-  // WhatsApp needs a full international number; assume India (+91) for 10-digit numbers.
-  const waNumber = (() => {
-    const d = (phone || "").replace(/\D/g, "");
-    if (!d) return "";
-    return d.length === 10 ? `91${d}` : d;
-  })();
+  // Both channels go out from the CRM's own accounts (Settings → Integrations),
+  // so the customer hears from the company and every send lands in the outbox.
+  const send = async (channel: "whatsapp" | "email") => {
+    const label = channel === "email" ? "email" : "WhatsApp";
+    if (!hasGenerated) { alert("Generate the warranty certificate first."); return; }
+    const fallback = channel === "email" ? email : phone;
+    const to = window.prompt(`Send the warranty by ${label} to:`, fallback || "");
+    if (!to || !to.trim()) return;
 
-  const markSent = () => { if (!readOnly && !sent) { setSent(true); setSaved(false); } };
-
-  const sendWhatsApp = () => {
-    if (!waNumber) { alert("No phone number on file for this customer."); return; }
-    const msg = encodeURIComponent(`Hello${customerName ? " " + customerName : ""}, please find your solar system warranty details.`);
-    window.open(`https://wa.me/${waNumber}?text=${msg}`, "_blank", "noopener");
-    markSent();
-  };
-
-  const sendEmail = () => {
-    if (!email) { alert("No email on file for this customer."); return; }
-    const subject = encodeURIComponent("Solar System Warranty");
-    const body = encodeURIComponent(`Dear ${customerName || "Customer"},\n\nPlease find your solar system warranty details.\n\nRegards,\nEnergyFox`);
-    window.location.href = `mailto:${email}?subject=${subject}&body=${body}`;
-    markSent();
+    setSending(channel);
+    try {
+      const body = new FormData();
+      body.append("channels", channel);
+      body.append(channel === "email" ? "email" : "phone", to.trim());
+      const r = await fetch(`${apiBase}/api/leads/${leadId}/send-warranty/`, {
+        method: "POST", headers: authHeader(), body,
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(d.error || `Could not send the warranty by ${label}.`); return; }
+      const warnings: string[] = d.warnings || [];
+      alert(warnings.length ? ["Sent, with warnings:", ...warnings].join("\n")
+                            : `Warranty sent by ${label}.`);
+      await refetch();
+      onChanged?.();
+    } catch { alert(`Network error while sending the warranty by ${label}.`); }
+    finally { setSending(null); }
   };
 
   const saveScalars = async (): Promise<any | null> => {
@@ -445,23 +450,27 @@ export default function WarrantySection({ leadId, canEdit, phone, email, custome
       <div className={cardCls}>
         {/* Send */}
         <div className="flex flex-wrap items-center gap-3">
-          <button type="button" onClick={sendWhatsApp} disabled={!waNumber}
-            title={waNumber ? `WhatsApp ${phone}` : "No phone number on file"}
+          <button type="button" onClick={() => send("whatsapp")} disabled={!phone || sending !== null || !hasGenerated}
+            title={!hasGenerated ? "Generate the certificate first" : phone ? `WhatsApp ${phone}` : "No phone number on file"}
             className="inline-flex items-center gap-2 px-4 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.47 14.38c-.29-.15-1.71-.84-1.97-.94-.26-.1-.46-.15-.65.14-.19.29-.75.94-.92 1.13-.17.19-.34.21-.63.07-.29-.15-1.22-.45-2.33-1.44-.86-.77-1.44-1.72-1.61-2.01-.17-.29-.02-.44.13-.59.13-.13.29-.34.44-.51.15-.17.19-.29.29-.48.1-.19.05-.36-.02-.51-.07-.15-.65-1.57-.89-2.15-.24-.56-.48-.49-.65-.5-.17-.01-.36-.01-.56-.01-.19 0-.51.07-.78.36-.27.29-1.02 1-1.02 2.42 0 1.43 1.04 2.81 1.19 3 .15.19 2.05 3.13 4.97 4.39.69.3 1.23.48 1.65.61.69.22 1.32.19 1.82.12.56-.08 1.71-.7 1.95-1.37.24-.67.24-1.25.17-1.37-.07-.12-.26-.19-.55-.34z"/><path d="M20.52 3.44A11.86 11.86 0 0012.05 0C5.5 0 .18 5.31.17 11.85c0 2.09.55 4.13 1.59 5.93L0 24l6.38-1.67a11.87 11.87 0 005.67 1.44h.01c6.55 0 11.87-5.31 11.87-11.85 0-3.17-1.23-6.15-3.41-8.48zM12.06 21.2h-.01a9.86 9.86 0 01-5.02-1.37l-.36-.21-3.79.99 1.01-3.69-.23-.38a9.82 9.82 0 01-1.51-5.24c0-5.44 4.43-9.86 9.9-9.86 2.64 0 5.13 1.03 7 2.9a9.82 9.82 0 012.9 6.97c0 5.44-4.43 9.86-9.89 9.86z"/></svg>
-            WhatsApp
+            {sending === "whatsapp" ? "Sending…" : "WhatsApp"}
           </button>
-          <button type="button" onClick={sendEmail} disabled={!email}
-            title={email ? `Email ${email}` : "No email on file"}
+          <button type="button" onClick={() => send("email")} disabled={!email || sending !== null || !hasGenerated}
+            title={!hasGenerated ? "Generate the certificate first" : email ? `Email ${email}` : "No email on file"}
             className="inline-flex items-center gap-2 px-4 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition">
             <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
-            Email
+            {sending === "email" ? "Sending…" : "Email"}
           </button>
           {sent && <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600">✓ Marked sent</span>}
         </div>
-        {(!waNumber || !email) && (
-          <p className="text-[11px] text-amber-600 mt-2">
-            {!waNumber && "No phone number on file. "}{!email && "No email on file."}
+        <p className="text-[11px] text-slate-400 mt-2">
+          Sent from the company&apos;s WhatsApp number and email account (Settings → Integrations), with the certificate attached.
+        </p>
+        {(!phone || !email || !hasGenerated) && (
+          <p className="text-[11px] text-amber-600 mt-1">
+            {!hasGenerated && "Generate the certificate before sending. "}
+            {!phone && "No phone number on file. "}{!email && "No email on file."}
           </p>
         )}
 

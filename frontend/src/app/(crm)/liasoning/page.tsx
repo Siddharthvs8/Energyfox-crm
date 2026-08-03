@@ -8,7 +8,6 @@ import Link from "next/link";
 
 import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCleanup";
 type LiasoningRecord = {
-  feasibility_completed: boolean; feasibility_remark: string;
   annexure3_completed: boolean; annexure3_remark: string;
   discom_approval: string;
   is_complete: boolean;
@@ -31,11 +30,6 @@ type LiasoningLead = {
   record: LiasoningRecord | null;
 };
 
-const STAGES = [
-  { key: "feasibility", label: "Feasibility" },
-  { key: "annexure3", label: "Annexure 3 (completion doc submission)" },
-] as const;
-
 const DISCOM_OPTIONS = [
   { value: "pending", label: "Pending" },
   { value: "yes", label: "Approved" },
@@ -43,9 +37,7 @@ const DISCOM_OPTIONS = [
 ];
 
 type RowDraft = {
-  feasibility_completed: boolean; feasibility_remark: string;
   annexure3_completed: boolean; annexure3_remark: string;
-  discom_approval: string;
 };
 
 const inputCls = "w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all disabled:opacity-70";
@@ -58,7 +50,6 @@ export default function LiasoningPage() {
   const [leads, setLeads] = useState<LiasoningLead[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [stage, setStage] = useState<(typeof STAGES)[number]["key"]>("feasibility");
   const [rows, setRows] = useState<Record<number, RowDraft>>({});
   const [savingId, setSavingId] = useState<number | null>(null);
 
@@ -82,11 +73,8 @@ export default function LiasoningPage() {
     const drafts: Record<number, RowDraft> = {};
     for (const l of list) {
       drafts[l.id] = {
-        feasibility_completed: !!l.record?.feasibility_completed,
-        feasibility_remark: l.record?.feasibility_remark || "",
         annexure3_completed: !!l.record?.annexure3_completed,
         annexure3_remark: l.record?.annexure3_remark || "",
-        discom_approval: l.record?.discom_approval || "pending",
       };
     }
     setRows(drafts);
@@ -107,9 +95,10 @@ export default function LiasoningPage() {
   const saveRow = async (lead: LiasoningLead) => {
     const draft = rows[lead.id];
     if (!draft) return;
-    const body = stage === "feasibility"
-      ? { feasibility_completed: draft.feasibility_completed, feasibility_remark: draft.feasibility_remark }
-      : { annexure3_completed: draft.annexure3_completed, annexure3_remark: draft.annexure3_remark, discom_approval: draft.discom_approval };
+    const body = {
+      annexure3_completed: draft.annexure3_completed,
+      annexure3_remark: draft.annexure3_remark,
+    };
     setSavingId(lead.id);
     try {
       const r = await fetch(`${getApiBase(domain)}/api/leads/${lead.id}/liasoning-record/`, {
@@ -133,36 +122,23 @@ export default function LiasoningPage() {
   );
   if (!allowed) return null;
 
-  const filtered = leads.filter(l => {
+  const stageLeads = leads.filter(l => {
     const q = search.trim().toLowerCase();
     if (!q) return true;
     return (`${l.first_name} ${l.last_name || ""}`.toLowerCase().includes(q)
       || (l.phone || "").toLowerCase().includes(q)
       || (l.location || "").toLowerCase().includes(q));
   });
-  // Annexure 3 only opens once a customer's feasibility stage is completed (saved).
-  const stageLeads = stage === "annexure3" ? filtered.filter(l => !!l.record?.feasibility_completed) : filtered;
 
   return (
     <div className="p-6 lg:p-8 max-w-[1200px]">
       <div className="mb-5">
         <h1 className="text-2xl font-bold text-slate-900">Liasoning</h1>
-        <p className="text-sm text-slate-500 mt-1">Feasibility first — a customer moves to Annexure 3 (completion doc submission) once feasibility is completed.</p>
+        <p className="text-sm text-slate-500 mt-1">Annexure 3 — completion doc submission for each customer in liasoning.</p>
       </div>
 
       <>
-          {/* Stage toggle */}
-          <div className="mb-4 inline-flex items-center bg-slate-100 border border-slate-200 rounded-full p-1">
-            {STAGES.map(s => (
-              <button key={s.key} onClick={() => setStage(s.key)}
-                className={`px-4 py-1.5 rounded-full text-xs font-semibold transition ${stage === s.key ? "bg-indigo-600 text-white shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
-                {s.label}
-              </button>
-            ))}
-          </div>
-          {stage === "annexure3" && (
-            <p className="mb-4 text-[11px] text-slate-400">Annexure 3 status &amp; discom approval entered here sync directly to the customer&apos;s MNRE Stage 2 (Documentation Stage 2).</p>
-          )}
+          <p className="mb-4 text-[11px] text-slate-400">Annexure 3 status syncs directly to the customer&apos;s MNRE Stage 2. Discom approval is recorded in Documentation Stage 2 and shown here.</p>
 
           <div className="mb-4 flex items-center gap-3">
             <input
@@ -178,9 +154,7 @@ export default function LiasoningPage() {
             <div className="py-16 text-center text-sm text-slate-400">Loading…</div>
           ) : stageLeads.length === 0 ? (
             <div className="bg-white border border-dashed border-slate-200 rounded-2xl p-12 text-center text-sm text-slate-400">
-              {stage === "annexure3"
-                ? "No customers yet — a customer appears here once their feasibility stage is completed."
-                : "No customers in liasoning yet."}
+              No customers in liasoning yet.
             </div>
           ) : (
             <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
@@ -191,7 +165,7 @@ export default function LiasoningPage() {
                       <th className="px-5 py-3">Customer</th>
                       <th className="px-5 py-3">Completed</th>
                       <th className="px-5 py-3">Remarks</th>
-                      {stage === "annexure3" && <th className="px-5 py-3">Discom Approval</th>}
+                      <th className="px-5 py-3">Discom Approval</th>
                       <th className="px-5 py-3 text-right">Actions</th>
                     </tr>
                   </thead>
@@ -200,8 +174,8 @@ export default function LiasoningPage() {
                       const d = rows[l.id];
                       if (!d) return null;
                       const locked = !l.can_edit || !!l.record?.is_complete;
-                      const completed = stage === "feasibility" ? d.feasibility_completed : d.annexure3_completed;
-                      const remark = stage === "feasibility" ? d.feasibility_remark : d.annexure3_remark;
+                      const completed = d.annexure3_completed;
+                      const remark = d.annexure3_remark;
                       return (
                         <tr key={l.id} className="border-b border-slate-50 hover:bg-slate-50/60 align-middle">
                           <td className="px-5 py-3">
@@ -221,9 +195,7 @@ export default function LiasoningPage() {
                           <td className="px-5 py-3">
                             <label className="inline-flex items-center gap-2 cursor-pointer">
                               <input type="checkbox" checked={completed} disabled={locked}
-                                onChange={e => setRow(l.id, stage === "feasibility"
-                                  ? { feasibility_completed: e.target.checked }
-                                  : { annexure3_completed: e.target.checked })}
+                                onChange={e => setRow(l.id, { annexure3_completed: e.target.checked })}
                                 className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500/30" />
                               <span className={`text-xs font-semibold ${completed ? "text-emerald-600" : "text-slate-400"}`}>
                                 {completed ? "Completed" : "Not completed"}
@@ -232,20 +204,25 @@ export default function LiasoningPage() {
                           </td>
                           <td className="px-5 py-3 min-w-[220px]">
                             <input value={remark} disabled={locked} placeholder="Remarks"
-                              onChange={e => setRow(l.id, stage === "feasibility"
-                                ? { feasibility_remark: e.target.value }
-                                : { annexure3_remark: e.target.value })}
+                              onChange={e => setRow(l.id, { annexure3_remark: e.target.value })}
                               className={inputCls} />
                           </td>
-                          {stage === "annexure3" && (
-                            <td className="px-5 py-3 min-w-[150px]">
-                              <select value={d.discom_approval} disabled={locked}
-                                onChange={e => setRow(l.id, { discom_approval: e.target.value })}
-                                className={inputCls}>
-                                {DISCOM_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                              </select>
-                            </td>
-                          )}
+                          <td className="px-5 py-3 min-w-[150px]">
+                            {/* Owned by Documentation Stage 2 — shown here so the
+                                officer knows where each approval stands. */}
+                            {(() => {
+                              const v = l.record?.discom_approval || "pending";
+                              const opt = DISCOM_OPTIONS.find(o => o.value === v) || DISCOM_OPTIONS[0];
+                              const tone = v === "yes" ? "bg-emerald-50 border-emerald-200 text-emerald-700"
+                                : v === "no" ? "bg-rose-50 border-rose-200 text-rose-600"
+                                : "bg-amber-50 border-amber-200 text-amber-700";
+                              return (
+                                <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 border rounded-lg text-xs font-semibold ${tone}`}>
+                                  {v === "yes" ? "✓ " : ""}{opt.label}
+                                </span>
+                              );
+                            })()}
+                          </td>
                           <td className="px-5 py-3 text-right">
                             {locked ? (
                               <span className="text-[11px] text-slate-400">Read-only</span>

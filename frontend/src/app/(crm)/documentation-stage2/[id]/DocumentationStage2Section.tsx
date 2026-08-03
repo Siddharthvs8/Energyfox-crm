@@ -498,8 +498,9 @@ export default function DocumentationStage2Section({ leadId, canEdit, onChanged 
   };
 
   const saveScalars = async (): Promise<any | null> => {
-    // discom_approval is owned by Liasoning (write-through) — never sent from here.
-    const { discom_approval: _discom, ...payload } = f;
+    // Stage 2 owns discom_approval; the server writes it through to Liasoning.
+    // Once signed off it is the only field still accepted, so send it alone.
+    const payload = isComplete ? { discom_approval: f.discom_approval } : f;
     const r = await fetch(url, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...authHeader() },
@@ -705,18 +706,21 @@ export default function DocumentationStage2Section({ leadId, canEdit, onChanged 
         <div className="grid sm:grid-cols-3 gap-4 items-start">
           <div>
             <label className={labelCls}>Discom Approval</label>
-            {(() => {
-              const opt = DISCOM_OPTIONS.find(o => o.value === f.discom_approval) || DISCOM_OPTIONS[0];
-              const tone = f.discom_approval === "yes" ? "bg-emerald-50 border-emerald-200 text-emerald-700"
-                : f.discom_approval === "no" ? "bg-rose-50 border-rose-200 text-rose-600"
-                : "bg-amber-50 border-amber-200 text-amber-700";
-              return (
-                <span className={`inline-flex items-center gap-1.5 px-3.5 py-2 border rounded-xl text-sm font-semibold ${tone}`}>
-                  {f.discom_approval === "yes" ? "✓ " : ""}{opt.label}
-                </span>
-              );
-            })()}
-            <p className="text-[10px] text-slate-400 mt-1.5">Auto-fetched from Liasoning — updated by the liasoning officer.</p>
+            {/* Recorded here even after Stage 2 is signed off — KSEB answers on
+                its own schedule — and it reflects into Liasoning. */}
+            <select value={f.discom_approval} disabled={!canEdit}
+              onChange={e => set("discom_approval", e.target.value)} className={inputCls}>
+              {DISCOM_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+            <p className="text-[10px] text-slate-400 mt-1.5">Reflects into Liasoning for the liasoning officer.</p>
+            {/* The page's Save button is gone once Stage 2 is signed off, but the
+                approval can still land after that — so it gets its own. */}
+            {canEdit && isComplete && (
+              <button onClick={save} disabled={saving}
+                className="mt-2 px-4 py-2 bg-slate-800 text-white rounded-xl text-xs font-semibold hover:bg-slate-900 disabled:opacity-50 transition">
+                {saving ? "Saving…" : saved ? "Saved ✓" : "Save approval"}
+              </button>
+            )}
           </div>
           <div className="sm:col-span-2"><label className={labelCls}>Remark</label><input value={f.mnre_remark} disabled={readOnly} onChange={e => set("mnre_remark", e.target.value)} placeholder="Remark" className={inputCls} /></div>
         </div>
@@ -729,12 +733,12 @@ export default function DocumentationStage2Section({ leadId, canEdit, onChanged 
         {f.discom_approval !== "yes" && (
           <div className="mt-4 bg-amber-50/60 border border-amber-100 rounded-xl p-3">
             <p className="text-[11px] text-amber-700 font-semibold">
+              {/* Discom Follow-up belongs to Liasoning now, so this is a status
+                  line rather than a link the documentation team can follow. */}
               {f.discom_approval === "no"
-                ? "Not approved — this customer is tracked in the "
-                : "Approval pending — this customer moves to the "}
-              <a href="/discom-followup" className="underline hover:text-amber-900">Discom Follow-up</a>
-              {f.discom_approval === "no" ? " module" : " module if still pending after 7 days"}
-              {f.sent_to_liasoning ? " (liasoning officer sent to the concerned section)." : "."}
+                ? "Not approved — this customer is on the liasoning officer's Discom Follow-up list"
+                : "Approval pending — this customer joins the liasoning officer's Discom Follow-up list if still pending after 7 days"}
+              {f.sent_to_liasoning ? " (officer sent to the concerned section)." : "."}
             </p>
           </div>
         )}

@@ -25,6 +25,8 @@ export default function DiscomFollowupPage() {
   const router = useRouter();
   const [authChecked, setAuthChecked] = useState(false);
   const [allowed, setAllowed] = useState(false);
+  // Only someone with documentation access can actually open Stage 2 from here.
+  const [canOpenStage2, setCanOpenStage2] = useState(false);
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -38,8 +40,9 @@ export default function DiscomFollowupPage() {
     fetch(`${getApiBase(domain)}/api/users/me/`, { headers: { Authorization: `Bearer ${t}` } })
       .then(r => r.json())
       .then(d => {
-        const ok = ["documentation_staff", "documentation_manager"].includes(d.role) || d.is_staff || d.is_general_manager;
+        const ok = d.role === "liasoning_officer" || d.is_staff || d.is_general_manager;
         setAllowed(ok);
+        setCanOpenStage2(["documentation_staff", "documentation_manager"].includes(d.role) || d.is_staff || d.is_general_manager);
         setAuthChecked(true);
         if (!ok) router.replace("/");
       })
@@ -59,7 +62,7 @@ export default function DiscomFollowupPage() {
   const toggleSent = async (row: Row, value: boolean) => {
     setSavingId(row.id);
     try {
-      const r = await fetch(`${getApiBase(domain)}/api/leads/${row.id}/documentation-stage2-record/`, {
+      const r = await fetch(`${getApiBase(domain)}/api/leads/${row.id}/discom-followup-sent/`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
         body: JSON.stringify({ sent_to_liasoning: value }),
@@ -94,8 +97,8 @@ export default function DiscomFollowupPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-slate-900">Discom Follow-up</h1>
         <p className="text-sm text-slate-500 mt-1">
-          Customers whose discom approval is not approved, or still pending after 7 days — send the liasoning officer to the concerned section.
-          Once liasoning marks the approval as approved, the customer leaves this list.
+          Customers whose discom approval is not approved, or still pending after 7 days — go to the concerned section and chase it.
+          Once Documentation Stage 2 records the approval, the customer leaves this list.
         </p>
       </div>
 
@@ -136,9 +139,11 @@ export default function DiscomFollowupPage() {
                     </div>
                     <p className="text-xs text-slate-500 mt-0.5 truncate">{l.phone || "—"} · {l.location || l.installation_location || "No location"}</p>
                   </div>
-                  <Link href={`/documentation-stage2/${l.id}`} className="text-[12px] font-semibold text-indigo-600 hover:text-indigo-800 flex-shrink-0">
-                    Open Stage 2 →
-                  </Link>
+                  {canOpenStage2 && (
+                    <Link href={`/documentation-stage2/${l.id}`} className="text-[12px] font-semibold text-indigo-600 hover:text-indigo-800 flex-shrink-0">
+                      Open Stage 2 →
+                    </Link>
+                  )}
                 </div>
 
                 <div className={`mt-3 rounded-xl p-3 border ${notApproved ? "bg-amber-50/60 border-amber-100" : "bg-slate-50/70 border-slate-100"}`}>
@@ -147,11 +152,13 @@ export default function DiscomFollowupPage() {
                       ? "Not approved — send the liasoning officer to the concerned section."
                       : "Approval pending — send the liasoning officer to the concerned section."}
                   </p>
-                  <label className={`inline-flex items-center gap-2 text-sm font-medium ${l.is_complete ? "text-slate-400" : "text-slate-700 cursor-pointer"}`}>
+                  {/* Recordable even after Stage 2 is signed off — the approval
+                      can still be outstanding at that point. */}
+                  <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={l.sent_to_liasoning}
-                      disabled={l.is_complete || savingId === l.id}
+                      disabled={savingId === l.id}
                       onChange={e => toggleSent(l, e.target.checked)}
                       className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500/30"
                     />

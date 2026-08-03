@@ -1780,15 +1780,6 @@ class LeadViewSet(viewsets.ModelViewSet):
             qs = Lead.objects.filter(pushed_to_doc_stage2=True).exclude(documentation_stage2__is_complete=True)
             record('documentation-stage2', mine(qs, 'documentation_staff', 'doc_stage2_staff'), 'doc_stage2_staff')
 
-            cutoff = timezone.now() - timedelta(days=7)
-            counts['discom-followup'] = (Lead.objects.filter(pushed_to_doc_stage2=True)
-                                         .exclude(documentation_stage2__discom_approval='yes')
-                                         .filter(Q(documentation_stage2__discom_approval='no')
-                                                 | Q(pushed_to_doc_stage2_at__lte=cutoff)
-                                                 | Q(pushed_to_doc_stage2_at__isnull=True))
-                                         )
-            counts['discom-followup'] = unseen(counts['discom-followup'], 'discom-followup').count()
-
         if can_access_warranty(user):
             counts['warranty'] = unseen(Lead.objects.filter(pushed_to_warranty=True)
                                         .exclude(warranty__is_complete=True), 'warranty').count()
@@ -1817,6 +1808,15 @@ class LeadViewSet(viewsets.ModelViewSet):
             # Maintenance visits that are due / overdue and not yet filled in.
             counts['periodic-maintenance'] = MaintenanceVisit.objects.filter(
                 is_complete=False, due_date__lte=timezone.localdate()).count()
+            # Approvals the officer still has to chase at the KSEB section.
+            cutoff = timezone.now() - timedelta(days=7)
+            counts['discom-followup'] = unseen(
+                Lead.objects.filter(pushed_to_doc_stage2=True)
+                    .exclude(documentation_stage2__discom_approval='yes')
+                    .filter(Q(documentation_stage2__discom_approval='no')
+                            | Q(pushed_to_doc_stage2_at__lte=cutoff)
+                            | Q(pushed_to_doc_stage2_at__isnull=True)),
+                'discom-followup').count()
 
         return Response({'counts': counts, 'assigned': assigned})
 
@@ -2845,15 +2845,40 @@ class LeadViewSet(viewsets.ModelViewSet):
             data['prefill'] = self._doc_stage2_prefill(lead)
             data['can_reopen'] = can_reopen_documentation(request.user)
             return Response(data)
-        if rec.is_complete:
+        # The discom approval arrives from KSEB on its own schedule, often after
+        # the rest of Stage 2 has been signed off — so it is the one field that
+        # survives the lock. Everything else still stops here.
+        if rec.is_complete and set(request.data.keys()) - {'discom_approval'}:
             return Response({'error': 'Documentation Stage 2 is already completed and locked.'}, status=status.HTTP_400_BAD_REQUEST)
-        # Discom approval is owned by Liasoning (auto-fetched via write-through) —
-        # it cannot be edited from Documentation Stage 2.
-        data = {k: v for k, v in request.data.items() if k != 'discom_approval'}
-        serializer = DocumentationStage2Serializer(rec, data=data, partial=True, context={'request': request})
+        old_discom = rec.discom_approval
+        serializer = DocumentationStage2Serializer(rec, data=request.data, partial=True, context={'request': request})
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        if 'discom_approval' in request.data:
+            self._sync_discom_to_liasoning(lead, rec, old_discom, request)
         return Response(serializer.data)
+
+    def _sync_discom_to_liasoning(self, lead, rec, old_discom, request):
+        """Documentation Stage 2 owns the discom approval; Liasoning displays it.
+
+        Written straight to the model rather than through the liasoning endpoint
+        so a completed (locked) liasoning record still receives it — otherwise a
+        late approval would never reach the officer's list.
+        """
+        lia, _ = LiasoningService.objects.get_or_create(lead=lead)
+        if lia.discom_approval != rec.discom_approval:
+            lia.discom_approval = rec.discom_approval
+            lia.save(update_fields=['discom_approval', 'updated_at'])
+        # Approval clears the customer for the warranty hand-over. Checked on the
+        # current state (not just the transition) and idempotent, so a customer
+        # approved before this rule existed still gets moved on the next save.
+        if rec.discom_approval == 'yes':
+            self._push_to_warranty(lead, request)
+        if rec.discom_approval != old_discom:
+            if rec.discom_approval == 'yes':
+                fire_automation('discom_approved', lead)
+            elif rec.discom_approval == 'no':
+                fire_automation('discom_not_approved', lead)
 
     @action(detail=True, methods=['post'], url_path='documentation-stage2/documents')
     def doc_stage2_add_document(self, request, pk=None):
@@ -2897,14 +2922,14 @@ class LeadViewSet(viewsets.ModelViewSet):
     def discom_followup(self, request):
         """Discom Follow-up queue: Documentation Stage 2 customers whose discom
         approval needs chasing — explicitly not approved, or still pending for
-        more than 7 days. The liasoning officer is sent to the concerned section
-        from here; once liasoning marks the approval as approved the customer
-        leaves this list."""
+        more than 7 days. Chasing the approval is the liasoning officer's job, so
+        the queue lives in Liasoning; a customer leaves it once Documentation
+        Stage 2 records the approval."""
         from datetime import timedelta
         from django.db.models import Q
-        from .access import can_access_doc_stage2
-        if not can_access_doc_stage2(request.user):
-            return Response({'error': 'You do not have access to documentation.'}, status=status.HTTP_403_FORBIDDEN)
+        from .access import can_access_liasoning
+        if not can_access_liasoning(request.user):
+            return Response({'error': 'You do not have access to liasoning & service.'}, status=status.HTTP_403_FORBIDDEN)
         cutoff = timezone.now() - timedelta(days=7)
         qs = (Lead.objects.filter(pushed_to_doc_stage2=True)
               .exclude(documentation_stage2__discom_approval='yes')
@@ -2931,6 +2956,26 @@ class LeadViewSet(viewsets.ModelViewSet):
                 'days_pending': (timezone.now() - lead.pushed_to_doc_stage2_at).days if lead.pushed_to_doc_stage2_at else None,
             })
         return Response(rows)
+
+    @action(detail=True, methods=['patch'], url_path='discom-followup-sent')
+    def discom_followup_sent(self, request, pk=None):
+        """Tick 'liasoning officer sent to the concerned section' from the Discom
+        Follow-up queue.
+
+        Its own endpoint because the queue belongs to Liasoning while the flag
+        itself lives on the Stage 2 record — the officer should not need
+        documentation access to mark their own visit.
+        """
+        from .access import can_access_liasoning
+        if not can_access_liasoning(request.user):
+            return Response({'error': 'You do not have access to liasoning & service.'}, status=status.HTTP_403_FORBIDDEN)
+        lead = self.get_object()
+        if not lead.pushed_to_doc_stage2:
+            return Response({'error': 'This lead is not in Documentation Stage 2.'}, status=status.HTTP_404_NOT_FOUND)
+        rec, _ = DocumentationStage2.objects.get_or_create(lead=lead)
+        rec.sent_to_liasoning = str(request.data.get('sent_to_liasoning')).lower() in ('true', '1', 'yes', 'on')
+        rec.save(update_fields=['sent_to_liasoning', 'updated_at'])
+        return Response({'id': lead.id, 'sent_to_liasoning': rec.sent_to_liasoning})
 
     # ── Warranty (post-installation documentation module) ──
     def _push_to_warranty(self, lead, request=None):
@@ -3116,6 +3161,93 @@ class LeadViewSet(viewsets.ModelViewSet):
         doc.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+    @action(detail=True, methods=['post'], url_path='send-warranty')
+    def send_warranty(self, request, pk=None):
+        """Send the warranty certificate to the customer over the configured
+        WhatsApp / email integrations.
+
+        Goes out from the CRM's own accounts (Settings → Integrations) rather
+        than the staff member's device, so every send is logged in the outbox and
+        arrives from the company, not from whoever happened to click.
+        """
+        from .access import can_access_warranty
+        lead = self.get_object()
+        if not can_access_warranty(request.user):
+            return Response({'error': 'You do not have access to warranty.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        if not lead.pushed_to_warranty:
+            return Response({'error': 'This lead is not in the warranty stage.'},
+                            status=status.HTTP_404_NOT_FOUND)
+        rec, _ = Warranty.objects.get_or_create(lead=lead)
+
+        # The generated certificate is the thing being sent; if staff attached
+        # other files to the slot afterwards, prefer the certificate anyway.
+        docs = list(rec.documents.filter(doc_type='warranty'))
+        doc = next((d for d in reversed(docs)
+                    if (d.file.name or '').split('/')[-1].startswith('Warranty_Certificate')),
+                   docs[-1] if docs else None)
+        if doc is None:
+            return Response({'error': 'No warranty document to send. Generate the certificate first.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        who = f"{lead.first_name} {lead.last_name or ''}".strip()
+        filename = (doc.file.name or 'Warranty.pdf').split('/')[-1]
+        channels = [c.strip() for c in str(request.data.get('channels', 'email')).split(',') if c.strip()]
+        results, failures = {}, []
+
+        if 'email' in channels:
+            raw = request.data.get('email') or lead.email or ''
+            recipients = [a.strip() for a in str(raw).split(',') if a.strip()]
+            if not recipients:
+                failures.append('No email address given for this customer.')
+            else:
+                from messaging.email import send_and_log
+                doc.file.open('rb')
+                data = doc.file.read()
+                doc.file.close()
+                log = send_and_log(
+                    to=recipients,
+                    subject='Solar System Warranty',
+                    body=(f"Dear {who or 'Customer'},\n\nPlease find attached the warranty "
+                          f"certificate for your solar system.\n\nRegards,\nEnergyFox"),
+                    lead=lead, kind='warranty',
+                    attachments=[(filename, data, 'application/pdf')],
+                    created_by=request.user if request.user.is_authenticated else None,
+                )
+                results['email'] = log.status
+                if log.status != 'sent':
+                    failures.append(f'Email failed: {log.error}')
+
+        if 'whatsapp' in channels:
+            to = request.data.get('phone') or lead.phone or ''
+            if not to:
+                failures.append('No WhatsApp number given for this customer.')
+            else:
+                from messaging import whatsapp
+                try:
+                    whatsapp.send_document(
+                        to=to,
+                        link=request.build_absolute_uri(doc.file.url),
+                        filename=filename,
+                        caption='Solar System Warranty',
+                    )
+                    results['whatsapp'] = 'sent'
+                except Exception as exc:                     # surfaced to the user
+                    failures.append(f'WhatsApp failed: {exc}')
+
+        # A recorded attempt is not a delivery: an SMTP refusal comes back as a
+        # log with status 'failed', and neither the error nor the "sent" tick
+        # should be softened into a success.
+        delivered = [c for c, outcome in results.items() if outcome == 'sent']
+        if not delivered:
+            return Response({'error': ' '.join(failures) or 'Nothing was sent.'},
+                            status=status.HTTP_502_BAD_GATEWAY)
+        if not rec.sent:
+            rec.sent = True
+            rec.save(update_fields=['sent', 'updated_at'])
+        return Response({'sent': results, 'warnings': failures,
+                         'pdf': request.build_absolute_uri(doc.file.url)})
+
     @action(detail=True, methods=['post'], url_path='complete-warranty')
     def complete_warranty(self, request, pk=None):
         """Mark warranty complete for a lead."""
@@ -3199,11 +3331,13 @@ class LeadViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get', 'patch'], url_path='liasoning-record')
     def liasoning_record(self, request, pk=None):
-        """Get or update a lead's liasoning record (Feasibility & Annexure 3 stages).
+        """Get or update a lead's liasoning record (Annexure 3).
 
         The Annexure 3 status, remark and discom approval write through to the
         lead's Documentation Stage 2 — its Annexure section is 'fetched from
-        liasoning' (the liasoning officer is the one at the KSEB section)."""
+        liasoning' (the liasoning officer is the one at the KSEB section).
+
+        Feasibility lives in the KSEB Feasibility module, not here."""
         from .access import can_access_liasoning
         lead = self.get_object()
         if not can_access_liasoning(request.user):
@@ -3215,19 +3349,16 @@ class LeadViewSet(viewsets.ModelViewSet):
             return Response(LiasoningServiceSerializer(rec, context={'request': request}).data)
         if rec.is_complete:
             return Response({'error': 'Liasoning & Service is already completed and locked.'}, status=status.HTTP_400_BAD_REQUEST)
-        # Annexure 3 only opens after the feasibility stage is completed.
-        annex_keys = {'annexure3_completed', 'annexure3_remark', 'discom_approval'} & set(request.data.keys())
-        if annex_keys and not request.data.get('feasibility_completed', rec.feasibility_completed):
-            return Response({'error': 'Complete the feasibility stage first — Annexure 3 opens after feasibility.'},
-                            status=status.HTTP_400_BAD_REQUEST)
-        old_discom = rec.discom_approval
-        serializer = LiasoningServiceSerializer(rec, data=request.data, partial=True, context={'request': request})
+        # Discom approval is owned by Documentation Stage 2 (auto-fetched via
+        # write-through) — it cannot be edited from here.
+        data = {k: v for k, v in request.data.items() if k != 'discom_approval'}
+        serializer = LiasoningServiceSerializer(rec, data=data, partial=True, context={'request': request})
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        # These fields belong to liasoning — Documentation Stage 2 only displays
-        # them — so they sync through even when Stage 2 has been completed and
-        # locked. Otherwise a later KSEB approval would never reach the record.
-        synced = {'annexure3_completed', 'annexure3_remark', 'discom_approval'} & set(request.data.keys())
+        # Annexure 3 belongs to liasoning — Documentation Stage 2 only displays
+        # it — so it syncs through even when Stage 2 has been completed and
+        # locked. Otherwise a later submission would never reach the record.
+        synced = {'annexure3_completed', 'annexure3_remark'} & set(data.keys())
         if synced:
             s2, _ = DocumentationStage2.objects.get_or_create(lead=lead)
             update = []
@@ -3237,20 +3368,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             if 'annexure3_remark' in synced:
                 s2.annexure3_remark = rec.annexure3_remark
                 update.append('annexure3_remark')
-            if 'discom_approval' in synced:
-                s2.discom_approval = rec.discom_approval
-                update.append('discom_approval')
             s2.save(update_fields=update + ['updated_at'])
-        # Approval clears the customer for the warranty hand-over. Checked on the
-        # current state (not just the transition) and idempotent, so a customer
-        # approved before this rule existed still gets moved on the next save.
-        if rec.discom_approval == 'yes':
-            self._push_to_warranty(lead, request)
-        if rec.discom_approval != old_discom:
-            if rec.discom_approval == 'yes':
-                fire_automation('discom_approved', lead)
-            elif rec.discom_approval == 'no':
-                fire_automation('discom_not_approved', lead)
         return Response(LiasoningServiceSerializer(rec, context={'request': request}).data)
 
     @action(detail=True, methods=['post'], url_path='complete-liasoning')
