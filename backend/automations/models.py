@@ -37,6 +37,7 @@ class AutomationRule(models.Model):
         ('lead_inactive', 'Lead Inactive (no activity)'),
         # ── Pipeline stages (post-conversion modules) ──
         ('pushed_to_documentation', 'Closed Deal (Pushed to Documentation)'),
+        ('pushed_to_accounts', 'Reached Accounts (payment verification due)'),
         ('payment_partially_paid', 'Payment Verified — Partially Paid'),
         ('payment_fully_paid', 'Payment Fully Paid (moves to Purchase)'),
         ('project_completed', 'Project Completed (installation done)'),

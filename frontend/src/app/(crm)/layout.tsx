@@ -343,8 +343,8 @@ export default function DashboardLayout({
           if (["documentation_staff", "documentation_manager"].includes(d.role) && window.location.pathname === "/") {
             router.replace("/documentation");
           }
-          // Accounts staff land on the accounts queue.
-          if (d.role === "accounts_staff" && window.location.pathname === "/") {
+          // The accounts team lands on the accounts queue.
+          if (["accounts_staff", "accounts_manager"].includes(d.role) && window.location.pathname === "/") {
             router.replace("/accounts");
           }
           // Purchase staff land on the purchase & logistics queue.
@@ -633,7 +633,7 @@ export default function DashboardLayout({
   // Documentation team (staff/manager) get a focused view — only the Documentation page.
   const isDocOnly = ["documentation_staff", "documentation_manager"].includes(currentUser?.role);
   // Accounts staff get a focused view — only the Accounts page.
-  const isAccountsOnly = currentUser?.role === "accounts_staff";
+  const isAccountsOnly = ["accounts_staff", "accounts_manager"].includes(currentUser?.role);
   // Purchase staff get a focused view — only the Purchase & Logistics page.
   const isPurchaseOnly = currentUser?.role === "purchase_staff";
   // Project manager gets a focused view — Project, Service and Team Stats.

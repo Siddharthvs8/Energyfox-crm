@@ -17,7 +17,9 @@ const inputCls =
   "w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all disabled:opacity-70";
 const labelCls = "block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5";
 
-type BP = { id: number; amount: string; payment_mode: string; utr_details: string; on_account_of: string; note: string; recorded_by_name: string | null; created_at: string; receipt_id: number | null; receipt_number: string | null };
+// `id` is null on the first payment: it lives on the verification form rather
+// than in the balance-payment ledger, but it belongs in the same history.
+type BP = { id: number | null; is_initial?: boolean; amount: string; payment_mode: string; utr_details: string; on_account_of: string; note: string; recorded_by_name: string | null; created_at: string; receipt_id: number | null; receipt_number: string | null };
 type Summary = { deal_value: string; amount_received: string; discount_value: string; balance_amount: string; fully_paid: boolean; can_collect: boolean; payments: BP[] };
 
 const num = (v: any) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
@@ -180,9 +182,12 @@ export default function BalancePaymentSection({ leadId, canEdit, onChanged }: {
                 </thead>
                 <tbody>
                   {summary.payments.map(p => (
-                    <tr key={p.id} className="border-b border-slate-50">
+                    <tr key={p.is_initial ? "initial" : `bp-${p.id}`} className="border-b border-slate-50">
                       <td className="py-2 pr-4 text-slate-600">{new Date(p.created_at).toLocaleDateString("en-IN")}</td>
-                      <td className="py-2 pr-4 font-semibold text-emerald-700">₹{formatCurrency(num(p.amount))}</td>
+                      <td className="py-2 pr-4 font-semibold text-emerald-700">
+                        ₹{formatCurrency(num(p.amount))}
+                        {p.is_initial && <span className="ml-2 text-[10px] font-bold uppercase tracking-wide text-slate-400">First payment</span>}
+                      </td>
                       <td className="py-2 pr-4 text-slate-600 capitalize">{p.payment_mode || "—"}{p.utr_details ? ` · ${p.utr_details}` : ""}</td>
                       <td className="py-2 pr-4 text-slate-600">{p.on_account_of || p.note || "—"}</td>
                       <td className="py-2 pr-4 text-slate-600">{p.recorded_by_name || "—"}</td>

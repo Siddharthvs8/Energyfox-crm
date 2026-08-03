@@ -40,7 +40,7 @@ export default function FullyPaidPage() {
     fetch(`${getApiBase(domain)}/api/users/me/`, { headers: { Authorization: `Bearer ${t}` } })
       .then(r => r.json())
       .then(d => {
-        const ok = d.role === "accounts_staff" || d.is_staff || d.is_general_manager;
+        const ok = d.role === "accounts_staff" || d.role === "accounts_manager" || d.is_staff || d.is_general_manager;
         setAllowed(ok);
         setAuthChecked(true);
         if (!ok) router.replace("/");

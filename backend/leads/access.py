@@ -260,34 +260,44 @@ def can_access_warranty(user):
             or getattr(user, 'role', '') in DOCUMENTATION_ROLES)
 
 
+# The accounts team. The manager runs the queue and hands leads to their staff;
+# unlike the documentation manager it carries no company-wide flag, so every
+# power it has is granted here by name.
+ACCOUNTS_ROLES = {'accounts_staff', 'accounts_manager'}
+
+
 def can_access_accounts(user):
-    """Who can open the Accounts view (the payment-verification queue): accounts
-    staff and admins / general managers (who can edit), plus purchase staff who
-    get a read-only view of the accounts data alongside their own module."""
+    """Who can open the Accounts view (the payment-verification queue): the
+    accounts team and admins / general managers (who can edit), plus purchase
+    staff who get a read-only view of the accounts data alongside their own
+    module."""
     if not user or not user.is_authenticated:
         return False
     granted = custom_grant(user, 'accounts')
     if granted is not None:
         return granted
     return (user.is_staff or getattr(user, 'is_general_manager', False)
-            or getattr(user, 'role', '') in ('accounts_staff', 'purchase_staff'))
+            or getattr(user, 'role', '') in (ACCOUNTS_ROLES | {'purchase_staff'}))
 
 
 def can_assign_accounts(user):
-    """Admins / general managers may assign a lead to an accounts staff member
-    and reopen a completed payment verification. Not lead-specific."""
+    """The accounts manager (and admins / general managers) may assign a lead to
+    an accounts staff member and reopen a completed payment verification. Not
+    lead-specific."""
     if not user or not user.is_authenticated:
         return False
     granted = custom_grant(user, 'queue.assign')
     if granted is not None:
         return granted
-    return user.is_staff or getattr(user, 'is_general_manager', False)
+    return (user.is_staff or getattr(user, 'is_general_manager', False)
+            or getattr(user, 'role', '') == 'accounts_manager')
 
 
 def can_edit_payment_verification(user, lead):
     """Who may fill/complete a lead's payment verification:
 
     - admins / general managers with accounts access (any lead)
+    - the accounts manager, who oversees the whole queue (any lead)
     - an accounts_staff member ONLY for leads assigned to them
 
     The lead must already have been moved to accounts.
@@ -296,16 +306,18 @@ def can_edit_payment_verification(user, lead):
         return False
     if not getattr(lead, 'pushed_to_accounts', False):
         return False
+    role = getattr(user, 'role', '')
     is_plain_accounts_staff = (
-        getattr(user, 'role', '') == 'accounts_staff'
+        role == 'accounts_staff'
         and not user.is_staff
         and not getattr(user, 'is_general_manager', False)
     )
     if is_plain_accounts_staff:
         return bool(lead.accounts_staff_id and lead.accounts_staff_id == user.id)
-    # Admins / general managers may edit; other roles with access (purchase staff)
-    # only view.
-    return bool(user.is_staff or getattr(user, 'is_general_manager', False))
+    # Admins / general managers / the accounts manager may edit; other roles with
+    # access (purchase staff) only view.
+    return bool(user.is_staff or getattr(user, 'is_general_manager', False)
+                or role == 'accounts_manager')
 
 
 def can_access_purchase(user):

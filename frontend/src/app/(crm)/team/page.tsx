@@ -33,6 +33,7 @@ const ROLES = [
   { value: "documentation_staff", label: "Documentation Staff" },
   { value: "documentation_manager", label: "Documentation Manager" },
   { value: "accounts_staff", label: "Accounts Staff" },
+  { value: "accounts_manager", label: "Accounts Manager" },
   { value: "purchase_staff", label: "Purchase Staff" },
   { value: "project_manager", label: "Project Manager" },
   { value: "liasoning_officer", label: "Liasoning Officer" },

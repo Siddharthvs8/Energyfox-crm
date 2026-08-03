@@ -1228,6 +1228,9 @@ class LeadViewSet(viewsets.ModelViewSet):
                 lead=lead,
                 extra={'auto_generated': True},
             )
+            # Fired after the round-robin, so a rule that reassigns (e.g. the
+            # accounts manager's own routing) has the last word.
+            fire_automation('pushed_to_accounts', lead)
         return Response(self._documentation_payload(lead, request))
 
     @action(detail=True, methods=['post'], url_path='reopen-documentation-stage1')
@@ -1868,6 +1871,44 @@ class LeadViewSet(viewsets.ModelViewSet):
         qs = self._payment_bucket_qs(request.user).filter(_balance__lte=0)
         return Response([self._payment_bucket_item(lead, request) for lead in qs])
 
+    @staticmethod
+    def _payment_ledger(lead, pv):
+        """Every payment against this lead, oldest first.
+
+        The first payment is recorded on the verification form rather than as a
+        BalancePayment, so it has to be folded in here — otherwise the history
+        adds up to less than the "Received" figure printed above it.
+        """
+        from decimal import Decimal
+        rows = BalancePaymentSerializer(lead.balance_payments.all(), many=True).data
+        initial = lead.receipt_vouchers.filter(is_initial=True).order_by('created_at').first()
+        # The initial receipt holds the amount as it was at verification; without
+        # one (older leads), it's whatever the running total isn't accounted for.
+        if initial is not None:
+            amount = initial.amount
+        else:
+            amount = (pv.amount_received or 0) - sum(
+                (bp.amount for bp in lead.balance_payments.all()), Decimal('0'))
+        if amount <= 0:
+            return rows
+        who = pv.completed_by
+        rows.insert(0, {
+            'id': None,
+            'is_initial': True,
+            'amount': str(amount),
+            'payment_mode': pv.payment_mode or (initial.payment_mode if initial else ''),
+            'utr_details': pv.utr_details or '',
+            'on_account_of': pv.on_account_of or (initial.on_account_of if initial else ''),
+            'note': pv.remarks or '',
+            'recorded_by_name': ((f'{who.first_name} {who.last_name}'.strip() or who.username)
+                                 if who else None),
+            'created_at': (initial.date.isoformat() if initial
+                           else (pv.completed_at or pv.created_at).isoformat()),
+            'receipt_id': initial.id if initial else None,
+            'receipt_number': initial.number if initial else None,
+        })
+        return rows
+
     @action(detail=True, methods=['get', 'post'], url_path='balance-payments')
     def balance_payments(self, request, pk=None):
         """GET the balance-collection summary + ledger for a verified lead; POST a
@@ -1893,7 +1934,7 @@ class LeadViewSet(viewsets.ModelViewSet):
                 'balance_amount': pv.balance_amount,
                 'fully_paid': pv.balance_amount <= 0,
                 'can_collect': can_edit_payment_verification(request.user, lead),
-                'payments': BalancePaymentSerializer(lead.balance_payments.all(), many=True).data,
+                'payments': self._payment_ledger(lead, pv),
             }
 
         if request.method == 'GET':

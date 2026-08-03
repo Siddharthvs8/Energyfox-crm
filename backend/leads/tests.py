@@ -11,8 +11,8 @@ from django.utils import timezone
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from users.models import User
-from .models import (DocumentationStage2, Lead, LiasoningService, SiteVisit,
-                     Warranty, WarrantyDocument)
+from .models import (DocumentationStage2, Lead, LiasoningService, PaymentVerification,
+                     SiteVisit, Warranty, WarrantyDocument)
 
 
 def token_for(user):
@@ -2337,3 +2337,133 @@ class WarrantySendTests(TestCase):
         self.assertIn('SMTP refused', r.json()['error'])
         self.rec.refresh_from_db()
         self.assertFalse(self.rec.sent)
+
+
+class PaymentHistoryTests(TestCase):
+    """Payment History lists every payment, including the first one — which is
+    recorded on the verification form, not as a balance payment."""
+
+    def setUp(self):
+        self.staff = mk('ph_acct', 'accounts_staff')
+        # Accounts staff may only collect on leads assigned to them.
+        self.lead = Lead.objects.create(first_name='mini', last_name='A', phone='9526396820',
+                                        status='converted', value=Decimal('330000'),
+                                        pushed_to_accounts=True, accounts_staff=self.staff)
+        self.pv = PaymentVerification.objects.create(
+            lead=self.lead, amount_received=Decimal('140000'), payment_mode='cash',
+            on_account_of='3 KW LOAN AMOUNT', is_complete=True, completed_by=self.staff)
+        from leads.receipts import issue_receipt
+        issue_receipt(self.lead, Decimal('140000'), on_account_of='3 KW LOAN AMOUNT',
+                      payment_mode='Cash', is_initial=True, created_by=self.staff)
+
+    def ledger(self):
+        r = self.client.get(f'/api/leads/{self.lead.id}/balance-payments/',
+                            HTTP_AUTHORIZATION=token_for(self.staff))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        return r.json()
+
+    def add(self, amount, on_account_of):
+        return self.client.post(f'/api/leads/{self.lead.id}/balance-payments/',
+                                data={'amount': str(amount), 'payment_mode': 'upi',
+                                      'utr_details': '2323363', 'on_account_of': on_account_of},
+                                content_type='application/json',
+                                HTTP_AUTHORIZATION=token_for(self.staff))
+
+    def test_the_first_payment_appears_even_with_no_installments_yet(self):
+        rows = self.ledger()['payments']
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]['is_initial'])
+        self.assertEqual(Decimal(rows[0]['amount']), Decimal('140000'))
+        self.assertEqual(rows[0]['on_account_of'], '3 KW LOAN AMOUNT')
+        self.assertIsNotNone(rows[0]['receipt_id'])     # its receipt is downloadable
+
+    def test_the_history_adds_up_to_the_received_figure(self):
+        self.add(Decimal('130000'), 'DOWN PAYMENT')
+        self.add(Decimal('60000'), 'SECOND PAYMENT')
+        body = self.ledger()
+        total = sum(Decimal(p['amount']) for p in body['payments'])
+        self.assertEqual(total, Decimal(body['amount_received']))
+        self.assertEqual(total, Decimal('330000'))
+        self.assertEqual(len(body['payments']), 3)
+
+    def test_the_first_payment_leads_the_list(self):
+        self.add(Decimal('130000'), 'DOWN PAYMENT')
+        rows = self.ledger()['payments']
+        self.assertTrue(rows[0]['is_initial'])
+        self.assertFalse(rows[1].get('is_initial'))
+        self.assertEqual(rows[1]['on_account_of'], 'DOWN PAYMENT')
+
+    def test_a_lead_whose_first_payment_was_nothing_shows_only_installments(self):
+        """A zero-rupee verification is not a payment, so it earns no row."""
+        self.lead.receipt_vouchers.all().delete()
+        self.pv.amount_received = Decimal('0')
+        self.pv.save(update_fields=['amount_received'])
+        self.add(Decimal('50000'), 'DOWN PAYMENT')
+        rows = self.ledger()['payments']
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0].get('is_initial'))
+
+
+class AccountsManagerTests(TestCase):
+    """The accounts manager runs the accounts queue and hands leads to their
+    staff — without inheriting company-wide powers."""
+
+    def setUp(self):
+        self.manager = mk('am_manager', 'accounts_manager')
+        self.staff_a = mk('am_staff_a', 'accounts_staff')
+        self.staff_b = mk('am_staff_b', 'accounts_staff')
+        self.lead = Lead.objects.create(first_name='mini', last_name='A', phone='9526396821',
+                                        status='converted', value=Decimal('330000'),
+                                        pushed_to_accounts=True, accounts_staff=self.staff_a)
+
+    def assign(self, staff, who=None):
+        return self.client.post(f'/api/leads/{self.lead.id}/assign-accounts/',
+                                data={'staff': staff.id if staff else None},
+                                content_type='application/json',
+                                HTTP_AUTHORIZATION=token_for(who or self.manager))
+
+    def test_the_manager_assigns_a_lead_to_accounts_staff(self):
+        r = self.assign(self.staff_b)
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.accounts_staff_id, self.staff_b.id)
+
+    def test_the_manager_can_unassign(self):
+        self.assertEqual(self.assign(None).status_code, 200)
+        self.lead.refresh_from_db()
+        self.assertIsNone(self.lead.accounts_staff_id)
+
+    def test_accounts_staff_still_cannot_assign(self):
+        r = self.assign(self.staff_b, who=self.staff_a)
+        self.assertEqual(r.status_code, 403)
+
+    def test_the_manager_sees_the_whole_queue_not_just_their_own(self):
+        Lead.objects.create(first_name='other', phone='9000000001', status='converted',
+                            pushed_to_accounts=True, accounts_staff=self.staff_b)
+        r = self.client.get('/api/leads/accounts/', HTTP_AUTHORIZATION=token_for(self.manager))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(len(r.json()), 2)
+        # A staff member sees only their own.
+        r = self.client.get('/api/leads/accounts/', HTTP_AUTHORIZATION=token_for(self.staff_a))
+        self.assertEqual([x['id'] for x in r.json()], [self.lead.id])
+
+    def test_the_manager_may_edit_any_lead_in_accounts(self):
+        from .access import can_edit_payment_verification
+        self.assertTrue(can_edit_payment_verification(self.manager, self.lead))
+        # ...while staff are held to their own assignments.
+        self.assertTrue(can_edit_payment_verification(self.staff_a, self.lead))
+        self.assertFalse(can_edit_payment_verification(self.staff_b, self.lead))
+
+    def test_it_does_not_inherit_powers_over_other_desks(self):
+        """Unlike the documentation manager, it carries no company-wide flag."""
+        self.assertFalse(self.manager.is_staff)
+        self.assertFalse(self.manager.is_general_manager)
+        for url in ('/api/leads/documentation/', '/api/leads/purchase/', '/api/leads/project/'):
+            r = self.client.get(url, HTTP_AUTHORIZATION=token_for(self.manager))
+            self.assertEqual(r.status_code, 403, f'{url} should be closed to the accounts manager')
+
+    def test_an_admin_may_create_one_but_the_manager_may_not_create_an_admin(self):
+        from users.models import role_rank
+        self.assertEqual(role_rank('accounts_manager'), role_rank('documentation_manager'))
+        self.assertLess(role_rank('accounts_manager'), role_rank('admin'))
+        self.assertGreater(role_rank('accounts_manager'), role_rank('accounts_staff'))

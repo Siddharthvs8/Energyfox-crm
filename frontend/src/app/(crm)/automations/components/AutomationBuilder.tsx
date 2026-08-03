@@ -15,6 +15,7 @@ interface Props {
 const ACTION_LABELS: Record<string, string> = {
   ai_auto_assign: "🤖 AI Auto-Assign (Smart)",
   assign_lead: "Assign to Specific User", change_status: "Change Status", create_task: "Create Task",
+  assign_accounts_staff: "Assign Accounts Staff",
   add_to_campaign: "Add to Campaign", send_webhook: "Send Webhook",
   send_notification: "Send Notification", update_field: "Update Field",
   add_note: "Add Note", duplicate_check: "Duplicate Check",
@@ -23,9 +24,19 @@ const ACTION_LABELS: Record<string, string> = {
   notify_assignee: "Notify Lead Owner", wait: "⏳ Wait / Delay",
   send_whatsapp: "Send WhatsApp",
 };
+// Desks a rule can notify by role rather than by naming a person.
+const NOTIFY_ROLES = [
+  { value: "accounts_manager", label: "Accounts Manager" },
+  { value: "accounts_staff", label: "Accounts Staff" },
+  { value: "documentation_manager", label: "Documentation Manager" },
+  { value: "documentation_staff", label: "Documentation Staff" },
+  { value: "purchase_staff", label: "Purchase Staff" },
+  { value: "project_manager", label: "Project Manager" },
+  { value: "liasoning_officer", label: "Liasoning Officer" },
+];
 const ACTION_ICONS: Record<string, string> = {
   ai_auto_assign: "🤖",
-  assign_lead: "👤", change_status: "🔄", create_task: "📋",
+  assign_lead: "👤", assign_accounts_staff: "💰", change_status: "🔄", create_task: "📋",
   add_to_campaign: "📢", send_webhook: "🔗", send_notification: "🔔",
   update_field: "✏️", add_note: "📝", duplicate_check: "🔍",
   reassign_employee_leads: "🔀",
@@ -82,6 +93,7 @@ export default function AutomationBuilder({ domain, metaOptions, editingRule, on
     { value: "lead_lost", label: "Deal Marked Lost" },
     { value: "lead_inactive", label: "Lead Inactive (no activity)" },
     { value: "pushed_to_documentation", label: "Closed Deal (Pushed to Documentation)" },
+    { value: "pushed_to_accounts", label: "Reached Accounts (payment verification due)" },
     { value: "payment_partially_paid", label: "Payment Verified — Partially Paid" },
     { value: "payment_fully_paid", label: "Payment Fully Paid (moves to Purchase)" },
     { value: "project_completed", label: "Project Completed (installation done)" },
@@ -575,6 +587,18 @@ export default function AutomationBuilder({ domain, metaOptions, editingRule, on
                                     </div>
                                  </>
                               )}
+                              {action.type === "assign_accounts_staff" && (
+                                 <div className="space-y-2">
+                                    <label className="text-xs font-bold text-slate-500 uppercase">Accounts Staff</label>
+                                    <select value={action.params.user_id || ""} onChange={e => updateActionParam(drawerActionIndex, 'user_id', e.target.value ? Number(e.target.value) : "")} className="w-full px-4 py-3 bg-[#16161a] border border-white/10 rounded-xl text-sm text-white">
+                                       <option value="">Round robin (least recently assigned)</option>
+                                       {users.filter((u: any) => u.role === "accounts_staff").map((u: any) => (
+                                          <option key={u.id} value={u.id}>{u.first_name} {u.last_name}</option>
+                                       ))}
+                                    </select>
+                                    <p className="text-[11px] text-slate-500">Same handover the accounts manager does by hand — leave it on round robin to spread the queue evenly.</p>
+                                 </div>
+                              )}
                               {action.type === "change_status" && (
                                  <select value={action.params.status || ""} onChange={e => updateActionParam(drawerActionIndex, 'status', e.target.value)} className="w-full px-4 py-3 bg-[#16161a] border border-white/10 rounded-xl text-sm text-white">
                                     <option value="">Select New Status...</option>
@@ -614,10 +638,19 @@ export default function AutomationBuilder({ domain, metaOptions, editingRule, on
                               )}
                               {action.type === "send_notification" && (
                                  <div className="space-y-4">
-                                    <select value={action.params.user_id || ""} onChange={e => updateActionParam(drawerActionIndex, 'user_id', Number(e.target.value))} className="w-full px-4 py-3 bg-[#16161a] border border-white/10 rounded-xl text-sm text-white">
+                                    <select value={action.params.user_id || ""} onChange={e => { updateActionParam(drawerActionIndex, 'user_id', e.target.value ? Number(e.target.value) : ""); if (e.target.value) updateActionParam(drawerActionIndex, 'role', ""); }} className="w-full px-4 py-3 bg-[#16161a] border border-white/10 rounded-xl text-sm text-white">
                                        <option value="">Select Recipient...</option>
                                        {users.map((u: any) => <option key={u.id} value={u.id}>{u.first_name} {u.last_name}</option>)}
                                     </select>
+                                    {/* Naming a role instead of a person keeps the rule working
+                                        when whoever runs that desk changes. */}
+                                    <div className="space-y-2">
+                                       <label className="text-xs font-bold text-slate-500 uppercase">…or everyone with a role</label>
+                                       <select value={action.params.role || ""} onChange={e => { updateActionParam(drawerActionIndex, 'role', e.target.value); if (e.target.value) updateActionParam(drawerActionIndex, 'user_id', ""); }} className="w-full px-4 py-3 bg-[#16161a] border border-white/10 rounded-xl text-sm text-white">
+                                          <option value="">No role</option>
+                                          {NOTIFY_ROLES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+                                       </select>
+                                    </div>
                                     <input value={action.params.message || ""} onChange={e => updateActionParam(drawerActionIndex, 'message', e.target.value)} placeholder="Push notification message" className="w-full px-4 py-3 bg-[#16161a] border border-white/10 rounded-xl text-sm text-white" />
                                  </div>
                               )}

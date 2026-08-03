@@ -349,6 +349,7 @@ def _dispatch_action(action_type: str, params: dict, obj, context: dict) -> str:
     """Route to the appropriate action handler."""
     handlers = {
         'assign_lead': _action_assign_lead,
+        'assign_accounts_staff': _action_assign_accounts_staff,
         'ai_auto_assign': _action_ai_auto_assign,
         'change_status': _action_change_status,
         'create_task': _action_create_task,
@@ -429,6 +430,47 @@ def _action_assign_lead(params, obj, context) -> str:
             raise ValueError(f"User id={user_id} not found")
     else:
         raise ValueError("assign_lead requires user_id or round_robin+team_id")
+
+
+def _action_assign_accounts_staff(params, obj, context) -> str:
+    """Hand a lead in accounts to a specific accounts staff member, or let the
+    round-robin pick one.
+
+    The accounts manager does this by hand from the Accounts screen; this is the
+    same handover expressed as a rule, so routing can run without them.
+
+    params: {'user_id': <accounts staff id>}  — omit for round-robin.
+    """
+    from leads.models import Lead
+    if not isinstance(obj, Lead):
+        raise ValueError("assign_accounts_staff only works on Lead objects")
+    if not obj.pushed_to_accounts:
+        return "Lead is not in accounts yet — nothing to assign"
+
+    user_id = params.get('user_id')
+    if user_id:
+        from users.models import User, ROLE_ACCOUNTS_STAFF
+        try:
+            user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            raise ValueError(f"User id={user_id} not found")
+        # Assigning the queue to someone who cannot work it would strand the lead.
+        if user.role != ROLE_ACCOUNTS_STAFF or not user.is_active:
+            raise ValueError(f"{user.username} is not active accounts staff")
+        obj.accounts_staff = user
+        obj.save(update_fields=['accounts_staff'])
+        return f"Accounts staff set to {user.first_name} {user.last_name} (id={user.id})"
+
+    # Round-robin: reuse the same picker the accounts handoff uses, so a rule and
+    # the automatic handover can't drift apart.
+    from leads.views import auto_assign_accounts
+    if obj.accounts_staff_id:
+        obj.accounts_staff = None
+        obj.save(update_fields=['accounts_staff'])
+    assignee = auto_assign_accounts(obj)
+    if not assignee:
+        return "No active accounts staff to assign"
+    return f"Round-robin assigned to {assignee.first_name} {assignee.last_name} (id={assignee.id})"
 
 
 def _action_ai_auto_assign(params, obj, context) -> str:
@@ -551,26 +593,38 @@ def _action_send_webhook(params, obj, context) -> str:
 
 
 def _action_send_notification(params, obj, context) -> str:
-    """Create an in-app notification (uses ai_manager notification if available)."""
+    """Create an in-app notification (uses ai_manager notification if available).
+
+    Targets one person by `user_id`, or everyone holding a role by `role` — the
+    latter is how a rule reaches whoever currently runs a desk (the accounts
+    manager, say) without naming them and going stale when they change.
+    """
     user_id = params.get('user_id')
+    role = (params.get('role') or '').strip()
     message = params.get('message', 'Automation notification')
 
-    if not user_id:
-        raise ValueError("send_notification requires 'user_id'")
+    if not user_id and not role:
+        raise ValueError("send_notification requires 'user_id' or 'role'")
 
     try:
         from ai_manager.models import Notification
         from users.models import User
-        user = User.objects.get(id=user_id)
-        Notification.objects.create(
-            user=user,
-            title='🤖 Automation Alert',
-            message=message,
-        )
+        if role:
+            recipients = list(User.objects.filter(role=role, is_active=True))
+            if not recipients:
+                return f"No active user holds the role '{role}'"
+        else:
+            recipients = [User.objects.get(id=user_id)]
+        Notification.objects.bulk_create([
+            Notification(user=u, title='🤖 Automation Alert', message=message)
+            for u in recipients
+        ])
+        if role:
+            return f"Notification sent to {len(recipients)} user(s) with role '{role}'"
         return f"Notification sent to user id={user_id}"
     except ImportError:
         # Fallback: just log it
-        return f"Notification logged for user id={user_id} (notification module not available)"
+        return f"Notification logged for user id={user_id or role} (notification module not available)"
     except Exception as e:
         raise ValueError(f"Notification failed: {e}")
 

@@ -78,6 +78,7 @@ ROLE_COO = 'coo'
 ROLE_SALES_MANAGER = 'sales_manager'
 ROLE_DOC_MANAGER = 'documentation_manager'
 ROLE_DOC_STAFF = 'documentation_staff'
+ROLE_ACCOUNTS_MANAGER = 'accounts_manager'
 ROLE_ACCOUNTS_STAFF = 'accounts_staff'
 ROLE_PURCHASE_STAFF = 'purchase_staff'
 ROLE_PROJECT_MANAGER = 'project_manager'
@@ -104,6 +105,7 @@ ROLE_CHOICES = [
     (ROLE_SALES_MANAGER, 'Sales Manager'),
     (ROLE_DOC_MANAGER, 'Documentation Manager'),
     (ROLE_DOC_STAFF, 'Documentation Staff'),
+    (ROLE_ACCOUNTS_MANAGER, 'Accounts Manager'),
     (ROLE_ACCOUNTS_STAFF, 'Accounts Staff'),
     (ROLE_PURCHASE_STAFF, 'Purchase Staff'),
     (ROLE_PROJECT_MANAGER, 'Project Manager'),
@@ -128,6 +130,11 @@ ROLE_BOOL_MAP = {
     ROLE_SALES_MANAGER:  (False, False, True,  False),
     ROLE_DOC_MANAGER:    (False, False, True,  False),
     ROLE_DOC_STAFF:      (False, False, False, False),
+    # All-False on purpose. The documentation manager above carries
+    # is_general_manager, which opens every module in the company; the accounts
+    # manager runs accounts, so its powers are granted explicitly in access.py
+    # rather than inherited from a company-wide flag.
+    ROLE_ACCOUNTS_MANAGER: (False, False, False, False),
     ROLE_ACCOUNTS_STAFF: (False, False, False, False),
     ROLE_PURCHASE_STAFF: (False, False, False, False),
     ROLE_PROJECT_MANAGER: (False, False, False, False),
@@ -156,6 +163,7 @@ ROLE_RANK = {
     ROLE_COO: 80,
     ROLE_SALES_MANAGER: 70,
     ROLE_DOC_MANAGER: 70,
+    ROLE_ACCOUNTS_MANAGER: 70,
     ROLE_BRANCH_MANAGER: 60,
     ROLE_PROJECT_MANAGER: 40,
     ROLE_DOC_STAFF: 30,
@@ -227,7 +235,7 @@ class User(AbstractUser):
         granted = self.can('leads.view_all')
         if granted is not None:
             return granted
-        return self.is_staff or self.is_general_manager or self.role in (ROLE_DOC_STAFF, ROLE_ACCOUNTS_STAFF, ROLE_PURCHASE_STAFF, ROLE_PROJECT_MANAGER, ROLE_LIASONING_OFFICER)
+        return self.is_staff or self.is_general_manager or self.role in (ROLE_DOC_STAFF, ROLE_ACCOUNTS_MANAGER, ROLE_ACCOUNTS_STAFF, ROLE_PURCHASE_STAFF, ROLE_PROJECT_MANAGER, ROLE_LIASONING_OFFICER)
 
     @property
     def branch_scoped(self):
