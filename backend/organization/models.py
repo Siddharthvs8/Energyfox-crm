@@ -69,6 +69,27 @@ class OrgSettings(models.Model):
         blank=True, default='',
         help_text="Appended to outgoing emails sent from the CRM")
 
+    # ── B2B (wholesale) email + WhatsApp ──
+    # The wholesale side trades under its own identity: its proforma invoices and
+    # dispatch invoices go out from this account and this number rather than the
+    # retail ones. Leave a field blank and that channel falls back to the shared
+    # settings above, so switching B2B on is opt-in per credential.
+    b2b_email_host = models.CharField(max_length=255, blank=True, default='')
+    b2b_email_port = models.IntegerField(default=587)
+    b2b_email_use_tls = models.BooleanField(default=True)
+    b2b_email_use_ssl = models.BooleanField(default=False)
+    b2b_email_host_user = models.CharField(max_length=255, blank=True, default='')
+    b2b_email_host_password = models.CharField(max_length=255, blank=True, default='')
+    b2b_email_from_name = models.CharField(max_length=120, blank=True, default='')
+    b2b_email_from_address = models.EmailField(blank=True, default='')
+    b2b_email_signature = models.TextField(
+        blank=True, default='',
+        help_text="Appended to outgoing B2B emails; blank uses the shared signature")
+
+    b2b_whatsapp_phone_number_id = models.CharField(max_length=64, blank=True, default='')
+    b2b_whatsapp_access_token = models.TextField(blank=True, default='')
+    b2b_whatsapp_business_account_id = models.CharField(max_length=64, blank=True, default='')
+
     # ── Custom Lead Statuses ──
     custom_lead_statuses = models.JSONField(default=list, blank=True)
 

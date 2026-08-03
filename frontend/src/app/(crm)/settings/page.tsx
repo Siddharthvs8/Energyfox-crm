@@ -51,6 +51,11 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
     whatsapp_business_account_id: "",
     whatsapp_verify_token: "",
     email_host: "",
+    b2b_email_host: "", b2b_email_port: 587, b2b_email_use_tls: true, b2b_email_use_ssl: false,
+    b2b_email_host_user: "", b2b_email_host_password: "", b2b_email_from_name: "",
+    b2b_email_from_address: "", b2b_email_signature: "",
+    b2b_whatsapp_phone_number_id: "", b2b_whatsapp_business_account_id: "",
+    b2b_whatsapp_access_token: "",
     email_port: 587,
     email_use_tls: true,
     email_use_ssl: false,
@@ -76,6 +81,21 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
   const [isAdmin, setIsAdmin] = useState(false);
   // Whether outgoing email is actually working, and a way to prove it.
   const [emailStatus, setEmailStatus] = useState<any>(null);
+
+  // Which sending account the WhatsApp + Email blocks are editing. The wholesale
+  // side may trade under its own identity; a blank B2B field falls back to B2C,
+  // so switching it on is opt-in per credential.
+  const [intSide, setIntSide] = useState<"b2c" | "b2b">("b2c");
+  const sidePrefix = intSide === "b2b" ? "b2b_" : "";
+  const fld = (name: string) => (tenantData as any)[sidePrefix + name] ?? "";
+  const setFld = (name: string, value: any) =>
+    setTenantData({ ...tenantData, [sidePrefix + name]: value });
+  // For fields that move together, like the mutually exclusive TLS/SSL pair.
+  const setFlds = (patch: Record<string, any>) =>
+    setTenantData({
+      ...tenantData,
+      ...Object.fromEntries(Object.entries(patch).map(([k, v]) => [sidePrefix + k, v])),
+    });
   const [testingEmail, setTestingEmail] = useState(false);
   const [themeSaving, setThemeSaving] = useState("");
   // Settings is long, so it's split into sections rather than one endless scroll.
@@ -204,18 +224,19 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
     }
   };
 
-  const loadEmailStatus = async () => {
+  // The banner describes whichever account is on screen, so it re-reads on switch.
+  const loadEmailStatus = async (side = intSide) => {
     const token = localStorage.getItem(`${domain}_access`);
     if (!token) return;
     try {
-      const r = await fetch(`${getApiBase(domain)}/api/email/status/`, { headers: { Authorization: `Bearer ${token}` } });
+      const r = await fetch(`${getApiBase(domain)}/api/email/status/?channel=${side}`, { headers: { Authorization: `Bearer ${token}` } });
       if (r.ok) setEmailStatus(await r.json());
     } catch { /* banner just stays hidden */ }
   };
-  useEffect(() => { loadEmailStatus(); }, [domain]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadEmailStatus(); }, [domain, intSide]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const sendTestEmail = async () => {
-    const to = window.prompt("Send the test email to:", tenantData.email_from_address || tenantData.email_host_user || "");
+    const to = window.prompt("Send the test email to:", fld("email_from_address") || fld("email_host_user") || "");
     if (!to) return;
     setTestingEmail(true); setError(""); setSuccess("");
     try {
@@ -223,7 +244,7 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
       const r = await fetch(`${getApiBase(domain)}/api/email/test/`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ to }),
+        body: JSON.stringify({ to, channel: intSide }),
       });
       const d = await r.json().catch(() => ({}));
       if (r.ok) setSuccess(`Test email sent to ${d.to} from ${d.from}.`);
@@ -283,6 +304,14 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
     formData.append("whatsapp_business_account_id", tenantData.whatsapp_business_account_id || "");
     formData.append("whatsapp_verify_token", tenantData.whatsapp_verify_token || "");
     formData.append("email_host", tenantData.email_host || "");
+    // The wholesale account travels with the same PATCH.
+    ["b2b_email_host", "b2b_email_port", "b2b_email_host_user", "b2b_email_host_password",
+     "b2b_email_from_name", "b2b_email_from_address", "b2b_email_signature",
+     "b2b_whatsapp_phone_number_id", "b2b_whatsapp_business_account_id",
+     "b2b_whatsapp_access_token"].forEach(k =>
+      formData.append(k, String((tenantData as any)[k] ?? "")));
+    formData.append("b2b_email_use_tls", String(!!(tenantData as any).b2b_email_use_tls));
+    formData.append("b2b_email_use_ssl", String(!!(tenantData as any).b2b_email_use_ssl));
     formData.append("email_port", String(tenantData.email_port || 587));
     formData.append("email_use_tls", String(!!tenantData.email_use_tls));
     formData.append("email_use_ssl", String(!!tenantData.email_use_ssl));
@@ -347,6 +376,8 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
         }
         setLogoFile(null);
         setInvoiceFile(null);
+        // A just-saved SMTP host changes what the banner should say.
+        loadEmailStatus();
         if (data.warranty_signature) setPreviewSig(`${getApiBase(domain)}${data.warranty_signature}`);
         if (data.warranty_seal) setPreviewSeal(`${getApiBase(domain)}${data.warranty_seal}`);
         setSigFile(null);
@@ -661,32 +692,54 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
               )}
             </div>
 
+            {/* Retail and wholesale can send from different accounts. Anything left
+                blank on the B2B side falls back to the B2C one. */}
+            <div className="pt-6 border-t border-slate-100">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-sm font-semibold text-slate-700">Sending account</span>
+                <div className="inline-flex rounded-xl bg-slate-100 p-1">
+                  {(["b2c", "b2b"] as const).map(side => (
+                    <button key={side} type="button" onClick={() => setIntSide(side)}
+                      className={`px-4 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition ${
+                        intSide === side ? "bg-white text-indigo-600 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
+                      {side}
+                    </button>
+                  ))}
+                </div>
+                <span className="text-xs text-slate-400">
+                  {intSide === "b2b"
+                    ? "Used by wholesale proforma invoices and dispatch invoices. Blank fields fall back to B2C."
+                    : "Used by everything except the wholesale documents."}
+                </span>
+              </div>
+            </div>
+
             <div className="pt-6 border-t border-slate-100">
               <h3 className="text-lg font-bold text-slate-900 mb-1">WhatsApp Automation <span className="text-xs font-semibold text-emerald-600 align-middle">Cloud API</span></h3>
               <p className="text-sm text-slate-500 mb-6">Connect Meta WhatsApp Cloud API to send messages from automations and bulk campaigns.</p>
               <div className="grid sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-semibold text-slate-700 mb-2">Phone Number ID</label>
-                  <input type="text" value={tenantData.whatsapp_phone_number_id}
-                    onChange={(e) => setTenantData({ ...tenantData, whatsapp_phone_number_id: e.target.value })}
+                  <input type="text" value={fld("whatsapp_phone_number_id")}
+                    onChange={(e) => setFld("whatsapp_phone_number_id", e.target.value)}
                     placeholder="e.g. 1234567890" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
                 </div>
                 <div>
                   <label className="block text-sm font-semibold text-slate-700 mb-2">WhatsApp Business Account ID</label>
-                  <input type="text" value={tenantData.whatsapp_business_account_id}
-                    onChange={(e) => setTenantData({ ...tenantData, whatsapp_business_account_id: e.target.value })}
+                  <input type="text" value={fld("whatsapp_business_account_id")}
+                    onChange={(e) => setFld("whatsapp_business_account_id", e.target.value)}
                     placeholder="Optional" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
                 </div>
                 <div className="sm:col-span-2">
                   <label className="block text-sm font-semibold text-slate-700 mb-2">Permanent Access Token</label>
-                  <input type="password" value={tenantData.whatsapp_access_token}
-                    onChange={(e) => setTenantData({ ...tenantData, whatsapp_access_token: e.target.value })}
+                  <input type="password" value={fld("whatsapp_access_token")}
+                    onChange={(e) => setFld("whatsapp_access_token", e.target.value)}
                     placeholder="•••• (leave masked to keep current)" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
                 </div>
                 <div className="sm:col-span-2">
                   <label className="block text-sm font-semibold text-slate-700 mb-2">Webhook Verify Token</label>
-                  <input type="text" value={tenantData.whatsapp_verify_token}
-                    onChange={(e) => setTenantData({ ...tenantData, whatsapp_verify_token: e.target.value })}
+                  <input type="text" value={fld("whatsapp_verify_token")}
+                    onChange={(e) => setFld("whatsapp_verify_token", e.target.value)}
                     placeholder="Any secret string you choose (used to verify the webhook)" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
                 </div>
                 <div className="sm:col-span-2">
@@ -720,66 +773,66 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
               <div className="grid sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-semibold text-slate-700 mb-2">SMTP Host</label>
-                  <input type="text" value={tenantData.email_host || ""}
-                    onChange={(e) => setTenantData({ ...tenantData, email_host: e.target.value })}
+                  <input type="text" value={fld("email_host") || ""}
+                    onChange={(e) => setFld("email_host", e.target.value)}
                     placeholder="smtp.gmail.com"
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
                 </div>
                 <div>
                   <label className="block text-sm font-semibold text-slate-700 mb-2">Port</label>
-                  <input type="number" value={tenantData.email_port ?? 587}
-                    onChange={(e) => setTenantData({ ...tenantData, email_port: parseInt(e.target.value) || 587 })}
+                  <input type="number" value={fld("email_port") ?? 587}
+                    onChange={(e) => setFld("email_port", parseInt(e.target.value) || 587)}
                     placeholder="587"
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
                   <p className="text-xs text-slate-400 mt-2">587 with TLS, or 465 with SSL.</p>
                 </div>
                 <div>
                   <label className="block text-sm font-semibold text-slate-700 mb-2">Username</label>
-                  <input type="text" value={tenantData.email_host_user || ""}
-                    onChange={(e) => setTenantData({ ...tenantData, email_host_user: e.target.value })}
+                  <input type="text" value={fld("email_host_user") || ""}
+                    onChange={(e) => setFld("email_host_user", e.target.value)}
                     placeholder="you@energyfox.in"
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
                 </div>
                 <div>
                   <label className="block text-sm font-semibold text-slate-700 mb-2">Password / App Password</label>
-                  <input type="password" value={tenantData.email_host_password || ""}
-                    onChange={(e) => setTenantData({ ...tenantData, email_host_password: e.target.value })}
+                  <input type="password" value={fld("email_host_password") || ""}
+                    onChange={(e) => setFld("email_host_password", e.target.value)}
                     placeholder="•••• (leave masked to keep current)"
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
                 </div>
                 <div className="sm:col-span-2 flex flex-wrap items-center gap-6">
                   <label className="flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer">
-                    <input type="checkbox" checked={!!tenantData.email_use_tls}
-                      onChange={(e) => setTenantData({ ...tenantData, email_use_tls: e.target.checked, email_use_ssl: e.target.checked ? false : tenantData.email_use_ssl })}
+                    <input type="checkbox" checked={!!fld("email_use_tls")}
+                      onChange={(e) => setFlds({ email_use_tls: e.target.checked, email_use_ssl: e.target.checked ? false : fld("email_use_ssl") })}
                       className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500/30" />
                     Use TLS (port 587)
                   </label>
                   <label className="flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer">
-                    <input type="checkbox" checked={!!tenantData.email_use_ssl}
-                      onChange={(e) => setTenantData({ ...tenantData, email_use_ssl: e.target.checked, email_use_tls: e.target.checked ? false : tenantData.email_use_tls })}
+                    <input type="checkbox" checked={!!fld("email_use_ssl")}
+                      onChange={(e) => setFlds({ email_use_ssl: e.target.checked, email_use_tls: e.target.checked ? false : fld("email_use_tls") })}
                       className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500/30" />
                     Use SSL (port 465)
                   </label>
                 </div>
                 <div>
                   <label className="block text-sm font-semibold text-slate-700 mb-2">From Name</label>
-                  <input type="text" value={tenantData.email_from_name || ""}
-                    onChange={(e) => setTenantData({ ...tenantData, email_from_name: e.target.value })}
+                  <input type="text" value={fld("email_from_name") || ""}
+                    onChange={(e) => setFld("email_from_name", e.target.value)}
                     placeholder="EnergyFox"
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
                 </div>
                 <div>
                   <label className="block text-sm font-semibold text-slate-700 mb-2">From Address</label>
-                  <input type="email" value={tenantData.email_from_address || ""}
-                    onChange={(e) => setTenantData({ ...tenantData, email_from_address: e.target.value })}
+                  <input type="email" value={fld("email_from_address") || ""}
+                    onChange={(e) => setFld("email_from_address", e.target.value)}
                     placeholder="info@energyfox.in"
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
                   <p className="text-xs text-slate-400 mt-2">Defaults to the username if left blank.</p>
                 </div>
                 <div className="sm:col-span-2">
                   <label className="block text-sm font-semibold text-slate-700 mb-2">Email Signature</label>
-                  <textarea rows={3} value={tenantData.email_signature || ""}
-                    onChange={(e) => setTenantData({ ...tenantData, email_signature: e.target.value })}
+                  <textarea rows={3} value={fld("email_signature") || ""}
+                    onChange={(e) => setFld("email_signature", e.target.value)}
                     placeholder={"Regards,\nEnergyFox Consultants Pvt Ltd\n9526 396 823 · energyfox.in"}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
                   <p className="text-xs text-slate-400 mt-2">Appended to every email the CRM sends.</p>

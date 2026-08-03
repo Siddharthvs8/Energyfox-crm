@@ -266,7 +266,8 @@ class EmailStatusView(APIView):
 
     def get(self, request):
         from .email import config_status
-        return Response(config_status())
+        # ?channel=b2b reports the wholesale account rather than the shared one.
+        return Response(config_status(request.query_params.get('channel') or None))
 
 
 class EmailSendView(APIView):
@@ -324,10 +325,11 @@ class EmailTestView(APIView):
         if not to:
             return Response({'detail': 'No address to send the test to — add one to your profile.'},
                             status=400)
-        log = send_test(to, created_by=request.user)
+        channel = (request.data or {}).get('channel') or None
+        log = send_test(to, created_by=request.user, channel=channel)
         ok = log.status == 'sent'
         return Response({'status': log.status, 'to': log.to_email,
-                         'from': from_address(), 'error': log.error},
+                         'from': from_address(channel), 'error': log.error},
                         status=200 if ok else 400)
 
 

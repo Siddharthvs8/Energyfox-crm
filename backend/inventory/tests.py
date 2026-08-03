@@ -6,6 +6,12 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from django.core.files.uploadedfile import SimpleUploadedFile
+from unittest.mock import patch
+
+from leads.models import Lead
+from messaging import whatsapp
+from organization.models import OrgSettings
 from users.models import User
 from .models import Vendor, StockItem, StockCustomer, GoodsReceipt, StockDispatch
 
@@ -601,3 +607,69 @@ class DispatchTaxTests(TestCase):
                               content_type='application/json', **self.auth())
         self.assertEqual(r.status_code, 200)
         self.assertEqual(Decimal(r.json()['total']), Decimal('1050'))
+
+
+class DocumentSendChannelTests(TestCase):
+    """Wholesale documents go out on the B2B account; retail ones don't.
+
+    Driven through the real send endpoints rather than by reading the constant,
+    so a future refactor that drops the channel on the way down is caught.
+    """
+
+    def setUp(self):
+        self.admin = mk('chan_admin', 'admin')
+        org = OrgSettings.load()
+        org.whatsapp_phone_number_id = 'retail-pid'
+        org.whatsapp_access_token = 'retail-token'
+        org.b2b_whatsapp_phone_number_id = 'wholesale-pid'
+        org.b2b_whatsapp_access_token = 'wholesale-token'
+        org.save()
+        self.customer = StockCustomer.objects.create(name='Green Fields Resort',
+                                                     contact_number='9876543210')
+        self.item = StockItem.objects.create(code='CH-PNL', category='Solar Panel',
+                                             opening_stock=50, unit_cost=Decimal('9800'))
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': token_for(self.admin)}
+
+    def send(self, url):
+        """POST a one-page PDF at `url` over WhatsApp, and report the number used."""
+        pdf = SimpleUploadedFile('doc.pdf', b'%PDF-1.4 test', content_type='application/pdf')
+        with patch.object(whatsapp._session, 'post') as post:
+            post.return_value.status_code = 200
+            post.return_value.json.return_value = {'messages': [{'id': 'wamid.1'}]}
+            r = self.client.post(url, data={'pdf': pdf, 'channels': 'whatsapp'}, **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        return post.call_args[0][0], post.call_args[1]['headers']['Authorization']
+
+    def test_a_wholesale_proforma_uses_the_b2b_number(self):
+        r = self.client.post('/api/stock-quotes/', data={
+            'customer': self.customer.id, 'quote_date': str(timezone.localdate()),
+            'items': [{'item': self.item.id, 'quantity': '2', 'unit_price': '11200'}],
+        }, content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        url, token = self.send(f"/api/stock-quotes/{r.json()['id']}/send/")
+        self.assertIn('wholesale-pid', url)
+        self.assertEqual(token, 'Bearer wholesale-token')
+
+    def test_a_dispatch_invoice_uses_the_b2b_number(self):
+        r = self.client.post('/api/stock-dispatches/', data={
+            'item': self.item.id, 'customer': self.customer.id,
+            'date': str(timezone.localdate()), 'quantity': '2',
+            'unit_price': '11200',
+        }, content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        url, token = self.send(f"/api/stock-dispatches/{r.json()['id']}/send/")
+        self.assertIn('wholesale-pid', url)
+        self.assertEqual(token, 'Bearer wholesale-token')
+
+    def test_a_retail_proforma_still_uses_the_shared_number(self):
+        lead = Lead.objects.create(first_name='Sidharth', last_name='V', phone='9876500000')
+        r = self.client.post('/api/quotes/', data={
+            'lead': lead.id, 'quote_date': str(timezone.localdate()),
+            'items': [{'description': 'Solar panel', 'quantity': '2', 'unit_price': '11200'}],
+        }, content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        url, token = self.send(f"/api/quotes/{r.json()['id']}/send/")
+        self.assertIn('retail-pid', url)
+        self.assertEqual(token, 'Bearer retail-token')

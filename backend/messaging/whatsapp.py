@@ -13,13 +13,24 @@ GRAPH_BASE = 'https://graph.facebook.com/v20.0'
 _session = requests.Session()
 
 
-def _creds():
+# The wholesale side may message from its own number. `channel='b2b'` picks the
+# B2B credentials; blank ones fall back to the shared account, so turning it on
+# is opt-in rather than all-or-nothing.
+B2B = 'b2b'
+
+
+def _creds(channel=None):
     org = get_org_settings()
+    if channel == B2B:
+        pid = (org.b2b_whatsapp_phone_number_id or '').strip()
+        token = (org.b2b_whatsapp_access_token or '').strip()
+        if pid and token:
+            return pid, token
     return org.whatsapp_phone_number_id or '', org.whatsapp_access_token or ''
 
 
-def is_configured() -> bool:
-    pid, token = _creds()
+def is_configured(channel=None) -> bool:
+    pid, token = _creds(channel)
     return bool(pid and token)
 
 
@@ -28,8 +39,8 @@ def normalize_number(number: str) -> str:
     return re.sub(r'\D', '', number or '')
 
 
-def _post(payload: dict) -> str:
-    pid, token = _creds()
+def _post(payload: dict, channel=None) -> str:
+    pid, token = _creds(channel)
     if not (pid and token):
         raise ValueError('WhatsApp is not configured for this workspace')
     resp = _session.post(
@@ -49,16 +60,17 @@ def _post(payload: dict) -> str:
     return ((data.get('messages') or [{}])[0] or {}).get('id', '')
 
 
-def send_text(to: str, body: str) -> str:
+def send_text(to: str, body: str, channel=None) -> str:
     return _post({
         'messaging_product': 'whatsapp',
         'to': normalize_number(to),
         'type': 'text',
         'text': {'body': body or ''},
-    })
+    }, channel)
 
 
-def send_document(to: str, link: str, filename: str = '', caption: str = '') -> str:
+def send_document(to: str, link: str, filename: str = '', caption: str = '',
+                  channel=None) -> str:
     """Send a PDF (or other document) by URL.
 
     The Cloud API fetches the file itself, so `link` must be reachable from
@@ -75,7 +87,7 @@ def send_document(to: str, link: str, filename: str = '', caption: str = '') -> 
         'to': normalize_number(to),
         'type': 'document',
         'document': document,
-    })
+    }, channel)
 
 
 def send_template(to: str, template_name: str, language: str = 'en_US', variables=None) -> str:

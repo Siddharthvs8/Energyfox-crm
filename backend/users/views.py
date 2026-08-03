@@ -606,6 +606,16 @@ class TenantSettingsView(APIView):
         if org.email_host_password:
             masked_email_password = '•' * max(0, len(org.email_host_password) - 4) + org.email_host_password[-4:]
 
+        # The wholesale side's own credentials, masked the same way.
+        masked_b2b_email_password = ''
+        if org.b2b_email_host_password:
+            masked_b2b_email_password = ('•' * max(0, len(org.b2b_email_host_password) - 4)
+                                         + org.b2b_email_host_password[-4:])
+        masked_b2b_whatsapp_token = ''
+        if org.b2b_whatsapp_access_token:
+            masked_b2b_whatsapp_token = ('•' * max(0, len(org.b2b_whatsapp_access_token) - 4)
+                                         + org.b2b_whatsapp_access_token[-4:])
+
         return Response({
             "name": org.name,
             "logo": org.logo.url if org.logo else None,
@@ -633,6 +643,19 @@ class TenantSettingsView(APIView):
             "email_from_name": org.email_from_name,
             "email_from_address": org.email_from_address,
             "email_signature": org.email_signature,
+            # B2B (wholesale) email + WhatsApp. Blank means "use the shared one".
+            "b2b_email_host": org.b2b_email_host,
+            "b2b_email_port": org.b2b_email_port,
+            "b2b_email_use_tls": org.b2b_email_use_tls,
+            "b2b_email_use_ssl": org.b2b_email_use_ssl,
+            "b2b_email_host_user": org.b2b_email_host_user,
+            "b2b_email_host_password": masked_b2b_email_password,
+            "b2b_email_from_name": org.b2b_email_from_name,
+            "b2b_email_from_address": org.b2b_email_from_address,
+            "b2b_email_signature": org.b2b_email_signature,
+            "b2b_whatsapp_phone_number_id": org.b2b_whatsapp_phone_number_id,
+            "b2b_whatsapp_business_account_id": org.b2b_whatsapp_business_account_id,
+            "b2b_whatsapp_access_token": masked_b2b_whatsapp_token,
             "custom_lead_statuses": org.custom_lead_statuses or [],
             "theme": org.theme,
             "warranty_company_name": org.warranty_company_name,
@@ -767,6 +790,28 @@ class TenantSettingsView(APIView):
         pw = request.data.get('email_host_password')
         if pw is not None and not _looks_masked(str(pw), tenant.email_host_password):
             tenant.email_host_password = pw
+
+        # B2B (wholesale) email + WhatsApp — same shape, same masking rule.
+        for f in ['b2b_email_host', 'b2b_email_host_user', 'b2b_email_from_name',
+                  'b2b_email_from_address', 'b2b_email_signature',
+                  'b2b_whatsapp_phone_number_id', 'b2b_whatsapp_business_account_id']:
+            v = request.data.get(f)
+            if v is not None:
+                setattr(tenant, f, v)
+        if request.data.get('b2b_email_port') not in (None, ''):
+            try:
+                tenant.b2b_email_port = int(request.data.get('b2b_email_port'))
+            except (TypeError, ValueError):
+                pass
+        for f in ['b2b_email_use_tls', 'b2b_email_use_ssl']:
+            v = request.data.get(f)
+            if v is not None:
+                setattr(tenant, f, str(v).lower() in ('true', '1', 'yes', 'on'))
+        for field, current in (('b2b_email_host_password', tenant.b2b_email_host_password),
+                               ('b2b_whatsapp_access_token', tenant.b2b_whatsapp_access_token)):
+            v = request.data.get(field)
+            if v is not None and not _looks_masked(str(v), current):
+                setattr(tenant, field, v)
 
         # Warranty certificate settings (fixed details printed on the generated document).
         for f in ['warranty_company_name', 'warranty_cin', 'warranty_gst',

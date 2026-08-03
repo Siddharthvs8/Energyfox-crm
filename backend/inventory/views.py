@@ -206,7 +206,7 @@ def totals_block(taxable, discount, tax, grand):
     }
 
 
-def deliver_document(request, *, holder, number, amount, party, noun):
+def deliver_document(request, *, holder, number, amount, party, noun, channel=None):
     """Store the posted PDF against `holder` and send it out.
 
     Shared by the proforma invoice and the dispatch invoice: the client renders
@@ -243,6 +243,7 @@ def deliver_document(request, *, holder, number, amount, party, noun):
                 kind=noun.lower().replace(' ', '_'),
                 attachments=[(f"{safe_doc_name(number)}.pdf", data, 'application/pdf')],
                 created_by=request.user if request.user.is_authenticated else None,
+                channel=channel,
             )
             results['email'] = log.status
             if log.status != 'sent':
@@ -260,6 +261,7 @@ def deliver_document(request, *, holder, number, amount, party, noun):
                     link=request.build_absolute_uri(holder.pdf.url),
                     filename=f"{safe_doc_name(number)}.pdf",
                     caption=f"{noun} {number}",
+                    channel=channel,
                 )
                 results['whatsapp'] = 'sent'
             except Exception as exc:                         # surfaced to the user
@@ -280,6 +282,10 @@ class ProformaDocumentMixin:
     storing the PDF and sending it — is shared, so the two modules state the same
     figures and can't drift apart.
     """
+
+    # Which messaging account these documents go out on. Retail keeps the shared
+    # one; the wholesale viewsets override this to 'b2b'.
+    SEND_CHANNEL = None
 
     def proforma_party(self, quote):
         """Who the invoice is addressed to: name, gstin, address, state, contacts."""
@@ -339,7 +345,8 @@ class ProformaDocumentMixin:
         quote = self.get_object()
         payload, code = deliver_document(
             request, holder=quote, number=quote.number, amount=quote.total,
-            party=self.proforma_party(quote), noun='Proforma Invoice')
+            party=self.proforma_party(quote), noun='Proforma Invoice',
+            channel=self.SEND_CHANNEL)
         # Raising the document to the customer moves it out of draft.
         if code == status.HTTP_200_OK and quote.status == 'draft' and payload.get('sent'):
             quote.status = 'sent'
@@ -619,7 +626,8 @@ class StockDispatchViewSet(_MovementViewSet):
         # a multi-item delivery finds the same document.
         payload, code = deliver_document(
             request, holder=rows[0], number=dispatch.invoice_no or f'DSP-{dispatch.pk}',
-            amount=amount, party=self._party(dispatch.customer), noun='Invoice')
+            amount=amount, party=self._party(dispatch.customer), noun='Invoice',
+            channel='b2b')
         return Response(payload, status=code)
 
 
@@ -817,6 +825,8 @@ class InventoryDashboardView(APIView):
 
 
 class StockQuoteViewSet(ProformaDocumentMixin, viewsets.ModelViewSet):
+    # Wholesale trades under its own identity — see OrgSettings.b2b_email_*.
+    SEND_CHANNEL = 'b2b'
     """Wholesale quotations. Accepting one is recorded by converting it, which
     writes the dispatch rows that take the goods out of stock."""
     serializer_class = StockQuoteSerializer

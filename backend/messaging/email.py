@@ -17,17 +17,34 @@ from django.utils import timezone
 from organization.utils import get_org_settings
 
 
-def _config():
+# The wholesale side may trade under its own identity. `channel='b2b'` picks the
+# B2B account; any B2B field left blank falls back to the shared one, so turning
+# it on is opt-in per credential rather than all-or-nothing.
+B2B = 'b2b'
+
+
+def _org_field(org, channel, name):
+    """Read `name` for this channel, falling back to the shared setting."""
+    if channel == B2B:
+        value = getattr(org, f'b2b_{name}', '')
+        if str(value).strip():
+            return value
+    return getattr(org, name, '')
+
+
+def _config(channel=None):
     """Resolved SMTP config: Settings first, then env. Returns (dict, source)."""
     org = get_org_settings()
-    if (org.email_host or '').strip():
+    host = _org_field(org, channel, 'email_host')
+    if (host or '').strip():
+        prefix = 'b2b_' if (channel == B2B and (getattr(org, 'b2b_email_host', '') or '').strip()) else ''
         return {
-            'host': org.email_host.strip(),
-            'port': org.email_port or 587,
-            'username': org.email_host_user or '',
-            'password': org.email_host_password or '',
-            'use_tls': bool(org.email_use_tls),
-            'use_ssl': bool(org.email_use_ssl),
+            'host': host.strip(),
+            'port': getattr(org, f'{prefix}email_port') or 587,
+            'username': getattr(org, f'{prefix}email_host_user') or '',
+            'password': getattr(org, f'{prefix}email_host_password') or '',
+            'use_tls': bool(getattr(org, f'{prefix}email_use_tls')),
+            'use_ssl': bool(getattr(org, f'{prefix}email_use_ssl')),
         }, 'settings'
     if getattr(settings, 'EMAIL_HOST', ''):
         return {
@@ -41,44 +58,45 @@ def _config():
     return None, 'none'
 
 
-def is_configured() -> bool:
-    cfg, _ = _config()
+def is_configured(channel=None) -> bool:
+    cfg, _ = _config(channel)
     return cfg is not None
 
 
-def config_status() -> dict:
+def config_status(channel=None) -> dict:
     """What the UI shows: whether email is configured and where from."""
-    cfg, source = _config()
+    cfg, source = _config(channel)
     org = get_org_settings()
     return {
         'configured': cfg is not None,
         'source': source,                       # 'settings' | 'env' | 'none'
         'host': (cfg or {}).get('host', ''),
-        'from_address': from_address(),
-        'from_name': org.email_from_name or '',
+        'from_address': from_address(channel),
+        'from_name': _org_field(org, channel, 'email_from_name') or '',
     }
 
 
-def from_address() -> str:
+def from_address(channel=None) -> str:
     """The address outgoing mail is sent from."""
     org = get_org_settings()
-    return (org.email_from_address or org.email_host_user
+    return (_org_field(org, channel, 'email_from_address')
+            or _org_field(org, channel, 'email_host_user')
             or getattr(settings, 'DEFAULT_FROM_EMAIL', '')
             or getattr(settings, 'EMAIL_HOST_USER', '')
             or 'no-reply@energyfox.in')
 
 
-def _from_header() -> str:
+def _from_header(channel=None) -> str:
     org = get_org_settings()
-    addr = from_address()
-    name = (org.email_from_name or '').strip()
+    addr = from_address(channel)
+    name = (_org_field(org, channel, 'email_from_name') or '').strip()
     return f'{name} <{addr}>' if name else addr
 
 
-def _connection():
+def _connection(channel=None):
     """An SMTP connection from the resolved config, or None to use the default
     backend (console in dev) so a missing config doesn't raise."""
-    cfg, _ = _config()
+    cfg, _ = _config(channel)
     if not cfg:
         return None
     return get_connection(
@@ -101,23 +119,23 @@ def _split_recipients(value):
     return [x.strip() for x in items if str(x).strip()]
 
 
-def _with_signature(body: str) -> str:
+def _with_signature(body: str, channel=None) -> str:
     org = get_org_settings()
-    sig = (org.email_signature or '').strip()
+    sig = (_org_field(org, channel, 'email_signature') or '').strip()
     if not sig:
         return body or ''
     return f"{(body or '').rstrip()}\n\n{sig}"
 
 
 def send_and_log(*, to, subject, body, lead=None, cc=None, kind='manual',
-                 created_by=None, attachments=None, html_body=None):
+                 created_by=None, attachments=None, html_body=None, channel=None):
     """Send an email and record it in the outbox. Never raises — a failed send is
     stored with its error so the caller can report it and staff can see it."""
     from .models import EmailMessage as EmailLog
 
     recipients = _split_recipients(to)
     cc_list = _split_recipients(cc)
-    final_body = _with_signature(body)
+    final_body = _with_signature(body, channel)
 
     log = EmailLog(
         lead=lead, to_email=', '.join(recipients)[:254], cc=', '.join(cc_list)[:500],
@@ -129,8 +147,8 @@ def send_and_log(*, to, subject, body, lead=None, cc=None, kind='manual',
             raise ValueError('No recipient address')
         msg = EmailMultiAlternatives(
             subject=subject or '', body=final_body,
-            from_email=_from_header(), to=recipients, cc=cc_list or None,
-            connection=_connection(),
+            from_email=_from_header(channel), to=recipients, cc=cc_list or None,
+            connection=_connection(channel),
         )
         if html_body:
             msg.attach_alternative(html_body, 'text/html')
@@ -147,12 +165,13 @@ def send_and_log(*, to, subject, body, lead=None, cc=None, kind='manual',
     return log
 
 
-def send_test(to, created_by=None):
+def send_test(to, created_by=None, channel=None):
     """Send a "does my config work?" email from the Settings screen."""
     org = get_org_settings()
+    side = ' (B2B)' if channel == B2B else ''
     return send_and_log(
-        to=to,
-        subject=f'{org.name or "EnergyFox"} CRM — test email',
+        to=to, channel=channel,
+        subject=f'{org.name or "EnergyFox"} CRM{side} — test email',
         body=('This is a test email from your CRM.\n\n'
               'If you received it, outgoing email is configured correctly.'),
         kind='test', created_by=created_by,
