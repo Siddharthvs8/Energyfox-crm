@@ -673,3 +673,56 @@ class DocumentSendChannelTests(TestCase):
         url, token = self.send(f"/api/quotes/{r.json()['id']}/send/")
         self.assertIn('retail-pid', url)
         self.assertEqual(token, 'Bearer retail-token')
+
+
+class MultiItemGoodsReceiptTests(TestCase):
+    """A supplier delivery of several products is several receipt rows under one
+    GRN — that is what the stock ledger values, one movement per item."""
+
+    def setUp(self):
+        self.admin = mk('grn_admin', 'admin')
+        self.supplier = Vendor.objects.create(name='Techclustron')
+        self.items = [
+            StockItem.objects.create(code=f'MG-{n}', category='Solar Panel', brand='Adani',
+                                     model_name=f'{n}00W', opening_stock=0,
+                                     unit_cost=Decimal('1000'))
+            for n in (1, 2, 3)
+        ]
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': token_for(self.admin)}
+
+    def receipt(self, item, qty, grn='GRN-0007'):
+        return self.client.post('/api/goods-receipts/', data={
+            'grn_no': grn, 'date': str(timezone.localdate()), 'supplier': self.supplier.id,
+            'item': item.id, 'quantity': str(qty), 'rate': '1000',
+        }, content_type='application/json', **self.auth())
+
+    def test_several_items_share_one_grn(self):
+        for n, item in enumerate(self.items, start=1):
+            self.assertEqual(self.receipt(item, n * 5).status_code, 201)
+        rows = GoodsReceipt.objects.filter(grn_no='GRN-0007')
+        self.assertEqual(rows.count(), 3)
+        self.assertEqual(sum(r.amount for r in rows), Decimal('30000'))
+
+    def test_each_row_moves_its_own_item_into_stock(self):
+        for n, item in enumerate(self.items, start=1):
+            self.receipt(item, n * 5)
+        for n, item in enumerate(self.items, start=1):
+            item.refresh_from_db()
+            self.assertEqual(item.closing_stock, Decimal(n * 5))
+
+    def test_a_grn_number_is_not_claimed_exclusively(self):
+        """Reusing the number is how the rows group; it must not collide."""
+        self.assertEqual(self.receipt(self.items[0], 1).status_code, 201)
+        self.assertEqual(self.receipt(self.items[1], 1).status_code, 201)
+
+    def test_editing_one_row_leaves_its_siblings_alone(self):
+        first = self.receipt(self.items[0], 5).json()['id']
+        self.receipt(self.items[1], 5)
+        r = self.client.patch(f'/api/goods-receipts/{first}/', data={'quantity': '8'},
+                              content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.items[0].refresh_from_db(); self.items[1].refresh_from_db()
+        self.assertEqual(self.items[0].closing_stock, Decimal('8'))
+        self.assertEqual(self.items[1].closing_stock, Decimal('5'))
