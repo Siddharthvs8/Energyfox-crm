@@ -781,6 +781,8 @@ export default function DashboardLayout({
     { href: `/inventory/customers`,  label: "Customers",          Icon: Nav.Team },
     { href: `/inventory/quotes`,     label: "Proforma Invoice",   Icon: Nav.Quote },
     { href: `/inventory/dispatch`,   label: "Sales / Dispatches",  Icon: Nav.StockOut },
+    // The order goes out first; Purchases receives the goods against it.
+    { href: `/inventory/purchase-orders`, label: "Purchase Order", Icon: Nav.PurchaseOrder },
     { href: `/inventory/purchases`,  label: "Purchases",          Icon: Nav.StockIn },
   ];
 

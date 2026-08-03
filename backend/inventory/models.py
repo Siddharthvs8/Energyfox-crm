@@ -9,6 +9,9 @@ class Vendor(models.Model):
     email = models.EmailField(blank=True, null=True)
     phone = models.CharField(max_length=20, blank=True, default='')
     gst_number = models.CharField(max_length=30, blank=True, default='')
+    # Printed in the supplier block of a purchase order, beside the GST number.
+    pan_number = models.CharField(max_length=20, blank=True, default='', verbose_name='PAN No')
+    iec_code = models.CharField(max_length=30, blank=True, default='', verbose_name='IEC Code')
     payment_terms = models.CharField(max_length=100, blank=True, default='')
     address = models.TextField(blank=True, default='')
     notes = models.TextField(blank=True, default='')
@@ -411,4 +414,123 @@ class StockQuoteItem(models.Model):
 
     @property
     def line_total(self):
+        return (self.quantity or Decimal('0')) * (self.unit_price or Decimal('0'))
+
+
+# ─── Purchase orders (wholesale) ────────────────────────────────────────────
+def next_stock_po_number(on=None):
+    """The next purchase-order number for the financial year, e.g. '001'.
+
+    The printed document carries the bare sequence ("PO NO:001") and the year
+    lives alongside it, which is how the filed copies are named
+    ("... 26-27 001"). Numbers are probed rather than counted so deleting one
+    mid-year cannot hand its successor's number out twice.
+    """
+    fy = financial_year(on)
+    taken = set(StockPurchaseOrder.objects.filter(fy=fy).values_list('number', flat=True))
+    n = len(taken) + 1
+    while f"{n:03d}" in taken:
+        n += 1
+    return f"{n:03d}"
+
+
+class StockPurchaseOrder(models.Model):
+    """An order raised on a supplier for stock — the paperwork that goes out
+    before the goods arrive, which the GRN then receives against.
+
+    The printed form is the company's own purchase-order template: supplier
+    block, bill-to / ship-to, the spares table, a transportation charge, and one
+    tax rate applied to the whole order.
+    """
+    STATUS_CHOICES = [
+        ('draft', 'Draft'),
+        ('sent', 'Sent'),
+        ('received', 'Received'),
+        ('cancelled', 'Cancelled'),
+    ]
+
+    # 'number' is the bare sequence within 'fy' — unique together, not alone,
+    # because 001 comes round again every April.
+    number = models.CharField(max_length=10, blank=True, db_index=True)
+    fy = models.CharField(max_length=10, blank=True, db_index=True)
+    po_date = models.DateField(null=True, blank=True)
+    supplier = models.ForeignKey(Vendor, on_delete=models.PROTECT, related_name='stock_purchase_orders')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft', db_index=True)
+
+    # Ship-to is per order: stock often goes to a site rather than the office.
+    # Blank falls back to the company's own address on the printed form.
+    ship_to_address = models.TextField(blank=True, default='')
+    ship_to_phone = models.CharField(max_length=40, blank=True, default='')
+
+    # Freight is charged on the order, not against any one line, and it is taxed
+    # with the goods — so it sits between the line table and the tax row.
+    transportation = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    tax_percent = models.DecimalField(max_digits=5, decimal_places=2, default=18)
+    # IGST for an inter-state supplier, CGST+SGST within the state. Printed as
+    # entered so the document matches whichever applies.
+    tax_label = models.CharField(max_length=20, blank=True, default='IGST')
+
+    terms_taxes = models.CharField(max_length=255, blank=True, default='As Mentioned')
+    terms_delivery = models.CharField(max_length=255, blank=True, default='Immediately')
+    notes = models.TextField(blank=True, default='')
+
+    # The generated PDF, kept so it can be emailed and linked to on WhatsApp.
+    pdf = models.FileField(upload_to='purchase-orders/', null=True, blank=True)
+
+    created_by = models.ForeignKey('users.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(fields=['fy', 'number'], name='uniq_stock_po_number_per_fy'),
+        ]
+
+    def __str__(self):
+        return f"PO {self.number}/{self.fy}" if self.number else f"PO #{self.pk}"
+
+    def save(self, *args, **kwargs):
+        if not self.fy:
+            self.fy = financial_year(self.po_date)
+        if not self.number:
+            self.number = next_stock_po_number(self.po_date)
+        super().save(*args, **kwargs)
+
+    # ── Money. Freight is part of the taxable value, as the template shows. ──
+    @property
+    def goods_amount(self):
+        return sum((li.base_amount for li in self.items.all()), Decimal('0'))
+
+    @property
+    def taxable_amount(self):
+        return self.goods_amount + (self.transportation or Decimal('0'))
+
+    @property
+    def tax_amount(self):
+        return self.taxable_amount * (self.tax_percent or Decimal('0')) / Decimal('100')
+
+    @property
+    def total(self):
+        return self.taxable_amount + self.tax_amount
+
+
+class StockPurchaseOrderItem(models.Model):
+    """One line of the spares table."""
+    purchase_order = models.ForeignKey(StockPurchaseOrder, on_delete=models.CASCADE, related_name='items')
+    # Optional: an order may be raised for a catalogued item or for a one-off
+    # spare that has no stock record yet. PROTECT matches the movement tables.
+    item = models.ForeignKey(StockItem, on_delete=models.PROTECT, null=True, blank=True,
+                             related_name='purchase_order_lines')
+    type_of_spare = models.CharField(max_length=120, blank=True, default='')
+    description = models.CharField(max_length=255, blank=True, default='')
+    part_code = models.CharField(max_length=80, blank=True, default='')
+    unit_price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    quantity = models.DecimalField(max_digits=12, decimal_places=2, default=1)
+
+    class Meta:
+        ordering = ['id']
+
+    @property
+    def base_amount(self):
         return (self.quantity or Decimal('0')) * (self.unit_price or Decimal('0'))

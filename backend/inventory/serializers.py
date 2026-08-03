@@ -187,7 +187,8 @@ class SalesOrderSerializer(_TaxedDocSerializer):
 
 # ─── Stock register ─────────────────────────────────────────────────────────
 from .models import (StockItem, StockCustomer, GoodsReceipt, StockDispatch,  # noqa: E402
-                     StockQuote, StockQuoteItem)
+                     StockQuote, StockQuoteItem,
+                     StockPurchaseOrder, StockPurchaseOrderItem)
 
 
 class StockItemSerializer(serializers.ModelSerializer):
@@ -325,3 +326,52 @@ class StockQuoteSerializer(_DocSerializer):
         if self.instance and self.instance.status == 'converted':
             raise serializers.ValidationError('A converted quote can no longer be edited.')
         return data
+
+
+# ─── Purchase orders (wholesale) ────────────────────────────────────────────
+class StockPurchaseOrderItemSerializer(serializers.ModelSerializer):
+    item_code = serializers.CharField(source='item.code', read_only=True, default=None)
+    item_label = serializers.SerializerMethodField()
+    base_amount = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = StockPurchaseOrderItem
+        fields = ['id', 'item', 'item_code', 'item_label', 'type_of_spare', 'description',
+                  'part_code', 'unit_price', 'quantity', 'base_amount']
+
+    def get_item_label(self, obj):
+        it = obj.item
+        if not it:
+            return None
+        return f"{it.brand} {it.model_name}".strip() or it.code
+
+
+class StockPurchaseOrderSerializer(_DocSerializer):
+    item_model = StockPurchaseOrderItem
+    parent_fk = 'purchase_order'
+
+    items = StockPurchaseOrderItemSerializer(many=True, required=False)
+    supplier_name = serializers.CharField(source='supplier.name', read_only=True, default=None)
+    created_by_name = serializers.SerializerMethodField()
+    goods_amount = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    taxable_amount = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    tax_amount = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    total = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = StockPurchaseOrder
+        fields = [
+            'id', 'number', 'fy', 'po_date', 'supplier', 'supplier_name', 'status',
+            'ship_to_address', 'ship_to_phone', 'transportation', 'tax_percent', 'tax_label',
+            'terms_taxes', 'terms_delivery', 'notes', 'pdf',
+            'created_by', 'created_by_name', 'created_at',
+            'items', 'goods_amount', 'taxable_amount', 'tax_amount', 'total',
+        ]
+        # The number is issued by the series, not chosen by the caller.
+        read_only_fields = ['number', 'fy', 'created_by', 'created_at', 'pdf']
+
+    def get_created_by_name(self, obj):
+        u = obj.created_by
+        if not u:
+            return None
+        return f"{u.first_name} {u.last_name}".strip() or u.username

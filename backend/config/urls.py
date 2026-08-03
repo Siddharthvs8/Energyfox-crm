@@ -17,7 +17,8 @@ from leads.views import LeadViewSet, IntegrationSettingsViewSet, DashboardStatsV
 from inventory.views import (VendorViewSet, PurchaseOrderViewSet, QuoteViewSet, SalesOrderViewSet,
                             StockItemViewSet, StockCustomerViewSet, GoodsReceiptViewSet,
                             StockDispatchViewSet, StockSummaryView,
-                            InventoryDashboardView, StockQuoteViewSet)
+                            InventoryDashboardView, StockQuoteViewSet,
+                            StockPurchaseOrderViewSet)
 
 router = DefaultRouter()
 router.register(r'leads', LeadViewSet)
@@ -39,6 +40,7 @@ router.register(r'stock-customers', StockCustomerViewSet, basename='stock-custom
 router.register(r'goods-receipts', GoodsReceiptViewSet, basename='goods-receipts')
 router.register(r'stock-dispatches', StockDispatchViewSet, basename='stock-dispatches')
 router.register(r'stock-quotes', StockQuoteViewSet, basename='stock-quotes')
+router.register(r'stock-purchase-orders', StockPurchaseOrderViewSet, basename='stock-purchase-orders')
 
 
 urlpatterns = [

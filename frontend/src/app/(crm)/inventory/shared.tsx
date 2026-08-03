@@ -54,6 +54,7 @@ const SOURCES: Record<string, string> = {
   suppliers: "vendors",
   customers: "stock-customers",
   quotes: "stock-quotes",
+  purchaseOrders: "stock-purchase-orders",
 };
 
 const asArray = (d: any) => (Array.isArray(d) ? d : d?.results || []);
@@ -188,15 +189,18 @@ export function SearchBar({ value, onChange, placeholder }: {
 }
 
 /** Centred dialog, the same shell the retail pages use for create/edit. */
-export function Modal({ show, title, onClose, onSubmit, saving, submitLabel, wide, children }: {
+export function Modal({ show, title, onClose, onSubmit, saving, submitLabel, wide, xl, children }: {
   show: boolean; title: string; onClose: () => void; onSubmit: (e: React.FormEvent) => void;
-  saving?: boolean; submitLabel: string; wide?: boolean; children: React.ReactNode;
+  // `xl` is for forms with a wide line table — a purchase order's row carries
+  // seven fields, and they are unreadable squeezed into the standard width.
+  saving?: boolean; submitLabel: string; wide?: boolean; xl?: boolean; children: React.ReactNode;
 }) {
   if (!show) return null;
+  const width = xl ? "max-w-6xl" : wide ? "max-w-3xl" : "max-w-lg";
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
       <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={onClose} />
-      <div className={`bg-white rounded-2xl shadow-xl w-full ${wide ? "max-w-3xl" : "max-w-lg"} relative z-10 overflow-hidden max-h-[92vh] flex flex-col`}>
+      <div className={`bg-white rounded-2xl shadow-xl w-full ${width} relative z-10 overflow-hidden max-h-[92vh] flex flex-col`}>
         <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between flex-shrink-0">
           <h3 className="font-bold text-lg text-slate-900">{title}</h3>
           <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600"><I.X /></button>

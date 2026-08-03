@@ -437,10 +437,12 @@ from django.utils import timezone  # noqa: E402
 from rest_framework.views import APIView  # noqa: E402
 
 from .models import (StockItem, StockCustomer, GoodsReceipt, StockDispatch,  # noqa: E402
-                     StockQuote)
+                     StockQuote, StockPurchaseOrder,
+                     next_stock_po_number, financial_year)
 from .serializers import (  # noqa: E402
     StockItemSerializer, StockCustomerSerializer,
     GoodsReceiptSerializer, StockDispatchSerializer, StockQuoteSerializer,
+    StockPurchaseOrderSerializer,
 )
 
 _MONEY = DecimalField(max_digits=16, decimal_places=2)
@@ -903,3 +905,144 @@ class StockQuoteViewSet(ProformaDocumentMixin, viewsets.ModelViewSet):
         data = self.get_serializer(quote).data
         data['dispatched_lines'] = len(created)
         return Response(data)
+
+
+def purchase_order_words(amount):
+    """The total in words, in the purchase order form's own style.
+
+    The shared receipt helper prints "Rupees Thirty Four Thousand Eight Hundred
+    Sixty Nine Only"; this form's In Words cell drops the prefix and reads
+    "... Eight Hundred and Sixty Nine Only". Kept here rather than in the shared
+    helper so money receipts keep reading the way they always have.
+    """
+    from leads.receipts import amount_in_words
+
+    words = amount_in_words(amount)
+    prefix = 'Rupees '
+    if words.startswith(prefix):
+        words = words[len(prefix):]
+    tail = ' Hundred '
+    at = words.rfind(tail)
+    if at != -1:
+        rest = words[at + len(tail):]
+        if not rest.startswith('and ') and not rest.startswith('Only'):
+            words = words[:at + len(tail)] + 'and ' + rest
+    return words
+
+
+class StockPurchaseOrderViewSet(viewsets.ModelViewSet):
+    """Purchase orders raised on a supplier for stock (wholesale).
+
+    The outbound counterpart of the GRN: this is the order that goes out, the
+    goods receipt is what comes back against it.
+    """
+    serializer_class = StockPurchaseOrderSerializer
+    permission_classes = [permissions.IsAuthenticated, IsStockKeeper]
+    queryset = StockPurchaseOrder.objects.all()
+
+    def get_queryset(self):
+        qs = (StockPurchaseOrder.objects.all()
+              .select_related('supplier', 'created_by')
+              .prefetch_related('items', 'items__item')
+              .order_by('-created_at'))
+        status_f = self.request.query_params.get('status')
+        if status_f and status_f != 'all':
+            qs = qs.filter(status=status_f)
+        return qs
+
+    @staticmethod
+    def _supplier_block(vendor):
+        if not vendor:
+            return {'name': '', 'address': '', 'gstin': '', 'pan': '', 'iec': '',
+                    'contact_person': '', 'contact_number': '', 'email': ''}
+        return {
+            'name': vendor.name,
+            'address': vendor.address,
+            'gstin': vendor.gst_number,
+            'pan': vendor.pan_number,
+            'iec': vendor.iec_code,
+            'contact_person': vendor.contact_person,
+            'contact_number': vendor.phone,
+            'email': vendor.email or '',
+        }
+
+    @action(detail=True, methods=['get'], url_path='document')
+    def document(self, request, pk=None):
+        """Everything the printed purchase order needs, in the order the form
+        lays it out.
+
+        Assembled here rather than in the client so the printed figures and the
+        stored ones can never disagree.
+        """
+        po = self.get_object()
+        chrome = document_chrome(request)
+        company = chrome['company']
+        lines = [{
+            'sl': n,
+            'type_of_spare': li.type_of_spare or '',
+            'description': li.description or (
+                f"{li.item.brand} {li.item.model_name}".strip() or li.item.code if li.item else ''),
+            'part_code': li.part_code or (li.item.code if li.item else ''),
+            'unit_price': money(li.unit_price),
+            'quantity': str(li.quantity or 0),
+            'base_amount': money(li.base_amount),
+        } for n, li in enumerate(po.items.all(), start=1)]
+
+        return Response({
+            **chrome,
+            'title': 'PURCHASE ORDER',
+            'label': 'Purchase Order',
+            'order': {
+                'number': po.number,
+                'fy': po.fy,
+                'date': po.po_date.isoformat() if po.po_date else None,
+                'status': po.status,
+            },
+            'supplier': self._supplier_block(po.supplier),
+            # Bill-to is always the company; ship-to falls back to it.
+            'bill_to': {
+                'name': company['name'],
+                'address': company['address'],
+                'gstin': company['gst'],
+            },
+            'ship_to': {
+                'address': po.ship_to_address or company['address'],
+                'phone': po.ship_to_phone or company['phone'],
+            },
+            'lines': lines,
+            # money() quantizes to paise — the form prints two decimals, and the
+            # raw Decimal carries the multiplication's full scale.
+            'totals': {
+                'goods': money(po.goods_amount),
+                'transportation': money(po.transportation),
+                'taxable': money(po.taxable_amount),
+                'tax_label': po.tax_label or 'IGST',
+                'tax_percent': str(po.tax_percent or 0),
+                'tax_amount': money(po.tax_amount),
+                'total': money(po.total),
+                'in_words': purchase_order_words(po.total),
+            },
+            'terms': {
+                'taxes': po.terms_taxes,
+                'delivery': po.terms_delivery,
+            },
+        })
+
+    @action(detail=True, methods=['post'], parser_classes=[parsers.MultiPartParser, parsers.FormParser])
+    def send(self, request, pk=None):
+        """Store the generated PDF and send it to the supplier."""
+        po = self.get_object()
+        payload, code = deliver_document(
+            request, holder=po, number=f"PO-{po.fy}-{po.number}", amount=po.total,
+            party=self._supplier_block(po.supplier), noun='Purchase Order',
+            channel='b2b')
+        # Raising the order to the supplier moves it out of draft.
+        if code == status.HTTP_200_OK and po.status == 'draft' and payload.get('sent'):
+            po.status = 'sent'
+            po.save(update_fields=['status', 'updated_at'])
+        return Response(payload, status=code)
+
+    @action(detail=False, methods=['get'], url_path='next-number')
+    def next_number(self, request):
+        """The number the next order will take, so the form can show it."""
+        return Response({'number': next_stock_po_number(), 'fy': financial_year()})

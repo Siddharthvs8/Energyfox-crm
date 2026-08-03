@@ -13,7 +13,8 @@ from leads.models import Lead
 from messaging import whatsapp
 from organization.models import OrgSettings
 from users.models import User
-from .models import Vendor, StockItem, StockCustomer, GoodsReceipt, StockDispatch
+from .models import (Vendor, StockItem, StockCustomer, GoodsReceipt, StockDispatch,
+                     StockPurchaseOrder)
 
 
 def token_for(user):
@@ -726,3 +727,106 @@ class MultiItemGoodsReceiptTests(TestCase):
         self.items[0].refresh_from_db(); self.items[1].refresh_from_db()
         self.assertEqual(self.items[0].closing_stock, Decimal('8'))
         self.assertEqual(self.items[1].closing_stock, Decimal('5'))
+
+
+class StockPurchaseOrderTests(TestCase):
+    """The purchase order raised on a supplier: its number series, its money, and
+    the payload the printed form is drawn from."""
+
+    def setUp(self):
+        self.admin = mk('po_admin', 'admin')
+        self.supplier = Vendor.objects.create(
+            name='Texolver Solutions Pvt Ltd',
+            address='193, Raghuvir Industrial Estate, Vatva GIDC, A\'bad',
+            gst_number='24AAFCT0754L1Z8', pan_number='AAFCT0754L', iec_code='0123456789',
+            email='sales@texolver.example')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': token_for(self.admin)}
+
+    def make(self, **over):
+        payload = {
+            'supplier': self.supplier.id, 'po_date': '2026-04-30',
+            'transportation': '800', 'tax_percent': '18', 'tax_label': 'IGST',
+            'ship_to_phone': '9074193787',
+            'items': [{'description': 'R-KEM-II-300', 'unit_price': '575', 'quantity': '50'}],
+        }
+        payload.update(over)
+        return self.client.post('/api/stock-purchase-orders/', data=payload,
+                                content_type='application/json', **self.auth())
+
+    def test_the_money_matches_the_printed_form(self):
+        """Freight is taxed with the goods — 28750 + 800, then 18%."""
+        r = self.make()
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        po = StockPurchaseOrder.objects.get(pk=r.json()['id'])
+        self.assertEqual(po.goods_amount, Decimal('28750'))
+        self.assertEqual(po.taxable_amount, Decimal('29550'))
+        self.assertEqual(po.tax_amount, Decimal('5319'))
+        self.assertEqual(po.total, Decimal('34869'))
+
+    def test_numbers_run_per_financial_year(self):
+        first = StockPurchaseOrder.objects.get(pk=self.make().json()['id'])
+        second = StockPurchaseOrder.objects.get(pk=self.make().json()['id'])
+        self.assertEqual((first.number, first.fy), ('001', '26-27'))
+        self.assertEqual((second.number, second.fy), ('002', '26-27'))
+        # April starts the next year's series over at 001.
+        third = StockPurchaseOrder.objects.get(pk=self.make(po_date='2027-04-01').json()['id'])
+        self.assertEqual((third.number, third.fy), ('001', '27-28'))
+
+    def test_deleting_one_does_not_reissue_its_number(self):
+        a = StockPurchaseOrder.objects.get(pk=self.make().json()['id'])
+        b = StockPurchaseOrder.objects.get(pk=self.make().json()['id'])
+        a.delete()
+        c = StockPurchaseOrder.objects.get(pk=self.make().json()['id'])
+        self.assertNotEqual(c.number, b.number)
+        self.assertEqual(c.number, '003')
+
+    def test_the_document_payload_carries_what_the_form_prints(self):
+        po_id = self.make().json()['id']
+        r = self.client.get(f'/api/stock-purchase-orders/{po_id}/document/', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        d = r.json()
+        self.assertEqual(d['title'], 'PURCHASE ORDER')
+        self.assertEqual(d['order']['number'], '001')
+        self.assertEqual(d['supplier']['pan'], 'AAFCT0754L')
+        self.assertEqual(d['supplier']['iec'], '0123456789')
+        self.assertEqual(d['supplier']['gstin'], '24AAFCT0754L1Z8')
+        self.assertEqual(d['lines'][0]['description'], 'R-KEM-II-300')
+        self.assertEqual(d['totals']['total'], '34869.00')
+        self.assertEqual(d['totals']['in_words'],
+                         'Thirty Four Thousand Eight Hundred and Sixty Nine Only')
+
+    def test_ship_to_falls_back_to_the_company_address(self):
+        po_id = self.make(ship_to_address='').json()['id']
+        d = self.client.get(f'/api/stock-purchase-orders/{po_id}/document/', **self.auth()).json()
+        self.assertTrue(d['ship_to']['address'])
+        self.assertEqual(d['ship_to']['address'], d['company']['address'])
+
+    def test_a_catalogued_item_fills_the_description_and_part_code(self):
+        item = StockItem.objects.create(code='SOL-PNL-540', category='Solar Panel',
+                                        brand='Waaree', model_name='540W')
+        po_id = self.make(items=[{'item': item.id, 'quantity': '10', 'unit_price': '9800'}]).json()['id']
+        d = self.client.get(f'/api/stock-purchase-orders/{po_id}/document/', **self.auth()).json()
+        self.assertEqual(d['lines'][0]['description'], 'Waaree 540W')
+        self.assertEqual(d['lines'][0]['part_code'], 'SOL-PNL-540')
+
+    def test_sending_it_uses_the_b2b_account_and_leaves_draft(self):
+        po_id = self.make().json()['id']
+        with patch('messaging.email.send_and_log') as send:
+            send.return_value = type('L', (), {'status': 'sent', 'error': ''})()
+            r = self.client.post(
+                f'/api/stock-purchase-orders/{po_id}/send/',
+                data={'channels': 'email', 'email': 'sales@texolver.example',
+                      'pdf': SimpleUploadedFile('po.pdf', b'%PDF-1.4 order',
+                                                content_type='application/pdf')},
+                **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(send.call_args[1]['channel'], 'b2b')
+        self.assertEqual(StockPurchaseOrder.objects.get(pk=po_id).status, 'sent')
+
+    def test_the_desk_is_closed_to_everyone_else(self):
+        for role in ('bde', 'tele_caller', 'documentation_staff', 'accounts_staff'):
+            r = self.client.get('/api/stock-purchase-orders/',
+                                HTTP_AUTHORIZATION=token_for(mk(f'po_{role}', role)))
+            self.assertEqual(r.status_code, 403, role)
