@@ -166,17 +166,36 @@ export async function buildProformaPdf(d: ProformaData): Promise<any> {
     doc.roundedRect(boxX, boxY, boxW, boxH, 2, 2);
     doc.setDrawColor(120);
   }
-  size(11); bold();
-  text(d.company.name, L + 78, y + 6);
-  bold(false); size(7.5);
-  let ay = y + 10.5;
-  addrLines.forEach((l: string) => { text(l, L + 78, ay); ay += 3.2; });
   const meta: [string, string][] = [
     ["Tel", d.company.phone], ["Email", d.company.email],
     ["GST NO", d.company.gst], ["CIN NO", d.company.cin], ["PAN", d.company.pan],
   ];
+
+  /* The block sits against the right margin rather than at a fixed offset, so
+     the letterhead balances the logo whatever the company name and address
+     happen to be. Its own columns stay aligned inside it — the colons line up
+     as a column, which right-aligning each line individually would break. */
+  size(11); bold();
+  const nameW = doc.getTextWidth(d.company.name || "");
+  bold(false); size(7.5);
+  const addrW = Math.max(0, ...addrLines.map((l: string) => doc.getTextWidth(l)));
+  const labelW = Math.max(...meta.map(([k]) => doc.getTextWidth(k)));
+  const valueW = Math.max(...meta.map(([, v]) => doc.getTextWidth(v || "")));
+  const COLON_GAP = 3, VALUE_GAP = 3;
+  const colonW = doc.getTextWidth(":");
+  const metaW = labelW + COLON_GAP + colonW + VALUE_GAP + valueW;
+  // Never let it slide under the logo box, which ends at L + 66.
+  const blockL = Math.max(L + 70, R - Math.max(nameW, addrW, metaW));
+  const colonX = blockL + labelW + COLON_GAP;
+  const valueX = colonX + colonW + VALUE_GAP;
+
+  size(11); bold();
+  text(d.company.name, blockL, y + 6);
+  bold(false); size(7.5);
+  let ay = y + 10.5;
+  addrLines.forEach((l: string) => { text(l, blockL, ay); ay += 3.2; });
   meta.forEach(([k, v]) => {
-    text(k, L + 78, ay); text(":", L + 96, ay); text(v || "", L + 100, ay);
+    text(k, blockL, ay); text(":", colonX, ay); text(v || "", valueX, ay);
     ay += 3.2;
   });
   y += headerH;

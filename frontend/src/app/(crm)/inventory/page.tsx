@@ -98,7 +98,9 @@ export default function StockDashboardPage() {
               footer={<>Open value <b className="text-slate-700">{rupee(d.open_quote_value)}</b></>} />
             <Pipeline title="Sales / Dispatches" href="/inventory/dispatch" total={d.dispatch_count}
               footer={<>This month <b className="text-slate-700">{rupee(d.month_sales)}</b> · {d.customer_count ?? 0} customers</>} />
-            <Pipeline title="Purchases" href="/inventory/purchases" total={d.receipt_count}
+            {/* Counts the stock received to date; the module itself is now the
+                purchase orders raised on suppliers. */}
+            <Pipeline title="Purchases" href="/inventory/purchase-orders" total={d.receipt_count}
               footer={<>This month <b className="text-slate-700">{rupee(d.month_purchases)}</b> · {d.supplier_count ?? 0} suppliers</>} />
           </div>
         </>

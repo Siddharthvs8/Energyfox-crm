@@ -175,8 +175,8 @@ export default function StockPurchaseOrderPage() {
 
   return (
     <StockPage
-      title="Purchase Order" loading={loading} denied={denied}
-      subtitle="Orders raised on suppliers — print the order, send it, and receive it in Purchases."
+      title="Purchases" loading={loading} denied={denied}
+      subtitle="Purchase orders raised on suppliers — print the order and send it."
       action={<AddButton label="New Purchase Order" onClick={openCreate} />}>
 
       <SearchBar value={search} onChange={setSearch} placeholder="Search purchase orders..." />
