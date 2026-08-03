@@ -100,13 +100,18 @@ export function useStock(want: (keyof typeof SOURCES)[]) {
 
   const authJson = () => ({ "Content-Type": "application/json", Authorization: `Bearer ${token()}` });
 
-  /** Create when `id` is absent, update when present. Returns false on refusal. */
+  /** Create when `id` is absent, update when present.
+   *
+   *  Returns the saved row on success and false on refusal — callers that only
+   *  check truthiness are unaffected, and the ones that need what the server
+   *  assigned (a document number, say) can read it. */
   const save = async (source: keyof typeof SOURCES, body: any, id?: number | null) => {
     const url = id ? `${api}/api/${SOURCES[source]}/${id}/` : `${api}/api/${SOURCES[source]}/`;
     const r = await fetch(url, { method: id ? "PATCH" : "POST", headers: authJson(), body: JSON.stringify(body) });
     if (!r.ok) { alert(await explain(r, "Could not save.")); return false; }
+    const saved = await r.json().catch(() => true);
     load();
-    return true;
+    return saved;
   };
 
   const remove = async (source: keyof typeof SOURCES, id: number, label: string) => {

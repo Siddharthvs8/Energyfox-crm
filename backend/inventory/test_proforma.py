@@ -26,7 +26,7 @@ def mk(username, role):
 
 
 class ProformaNumberingTests(TestCase):
-    """EF/<financial year>/PI<seq>, matching the printed document."""
+    """Retail is EF/<financial year>/PI<seq>; wholesale is its own REN series."""
 
     def test_financial_year_runs_april_to_march(self):
         from datetime import date
@@ -38,26 +38,26 @@ class ProformaNumberingTests(TestCase):
         from datetime import date
         a = StockQuote.objects.create(quote_date=date(2026, 7, 24))
         b = StockQuote.objects.create(quote_date=date(2026, 8, 1))
-        self.assertEqual(a.number, 'EF/26-27/PI001')
-        self.assertEqual(b.number, 'EF/26-27/PI002')
+        self.assertEqual(a.number, 'REN2627-PI001')
+        self.assertEqual(b.number, 'REN2627-PI002')
 
     def test_the_sequence_restarts_each_financial_year(self):
         from datetime import date
         StockQuote.objects.create(quote_date=date(2026, 2, 1))     # FY 25-26
         nxt = StockQuote.objects.create(quote_date=date(2026, 5, 1))  # FY 26-27
-        self.assertEqual(nxt.number, 'EF/26-27/PI001')
+        self.assertEqual(nxt.number, 'REN2627-PI001')
 
-    def test_retail_and_wholesale_share_one_series(self):
-        """Both modules issue proforma invoices; two documents must never carry
-        the same number, so the sequence spans both tables."""
+    def test_retail_and_wholesale_number_separately(self):
+        """The wholesale documents carry their own REN series, so the two sides
+        count independently — the numbers can never collide because the prefixes
+        differ."""
         from datetime import date
         a = StockQuote.objects.create(quote_date=date(2026, 7, 1))
         b = Quote.objects.create(quote_date=date(2026, 7, 2))
         c = StockQuote.objects.create(quote_date=date(2026, 7, 3))
         d = Quote.objects.create(quote_date=date(2026, 7, 4))
-        self.assertEqual([a.number, b.number, c.number, d.number],
-                         ['EF/26-27/PI001', 'EF/26-27/PI002',
-                          'EF/26-27/PI003', 'EF/26-27/PI004'])
+        self.assertEqual([a.number, c.number], ['REN2627-PI001', 'REN2627-PI002'])
+        self.assertEqual([b.number, d.number], ['EF/26-27/PI001', 'EF/26-27/PI002'])
 
     def test_deleting_one_does_not_reissue_a_live_number(self):
         """A count alone would hand PI002 out twice after PI001 is deleted."""
@@ -445,13 +445,16 @@ class DispatchInvoiceTests(TestCase):
         self.assertEqual(Decimal(rows['85414300']['cgst']), Decimal('18.00'))    # 36 / 2
         self.assertEqual(Decimal(rows['85044090']['cgst']), Decimal('45.00'))    # 90 / 2
 
-    def test_a_row_with_no_invoice_number_stands_alone(self):
+    def test_a_row_saved_on_its_own_gets_its_own_invoice(self):
+        """Every dispatch is numbered from the invoice series on save, so a row
+        saved by itself is a one-line invoice rather than an unnumbered stray."""
         from .models import StockDispatch
         loose = StockDispatch.objects.create(item=self.panel, quantity=Decimal('1'),
                                              rate=Decimal('10'), date=timezone.localdate())
+        self.assertTrue(loose.invoice_no.startswith('REN'), loose.invoice_no)
         d = self.get(loose)
         self.assertEqual(len(d['lines']), 1)
-        self.assertEqual(d['invoice']['number'], f'DSP-{loose.pk}')
+        self.assertEqual(d['invoice']['number'], loose.invoice_no)
 
     def test_the_customer_fills_both_address_blocks(self):
         d = self.get()

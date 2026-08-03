@@ -438,7 +438,7 @@ from rest_framework.views import APIView  # noqa: E402
 
 from .models import (StockItem, StockCustomer, GoodsReceipt, StockDispatch,  # noqa: E402
                      StockQuote, StockPurchaseOrder,
-                     next_stock_po_number, financial_year)
+                     next_stock_po_number, next_document_number, financial_year)
 from .serializers import (  # noqa: E402
     StockItemSerializer, StockCustomerSerializer,
     GoodsReceiptSerializer, StockDispatchSerializer, StockQuoteSerializer,
@@ -888,9 +888,14 @@ class StockQuoteViewSet(ProformaDocumentMixin, viewsets.ModelViewSet):
                             status=status.HTTP_400_BAD_REQUEST)
 
         dispatch_date = quote.quote_date or timezone.localdate()
+        # The dispatch is a sale, so it takes its own number from the invoice
+        # series rather than carrying the proforma's. One number for the whole
+        # set — the rows of a delivery share it — with the proforma recorded in
+        # the note so the two stay traceable.
+        invoice_no = next_document_number('IN', StockDispatch, 'invoice_no', on=dispatch_date)
         created = [
             StockDispatch.objects.create(
-                invoice_no=quote.number or '', date=dispatch_date, customer=quote.customer,
+                invoice_no=invoice_no, date=dispatch_date, customer=quote.customer,
                 item=line.item, quantity=line.quantity, rate=line.unit_price,
                 tax_percent=quote.tax_percent or Decimal('0'),
                 site=quote.site, notes=f"From quote {quote.number}",

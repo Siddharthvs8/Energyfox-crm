@@ -120,6 +120,42 @@ def financial_year(on=None):
     return f"{start % 100:02d}-{(start + 1) % 100:02d}"
 
 
+# ─── Wholesale document series ──────────────────────────────────────────────
+# The B2B documents share one numbering scheme: REN<fy>-<kind><seq>, e.g.
+# REN2627-PI001. Each kind counts on its own, and every series restarts at 001
+# on 1 April because the financial-year code changes with it.
+DOC_SERIES_PREFIX = 'REN'
+
+
+def fy_code(on=None):
+    """Financial year as the wholesale series writes it: 1 Apr 2026 → '2627'.
+
+    Same April–March year as financial_year(), without the separator — the
+    document numbers run the two halves together.
+    """
+    from datetime import date
+    d = on or date.today()
+    start = d.year if d.month >= 4 else d.year - 1
+    return f"{start % 100:02d}{(start + 1) % 100:02d}"
+
+
+def next_document_number(kind, model, field='number', on=None):
+    """The next number in the REN<fy>-<kind><seq> series, e.g. REN2627-PI001.
+
+    Numbers are probed rather than taken from a count, because deleting a
+    document in the middle of the year would otherwise hand its successor's
+    number out twice. Only this year's series is examined, so 1 April starts
+    over at 001 on its own.
+    """
+    prefix = f"{DOC_SERIES_PREFIX}{fy_code(on)}-{kind}"
+    taken = set(model.objects.filter(**{f'{field}__startswith': prefix})
+                             .values_list(field, flat=True))
+    n = len(taken) + 1
+    while f"{prefix}{n:03d}" in taken:
+        n += 1
+    return f"{prefix}{n:03d}"
+
+
 def next_proforma_number(on=None):
     """The next number in the EF/<FY>/PI<seq> series, e.g. EF/26-27/PI009.
 
@@ -362,6 +398,14 @@ class StockDispatch(_StockMovement):
     class Meta(_StockMovement.Meta):
         verbose_name_plural = 'Stock dispatches'
 
+    def save(self, *args, **kwargs):
+        # A delivery of several products is several rows sharing one invoice
+        # number, so only a row that arrives without one mints it — the client
+        # sends the number it got back on the rest of the set.
+        if self._state.adding and not self.invoice_no:
+            self.invoice_no = next_document_number('IN', StockDispatch, 'invoice_no', on=self.date)
+        super().save(*args, **kwargs)
+
     @property
     def tax_amount(self):
         return (self.amount * (self.tax_percent or Decimal('0'))) / Decimal('100')
@@ -382,8 +426,8 @@ class StockQuote(_ProformaDoc):
     recorded by converting it, which writes the dispatch rows that take the goods
     out of stock — see StockQuoteViewSet.convert.
 
-    Numbering follows the printed document: EF/<financial year>/PI<seq>, e.g.
-    EF/26-27/PI009, restarting each Indian financial year (April–March).
+    Numbered in the wholesale series — REN<fy>-PI<seq>, e.g. REN2627-PI001 —
+    which restarts each Indian financial year (April–March).
     """
     NUMBER_PREFIX = 'PI'
     STATUS_CHOICES = [
@@ -402,6 +446,19 @@ class StockQuote(_ProformaDoc):
     # Guard: a quote's stock may only be dispatched once.
     converted_at = models.DateTimeField(null=True, blank=True)
 
+    class Meta(_ProformaDoc.Meta):
+        constraints = [
+            models.UniqueConstraint(fields=['number'], name='uniq_stock_quote_number'),
+        ]
+
+    def save(self, *args, **kwargs):
+        # The wholesale series, not the retail EF/<fy>/PI one the base assigns.
+        creating = self._state.adding
+        models.Model.save(self, *args, **kwargs)
+        if creating and not self.number:
+            self.number = next_document_number('PI', StockQuote, on=self.quote_date)
+            models.Model.save(self, update_fields=['number'])
+
 
 class StockQuoteItem(models.Model):
     quote = models.ForeignKey(StockQuote, on_delete=models.CASCADE, related_name='items')
@@ -419,19 +476,8 @@ class StockQuoteItem(models.Model):
 
 # ─── Purchase orders (wholesale) ────────────────────────────────────────────
 def next_stock_po_number(on=None):
-    """The next purchase-order number for the financial year, e.g. '001'.
-
-    The printed document carries the bare sequence ("PO NO:001") and the year
-    lives alongside it, which is how the filed copies are named
-    ("... 26-27 001"). Numbers are probed rather than counted so deleting one
-    mid-year cannot hand its successor's number out twice.
-    """
-    fy = financial_year(on)
-    taken = set(StockPurchaseOrder.objects.filter(fy=fy).values_list('number', flat=True))
-    n = len(taken) + 1
-    while f"{n:03d}" in taken:
-        n += 1
-    return f"{n:03d}"
+    """The number the next purchase order will take, e.g. REN2627-PO001."""
+    return next_document_number('PO', StockPurchaseOrder, on=on)
 
 
 class StockPurchaseOrder(models.Model):
@@ -449,9 +495,9 @@ class StockPurchaseOrder(models.Model):
         ('cancelled', 'Cancelled'),
     ]
 
-    # 'number' is the bare sequence within 'fy' — unique together, not alone,
-    # because 001 comes round again every April.
-    number = models.CharField(max_length=10, blank=True, db_index=True)
+    # The wholesale series number, e.g. REN2627-PO001. 'fy' is kept alongside it
+    # for filtering; the year is embedded in the number too.
+    number = models.CharField(max_length=30, blank=True, db_index=True)
     fy = models.CharField(max_length=10, blank=True, db_index=True)
     po_date = models.DateField(null=True, blank=True)
     supplier = models.ForeignKey(Vendor, on_delete=models.PROTECT, related_name='stock_purchase_orders')
@@ -494,7 +540,7 @@ class StockPurchaseOrder(models.Model):
         if not self.fy:
             self.fy = financial_year(self.po_date)
         if not self.number:
-            self.number = next_stock_po_number(self.po_date)
+            self.number = next_document_number('PO', StockPurchaseOrder, on=self.po_date)
         super().save(*args, **kwargs)
 
     # ── Money. Freight is part of the taxable value, as the template shows. ──

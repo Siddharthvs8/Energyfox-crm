@@ -781,7 +781,7 @@ export default function DashboardLayout({
     { href: `/inventory/customers`,  label: "Customers",          Icon: Nav.Team },
     { href: `/inventory/quotes`,     label: "Proforma Invoice",   Icon: Nav.Quote },
     { href: `/inventory/dispatch`,   label: "Sales / Dispatches",  Icon: Nav.StockOut },
-    { href: `/inventory/purchase-orders`, label: "Purchases",     Icon: Nav.PurchaseOrder },
+    { href: `/inventory/purchase-orders`, label: "Purchases",     Icon: Nav.StockIn },
   ];
 
   const inventoryItems = bizMode === "b2b" ? b2bInventoryItems : b2cInventoryItems;

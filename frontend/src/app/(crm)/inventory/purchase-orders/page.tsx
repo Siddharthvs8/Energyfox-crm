@@ -125,7 +125,7 @@ export default function StockPurchaseOrderPage() {
   };
 
   const docName = (r: any) =>
-    purchaseOrderFileName({ number: r.number, fy: r.fy, supplier: r.supplier_name });
+    purchaseOrderFileName({ number: r.number, supplier: r.supplier_name });
 
   /** Pull the printed figures from the server and render the order. */
   const render = async (r: any) => {
@@ -191,9 +191,7 @@ export default function StockPurchaseOrderPage() {
         onRowClick={i => setPreview(filtered[i])}
         rowTitle="Open the purchase order"
         rows={filtered.map(r => [
-          <span className="font-mono text-xs font-semibold text-slate-900">
-            {r.number || "—"}<span className="text-slate-400"> / {r.fy}</span>
-          </span>,
+          <span className="font-mono text-xs font-semibold text-slate-900">{r.number || "—"}</span>,
           <span className="font-mono text-xs text-slate-500">{r.po_date || "—"}</span>,
           r.supplier_name || "—",
           <span className="tabular-nums">{(r.items || []).length}</span>,
@@ -217,7 +215,7 @@ export default function StockPurchaseOrderPage() {
 
       <DocumentPreview
         open={!!preview}
-        title={preview ? `Purchase Order ${preview.number} / ${preview.fy}` : ""}
+        title={preview ? `Purchase Order ${preview.number}` : ""}
         fileName={preview ? docName(preview) : ""}
         render={() => render(preview)}
         onClose={() => setPreview(null)}
@@ -248,7 +246,7 @@ export default function StockPurchaseOrderPage() {
           </Fld>
         </Row>
         <p className="-mt-2 text-xs text-slate-400">
-          The PO number is issued from this financial year&apos;s series when the order is saved.
+          The PO number is issued from this financial year&apos;s series when the order is saved (REN2627-PO001).
           The supplier&apos;s PAN, IEC and GST print from their Suppliers record.
         </p>
 

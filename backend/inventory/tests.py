@@ -14,7 +14,7 @@ from messaging import whatsapp
 from organization.models import OrgSettings
 from users.models import User
 from .models import (Vendor, StockItem, StockCustomer, GoodsReceipt, StockDispatch,
-                     StockPurchaseOrder)
+                     StockPurchaseOrder, StockQuote, StockQuoteItem, Quote)
 
 
 def token_for(user):
@@ -285,7 +285,7 @@ class StockQuoteTests(TestCase):
         self.assertEqual(Decimal(d['discount_amount']), Decimal('11700'))
         self.assertEqual(Decimal(d['tax_amount']), Decimal('18954'))
         self.assertEqual(Decimal(d['total']), Decimal('124254'))
-        self.assertTrue(d['number'].startswith('EF/') and '/PI' in d['number'], d['number'])
+        self.assertTrue(d['number'].startswith('REN') and '-PI' in d['number'], d['number'])
         self.assertEqual(len(d['items']), 2)
 
     def test_a_quote_alone_does_not_move_stock(self):
@@ -308,7 +308,7 @@ class StockQuoteTests(TestCase):
         self.assertEqual(d.customer_id, self.customer.id)
         self.assertEqual(d.site, 'Kollam')
         self.assertEqual(d.rate, Decimal('11200'))
-        self.assertTrue(d.invoice_no.startswith('EF/'), d.invoice_no)
+        self.assertTrue(d.invoice_no.startswith('REN') and '-IN' in d.invoice_no, d.invoice_no)
 
     def test_converting_twice_is_refused(self):
         """A second convert would take the same goods out of stock again."""
@@ -768,11 +768,11 @@ class StockPurchaseOrderTests(TestCase):
     def test_numbers_run_per_financial_year(self):
         first = StockPurchaseOrder.objects.get(pk=self.make().json()['id'])
         second = StockPurchaseOrder.objects.get(pk=self.make().json()['id'])
-        self.assertEqual((first.number, first.fy), ('001', '26-27'))
-        self.assertEqual((second.number, second.fy), ('002', '26-27'))
+        self.assertEqual((first.number, first.fy), ('REN2627-PO001', '26-27'))
+        self.assertEqual((second.number, second.fy), ('REN2627-PO002', '26-27'))
         # April starts the next year's series over at 001.
         third = StockPurchaseOrder.objects.get(pk=self.make(po_date='2027-04-01').json()['id'])
-        self.assertEqual((third.number, third.fy), ('001', '27-28'))
+        self.assertEqual((third.number, third.fy), ('REN2728-PO001', '27-28'))
 
     def test_deleting_one_does_not_reissue_its_number(self):
         a = StockPurchaseOrder.objects.get(pk=self.make().json()['id'])
@@ -780,7 +780,7 @@ class StockPurchaseOrderTests(TestCase):
         a.delete()
         c = StockPurchaseOrder.objects.get(pk=self.make().json()['id'])
         self.assertNotEqual(c.number, b.number)
-        self.assertEqual(c.number, '003')
+        self.assertEqual(c.number, 'REN2627-PO003')
 
     def test_the_document_payload_carries_what_the_form_prints(self):
         po_id = self.make().json()['id']
@@ -788,7 +788,7 @@ class StockPurchaseOrderTests(TestCase):
         self.assertEqual(r.status_code, 200, r.content[:300])
         d = r.json()
         self.assertEqual(d['title'], 'PURCHASE ORDER')
-        self.assertEqual(d['order']['number'], '001')
+        self.assertEqual(d['order']['number'], 'REN2627-PO001')
         self.assertEqual(d['supplier']['pan'], 'AAFCT0754L')
         self.assertEqual(d['supplier']['iec'], '0123456789')
         self.assertEqual(d['supplier']['gstin'], '24AAFCT0754L1Z8')
@@ -830,3 +830,86 @@ class StockPurchaseOrderTests(TestCase):
             r = self.client.get('/api/stock-purchase-orders/',
                                 HTTP_AUTHORIZATION=token_for(mk(f'po_{role}', role)))
             self.assertEqual(r.status_code, 403, role)
+
+
+class WholesaleDocumentSeriesTests(TestCase):
+    """B2B documents number themselves REN<fy>-<kind><seq>, each kind counting on
+    its own and every series restarting on 1 April."""
+
+    def setUp(self):
+        self.admin = mk('ser_admin', 'admin')
+        self.supplier = Vendor.objects.create(name='Ensun')
+        self.customer = StockCustomer.objects.create(name='Ananthapuri')
+        self.item = StockItem.objects.create(code='SER-1', category='Solar Panel',
+                                             brand='Adani', model_name='555wp',
+                                             opening_stock=500)
+
+    def quote(self, on=date(2026, 8, 3)):
+        return StockQuote.objects.create(customer=self.customer, quote_date=on)
+
+    def dispatch(self, on=date(2026, 8, 3), invoice_no=''):
+        return StockDispatch.objects.create(item=self.item, customer=self.customer,
+                                            date=on, quantity=1, rate=Decimal('100'),
+                                            invoice_no=invoice_no)
+
+    def order(self, on=date(2026, 8, 3)):
+        return StockPurchaseOrder.objects.create(supplier=self.supplier, po_date=on)
+
+    def test_each_document_takes_its_own_prefix(self):
+        self.assertEqual(self.quote().number, 'REN2627-PI001')
+        self.assertEqual(self.dispatch().invoice_no, 'REN2627-IN001')
+        self.assertEqual(self.order().number, 'REN2627-PO001')
+
+    def test_each_series_counts_independently(self):
+        self.assertEqual([self.quote().number for _ in range(3)][-1], 'REN2627-PI003')
+        self.assertEqual(self.dispatch().invoice_no, 'REN2627-IN001')   # unaffected
+        self.assertEqual(self.order().number, 'REN2627-PO001')
+
+    def test_the_series_restarts_on_the_first_of_april(self):
+        self.assertEqual(self.order(date(2026, 8, 3)).number, 'REN2627-PO001')
+        self.assertEqual(self.order(date(2027, 3, 31)).number, 'REN2627-PO002')
+        # 1 April is a new financial year, so the count starts over.
+        self.assertEqual(self.order(date(2027, 4, 1)).number, 'REN2728-PO001')
+        self.assertEqual(self.order(date(2027, 4, 2)).number, 'REN2728-PO002')
+        # …and the old year carries on from where it left off.
+        self.assertEqual(self.order(date(2027, 3, 30)).number, 'REN2627-PO003')
+
+    def test_a_number_is_never_reissued_after_a_deletion(self):
+        first = self.order()
+        second = self.order()
+        first.delete()
+        self.assertEqual(self.order().number, 'REN2627-PO003')
+        self.assertEqual(second.number, 'REN2627-PO002')
+
+    def test_two_quotes_cannot_share_a_number(self):
+        q = self.quote()
+        with self.assertRaises(Exception):
+            StockQuote.objects.create(customer=self.customer, quote_date=date(2026, 8, 3),
+                                      number=q.number)
+
+    def test_the_rows_of_one_delivery_share_their_invoice_number(self):
+        """A dispatch is one row per item; the set is one invoice."""
+        first = self.dispatch()
+        rest = [self.dispatch(invoice_no=first.invoice_no) for _ in range(2)]
+        self.assertEqual({d.invoice_no for d in rest}, {first.invoice_no})
+        self.assertEqual(StockDispatch.objects.filter(invoice_no='REN2627-IN001').count(), 3)
+        # The next delivery still gets 002, not 004.
+        self.assertEqual(self.dispatch().invoice_no, 'REN2627-IN002')
+
+    def test_converting_a_proforma_issues_an_invoice_number(self):
+        q = self.quote()
+        StockQuoteItem.objects.create(quote=q, item=self.item, quantity=2, unit_price=Decimal('100'))
+        r = self.client.post(f'/api/stock-quotes/{q.id}/convert/',
+                             HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        made = StockDispatch.objects.filter(notes__contains=q.number)
+        self.assertEqual(made.count(), 1)
+        # The sale gets its own number rather than carrying the proforma's.
+        self.assertEqual(made.first().invoice_no, 'REN2627-IN001')
+
+    def test_the_retail_series_is_untouched(self):
+        """B2C proforma invoices keep the EF/<fy>/PI series they always had."""
+        from leads.models import Lead
+        lead = Lead.objects.create(first_name='Retail', last_name='One', phone='9990001234')
+        q = Quote.objects.create(lead=lead, quote_date=date(2026, 8, 3))
+        self.assertTrue(q.number.startswith('EF/26-27/PI'), q.number)

@@ -279,5 +279,5 @@ export async function buildPurchaseOrderPdf(d: PurchaseOrderData): Promise<any> 
 }
 
 /** Filename the document is downloaded / attached under, matching the filed copies. */
-export const purchaseOrderFileName = (d: { number: string; fy: string; supplier?: string }) =>
-  `Purchase order of ${d.supplier || "supplier"} ${d.fy} ${d.number}.pdf`.replace(/[\\/:*?"<>|]/g, "-");
+export const purchaseOrderFileName = (d: { number: string; supplier?: string }) =>
+  `Purchase order of ${d.supplier || "supplier"} ${d.number}.pdf`.replace(/[\\/:*?"<>|]/g, "-");

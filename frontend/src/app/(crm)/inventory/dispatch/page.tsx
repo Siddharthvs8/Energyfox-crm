@@ -79,16 +79,21 @@ export default function StockDispatchPage() {
     // One row per product, all carrying the same header so they print as one
     // invoice. Editing stays a single-row update.
     const header = {
-      invoice_no: form.invoice_no, date: form.date, customer: form.customer || null,
+      date: form.date, customer: form.customer || null,
       tax_percent: form.tax_percent || 0, site: form.site, notes: form.notes,
     };
+    // The invoice number is issued by the server on the first row; the rest of
+    // the set carry it so the delivery prints as one invoice.
+    let invoiceNo = form.invoice_no;
     let ok = true;
     for (const l of valid) {
       const body = {
-        ...header, item: l.item, serial_numbers: l.serial_numbers,
+        ...header, invoice_no: invoiceNo, item: l.item, serial_numbers: l.serial_numbers,
         quantity: l.quantity, rate: l.rate || 0,
       };
-      ok = (await save("dispatches", body, editing?.id)) && ok;
+      const saved = await save("dispatches", body, editing?.id);
+      if (!saved) { ok = false; break; }
+      if (!invoiceNo && saved.invoice_no) invoiceNo = saved.invoice_no;
       if (editing) break;                      // an edit is one row, not a set
     }
     setSaving(false);
@@ -214,8 +219,9 @@ export default function StockDispatchPage() {
         onClose={() => setShow(false)} onSubmit={submit} saving={saving} submitLabel="Save Dispatch">
         <Row>
           <Fld label="Invoice No.">
+            {/* Issued from this year's series on save; typing one overrides it. */}
             <input value={form.invoice_no} onChange={e => setForm({ ...form, invoice_no: e.target.value })}
-              className={`${FIELD} font-mono`} placeholder="INV-S001" />
+              className={`${FIELD} font-mono`} placeholder="Auto — REN2627-IN001" />
           </Fld>
           <Fld label="Date *">
             <input type="date" required value={form.date}
