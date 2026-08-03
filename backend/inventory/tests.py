@@ -913,3 +913,61 @@ class WholesaleDocumentSeriesTests(TestCase):
         lead = Lead.objects.create(first_name='Retail', last_name='One', phone='9990001234')
         q = Quote.objects.create(lead=lead, quote_date=date(2026, 8, 3))
         self.assertTrue(q.number.startswith('EF/26-27/PI'), q.number)
+
+
+class DocumentNumbersAreSpentOnceTests(TestCase):
+    """A number that has been on a document is never issued again — deleting the
+    document does not release it."""
+
+    def setUp(self):
+        self.supplier = Vendor.objects.create(name='Ensun')
+        self.customer = StockCustomer.objects.create(name='Ananthapuri')
+        self.item = StockItem.objects.create(code='SP-1', category='Solar Panel',
+                                             opening_stock=100)
+
+    def order(self, on=date(2026, 8, 3)):
+        return StockPurchaseOrder.objects.create(supplier=self.supplier, po_date=on)
+
+    def test_deleting_the_newest_does_not_free_its_number(self):
+        """The case a count-the-rows scheme gets wrong: nothing sits above the
+        deleted number, so counting would hand it straight back."""
+        first, second = self.order(), self.order()
+        self.assertEqual([first.number, second.number], ['REN2627-PO001', 'REN2627-PO002'])
+        second.delete()
+        self.assertEqual(self.order().number, 'REN2627-PO003')
+
+    def test_deleting_one_in_the_middle_does_not_free_its_number(self):
+        a, b, c = self.order(), self.order(), self.order()
+        b.delete()
+        self.assertEqual(self.order().number, 'REN2627-PO004')
+        self.assertEqual([a.number, c.number], ['REN2627-PO001', 'REN2627-PO003'])
+
+    def test_deleting_every_document_still_moves_the_series_on(self):
+        made = [self.order() for _ in range(3)]
+        for po in made:
+            po.delete()
+        self.assertEqual(StockPurchaseOrder.objects.count(), 0)
+        self.assertEqual(self.order().number, 'REN2627-PO004')
+
+    def test_it_holds_for_proformas_and_invoices_too(self):
+        q = StockQuote.objects.create(customer=self.customer, quote_date=date(2026, 8, 3))
+        d = StockDispatch.objects.create(item=self.item, customer=self.customer,
+                                         date=date(2026, 8, 3), quantity=1, rate=Decimal('10'))
+        self.assertEqual((q.number, d.invoice_no), ('REN2627-PI001', 'REN2627-IN001'))
+        q.delete(); d.delete()
+        q2 = StockQuote.objects.create(customer=self.customer, quote_date=date(2026, 8, 3))
+        d2 = StockDispatch.objects.create(item=self.item, customer=self.customer,
+                                          date=date(2026, 8, 3), quantity=1, rate=Decimal('10'))
+        self.assertEqual((q2.number, d2.invoice_no), ('REN2627-PI002', 'REN2627-IN002'))
+
+    def test_the_new_year_still_starts_at_001(self):
+        """Spending numbers in one year must not carry into the next."""
+        for _ in range(3):
+            self.order(date(2026, 8, 3))
+        self.assertEqual(self.order(date(2027, 4, 1)).number, 'REN2728-PO001')
+
+    def test_previewing_the_next_number_does_not_spend_it(self):
+        from .models import peek_document_number
+        self.assertEqual(peek_document_number('PO', on=date(2026, 8, 3)), 'REN2627-PO001')
+        self.assertEqual(peek_document_number('PO', on=date(2026, 8, 3)), 'REN2627-PO001')
+        self.assertEqual(self.order().number, 'REN2627-PO001')

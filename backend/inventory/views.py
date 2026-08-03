@@ -895,7 +895,7 @@ class StockQuoteViewSet(ProformaDocumentMixin, viewsets.ModelViewSet):
         # series rather than carrying the proforma's. One number for the whole
         # set — the rows of a delivery share it — with the proforma recorded in
         # the note so the two stay traceable.
-        invoice_no = next_document_number('IN', StockDispatch, 'invoice_no', on=dispatch_date)
+        invoice_no = next_document_number('IN', on=dispatch_date)
         created = [
             StockDispatch.objects.create(
                 invoice_no=invoice_no, date=dispatch_date, customer=quote.customer,

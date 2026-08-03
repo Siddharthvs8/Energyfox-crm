@@ -139,21 +139,66 @@ def fy_code(on=None):
     return f"{start % 100:02d}{(start + 1) % 100:02d}"
 
 
-def next_document_number(kind, model, field='number', on=None):
-    """The next number in the REN<fy>-<kind><seq> series, e.g. REN2627-PI001.
+def series_key(kind, on=None):
+    """The series a document of this kind and date belongs to, e.g. REN2627-PI."""
+    return f"{DOC_SERIES_PREFIX}{fy_code(on)}-{kind}"
 
-    Numbers are probed rather than taken from a count, because deleting a
-    document in the middle of the year would otherwise hand its successor's
-    number out twice. Only this year's series is examined, so 1 April starts
-    over at 001 on its own.
+
+class DocumentNumberSeries(models.Model):
+    """The high-water mark of an issued document series.
+
+    A number, once issued, is spent: it has been on a document that went to a
+    customer or a supplier, so it must never appear on a second one. Deleting
+    the document does not release it — which is why the next number comes from
+    a counter that only moves forward, rather than from counting the rows that
+    happen to still exist.
+
+    One row per series (REN2627-PI, REN2627-IN, REN2627-PO …), so 1 April opens
+    a new counter and every series starts again at 001 on its own.
     """
-    prefix = f"{DOC_SERIES_PREFIX}{fy_code(on)}-{kind}"
-    taken = set(model.objects.filter(**{f'{field}__startswith': prefix})
-                             .values_list(field, flat=True))
-    n = len(taken) + 1
-    while f"{prefix}{n:03d}" in taken:
-        n += 1
-    return f"{prefix}{n:03d}"
+    key = models.CharField(max_length=40, unique=True, db_index=True)
+    last_seq = models.PositiveIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['key']
+        verbose_name_plural = 'Document number series'
+
+    def __str__(self):
+        return f"{self.key} — {self.last_seq} issued"
+
+    @classmethod
+    def issue(cls, key):
+        """Take the next sequence in this series, under a row lock so two
+        concurrent saves cannot be handed the same one."""
+        from django.db import transaction
+        with transaction.atomic():
+            cls.objects.get_or_create(key=key)
+            row = cls.objects.select_for_update().get(key=key)
+            row.last_seq += 1
+            row.save(update_fields=['last_seq', 'updated_at'])
+            return row.last_seq
+
+    @classmethod
+    def peek(cls, key):
+        """What issue() would return, without spending it."""
+        row = cls.objects.filter(key=key).first()
+        return (row.last_seq if row else 0) + 1
+
+
+def next_document_number(kind, on=None):
+    """Issue the next number in the REN<fy>-<kind><seq> series, e.g. REN2627-PI001.
+
+    Spends the number — call it only when a document is actually being created.
+    """
+    key = series_key(kind, on)
+    return f"{key}{DocumentNumberSeries.issue(key):03d}"
+
+
+def peek_document_number(kind, on=None):
+    """The number the next document would take, without spending it."""
+    key = series_key(kind, on)
+    return f"{key}{DocumentNumberSeries.peek(key):03d}"
 
 
 def next_proforma_number(on=None):
@@ -403,7 +448,7 @@ class StockDispatch(_StockMovement):
         # number, so only a row that arrives without one mints it — the client
         # sends the number it got back on the rest of the set.
         if self._state.adding and not self.invoice_no:
-            self.invoice_no = next_document_number('IN', StockDispatch, 'invoice_no', on=self.date)
+            self.invoice_no = next_document_number('IN', on=self.date)
         super().save(*args, **kwargs)
 
     @property
@@ -456,7 +501,7 @@ class StockQuote(_ProformaDoc):
         creating = self._state.adding
         models.Model.save(self, *args, **kwargs)
         if creating and not self.number:
-            self.number = next_document_number('PI', StockQuote, on=self.quote_date)
+            self.number = next_document_number('PI', on=self.quote_date)
             models.Model.save(self, update_fields=['number'])
 
 
@@ -476,8 +521,11 @@ class StockQuoteItem(models.Model):
 
 # ─── Purchase orders (wholesale) ────────────────────────────────────────────
 def next_stock_po_number(on=None):
-    """The number the next purchase order will take, e.g. REN2627-PO001."""
-    return next_document_number('PO', StockPurchaseOrder, on=on)
+    """The number the next purchase order would take, e.g. REN2627-PO001.
+
+    A preview for the form — it does not spend the number.
+    """
+    return peek_document_number('PO', on=on)
 
 
 class StockPurchaseOrder(models.Model):
@@ -540,7 +588,7 @@ class StockPurchaseOrder(models.Model):
         if not self.fy:
             self.fy = financial_year(self.po_date)
         if not self.number:
-            self.number = next_document_number('PO', StockPurchaseOrder, on=self.po_date)
+            self.number = next_document_number('PO', on=self.po_date)
         super().save(*args, **kwargs)
 
     # ── Money. Freight is part of the taxable value, as the template shows. ──
