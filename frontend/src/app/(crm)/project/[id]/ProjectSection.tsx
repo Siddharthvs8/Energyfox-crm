@@ -30,7 +30,6 @@ export default function ProjectSection({ leadId, canEdit, canReopen, onChanged }
   const [f, setF] = useState<Record<string, string>>({
     structure_work_start_date: "", structure_work_completed_date: "",
     electrical_work_start_date: "", electrical_work_completed_date: "",
-    site_name: "", pending_remark: "",
   });
   const [documents, setDocuments] = useState<ProjDoc[]>([]);
   const [uploadingType, setUploadingType] = useState<string | null>(null);
@@ -48,8 +47,6 @@ export default function ProjectSection({ leadId, canEdit, canReopen, onChanged }
       structure_work_completed_date: d.structure_work_completed_date || "",
       electrical_work_start_date: d.electrical_work_start_date || "",
       electrical_work_completed_date: d.electrical_work_completed_date || "",
-      site_name: d.site_name || "",
-      pending_remark: d.pending_remark || "",
     });
     setDocuments(Array.isArray(d.documents) ? d.documents : []);
     setIsComplete(!!d.is_complete);
@@ -71,7 +68,7 @@ export default function ProjectSection({ leadId, canEdit, canReopen, onChanged }
 
   const saveScalars = async (): Promise<any | null> => {
     // Dates must be null (not "") for DRF DateField.
-    const body: Record<string, any> = { site_name: f.site_name, pending_remark: f.pending_remark };
+    const body: Record<string, any> = {};
     for (const k of ["structure_work_start_date", "structure_work_completed_date", "electrical_work_start_date", "electrical_work_completed_date"]) {
       body[k] = f[k] ? f[k] : null;
     }
@@ -186,15 +183,6 @@ export default function ProjectSection({ leadId, canEdit, canReopen, onChanged }
               <div><label className={labelCls}>Completed Date</label><input type="date" value={f.electrical_work_completed_date} disabled={readOnly} onChange={e => set("electrical_work_completed_date", e.target.value)} className={inputCls} /></div>
             </div>
           </div>
-        </div>
-      </div>
-
-      {/* Pending site */}
-      <div className={cardCls}>
-        <h3 className={sectionTitle}>Pending Site</h3>
-        <div className="grid sm:grid-cols-3 gap-4">
-          <div><label className={labelCls}>Site Name</label><input value={f.site_name} disabled={readOnly} onChange={e => set("site_name", e.target.value)} placeholder="Site name" className={inputCls} /></div>
-          <div className="sm:col-span-2"><label className={labelCls}>Remark</label><input value={f.pending_remark} disabled={readOnly} onChange={e => set("pending_remark", e.target.value)} placeholder="Any pending items / remark" className={inputCls} /></div>
         </div>
       </div>
 
