@@ -21,7 +21,29 @@ type Stage2Lead = {
   documentation_staff_name: string | null;
   doc_stage2_staff_name: string | null;
   is_complete: boolean;
+  // Signed off but the subsidy has not been claimed — decided server-side so
+  // the list and the record agree on what "pending" means.
+  subsidy_requested?: boolean;
+  subsidy_pending?: boolean;
   pushed_at: string | null;
+};
+
+/** The three buckets are disjoint: a signed-off customer whose subsidy has not
+ *  been claimed is not finished, which is the whole point of separating it. */
+type Bucket = "pending" | "done" | "subsidy_pending";
+const bucketOf = (l: Stage2Lead): Bucket =>
+  !l.is_complete ? "pending" : l.subsidy_pending ? "subsidy_pending" : "done";
+
+const TABS: { key: Bucket; label: string }[] = [
+  { key: "pending", label: "Pending" },
+  { key: "done", label: "Done" },
+  { key: "subsidy_pending", label: "Subsidy Pending" },
+];
+
+const EMPTY: Record<Bucket, string> = {
+  pending: "Nothing pending — every customer here has been signed off.",
+  done: "No completed customers yet.",
+  subsidy_pending: "No subsidies outstanding — every signed-off customer has theirs requested.",
 };
 
 export default function DocumentationStage2Page() {
@@ -32,6 +54,8 @@ export default function DocumentationStage2Page() {
   const [leads, setLeads] = useState<Stage2Lead[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  // Opens on the work still to do, like Purchase & Logistics does.
+  const [bucket, setBucket] = useState<Bucket>("pending");
 
   const token = () => localStorage.getItem(`${domain}_access`);
 
@@ -65,19 +89,42 @@ export default function DocumentationStage2Page() {
   );
   if (!allowed) return null;
 
-  const filtered = leads.filter(l => {
+  const matchesSearch = (l: Stage2Lead) => {
     const q = search.trim().toLowerCase();
     if (!q) return true;
     return (`${l.first_name} ${l.last_name || ""}`.toLowerCase().includes(q)
       || (l.phone || "").toLowerCase().includes(q)
       || (l.location || "").toLowerCase().includes(q));
-  });
+  };
+
+  // Counts are of the search results, so the tabs can't disagree with the list.
+  const found = leads.filter(matchesSearch);
+  const counts: Record<Bucket, number> = {
+    pending: found.filter(l => bucketOf(l) === "pending").length,
+    done: found.filter(l => bucketOf(l) === "done").length,
+    subsidy_pending: found.filter(l => bucketOf(l) === "subsidy_pending").length,
+  };
+  const filtered = found.filter(l => bucketOf(l) === bucket);
 
   return (
     <div className="p-6 lg:p-8 max-w-[1200px]">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-slate-900">Documentation Stage 2</h1>
         <p className="text-sm text-slate-500 mt-1">Customers whose installation is complete, now in the second documentation stage.</p>
+      </div>
+
+      <div className="flex gap-1 mb-5 border-b border-slate-200 overflow-x-auto no-scrollbar">
+        {TABS.map(t => (
+          <button key={t.key} onClick={() => setBucket(t.key)}
+            className={`flex items-center gap-2 px-4 py-2.5 text-sm font-semibold whitespace-nowrap border-b-2 -mb-px transition-colors ${
+              bucket === t.key ? "border-indigo-600 text-indigo-600" : "border-transparent text-slate-500 hover:text-slate-800"}`}>
+            {t.label}
+            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+              bucket === t.key ? "bg-indigo-50 text-indigo-700" : "bg-slate-100 text-slate-500"}`}>
+              {counts[t.key]}
+            </span>
+          </button>
+        ))}
       </div>
 
       <div className="mb-5 flex items-center gap-3">
@@ -94,7 +141,9 @@ export default function DocumentationStage2Page() {
         <div className="py-16 text-center text-sm text-slate-400">Loading…</div>
       ) : filtered.length === 0 ? (
         <div className="bg-white border border-dashed border-slate-200 rounded-2xl p-12 text-center text-sm text-slate-400">
-          No customers in Documentation Stage 2 yet.
+          {leads.length === 0
+            ? "No customers in Documentation Stage 2 yet."
+            : found.length === 0 ? "No customers match your search." : EMPTY[bucket]}
         </div>
       ) : (
         <div className="space-y-4">
@@ -105,9 +154,19 @@ export default function DocumentationStage2Page() {
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-bold text-slate-900 truncate">{l.first_name} {l.last_name}</p>
                     {l.lead_deleted && <DeletedLeadBadge />}
-                    <span className={`text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${l.is_complete ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
-                      {l.is_complete ? "Done" : "In Progress"}
-                    </span>
+                    {(() => {
+                      const b = bucketOf(l);
+                      const tone = b === "done" ? "bg-emerald-50 text-emerald-700"
+                        : b === "subsidy_pending" ? "bg-violet-50 text-violet-700"
+                        : "bg-amber-50 text-amber-700";
+                      const text = b === "done" ? "Done"
+                        : b === "subsidy_pending" ? "Subsidy Pending" : "In Progress";
+                      return (
+                        <span className={`text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${tone}`}>
+                          {text}
+                        </span>
+                      );
+                    })()}
                   </div>
                   <p className="text-xs text-slate-500 mt-0.5 truncate">{l.phone || "—"} · {l.location || "No location"}{l.product_name ? ` · ${l.product_name}` : ""}</p>
                 </div>

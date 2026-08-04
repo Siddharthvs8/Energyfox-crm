@@ -2695,3 +2695,65 @@ class WarrantySendLandsOnTheTimelineTests(TestCase):
                                  HTTP_AUTHORIZATION=token_for(self.docstaff))
         self.assertEqual(r.status_code, 502)
         self.assertEqual(ActivityLog.objects.filter(lead=self.lead).count(), before)
+
+
+class DocStage2SubsidyPendingTests(TestCase):
+    """Documentation Stage 2 splits into Pending / Done / Subsidy Pending: a
+    signed-off customer whose subsidy has not been claimed is not finished."""
+
+    def setUp(self):
+        # The manager sees the whole queue; documentation staff see only the rows
+        # assigned to them, which would hide this one.
+        self.docstaff = mk('s2_docman', 'documentation_manager')
+        self.lead = Lead.objects.create(first_name='Asha', last_name='Devi T',
+                                        phone='9895271485', status='converted',
+                                        pushed_to_doc_stage2=True,
+                                        pushed_to_doc_stage2_at=timezone.now())
+        self.rec, _ = DocumentationStage2.objects.get_or_create(lead=self.lead)
+
+    def row(self):
+        r = self.client.get('/api/leads/documentation-stage2/',
+                            HTTP_AUTHORIZATION=token_for(self.docstaff))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        return next(x for x in r.json() if x['id'] == self.lead.id)
+
+    def set(self, **kw):
+        for k, v in kw.items():
+            setattr(self.rec, k, v)
+        self.rec.save()
+
+    def test_an_open_stage_2_is_pending(self):
+        row = self.row()
+        self.assertFalse(row['is_complete'])
+        self.assertFalse(row['subsidy_pending'])
+
+    def test_signed_off_without_the_subsidy_is_subsidy_pending(self):
+        self.set(is_complete=True, subsidy_requested=False)
+        row = self.row()
+        self.assertTrue(row['is_complete'])
+        self.assertTrue(row['subsidy_pending'])
+        self.assertFalse(row['subsidy_requested'])
+
+    def test_signed_off_with_the_subsidy_is_done(self):
+        self.set(is_complete=True, subsidy_requested=True)
+        row = self.row()
+        self.assertTrue(row['is_complete'])
+        self.assertFalse(row['subsidy_pending'])
+        self.assertTrue(row['subsidy_requested'])
+
+    def test_an_unfinished_stage_2_is_never_subsidy_pending(self):
+        """Ticking the box early must not move it out of Pending."""
+        self.set(is_complete=False, subsidy_requested=True)
+        self.assertFalse(self.row()['subsidy_pending'])
+        self.set(is_complete=False, subsidy_requested=False)
+        self.assertFalse(self.row()['subsidy_pending'])
+
+    def test_the_three_states_are_disjoint(self):
+        for complete, requested in ((False, False), (True, False), (True, True)):
+            self.set(is_complete=complete, subsidy_requested=requested)
+            row = self.row()
+            pending = not row['is_complete']
+            subsidy = row['subsidy_pending']
+            done = row['is_complete'] and not subsidy
+            self.assertEqual([pending, subsidy, done].count(True), 1,
+                             f'complete={complete} requested={requested} -> {row}')

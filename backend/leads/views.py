@@ -2685,6 +2685,11 @@ class LeadViewSet(viewsets.ModelViewSet):
             'pushed_at': lead.pushed_to_doc_stage2_at,
             'record': DocumentationStage2Serializer(rec, context={'request': request}).data if rec else None,
             'is_complete': bool(rec and rec.is_complete),
+            'subsidy_requested': bool(rec and rec.subsidy_requested),
+            # Signed off and handed on, but nobody has claimed the subsidy yet —
+            # the one thing left outstanding after Stage 2 closes. Decided here
+            # so the list and any later consumer share one definition.
+            'subsidy_pending': bool(rec and rec.is_complete and not rec.subsidy_requested),
             'can_edit': can_access_doc_stage2(request.user),
             'can_reopen': can_reopen_documentation(request.user),
             # Stage 2 has its own assignee, set by the documentation manager.
