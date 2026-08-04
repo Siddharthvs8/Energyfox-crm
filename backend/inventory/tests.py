@@ -32,7 +32,7 @@ class StockLedgerTests(TestCase):
     """Closing stock is never stored — it is opening + received − dispatched."""
 
     def setUp(self):
-        self.admin = mk('t_admin', 'admin')
+        self.admin = mk('t_admin', 'superadmin')
         self.supplier = Vendor.objects.create(name='Waaree Energies')
         self.customer = StockCustomer.objects.create(name='Green Fields Resort')
         self.panel = StockItem.objects.create(
@@ -102,7 +102,7 @@ class StockLedgerTests(TestCase):
 
 class StockSummaryTests(TestCase):
     def setUp(self):
-        self.admin = mk('t_admin', 'admin')
+        self.admin = mk('t_admin', 'superadmin')
         self.panel = StockItem.objects.create(code='P1', category='Solar Panel',
                                               opening_stock=10, unit_cost=Decimal('100'), reorder_level=2)
         self.inverter = StockItem.objects.create(code='I1', category='Inverter',
@@ -130,7 +130,9 @@ class StockSummaryTests(TestCase):
 
 
 class StockAccessTests(TestCase):
-    """The warehouse desk only: admins, general managers and purchase staff."""
+    """The warehouse desk: the super admin and the COO who cross between the two
+    businesses, purchase staff who buy against it, and the B2B roles whose whole
+    job it is. An admin runs the retail CRM and does not see it."""
 
     ENDPOINTS = ['/api/stock-items/', '/api/stock-customers/', '/api/goods-receipts/',
                  '/api/stock-dispatches/', '/api/stock-summary/']
@@ -141,9 +143,19 @@ class StockAccessTests(TestCase):
             self.assertEqual(r.status_code, 200 if allowed else 403, f"{user.role} {url}")
 
     def test_allowed_roles(self):
-        for role in ('superadmin', 'admin', 'coo', 'purchase_staff',
+        for role in ('superadmin', 'coo', 'purchase_staff',
                      'store_manager', 'store_keeper', 'accounts_b2b'):
             self.check(mk(f't_{role}', role), True)
+
+    def test_an_admin_has_no_wholesale_access(self):
+        """The B2C/B2B switch is the super admin's and the COO's; the API agrees,
+        so an admin cannot reach the register by calling it directly."""
+        self.check(mk('t_admin_b2b', 'admin'), False)
+
+    def test_the_other_managers_have_none_either(self):
+        for role in ('sales_manager', 'documentation_manager', 'accounts_manager',
+                     'branch_manager', 'project_manager', 'liasoning_officer'):
+            self.check(mk(f't_mgr_{role}', role), False)
 
     def test_b2b_roles_can_run_the_register(self):
         """The stock register is the whole job for these three."""
@@ -175,7 +187,7 @@ class InventoryDashboardTests(TestCase):
     def setUp(self):
         from leads.models import Product
         from .models import PurchaseOrder, PurchaseOrderItem, Quote, QuoteItem, SalesOrder, SalesOrderItem
-        self.admin = mk('d_admin', 'admin')
+        self.admin = mk('d_admin', 'superadmin')
         self.bde = mk('d_bde', 'bde')
 
         self.panel = Product.objects.create(name='Panel 540W', sku='P-540', unit='Nos',
@@ -250,7 +262,7 @@ class StockQuoteTests(TestCase):
     that take the goods out of stock."""
 
     def setUp(self):
-        self.admin = mk('q_admin', 'admin')
+        self.admin = mk('q_admin', 'superadmin')
         self.keeper = mk('q_keeper', 'store_keeper')
         self.bde = mk('q_bde', 'bde')
         self.customer = StockCustomer.objects.create(name='Green Fields Resort')
@@ -374,7 +386,7 @@ class StockSummaryShapeTests(TestCase):
     two screens can be laid out identically."""
 
     def setUp(self):
-        self.admin = mk('s_admin', 'admin')
+        self.admin = mk('s_admin', 'superadmin')
         self.item = StockItem.objects.create(code='S1', category='Solar Panel', opening_stock=20,
                                              unit_cost=Decimal('100'), reorder_level=2)
         today = timezone.localdate()
@@ -434,7 +446,7 @@ class FractionalQuantityTests(TestCase):
     sets. Nothing in the inventory path may round or truncate them."""
 
     def setUp(self):
-        self.admin = mk('fq_admin', 'admin')
+        self.admin = mk('fq_admin', 'superadmin')
 
     def auth(self):
         return {'HTTP_AUTHORIZATION': token_for(self.admin)}
@@ -530,7 +542,7 @@ class DispatchTaxTests(TestCase):
     the customer is invoiced."""
 
     def setUp(self):
-        self.admin = mk('dt_admin', 'admin')
+        self.admin = mk('dt_admin', 'superadmin')
         self.item = StockItem.objects.create(code='DT-PNL', category='Solar Panel',
                                              opening_stock=Decimal('100'), unit_cost=Decimal('9800'))
 
@@ -622,7 +634,7 @@ class DocumentSendChannelTests(TestCase):
     """
 
     def setUp(self):
-        self.admin = mk('chan_admin', 'admin')
+        self.admin = mk('chan_admin', 'superadmin')
         org = OrgSettings.load()
         org.whatsapp_phone_number_id = 'retail-pid'
         org.whatsapp_access_token = 'retail-token'
@@ -685,7 +697,7 @@ class MultiItemGoodsReceiptTests(TestCase):
     GRN — that is what the stock ledger values, one movement per item."""
 
     def setUp(self):
-        self.admin = mk('grn_admin', 'admin')
+        self.admin = mk('grn_admin', 'superadmin')
         self.supplier = Vendor.objects.create(name='Techclustron')
         self.items = [
             StockItem.objects.create(code=f'MG-{n}', category='Solar Panel', brand='Adani',
@@ -738,7 +750,7 @@ class StockPurchaseOrderTests(TestCase):
     the payload the printed form is drawn from."""
 
     def setUp(self):
-        self.admin = mk('po_admin', 'admin')
+        self.admin = mk('po_admin', 'superadmin')
         self.supplier = Vendor.objects.create(
             name='Texolver Solutions Pvt Ltd',
             address='193, Raghuvir Industrial Estate, Vatva GIDC, A\'bad',
@@ -841,7 +853,7 @@ class WholesaleDocumentSeriesTests(TestCase):
     its own and every series restarting on 1 April."""
 
     def setUp(self):
-        self.admin = mk('ser_admin', 'admin')
+        self.admin = mk('ser_admin', 'superadmin')
         self.supplier = Vendor.objects.create(name='Ensun')
         self.customer = StockCustomer.objects.create(name='Ananthapuri')
         self.item = StockItem.objects.create(code='SER-1', category='Solar Panel',
@@ -982,7 +994,7 @@ class StockQuoteDeletionTests(TestCase):
     after it has been dispatched."""
 
     def setUp(self):
-        self.admin = mk('del_admin', 'admin')
+        self.admin = mk('del_admin', 'superadmin')
         self.customer = StockCustomer.objects.create(name='Ananthapuri')
         self.item = StockItem.objects.create(code='DEL-1', category='Solar Panel',
                                              opening_stock=100)

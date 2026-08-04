@@ -89,7 +89,7 @@ class ProformaDocumentTests(TestCase):
         shutil.rmtree(cls._media, ignore_errors=True)
 
     def setUp(self):
-        self.admin = mk('pf_admin', 'admin')
+        self.admin = mk('pf_admin', 'superadmin')
         self.customer = StockCustomer.objects.create(
             name='DAYLIGHT ENERGIES', gstin='32AAWFD1840P1ZZ', state='Kerala',
             site_address='Indira Nagar Main Road, Vazhayila, Thiruvananthapuram - 695005',
@@ -248,7 +248,7 @@ class ProformaSendTests(TestCase):
         shutil.rmtree(cls._media, ignore_errors=True)
 
     def setUp(self):
-        self.admin = mk('ps_admin', 'admin')
+        self.admin = mk('ps_admin', 'superadmin')
         self.bde = mk('ps_bde', 'bde')
         self.customer = StockCustomer.objects.create(name='Daylight', contact_number='9876543210')
         self.item = StockItem.objects.create(code='PS-1', category='Solar Panel', unit='NOS')
@@ -316,7 +316,7 @@ class HsnPlumbingTests(TestCase):
 
     def setUp(self):
         from leads.models import Product
-        self.admin = mk('hsn_admin', 'admin')
+        self.admin = mk('hsn_admin', 'superadmin')
         self.product = Product.objects.create(name='Waaree 540w', unit='Nos', hsn='85414300')
         self.item = StockItem.objects.create(code='HSN-1', category='Solar Panel',
                                              unit='NOS', hsn='85414300')
@@ -385,7 +385,7 @@ class DispatchInvoiceTests(TestCase):
 
     def setUp(self):
         from .models import StockDispatch
-        self.admin = mk('di_admin', 'admin')
+        self.admin = mk('di_admin', 'superadmin')
         self.customer = StockCustomer.objects.create(
             name='Adya Global', gstin='32AAWFD1840P1ZZ', state='Kerala',
             site_address='Kowdiar, Thiruvananthapuram', contact_number='9876543210')
@@ -504,7 +504,7 @@ class RetailProformaTests(TestCase):
 
     def setUp(self):
         from leads.models import Lead, Product
-        self.admin = mk('rp_admin', 'admin')
+        self.admin = mk('rp_admin', 'superadmin')
         self.lead = Lead.objects.create(
             first_name='Anil', last_name='Kumar', email='anil@example.com',
             phone='9876500000', installation_location='Kowdiar, Thiruvananthapuram')
@@ -591,7 +591,7 @@ class InventoryDocumentProfileTests(TestCase):
     def setUp(self):
         from organization.models import InventoryDocumentProfile
         from organization.utils import get_org_settings
-        self.admin = mk('doc_admin', 'admin')
+        self.admin = mk('doc_admin', 'superadmin')
         self.org = get_org_settings()
         self.org.warranty_company_name = 'Energyfox Consultants Pvt. Ltd.'
         self.org.warranty_gst = '32AAHCE8716F1ZR'
@@ -686,7 +686,7 @@ class ProformaSendLandsOnTheLeadTimelineTests(TestCase):
 
     def setUp(self):
         from leads.models import Lead
-        self.admin = mk('pt_admin', 'admin')
+        self.admin = mk('pt_admin', 'superadmin')
         self.lead = Lead.objects.create(first_name='Retail', last_name='Buyer',
                                         phone='9990007777', email='buyer@example.com')
         self.quote = Quote.objects.create(lead=self.lead, quote_date=timezone.localdate())

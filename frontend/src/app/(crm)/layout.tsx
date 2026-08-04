@@ -237,8 +237,9 @@ export default function DashboardLayout({
   const [toasts, setToasts] = useState<any[]>([]);
   const [inventoryOpen, setInventoryOpen] = useState(false);
   // B2C (the whole CRM) vs B2B (wholesale — stock only, no lead pipeline).
-  // A view mode, not a permission: the toggle is admin-only and every module it
-  // reveals still enforces its own access on the server.
+  // A view mode, not a permission: the switch is limited to the super admin and
+  // the COO, and every module it reveals still enforces its own access on the
+  // server — see IsStockKeeper.
   const [bizMode, setBizMode] = useState<"b2c" | "b2b">("b2c");
   const [night, setNight] = useState(false);
   // Signing out is easy to hit by accident next to the theme toggle, so it asks first.
@@ -246,16 +247,19 @@ export default function DashboardLayout({
 
   // Store manager / store keeper / accounts B2B work the wholesale side only.
   const isB2BOnly = B2B_ONLY_ROLES.includes(currentUser?.role);
+  // The wholesale side is a separate business, not another admin screen — only
+  // the super admin and the COO cross between the two.
+  const canSwitchBiz = ["superadmin", "coo"].includes(currentUser?.role);
 
   // Restore the saved mode once we know who is logged in. B2B-only staff are
-  // pinned there; for everyone else only admins and super admins have B2B, so
-  // anyone else is put back into B2C.
+  // pinned there; anyone else without the switch is put back into B2C, which
+  // also drops a stale "b2b" left behind by a role change.
   useEffect(() => {
     if (!currentUser) return;
     if (B2B_ONLY_ROLES.includes(currentUser.role)) { setBizMode("b2b"); return; }
     const saved = localStorage.getItem(`${domain}_biz_mode`);
-    setBizMode(currentUser.is_staff && saved === "b2b" ? "b2b" : "b2c");
-  }, [currentUser, domain]);
+    setBizMode(canSwitchBiz && saved === "b2b" ? "b2b" : "b2c");
+  }, [currentUser, domain, canSwitchBiz]);
 
   // Someone in B2B who lands on a B2C route (a bookmark, a back button, a link
   // in a notification) is sent to the only module the mode carries.
@@ -824,8 +828,8 @@ export default function DashboardLayout({
           </button>
         </div>
 
-        {/* B2C / B2B switch — admins and super admins only; everyone else is B2C. */}
-        {currentUser?.is_staff && (
+        {/* B2C / B2B switch — super admin and COO only; everyone else is B2C. */}
+        {canSwitchBiz && (
           <div className="px-4 pt-3 flex-shrink-0">
             <div className="flex p-0.5 bg-white/[0.06] rounded-xl" role="group" aria-label="Business mode">
               {(["b2c", "b2b"] as const).map(mode => (

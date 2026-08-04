@@ -469,17 +469,22 @@ _MONEY = DecimalField(max_digits=16, decimal_places=2)
 
 
 class IsStockKeeper(permissions.BasePermission):
-    """The warehouse desk: admins, general managers, purchase staff, and the
-    B2B roles (store manager / store keeper / accounts B2B) whose whole job is
-    this module."""
+    """The warehouse desk.
+
+    The wholesale side is a separate business rather than another admin screen,
+    so crossing into it is limited to the super admin and the COO — an admin
+    runs the retail CRM and does not see the stock register. Purchase staff keep
+    it because they buy against it, and the B2B roles (store manager / store
+    keeper / accounts B2B) because it is their whole job.
+    """
     message = 'You do not have access to the stock register.'
 
     def has_permission(self, request, view):
         u = request.user
         if not u or not u.is_authenticated:
             return False
-        return bool(u.is_staff or getattr(u, 'is_general_manager', False)
-                    or getattr(u, 'role', '') == 'purchase_staff'
+        return bool(getattr(u, 'is_superuser', False)
+                    or getattr(u, 'role', '') in ('coo', 'purchase_staff')
                     or getattr(u, 'is_b2b_only', False))
 
 
