@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.utils import timezone
-from .models import Lead, IntegrationSettings, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, Warranty, WarrantyDocument, EmergencyService, PeriodicMaintenance, MaintenanceVisit
+from .models import Lead, IntegrationSettings, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, LiasoningDocument, Warranty, WarrantyDocument, EmergencyService, PeriodicMaintenance, MaintenanceVisit
 from .document_kinds import SLOT_TO_KIND, SITE_VISIT_SHARED_SLOTS, DOC_STAGE1_SHARED_SLOTS, shared_doc_entries
 
 from users.serializers import UserSerializer
@@ -211,8 +211,17 @@ class DocumentationStage2Serializer(serializers.ModelSerializer):
         return DocumentationStage2.MNRE_PORTAL_URL
 
 
+class LiasoningDocumentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LiasoningDocument
+        fields = ['id', 'doc_type', 'file', 'uploaded_at']
+
+
 class LiasoningServiceSerializer(serializers.ModelSerializer):
     completed_by_name = serializers.SerializerMethodField()
+    documents = LiasoningDocumentSerializer(many=True, read_only=True)
+    # Liasoning cannot be signed off until the commissioned plant is photographed.
+    has_plant_photo = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = LiasoningService

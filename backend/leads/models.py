@@ -956,6 +956,9 @@ class LiasoningService(models.Model):
     annexure3_remark = models.CharField(max_length=255, blank=True, default='')
     discom_approval = models.CharField(max_length=10, choices=DISCOM_CHOICES, blank=True, default='pending')
 
+    # The one document slot on this record; see LiasoningDocument.
+    PLANT_PHOTO = 'plant_commissioned'
+
     is_complete = models.BooleanField(default=False, db_index=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     completed_by = models.ForeignKey(
@@ -964,8 +967,34 @@ class LiasoningService(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    @property
+    def has_plant_photo(self):
+        """Whether the commissioned plant has been photographed. Liasoning waits
+        on it — the sign-off says the plant is live, so it needs the evidence."""
+        return self.documents.filter(doc_type=self.PLANT_PHOTO).exists()
+
     def __str__(self):
         return f"Liasoning & Service — {self.lead}"
+
+
+class LiasoningDocument(models.Model):
+    """A photo or file attached to a liasoning record.
+
+    The commissioned-plant photo is the evidence the installation is actually
+    live, so liasoning cannot be signed off without one — see
+    LiasoningService.PLANT_PHOTO and complete_liasoning.
+    """
+    liasoning = models.ForeignKey(LiasoningService, on_delete=models.CASCADE, related_name='documents')
+    doc_type = models.CharField(max_length=40, db_index=True)
+    file = models.FileField(upload_to='liasoning/')
+    uploaded_by = models.ForeignKey('users.User', on_delete=models.SET_NULL, null=True, blank=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['uploaded_at', 'id']
+
+    def __str__(self):
+        return f"{self.doc_type} — {self.liasoning_id}"
 
 
 class ServiceEntry(models.Model):

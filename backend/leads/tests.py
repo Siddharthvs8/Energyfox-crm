@@ -2757,3 +2757,88 @@ class DocStage2SubsidyPendingTests(TestCase):
             done = row['is_complete'] and not subsidy
             self.assertEqual([pending, subsidy, done].count(True), 1,
                              f'complete={complete} requested={requested} -> {row}')
+
+
+class LiasoningWaitsForThePlantPhotoTests(TestCase):
+    """Signing off liasoning says the plant is live, so it waits on the photo."""
+
+    def setUp(self):
+        from .models import LiasoningService
+        self.officer = mk('lp_officer', 'liasoning_officer')
+        self.lead = Lead.objects.create(first_name='mini', last_name='A', phone='9526396825',
+                                        status='converted', pushed_to_liasoning=True,
+                                        pushed_to_liasoning_at=timezone.now())
+        self.rec = LiasoningService.objects.create(lead=self.lead)
+
+    def photo(self, name='plant.jpg'):
+        return SimpleUploadedFile(name, b'\xff\xd8\xff jpeg', content_type='image/jpeg')
+
+    def upload(self, **extra):
+        data = {'file': self.photo()}
+        data.update(extra)
+        return self.client.post(f'/api/leads/{self.lead.id}/liasoning/documents/',
+                                data=data, HTTP_AUTHORIZATION=token_for(self.officer))
+
+    def complete(self):
+        return self.client.post(f'/api/leads/{self.lead.id}/complete-liasoning/',
+                                HTTP_AUTHORIZATION=token_for(self.officer))
+
+    def test_completion_is_refused_without_the_photo(self):
+        r = self.complete()
+        self.assertEqual(r.status_code, 400, r.content[:300])
+        self.assertTrue(r.json().get('needs_plant_photo'))
+        self.rec.refresh_from_db()
+        self.assertFalse(self.rec.is_complete)
+
+    def test_completion_works_once_the_photo_is_there(self):
+        self.assertEqual(self.upload().status_code, 201)
+        self.rec.refresh_from_db()
+        self.assertTrue(self.rec.has_plant_photo)
+        self.assertEqual(self.complete().status_code, 200)
+        self.rec.refresh_from_db()
+        self.assertTrue(self.rec.is_complete)
+
+    def test_the_record_reports_whether_the_photo_is_there(self):
+        r = self.client.get(f'/api/leads/{self.lead.id}/liasoning-record/',
+                            HTTP_AUTHORIZATION=token_for(self.officer))
+        self.assertIs(r.json()['has_plant_photo'], False)
+        self.upload()
+        r = self.client.get(f'/api/leads/{self.lead.id}/liasoning-record/',
+                            HTTP_AUTHORIZATION=token_for(self.officer))
+        self.assertIs(r.json()['has_plant_photo'], True)
+        self.assertEqual(len(r.json()['documents']), 1)
+
+    def test_several_photos_are_allowed(self):
+        self.assertEqual(self.upload().status_code, 201)
+        self.assertEqual(self.upload().status_code, 201)
+        self.rec.refresh_from_db()
+        self.assertEqual(self.rec.documents.count(), 2)
+
+    def test_an_unknown_slot_is_refused(self):
+        r = self.upload(doc_type='something_else')
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(self.rec.documents.count(), 0)
+
+    def test_a_file_is_required(self):
+        r = self.client.post(f'/api/leads/{self.lead.id}/liasoning/documents/',
+                             data={'doc_type': 'plant_commissioned'},
+                             HTTP_AUTHORIZATION=token_for(self.officer))
+        self.assertEqual(r.status_code, 400)
+
+    def test_the_photo_is_locked_once_signed_off(self):
+        """It is the evidence behind the sign-off, so it cannot be pulled after."""
+        doc_id = self.upload().json()['id']
+        self.complete()
+        r = self.client.delete(f'/api/leads/{self.lead.id}/liasoning/documents/{doc_id}/',
+                               HTTP_AUTHORIZATION=token_for(self.officer))
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(self.upload().status_code, 400)
+
+    def test_someone_outside_liasoning_cannot_upload(self):
+        """A BDE is refused as 404 rather than 403 — the lead is not in their
+        queryset at all, so it is rejected before the permission check."""
+        r = self.client.post(f'/api/leads/{self.lead.id}/liasoning/documents/',
+                             data={'file': self.photo()},
+                             HTTP_AUTHORIZATION=token_for(mk('lp_bde', 'bde')))
+        self.assertIn(r.status_code, (403, 404), r.content[:200])
+        self.assertEqual(self.rec.documents.count(), 0)

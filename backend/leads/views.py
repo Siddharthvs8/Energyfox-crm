@@ -6,8 +6,8 @@ from django.http import HttpResponse
 import csv
 import io
 import logging
-from .models import Lead, IntegrationSettings, ActivityLog, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, LeadDocument, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, Warranty, WarrantyDocument, EmergencyService, PeriodicMaintenance, MaintenanceVisit, ModuleSeen, ReceiptVoucher
-from .serializers import LeadSerializer, IntegrationSettingsSerializer, LeadAttachmentSerializer, ProductSerializer, SiteVisitSerializer, DocumentationStage1Serializer, SiteVisitDocumentSerializer, DocumentationStage1DocumentSerializer, PaymentVerificationSerializer, PurchaseLogisticsSerializer, ProjectSerializer, ProjectDocumentSerializer, ServiceEntrySerializer, BalancePaymentSerializer, DocumentationStage2Serializer, DocumentationStage2DocumentSerializer, LiasoningServiceSerializer, WarrantySerializer, WarrantyDocumentSerializer, EmergencyServiceSerializer, PeriodicMaintenanceSerializer, MaintenanceVisitSerializer, ReceiptVoucherSerializer
+from .models import Lead, IntegrationSettings, ActivityLog, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, LeadDocument, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, LiasoningDocument, Warranty, WarrantyDocument, EmergencyService, PeriodicMaintenance, MaintenanceVisit, ModuleSeen, ReceiptVoucher
+from .serializers import LeadSerializer, IntegrationSettingsSerializer, LeadAttachmentSerializer, ProductSerializer, SiteVisitSerializer, DocumentationStage1Serializer, SiteVisitDocumentSerializer, DocumentationStage1DocumentSerializer, PaymentVerificationSerializer, PurchaseLogisticsSerializer, ProjectSerializer, ProjectDocumentSerializer, ServiceEntrySerializer, BalancePaymentSerializer, DocumentationStage2Serializer, DocumentationStage2DocumentSerializer, LiasoningServiceSerializer, LiasoningDocumentSerializer, WarrantySerializer, WarrantyDocumentSerializer, EmergencyServiceSerializer, PeriodicMaintenanceSerializer, MaintenanceVisitSerializer, ReceiptVoucherSerializer
 from .document_kinds import SHARED_KIND_LABELS, kind_for
 # Module-level: the nine module payloads all report this one rule, and
 # access.py imports nothing, so there is no cycle to dodge.
@@ -3419,6 +3419,51 @@ class LeadViewSet(viewsets.ModelViewSet):
             s2.save(update_fields=update + ['updated_at'])
         return Response(LiasoningServiceSerializer(rec, context={'request': request}).data)
 
+    @action(detail=True, methods=['post'], url_path='liasoning/documents',
+            parser_classes=[parsers.MultiPartParser, parsers.FormParser])
+    def liasoning_add_document(self, request, pk=None):
+        """Attach a file to a liasoning record — the commissioned plant photo."""
+        from .access import can_access_liasoning
+        lead = self.get_object()
+        if not can_access_liasoning(request.user):
+            return Response({'error': 'You do not have access to liasoning & service.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        rec, _ = LiasoningService.objects.get_or_create(lead=lead)
+        if rec.is_complete:
+            return Response({'error': 'Liasoning & Service is completed and locked.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        file = request.FILES.get('file')
+        if not file:
+            return Response({'error': 'file is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        doc_type = (request.data.get('doc_type') or LiasoningService.PLANT_PHOTO).strip()
+        if doc_type != LiasoningService.PLANT_PHOTO:
+            return Response({'error': 'Unknown document type.'}, status=status.HTTP_400_BAD_REQUEST)
+        doc = LiasoningDocument.objects.create(
+            liasoning=rec, doc_type=doc_type, file=file,
+            uploaded_by=request.user if request.user.is_authenticated else None)
+        return Response(LiasoningDocumentSerializer(doc, context={'request': request}).data,
+                        status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['delete'], url_path='liasoning/documents/(?P<doc_id>[0-9]+)')
+    def liasoning_delete_document(self, request, pk=None, doc_id=None):
+        """Remove a liasoning file. Refused once the record is signed off — the
+        photo is the evidence behind that sign-off."""
+        from .access import can_access_liasoning
+        lead = self.get_object()
+        if not can_access_liasoning(request.user):
+            return Response({'error': 'You do not have access to liasoning & service.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        try:
+            doc = LiasoningDocument.objects.get(pk=doc_id, liasoning__lead=lead)
+        except LiasoningDocument.DoesNotExist:
+            return Response({'error': 'Document not found.'}, status=status.HTTP_404_NOT_FOUND)
+        if doc.liasoning.is_complete:
+            return Response({'error': 'Liasoning & Service is completed and locked.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        doc.file.delete(save=False)
+        doc.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     @action(detail=True, methods=['post'], url_path='complete-liasoning')
     def complete_liasoning(self, request, pk=None):
         """Mark Liasoning & Service complete for a lead."""
@@ -3431,6 +3476,12 @@ class LeadViewSet(viewsets.ModelViewSet):
         rec, _ = LiasoningService.objects.get_or_create(lead=lead)
         if rec.is_complete:
             return Response({'error': 'Liasoning & Service is already completed.'}, status=status.HTTP_400_BAD_REQUEST)
+        # Signing this off says the plant is live, so it waits on the evidence.
+        if not rec.has_plant_photo:
+            return Response(
+                {'error': 'Upload the commissioned plant photo before completing liasoning.',
+                 'needs_plant_photo': True},
+                status=status.HTTP_400_BAD_REQUEST)
         rec.is_complete = True
         rec.completed_at = timezone.now()
         rec.completed_by = request.user if request.user.is_authenticated else None
