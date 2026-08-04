@@ -206,13 +206,17 @@ def totals_block(taxable, discount, tax, grand):
     }
 
 
-def deliver_document(request, *, holder, number, amount, party, noun, channel=None):
+def deliver_document(request, *, holder, number, amount, party, noun, channel=None, lead=None):
     """Store the posted PDF against `holder` and send it out.
 
     Shared by the proforma invoice and the dispatch invoice: the client renders
     the document (it owns the template) and posts it back, the file is kept so
     email can attach it and WhatsApp can link to it — the Cloud API fetches
     documents by URL rather than by upload.
+
+    `lead` records the send on that customer's Activity Timeline. Only the retail
+    proforma has one — the wholesale documents are raised against a stock
+    customer or a supplier, who have no lead history to write to.
 
     Returns (payload, http_status).
     """
@@ -223,7 +227,7 @@ def deliver_document(request, *, holder, number, amount, party, noun, channel=No
         return {'error': 'No document to send. Generate the PDF first.'}, status.HTTP_400_BAD_REQUEST
 
     channels = [c.strip() for c in str(request.data.get('channels', 'email')).split(',') if c.strip()]
-    results, failures = {}, []
+    results, failures, delivered = {}, [], []
 
     if 'email' in channels:
         raw = request.data.get('email') or party.get('email') or ''
@@ -246,7 +250,9 @@ def deliver_document(request, *, holder, number, amount, party, noun, channel=No
                 channel=channel,
             )
             results['email'] = log.status
-            if log.status != 'sent':
+            if log.status == 'sent':
+                delivered.append(f"email to {', '.join(recipients)}")
+            else:
                 failures.append(f"Email failed: {log.error}")
 
     if 'whatsapp' in channels:
@@ -264,11 +270,21 @@ def deliver_document(request, *, holder, number, amount, party, noun, channel=No
                     channel=channel,
                 )
                 results['whatsapp'] = 'sent'
+                delivered.append(f'WhatsApp to {to}')
             except Exception as exc:                         # surfaced to the user
                 failures.append(f"WhatsApp failed: {exc}")
 
     if failures and not results:
         return {'error': ' '.join(failures)}, status.HTTP_502_BAD_GATEWAY
+    # Only actual deliveries reach the timeline — a refusal is not an event.
+    if lead is not None and delivered:
+        from leads.models import ActivityLog
+        ActivityLog.objects.create(
+            activity_type='note_added', lead=lead,
+            actor=request.user if request.user.is_authenticated else None,
+            description=f"{noun} {number} sent by {' and '.join(delivered)}.",
+            extra={'auto_generated': True, 'document': number, 'channels': sorted(results)},
+        )
     return ({'sent': results, 'warnings': failures,
              'pdf': request.build_absolute_uri(holder.pdf.url)}, status.HTTP_200_OK)
 
@@ -348,7 +364,9 @@ class ProformaDocumentMixin:
         payload, code = deliver_document(
             request, holder=quote, number=quote.number, amount=quote.total,
             party=self.proforma_party(quote), noun='Proforma Invoice',
-            channel=self.SEND_CHANNEL)
+            channel=self.SEND_CHANNEL,
+            # Retail quotes hang off a lead; wholesale ones do not.
+            lead=getattr(quote, 'lead', None))
         # Raising the document to the customer moves it out of draft.
         if code == status.HTTP_200_OK and quote.status == 'draft' and payload.get('sent'):
             quote.status = 'sent'

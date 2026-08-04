@@ -677,3 +677,66 @@ class InventoryDocumentProfileTests(TestCase):
         rq = Quote.objects.create(lead=lead, quote_date=timezone.localdate())
         d = self.client.get(f'/api/quotes/{rq.id}/proforma/', **self.auth()).json()
         self.assertEqual(d['company']['name'], 'Energyfox Consultants Pvt. Ltd.')
+
+
+class ProformaSendLandsOnTheLeadTimelineTests(TestCase):
+    """A retail proforma is raised against a lead, so sending it belongs on that
+    customer's Activity Timeline. The wholesale documents have no lead to
+    record against — they are raised on a stock customer or a supplier."""
+
+    def setUp(self):
+        from leads.models import Lead
+        self.admin = mk('pt_admin', 'admin')
+        self.lead = Lead.objects.create(first_name='Retail', last_name='Buyer',
+                                        phone='9990007777', email='buyer@example.com')
+        self.quote = Quote.objects.create(lead=self.lead, quote_date=timezone.localdate())
+        QuoteItem.objects.create(quote=self.quote, description='5kW system',
+                                 quantity=1, unit_price=Decimal('225000'))
+
+    @staticmethod
+    def _pdf():
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        return SimpleUploadedFile('q.pdf', b'%PDF-1.4 q', content_type='application/pdf')
+
+    def entries(self):
+        r = self.client.get(f'/api/leads/{self.lead.id}/activity-timeline/',
+                            HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        return [e['description'] for e in r.json()['entries']]
+
+    def test_an_emailed_proforma_is_recorded(self):
+        with patch('messaging.email.send_and_log') as send:
+            send.return_value = type('L', (), {'status': 'sent', 'error': ''})()
+            r = self.client.post(f'/api/quotes/{self.quote.id}/send/',
+                                 {'pdf': self._pdf(), 'channels': 'email',
+                                  'email': 'buyer@example.com'},
+                                 HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertTrue(any(self.quote.number in e and 'buyer@example.com' in e
+                            for e in self.entries()), self.entries())
+
+    def test_a_failed_send_is_not_recorded(self):
+        from leads.models import ActivityLog
+        before = ActivityLog.objects.filter(lead=self.lead).count()
+        with patch('messaging.email.send_and_log') as send:
+            send.return_value = type('L', (), {'status': 'failed', 'error': 'SMTP refused'})()
+            self.client.post(f'/api/quotes/{self.quote.id}/send/',
+                             {'pdf': self._pdf(), 'channels': 'email',
+                              'email': 'buyer@example.com'},
+                             HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(ActivityLog.objects.filter(lead=self.lead).count(), before)
+
+    def test_a_wholesale_send_has_no_lead_to_record_against(self):
+        """It must not raise looking for one."""
+        from .models import StockQuote, StockQuoteItem, StockCustomer, StockItem
+        customer = StockCustomer.objects.create(name='Adya Global')
+        item = StockItem.objects.create(code='PT-1', category='Solar Panel', opening_stock=5)
+        sq = StockQuote.objects.create(customer=customer, quote_date=timezone.localdate())
+        StockQuoteItem.objects.create(quote=sq, item=item, quantity=1, unit_price=Decimal('100'))
+        with patch('messaging.email.send_and_log') as send:
+            send.return_value = type('L', (), {'status': 'sent', 'error': ''})()
+            r = self.client.post(f'/api/stock-quotes/{sq.id}/send/',
+                                 {'pdf': self._pdf(), 'channels': 'email',
+                                  'email': 'trade@example.com'},
+                                 HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])

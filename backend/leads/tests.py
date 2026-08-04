@@ -2647,3 +2647,51 @@ class ModuleCleanupIsSuperAdminOnlyTests(TestCase):
         self.lead.refresh_from_db()
         self.assertTrue(self.lead.pushed_to_accounts)
         self.assertTrue(PaymentVerification.objects.filter(lead=self.lead).exists())
+
+
+class WarrantySendLandsOnTheTimelineTests(TestCase):
+    """Handing the warranty to the customer belongs on their timeline."""
+
+    def setUp(self):
+        self.docstaff = mk('wt_doc', 'documentation_staff')
+        self.lead = Lead.objects.create(first_name='mini', last_name='A', phone='9526396824',
+                                        email='mini@example.com', status='converted',
+                                        pushed_to_warranty=True)
+        self.rec, _ = Warranty.objects.get_or_create(lead=self.lead)
+        WarrantyDocument.objects.create(
+            warranty=self.rec, doc_type='warranty',
+            file=SimpleUploadedFile('Warranty_Certificate_mini_A.pdf', b'%PDF-1.4 w',
+                                    content_type='application/pdf'))
+
+    def entries(self):
+        r = self.client.get(f'/api/leads/{self.lead.id}/activity-timeline/',
+                            HTTP_AUTHORIZATION=token_for(self.docstaff))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        return [e['description'] for e in r.json()['entries']]
+
+    def test_an_emailed_warranty_is_recorded(self):
+        with patch('messaging.email.send_and_log') as send:
+            send.return_value = SimpleNamespace(status='sent', error='')
+            self.client.post(f'/api/leads/{self.lead.id}/send-warranty/',
+                             data={'channels': 'email'},
+                             HTTP_AUTHORIZATION=token_for(self.docstaff))
+        self.assertTrue(any('Warranty certificate sent by email to mini@example.com' in e
+                            for e in self.entries()), self.entries())
+
+    def test_a_whatsapp_warranty_is_recorded(self):
+        with patch('messaging.whatsapp.send_document'):
+            self.client.post(f'/api/leads/{self.lead.id}/send-warranty/',
+                             data={'channels': 'whatsapp'},
+                             HTTP_AUTHORIZATION=token_for(self.docstaff))
+        self.assertTrue(any('WhatsApp to 9526396824' in e for e in self.entries()), self.entries())
+
+    def test_a_failed_send_is_not_recorded(self):
+        from .models import ActivityLog
+        before = ActivityLog.objects.filter(lead=self.lead).count()
+        with patch('messaging.email.send_and_log') as send:
+            send.return_value = SimpleNamespace(status='failed', error='SMTP refused')
+            r = self.client.post(f'/api/leads/{self.lead.id}/send-warranty/',
+                                 data={'channels': 'email'},
+                                 HTTP_AUTHORIZATION=token_for(self.docstaff))
+        self.assertEqual(r.status_code, 502)
+        self.assertEqual(ActivityLog.objects.filter(lead=self.lead).count(), before)

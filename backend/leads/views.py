@@ -3229,7 +3229,7 @@ class LeadViewSet(viewsets.ModelViewSet):
         who = f"{lead.first_name} {lead.last_name or ''}".strip()
         filename = (doc.file.name or 'Warranty.pdf').split('/')[-1]
         channels = [c.strip() for c in str(request.data.get('channels', 'email')).split(',') if c.strip()]
-        results, failures = {}, []
+        results, failures, delivered = {}, [], []
 
         if 'email' in channels:
             raw = request.data.get('email') or lead.email or ''
@@ -3251,7 +3251,9 @@ class LeadViewSet(viewsets.ModelViewSet):
                     created_by=request.user if request.user.is_authenticated else None,
                 )
                 results['email'] = log.status
-                if log.status != 'sent':
+                if log.status == 'sent':
+                    delivered.append(f"email to {', '.join(recipients)}")
+                else:
                     failures.append(f'Email failed: {log.error}')
 
         if 'whatsapp' in channels:
@@ -3268,19 +3270,27 @@ class LeadViewSet(viewsets.ModelViewSet):
                         caption='Solar System Warranty',
                     )
                     results['whatsapp'] = 'sent'
+                    delivered.append(f'WhatsApp to {to}')
                 except Exception as exc:                     # surfaced to the user
                     failures.append(f'WhatsApp failed: {exc}')
 
         # A recorded attempt is not a delivery: an SMTP refusal comes back as a
         # log with status 'failed', and neither the error nor the "sent" tick
         # should be softened into a success.
-        delivered = [c for c, outcome in results.items() if outcome == 'sent']
-        if not delivered:
+        sent_channels = [c for c, outcome in results.items() if outcome == 'sent']
+        if not sent_channels:
             return Response({'error': ' '.join(failures) or 'Nothing was sent.'},
                             status=status.HTTP_502_BAD_GATEWAY)
         if not rec.sent:
             rec.sent = True
             rec.save(update_fields=['sent', 'updated_at'])
+        # The hand-over of the warranty belongs on the customer's timeline.
+        ActivityLog.objects.create(
+            activity_type='note_added', lead=lead,
+            actor=request.user if request.user.is_authenticated else None,
+            description=f"Warranty certificate sent by {' and '.join(delivered)}.",
+            extra={'auto_generated': True, 'channels': sorted(results)},
+        )
         return Response({'sent': results, 'warnings': failures,
                          'pdf': request.build_absolute_uri(doc.file.url)})
 

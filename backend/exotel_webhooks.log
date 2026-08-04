@@ -856,3 +856,28 @@ UPDATED CallLog id=5: {'outcome': 'connected', 'duration_seconds': 150, 'recordi
 Payload: {"CallSid": "exotel_sid_888", "Status": "completed", "ConversationDuration": "150", "RecordingUrl": "https://example.com/recording.mp3"}
 ============================================================
 
+=== EXOTEL WEBHOOK RECEIVED AT 2026-08-04 13:50:42 ===
+Matched Call ID: 4
+Notes:
+Method: POST
+Full Path: /api/calls/webhook/exotel/
+Host: testserver
+Payload keys: ['CallSid', 'Status', 'ConversationDuration', 'RecordingUrl', 'Direction', 'From', 'To', 'DialWhomNumber']
+Extracted: CallSid=exotel_sid_inbound_123, Status=completed, Duration=120, Recording=https://example.com/inbound.mp3, CustomField=None, direction=inbound
+No matched CallLog found. Attempting Inbound Call processing...
+CREATED Inbound Exotel CallLog id=4
+Payload: {"CallSid": "exotel_sid_inbound_123", "Status": "completed", "ConversationDuration": "120", "RecordingUrl": "https://example.com/inbound.mp3", "Direction": "inbound", "From": "9876543210", "To": "+919988776655", "DialWhomNumber": "+919900000000"}
+============================================================
+
+=== EXOTEL WEBHOOK RECEIVED AT 2026-08-04 13:50:43 ===
+Matched Call ID: 5
+Notes:
+Method: POST
+Full Path: /api/calls/webhook/exotel/
+Host: testserver
+Payload keys: ['CallSid', 'Status', 'ConversationDuration', 'RecordingUrl']
+Extracted: CallSid=exotel_sid_888, Status=completed, Duration=150, Recording=https://example.com/recording.mp3, CustomField=None, direction=inbound
+UPDATED CallLog id=5: {'outcome': 'connected', 'duration_seconds': 150, 'recording_url': 'https://example.com/recording.mp3'}
+Payload: {"CallSid": "exotel_sid_888", "Status": "completed", "ConversationDuration": "150", "RecordingUrl": "https://example.com/recording.mp3"}
+============================================================
+
