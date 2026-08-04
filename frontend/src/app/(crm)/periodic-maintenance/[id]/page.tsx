@@ -40,6 +40,12 @@ export default function MaintenanceDetailPage({ params: paramsPromise }: { param
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [openVisit, setOpenVisit] = useState<Visit | null>(null);
+  // Rescheduling gets a real dialog with a date picker — a text prompt made
+  // the officer type the format by hand.
+  const [moving, setMoving] = useState<Visit | null>(null);
+  const [moveDate, setMoveDate] = useState("");
+  const [moveReason, setMoveReason] = useState("");
+  const [moveSaving, setMoveSaving] = useState(false);
   const [draft, setDraft] = useState<any>({});
   const [saving, setSaving] = useState(false);
   const [uploadingSlot, setUploadingSlot] = useState<string | null>(null);
@@ -74,24 +80,30 @@ export default function MaintenanceDetailPage({ params: paramsPromise }: { param
 
   /** Move a visit's due date. Its own endpoint, so the original date and the
    *  reason are recorded rather than the schedule quietly rewriting itself. */
-  const reschedule = async (v: Visit) => {
-    const next = window.prompt(
-      `Reschedule visit ${v.sequence} — currently due ${v.due_date}.
-
-New date (YYYY-MM-DD):`,
-      v.due_date);
-    if (!next || next.trim() === v.due_date) return;
-    const reason = window.prompt("Why is it moving? (optional)", v.reschedule_reason || "") ?? "";
+  const submitReschedule = async () => {
+    if (!moving) return;
+    if (!moveDate || moveDate === moving.due_date) {
+      alert("Pick a different date."); return;
+    }
+    setMoveSaving(true);
     try {
       const r = await fetch(
-        `${getApiBase(domain)}/api/leads/${id}/maintenance-visits/${v.id}/reschedule/`, {
+        `${getApiBase(domain)}/api/leads/${id}/maintenance-visits/${moving.id}/reschedule/`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
-          body: JSON.stringify({ due_date: next.trim(), reason }),
+          body: JSON.stringify({ due_date: moveDate, reason: moveReason }),
         });
       if (!r.ok) { const d = await r.json().catch(() => ({})); alert(d.error || "Could not reschedule."); return; }
+      setMoving(null);
       await load();
     } catch { alert("Network error while rescheduling."); }
+    finally { setMoveSaving(false); }
+  };
+
+  const openReschedule = (v: Visit) => {
+    setMoving(v);
+    setMoveDate(v.due_date);                       // the picker opens on the current date
+    setMoveReason(v.reschedule_reason || "");
   };
 
   const patchVisit = async (visitId: number, body: any) => {
@@ -207,7 +219,7 @@ New date (YYYY-MM-DD):`,
                     <td className="px-5 py-3 text-slate-600">{v.monthly_production || "—"}</td>
                     <td className="px-5 py-3 text-right whitespace-nowrap">
                       {data.can_edit && !v.is_complete && (
-                        <button onClick={() => reschedule(v)}
+                        <button onClick={() => openReschedule(v)}
                           className="text-[12px] font-semibold text-slate-500 hover:text-slate-800 mr-3">
                           Reschedule
                         </button>
@@ -225,6 +237,59 @@ New date (YYYY-MM-DD):`,
       </div>
 
       {/* Visit form modal */}
+      {/* Reschedule — a date picker rather than a typed string. */}
+      {moving && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+          onClick={() => setMoving(null)}>
+          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden"
+            onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+              <div>
+                <h2 className="text-base font-bold text-slate-900">Reschedule visit #{moving.sequence}</h2>
+                <p className="text-xs text-slate-400">
+                  Currently due {new Date(moving.due_date).toLocaleDateString("en-IN")}
+                </p>
+              </div>
+              <button onClick={() => setMoving(null)}
+                className="w-8 h-8 flex items-center justify-center rounded-xl bg-slate-100 text-slate-500 hover:bg-slate-200 transition text-sm">✕</button>
+            </div>
+
+            <div className="px-6 py-5 space-y-4">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                  New due date
+                </label>
+                <input type="date" value={moveDate} autoFocus
+                  onChange={e => setMoveDate(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                  Reason <span className="normal-case font-semibold text-slate-300">(optional)</span>
+                </label>
+                <input value={moveReason} placeholder="e.g. customer away, monsoon"
+                  onChange={e => setMoveReason(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all" />
+              </div>
+              <p className="text-[11px] text-slate-400">
+                The date it was originally due is kept, so the change stays visible.
+              </p>
+            </div>
+
+            <div className="flex gap-3 px-6 pb-5">
+              <button onClick={() => setMoving(null)}
+                className="flex-1 px-4 py-2.5 text-slate-600 font-medium hover:bg-slate-50 rounded-xl transition-colors">
+                Cancel
+              </button>
+              <button onClick={submitReschedule} disabled={moveSaving || !moveDate || moveDate === moving.due_date}
+                className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 rounded-xl transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
+                {moveSaving ? "Saving…" : "Reschedule"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {openVisit && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={() => setOpenVisit(null)}>
           <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>

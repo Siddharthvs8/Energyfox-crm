@@ -19,6 +19,9 @@ type LiasoningDetail = {
   can_edit: boolean;
   record: {
     completed_by_name: string | null; completed_at: string | null;
+    annexure3_completed?: boolean; annexure3_remark?: string;
+    // Owned by Documentation Stage 2 — shown here, never edited here.
+    discom_approval?: string;
     // Liasoning waits on the commissioned plant photo — signing off says the
     // plant is live, so it needs the evidence.
     has_plant_photo?: boolean;
@@ -27,6 +30,18 @@ type LiasoningDetail = {
 };
 
 const PLANT_PHOTO = "plant_commissioned";
+
+const DISCOM_LABEL: Record<string, string> = {
+  pending: "Pending", yes: "Approved", no: "Not Approved",
+};
+const DISCOM_TONE: Record<string, string> = {
+  pending: "bg-amber-50 border-amber-200 text-amber-700",
+  yes: "bg-emerald-50 border-emerald-200 text-emerald-700",
+  no: "bg-rose-50 border-rose-200 text-rose-600",
+};
+
+const inputCls = "w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all disabled:opacity-70";
+const labelCls = "block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5";
 
 export default function LiasoningDetailPage({ params: paramsPromise }: { params: Promise<{ id: string }> }) {
   const params = React.use(paramsPromise);
@@ -39,6 +54,11 @@ export default function LiasoningDetailPage({ params: paramsPromise }: { params:
   const [error, setError] = useState("");
   const [completing, setCompleting] = useState(false);
   const [uploading, setUploading] = useState(false);
+  // The Annexure 3 fields, editable here as well as from the list row.
+  const [annexDone, setAnnexDone] = useState(false);
+  const [annexRemark, setAnnexRemark] = useState("");
+  const [savingAnnex, setSavingAnnex] = useState(false);
+  const [savedAnnex, setSavedAnnex] = useState(false);
 
   const token = () => localStorage.getItem(`${domain}_access`);
 
@@ -47,7 +67,12 @@ export default function LiasoningDetailPage({ params: paramsPromise }: { params:
     if (!t) { router.push("/login"); return; }
     try {
       const r = await fetch(`${getApiBase(domain)}/api/leads/${id}/liasoning-detail/`, { headers: { Authorization: `Bearer ${t}` } });
-      if (r.ok) setData(await r.json());
+      if (r.ok) {
+        const d = await r.json();
+        setData(d);
+        setAnnexDone(!!d.record?.annexure3_completed);
+        setAnnexRemark(d.record?.annexure3_remark || "");
+      }
       else if (r.status === 403 || r.status === 404) setError("You don't have access to this customer, or it isn't in liasoning & service.");
       else setError("Failed to load.");
     } catch { setError("Network error."); }
@@ -55,6 +80,21 @@ export default function LiasoningDetailPage({ params: paramsPromise }: { params:
   }, [domain, id, router]);
 
   useEffect(() => { load(); }, [load]);
+
+  const saveAnnexure = async () => {
+    setSavingAnnex(true); setSavedAnnex(false);
+    try {
+      const r = await fetch(`${getApiBase(domain)}/api/leads/${id}/liasoning-record/`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
+        body: JSON.stringify({ annexure3_completed: annexDone, annexure3_remark: annexRemark }),
+      });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); alert(d.error || "Could not save."); return; }
+      await load();
+      setSavedAnnex(true);
+    } catch { alert("Network error while saving."); }
+    finally { setSavingAnnex(false); }
+  };
 
   /** The photo is the evidence behind the sign-off, so it is uploaded here. */
   const upload = async (files: FileList | null) => {
@@ -144,8 +184,51 @@ export default function LiasoningDetailPage({ params: paramsPromise }: { params:
       <div className="mt-5 bg-white border border-slate-200 rounded-2xl shadow-sm p-5">
         <h2 className="text-base font-bold text-slate-900">Liasoning &amp; Service</h2>
         <p className="text-xs text-slate-400 mt-0.5 mb-4">
-          The commissioned plant photo is required before this customer can move on.
+          Annexure 3 syncs to the customer&apos;s MNRE Stage 2. The commissioned plant photo is
+          required before this customer can move on.
         </p>
+
+        {/* Annexure 3 — the same fields the list row carries, in full here. */}
+        <div className="grid sm:grid-cols-2 gap-4 mb-5">
+          <div>
+            <label className={labelCls}>Annexure 3</label>
+            <label className={`inline-flex items-center gap-2 ${data.can_edit && !data.is_complete ? "cursor-pointer" : "opacity-70"}`}>
+              <input type="checkbox" checked={annexDone} disabled={!data.can_edit || data.is_complete}
+                onChange={e => { setAnnexDone(e.target.checked); setSavedAnnex(false); }}
+                className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500/30" />
+              <span className={`text-sm font-semibold ${annexDone ? "text-emerald-600" : "text-slate-500"}`}>
+                {annexDone ? "Completed" : "Not completed"}
+              </span>
+            </label>
+          </div>
+          <div>
+            <label className={labelCls}>Discom Approval</label>
+            {(() => {
+              const v = data.record?.discom_approval || "pending";
+              return (
+                <span className={`inline-flex items-center px-3 py-1.5 border rounded-lg text-xs font-semibold ${DISCOM_TONE[v]}`}>
+                  {v === "yes" ? "✓ " : ""}{DISCOM_LABEL[v] || v}
+                </span>
+              );
+            })()}
+            <p className="text-[10px] text-slate-400 mt-1.5">Recorded in Documentation Stage 2.</p>
+          </div>
+          <div className="sm:col-span-2">
+            <label className={labelCls}>Remarks</label>
+            <input value={annexRemark} disabled={!data.can_edit || data.is_complete}
+              placeholder="Remarks"
+              onChange={e => { setAnnexRemark(e.target.value); setSavedAnnex(false); }}
+              className={inputCls} />
+          </div>
+          {data.can_edit && !data.is_complete && (
+            <div className="sm:col-span-2">
+              <button onClick={saveAnnexure} disabled={savingAnnex}
+                className="px-4 py-2 bg-slate-800 text-white rounded-xl text-xs font-semibold hover:bg-slate-900 disabled:opacity-50 transition">
+                {savingAnnex ? "Saving…" : savedAnnex ? "Saved ✓" : "Save Annexure 3"}
+              </button>
+            </div>
+          )}
+        </div>
 
         {(() => {
           const photos = (data.record?.documents || []).filter(d => d.doc_type === PLANT_PHOTO);

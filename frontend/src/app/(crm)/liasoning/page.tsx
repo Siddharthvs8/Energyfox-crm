@@ -7,7 +7,12 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCleanup";
+const PLANT_PHOTO = "plant_commissioned";
+
 type LiasoningRecord = {
+  // Liasoning waits on the commissioned plant photo before it can be signed off.
+  has_plant_photo?: boolean;
+  documents?: { id: number; doc_type: string; file: string }[];
   annexure3_completed: boolean; annexure3_remark: string;
   discom_approval: string;
   is_complete: boolean;
@@ -52,6 +57,7 @@ export default function LiasoningPage() {
   const [search, setSearch] = useState("");
   const [rows, setRows] = useState<Record<number, RowDraft>>({});
   const [savingId, setSavingId] = useState<number | null>(null);
+  const [photoId, setPhotoId] = useState<number | null>(null);
 
   const token = () => localStorage.getItem(`${domain}_access`);
 
@@ -91,6 +97,32 @@ export default function LiasoningPage() {
 
   const setRow = (id: number, patch: Partial<RowDraft>) =>
     setRows(p => ({ ...p, [id]: { ...p[id], ...patch } }));
+
+  /** Upload the commissioned plant photo from the row, so the officer does not
+   *  have to open the customer to attach it. */
+  const uploadPhoto = async (lead: LiasoningLead, file: File | null) => {
+    if (!file) return;
+    setPhotoId(lead.id);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      body.append("doc_type", PLANT_PHOTO);
+      const r = await fetch(`${getApiBase(domain)}/api/leads/${lead.id}/liasoning/documents/`, {
+        method: "POST", headers: { Authorization: `Bearer ${token()}` }, body,
+      });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); alert(e.error || "Could not upload the photo."); return; }
+      const doc = await r.json();
+      setLeads(prev => prev.map(x => (x.id === lead.id ? {
+        ...x,
+        record: {
+          ...(x.record || {} as LiasoningRecord),
+          has_plant_photo: true,
+          documents: [...(x.record?.documents || []), doc],
+        },
+      } : x)));
+    } catch { alert("Network error while uploading."); }
+    finally { setPhotoId(null); }
+  };
 
   const saveRow = async (lead: LiasoningLead) => {
     const draft = rows[lead.id];
@@ -159,13 +191,14 @@ export default function LiasoningPage() {
           ) : (
             <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
               <div className="overflow-x-auto">
-                <table className="w-full text-sm min-w-[760px]">
+                <table className="w-full text-sm min-w-[900px]">
                   <thead>
                     <tr className="text-left text-[10px] font-bold text-slate-400 uppercase tracking-wide border-b border-slate-100 bg-slate-50/60">
                       <th className="px-5 py-3">Customer</th>
                       <th className="px-5 py-3">Completed</th>
                       <th className="px-5 py-3">Remarks</th>
                       <th className="px-5 py-3">Discom Approval</th>
+                      <th className="px-5 py-3">Plant Photo</th>
                       <th className="px-5 py-3 text-right">Actions</th>
                     </tr>
                   </thead>
@@ -220,6 +253,30 @@ export default function LiasoningPage() {
                                 <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 border rounded-lg text-xs font-semibold ${tone}`}>
                                   {v === "yes" ? "✓ " : ""}{opt.label}
                                 </span>
+                              );
+                            })()}
+                          </td>
+                          <td className="px-5 py-3 min-w-[150px]">
+                            {/* Required before liasoning can be completed. */}
+                            {(() => {
+                              const photos = (l.record?.documents || []).filter(d => d.doc_type === PLANT_PHOTO);
+                              const has = !!l.record?.has_plant_photo || photos.length > 0;
+                              if (has) {
+                                return (
+                                  <a href={photos[0]?.file} target="_blank" rel="noreferrer"
+                                    className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 hover:text-emerald-800">
+                                    ✓ Uploaded{photos.length > 1 ? ` (${photos.length})` : ""}
+                                  </a>
+                                );
+                              }
+                              if (locked) return <span className="text-xs text-slate-400">—</span>;
+                              return (
+                                <label className="inline-flex items-center gap-2 cursor-pointer text-xs font-semibold text-amber-600 hover:text-amber-800">
+                                  {photoId === l.id ? "Uploading…" : "+ Upload"}
+                                  <input type="file" accept="image/*" className="hidden"
+                                    disabled={photoId === l.id}
+                                    onChange={e => uploadPhoto(l, e.target.files?.[0] ?? null)} />
+                                </label>
                               );
                             })()}
                           </td>
