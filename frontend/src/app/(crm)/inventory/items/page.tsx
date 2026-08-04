@@ -19,7 +19,7 @@ const blankItem = {
 };
 
 export default function StockItemMasterPage() {
-  const { items, loading, denied, save, remove } = useStock(["items"]);
+  const { items, loading, denied, readOnly, save, remove } = useStock(["items"], "items");
   const list: any[] = items || [];
 
   const [form, setForm] = useState<any>(blankItem);
@@ -65,7 +65,7 @@ export default function StockItemMasterPage() {
         Your wholesale SKUs — closing stock is derived from movements.
         {lowCount > 0 && <span className="ml-2 text-rose-600 font-medium">{lowCount} low on stock</span>}
       </>}
-      action={<AddButton label="Add Item" onClick={openCreate} />}>
+      action={readOnly ? undefined : <AddButton label="Add Item" onClick={openCreate} />}>
 
       <SearchBar value={search} onChange={setSearch} placeholder="Search items..." />
 
@@ -94,7 +94,8 @@ export default function StockItemMasterPage() {
           <span className="tabular-nums text-slate-400">{rupee(r.unit_cost)}</span>,
           <span className="tabular-nums font-semibold">{rupee(r.stock_value)}</span>,
           <span className="text-slate-500">{r.location || "—"}</span>,
-          <RowActions onEdit={() => openEdit(r)} onDelete={() => remove("items", r.id, "item")} />,
+          readOnly ? <span className="text-xs text-slate-300">—</span>
+            : <RowActions onEdit={() => openEdit(r)} onDelete={() => remove("items", r.id, "item")} />,
         ])} />
 
       <Modal show={show} title={editing ? "Edit Item" : "Add Item"} onClose={() => setShow(false)}

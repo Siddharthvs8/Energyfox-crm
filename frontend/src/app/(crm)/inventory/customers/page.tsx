@@ -15,12 +15,12 @@ export const CUSTOMER_COLUMNS: PartyCol[] = [
 ];
 
 export default function StockCustomersPage() {
-  const { customers, loading, denied, save, remove } = useStock(["customers"]);
+  const { customers, loading, denied, readOnly, save, remove } = useStock(["customers"], "customers");
 
   return (
     <PartyScreen
       title="Customers" subtitle="Buyers and project sites you dispatch to." noun="Customer"
-      columns={CUSTOMER_COLUMNS} rows={customers} loading={loading} denied={denied}
+      columns={CUSTOMER_COLUMNS} readOnly={readOnly} rows={customers} loading={loading} denied={denied}
       onSave={(body, id) => save("customers", body, id)}
       onDelete={(id) => remove("customers", id, "customer")} />
   );

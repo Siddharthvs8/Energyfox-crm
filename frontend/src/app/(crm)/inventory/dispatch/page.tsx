@@ -26,8 +26,8 @@ const blankForm = () => ({
 });
 
 export default function StockDispatchPage() {
-  const { dispatches, items, customers, loading, denied, save, remove, reload } =
-    useStock(["dispatches", "items", "customers"]);
+  const { dispatches, items, customers, loading, denied, readOnly, save, remove, reload } =
+    useStock(["dispatches", "items", "customers"], "dispatch");
   const itemList: any[] = items || [];
   const customerList: any[] = customers || [];
   const list: any[] = dispatches || [];
@@ -158,7 +158,7 @@ export default function StockDispatchPage() {
     <StockPage
       title="Sales / Dispatches" loading={loading} denied={denied}
       subtitle="Goods going out to customers — raise the invoice, send it, and the stock ledger follows."
-      action={<AddButton label="New Dispatch" onClick={openCreate} />}>
+      action={readOnly ? undefined : <AddButton label="New Dispatch" onClick={openCreate} />}>
 
       <SearchBar value={search} onChange={setSearch} placeholder="Search dispatches..." />
 
@@ -185,8 +185,8 @@ export default function StockDispatchPage() {
             onDownload={() => download(r)}
             onEmail={() => sendTo(r, "email")}
             onWhatsApp={() => sendTo(r, "whatsapp")}
-            onEdit={() => openEdit(r)}
-            onDelete={() => remove("dispatches", r.id, "dispatch")} />,
+            onEdit={readOnly ? undefined : () => openEdit(r)}
+            onDelete={readOnly ? undefined : () => remove("dispatches", r.id, "dispatch")} />,
         ])} />
 
       <DocumentPreview

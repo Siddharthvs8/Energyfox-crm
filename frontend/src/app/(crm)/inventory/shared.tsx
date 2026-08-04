@@ -73,7 +73,11 @@ const explain = async (r: Response, fallback: string) => {
   } catch { return fallback; }
 };
 
-export function useStock(want: (keyof typeof SOURCES)[]) {
+/** Wholesale modules, as the access matrix names them (inventory/b2b_access.py). */
+export type B2BModule = "dashboard" | "items" | "suppliers" | "customers"
+  | "proforma" | "dispatch" | "purchases";
+
+export function useStock(want: (keyof typeof SOURCES)[], module?: B2BModule) {
   const domain = APP_SLUG;
   const api = getApiBase(domain);
   const router = useRouter();
@@ -81,6 +85,8 @@ export function useStock(want: (keyof typeof SOURCES)[]) {
   const [data, setData] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
   const [denied, setDenied] = useState(false);
+  // The server's own table, so the buttons shown match the requests accepted.
+  const [access, setAccess] = useState<Record<string, string> | null>(null);
 
   const token = () => localStorage.getItem(`${domain}_access`);
   const key = want.join(",");
@@ -103,6 +109,15 @@ export function useStock(want: (keyof typeof SOURCES)[]) {
   }, [api, key]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Read-only roles keep the screen but lose its write controls.
+  useEffect(() => {
+    if (!token()) return;
+    fetch(`${api}/api/users/me/`, { headers: { Authorization: `Bearer ${token()}` } })
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (d) setAccess(d.b2b_access || {}); })
+      .catch(() => {});
+  }, [api]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   const authJson = () => ({ "Content-Type": "application/json", Authorization: `Bearer ${token()}` });
 
@@ -139,7 +154,12 @@ export function useStock(want: (keyof typeof SOURCES)[]) {
     return d;
   };
 
-  return { ...data, loading, denied, save, remove, act, reload: load } as any;
+  // Until `me` answers, assume writable — the server is the one that refuses,
+  // and flashing the controls off and on again would be worse.
+  const level = module && access ? access[module] : undefined;
+  const readOnly = !!module && !!access && level !== "rw";
+
+  return { ...data, loading, denied, readOnly, access, save, remove, act, reload: load } as any;
 }
 
 /* ── Page frame ───────────────────────────────────────────────────────────── */
@@ -400,9 +420,9 @@ export function StatusPill({ status }: { status: string }) {
 export type PartyCol = { key: string; label: string; required?: boolean; placeholder?: string;
                          mono?: boolean; defaultValue?: string; options?: string[] };
 
-export function PartyScreen({ title, subtitle, noun, columns, rows, loading, denied, onSave, onDelete }: {
+export function PartyScreen({ title, subtitle, noun, columns, rows, loading, denied, readOnly, onSave, onDelete }: {
   title: string; subtitle: string; noun: string; columns: PartyCol[]; rows: any[];
-  loading?: boolean; denied?: boolean;
+  loading?: boolean; denied?: boolean; readOnly?: boolean;
   onSave: (body: any, id?: number | null) => Promise<boolean>;
   onDelete: (id: number) => void;
 }) {
@@ -436,7 +456,7 @@ export function PartyScreen({ title, subtitle, noun, columns, rows, loading, den
 
   return (
     <StockPage title={title} subtitle={subtitle} loading={loading} denied={denied}
-      action={<AddButton label={`Add ${noun}`} onClick={openCreate} />}>
+      action={readOnly ? undefined : <AddButton label={`Add ${noun}`} onClick={openCreate} />}>
 
       <SearchBar value={search} onChange={setSearch} placeholder={`Search ${noun.toLowerCase()}s...`} />
 
@@ -449,7 +469,8 @@ export function PartyScreen({ title, subtitle, noun, columns, rows, loading, den
               ? <span className="font-semibold text-slate-900">{r[c.key] || "—"}</span>
               : <span className={c.mono ? "font-mono text-xs text-slate-500" : ""}>{r[c.key] || "—"}</span>
           )),
-          <RowActions onEdit={() => openEdit(r)} onDelete={() => onDelete(r.id)} />,
+          readOnly ? <span className="text-xs text-slate-300">—</span>
+            : <RowActions onEdit={() => openEdit(r)} onDelete={() => onDelete(r.id)} />,
         ])} />
 
       <Modal show={show} title={`${editing ? "Edit" : "Add"} ${noun}`} onClose={() => setShow(false)}

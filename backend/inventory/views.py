@@ -8,15 +8,39 @@ from rest_framework import viewsets, permissions, status, parsers
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from . import b2b_access
 from .models import Vendor, PurchaseOrder, Quote, SalesOrder, SalesOrderItem
 from .serializers import (
     VendorSerializer, PurchaseOrderSerializer, QuoteSerializer, SalesOrderSerializer,
 )
 
 
+class SuppliersAccess(permissions.BasePermission):
+    """Suppliers is one list shared by both sides of the business.
+
+    So the wholesale matrix only scopes the B2B-only roles here — a store keeper
+    and a store manager have no suppliers module. Everyone on the retail side
+    keeps the access they always had.
+    """
+    def has_permission(self, request, view):
+        u = request.user
+        if not u or not u.is_authenticated:
+            return False
+        if not getattr(u, 'is_b2b_only', False):
+            return True
+        level = b2b_access.level_for(u, 'suppliers')
+        if level is None:
+            self.message = 'You do not have access to suppliers.'
+            return False
+        if request.method in permissions.SAFE_METHODS:
+            return True
+        self.message = 'You have read-only access to suppliers.'
+        return level == b2b_access.WRITE
+
+
 class VendorViewSet(viewsets.ModelViewSet):
     serializer_class = VendorSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, SuppliersAccess]
     queryset = Vendor.objects.all()
 
     def get_queryset(self):
@@ -469,13 +493,14 @@ _MONEY = DecimalField(max_digits=16, decimal_places=2)
 
 
 class IsStockKeeper(permissions.BasePermission):
-    """The warehouse desk.
+    """Anywhere on the wholesale side.
 
     The wholesale side is a separate business rather than another admin screen,
     so crossing into it is limited to the super admin and the COO — an admin
     runs the retail CRM and does not see the stock register. Purchase staff keep
-    it because they buy against it, and the B2B roles (store manager / store
-    keeper / accounts B2B) because it is their whole job.
+    it because they buy against it, and the B2B roles because it is their whole
+    job. Which *modules* each of those B2B roles reaches, and whether they may
+    write, is the matrix in b2b_access — see StockModule.
     """
     message = 'You do not have access to the stock register.'
 
@@ -484,8 +509,33 @@ class IsStockKeeper(permissions.BasePermission):
         if not u or not u.is_authenticated:
             return False
         return bool(getattr(u, 'is_superuser', False)
-                    or getattr(u, 'role', '') in ('coo', 'purchase_staff')
+                    or getattr(u, 'role', '') in b2b_access.UNRESTRICTED_ROLES
                     or getattr(u, 'is_b2b_only', False))
+
+
+def StockModule(module):
+    """Permission for one wholesale module, read/write per role.
+
+    Built per module rather than one blanket check, because the B2B roles do
+    different jobs: a store keeper looks stock up, a store manager keeps the item
+    master and watches the rest, Accounts B2B runs the lot.
+    """
+    class _Permission(permissions.BasePermission):
+        def has_permission(self, request, view):
+            u = request.user
+            if not u or not u.is_authenticated:
+                return False
+            level = b2b_access.level_for(u, module)
+            if level is None:
+                self.message = 'You do not have access to this part of the stock register.'
+                return False
+            if request.method in permissions.SAFE_METHODS:
+                return True
+            self.message = 'You have read-only access here.'
+            return level == b2b_access.WRITE
+
+    _Permission.__name__ = f'StockModule_{module}'
+    return _Permission
 
 
 def _movement_total(model, field='quantity'):
@@ -511,7 +561,7 @@ def stock_items_with_ledger():
 
 class StockItemViewSet(viewsets.ModelViewSet):
     serializer_class = StockItemSerializer
-    permission_classes = [permissions.IsAuthenticated, IsStockKeeper]
+    permission_classes = [permissions.IsAuthenticated, StockModule('items')]
 
     def get_queryset(self):
         qs = stock_items_with_ledger()
@@ -541,7 +591,7 @@ class StockItemViewSet(viewsets.ModelViewSet):
 
 class StockCustomerViewSet(viewsets.ModelViewSet):
     serializer_class = StockCustomerSerializer
-    permission_classes = [permissions.IsAuthenticated, IsStockKeeper]
+    permission_classes = [permissions.IsAuthenticated, StockModule('customers')]
     queryset = StockCustomer.objects.all()
 
     def get_queryset(self):
@@ -553,6 +603,8 @@ class StockCustomerViewSet(viewsets.ModelViewSet):
 
 
 class _MovementViewSet(viewsets.ModelViewSet):
+    # Subclasses set their own module: receipts belong to purchases, dispatches
+    # to the sales module.
     permission_classes = [permissions.IsAuthenticated, IsStockKeeper]
 
     def perform_create(self, serializer):
@@ -560,6 +612,7 @@ class _MovementViewSet(viewsets.ModelViewSet):
 
 
 class GoodsReceiptViewSet(_MovementViewSet):
+    permission_classes = [permissions.IsAuthenticated, StockModule('purchases')]
     serializer_class = GoodsReceiptSerializer
     queryset = GoodsReceipt.objects.all()
 
@@ -568,6 +621,7 @@ class GoodsReceiptViewSet(_MovementViewSet):
 
 
 class StockDispatchViewSet(_MovementViewSet):
+    permission_classes = [permissions.IsAuthenticated, StockModule('dispatch')]
     serializer_class = StockDispatchSerializer
     queryset = StockDispatch.objects.all()
 
@@ -662,7 +716,7 @@ class StockSummaryView(APIView):
     """Dashboard figures for the stock register: total value, reorder alerts,
     this month's movement, a six-month series and the quote pipeline — the same
     shape the retail inventory dashboard reports, so the two screens match."""
-    permission_classes = [permissions.IsAuthenticated, IsStockKeeper]
+    permission_classes = [permissions.IsAuthenticated, StockModule('dashboard')]
     MONTHS = 6
 
     def get(self, request):
@@ -852,13 +906,13 @@ class InventoryDashboardView(APIView):
 
 
 class StockQuoteViewSet(ProformaDocumentMixin, viewsets.ModelViewSet):
+    permission_classes = [permissions.IsAuthenticated, StockModule('proforma')]
     # Wholesale trades under its own identity — see OrgSettings.b2b_email_*.
     SEND_CHANNEL = 'b2b'
     DOC_SIDE = 'b2b'
     """Wholesale quotations. Accepting one is recorded by converting it, which
     writes the dispatch rows that take the goods out of stock."""
     serializer_class = StockQuoteSerializer
-    permission_classes = [permissions.IsAuthenticated, IsStockKeeper]
     queryset = StockQuote.objects.all()
 
     def get_queryset(self):
@@ -957,13 +1011,13 @@ def purchase_order_words(amount):
 
 
 class StockPurchaseOrderViewSet(viewsets.ModelViewSet):
+    permission_classes = [permissions.IsAuthenticated, StockModule('purchases')]
     """Purchase orders raised on a supplier for stock (wholesale).
 
     The outbound counterpart of the GRN: this is the order that goes out, the
     goods receipt is what comes back against it.
     """
     serializer_class = StockPurchaseOrderSerializer
-    permission_classes = [permissions.IsAuthenticated, IsStockKeeper]
     queryset = StockPurchaseOrder.objects.all()
 
     def get_queryset(self):

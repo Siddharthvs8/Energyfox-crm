@@ -42,8 +42,8 @@ const STATUS_TONE: Record<string, string> = {
 };
 
 export default function StockPurchaseOrderPage() {
-  const { purchaseOrders, items, suppliers, loading, denied, save, remove, reload } =
-    useStock(["purchaseOrders", "items", "suppliers"]);
+  const { purchaseOrders, items, suppliers, loading, denied, readOnly, save, remove, reload } =
+    useStock(["purchaseOrders", "items", "suppliers"], "purchases");
   const itemList: any[] = items || [];
   const supplierList: any[] = suppliers || [];
   const list: any[] = purchaseOrders || [];
@@ -203,8 +203,8 @@ export default function StockPurchaseOrderPage() {
             onDownload={() => download(r)}
             onEmail={() => sendTo(r, "email")}
             onWhatsApp={() => sendTo(r, "whatsapp")}
-            onEdit={() => openEdit(r)}
-            onDelete={() => remove("purchaseOrders", r.id, "purchase order")} />,
+            onEdit={readOnly ? undefined : () => openEdit(r)}
+            onDelete={readOnly ? undefined : () => remove("purchaseOrders", r.id, "purchase order")} />,
         ])} />
 
       <DocumentPreview

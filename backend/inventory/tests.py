@@ -143,8 +143,9 @@ class StockAccessTests(TestCase):
             self.assertEqual(r.status_code, 200 if allowed else 403, f"{user.role} {url}")
 
     def test_allowed_roles(self):
-        for role in ('superadmin', 'coo', 'purchase_staff',
-                     'store_manager', 'store_keeper', 'accounts_b2b'):
+        """Roles with the whole register. Which modules the *other* B2B roles
+        reach is the matrix — see B2BRoleAccessTests."""
+        for role in ('superadmin', 'coo', 'purchase_staff', 'accounts_b2b'):
             self.check(mk(f't_{role}', role), True)
 
     def test_an_admin_has_no_wholesale_access(self):
@@ -157,13 +158,13 @@ class StockAccessTests(TestCase):
                      'branch_manager', 'project_manager', 'liasoning_officer'):
             self.check(mk(f't_mgr_{role}', role), False)
 
-    def test_b2b_roles_can_run_the_register(self):
-        """The stock register is the whole job for these three."""
-        for role in ('store_manager', 'store_keeper', 'accounts_b2b'):
-            u = mk(f'w_{role}', role)
-            r = self.client.post('/api/stock-items/', data={'code': f'W-{role}'},
-                                 content_type='application/json', HTTP_AUTHORIZATION=token_for(u))
-            self.assertEqual(r.status_code, 201, role)
+    def test_accounts_b2b_runs_the_whole_register(self):
+        """The wholesale business is this role's whole job, so it writes anywhere.
+        The store manager and store keeper are scoped by the matrix instead."""
+        u = mk('w_accounts_b2b', 'accounts_b2b')
+        r = self.client.post('/api/stock-items/', data={'code': 'W-ACC'},
+                             content_type='application/json', HTTP_AUTHORIZATION=token_for(u))
+        self.assertEqual(r.status_code, 201, r.content[:200])
 
     def test_blocked_roles(self):
         for role in ('bde', 'tele_caller', 'documentation_staff', 'accounts_staff'):
@@ -1041,3 +1042,102 @@ class StockQuoteDeletionTests(TestCase):
         self.delete(q)
         nxt = StockQuote.objects.create(customer=self.customer, quote_date=date(2026, 8, 3))
         self.assertNotEqual(nxt.number, number)
+
+
+class B2BRoleAccessTests(TestCase):
+    """The three wholesale roles do different jobs, so the register is not one
+    door: Accounts B2B runs it, the store manager keeps the item master and
+    watches the rest, the store keeper only looks things up."""
+
+    # module -> (list url, a minimal create body)
+    ENDPOINTS = {
+        'dashboard': ('/api/stock-summary/', None),
+        'items':     ('/api/stock-items/', {'code': 'ACC-1'}),
+        'suppliers': ('/api/vendors/', {'name': 'ACC supplier'}),
+        'customers': ('/api/stock-customers/', {'name': 'ACC customer'}),
+        'proforma':  ('/api/stock-quotes/', {'quote_date': '2026-08-04'}),
+        'dispatch':  ('/api/stock-dispatches/', None),
+        'purchases': ('/api/stock-purchase-orders/', None),
+    }
+
+    # What the matrix promises, spelled out here independently of the code.
+    EXPECTED = {
+        'accounts_b2b':  {'dashboard': 'rw', 'items': 'rw', 'suppliers': 'rw',
+                          'customers': 'rw', 'proforma': 'rw', 'dispatch': 'rw',
+                          'purchases': 'rw'},
+        'store_manager': {'dashboard': 'r', 'items': 'rw', 'customers': 'r',
+                          'proforma': 'r', 'dispatch': 'r'},
+        'store_keeper':  {'items': 'r', 'proforma': 'r'},
+    }
+
+    def can_read(self, user, url):
+        r = self.client.get(url, HTTP_AUTHORIZATION=token_for(user))
+        self.assertIn(r.status_code, (200, 403), f'{user.role} GET {url} -> {r.status_code}')
+        return r.status_code == 200
+
+    def can_write(self, user, url, body):
+        r = self.client.post(url, data=body, content_type='application/json',
+                             HTTP_AUTHORIZATION=token_for(user))
+        # 400 means it got past the permission layer and failed validation, which
+        # is still "allowed to write".
+        return r.status_code != 403
+
+    def test_every_role_reaches_exactly_its_own_modules(self):
+        for role, expected in self.EXPECTED.items():
+            user = mk(f'b2b_{role}', role)
+            for module, (url, _) in self.ENDPOINTS.items():
+                allowed = module in expected
+                self.assertEqual(self.can_read(user, url), allowed,
+                                 f'{role} should {"" if allowed else "not "}read {module}')
+
+    def test_read_only_modules_refuse_writes(self):
+        for role, expected in self.EXPECTED.items():
+            user = mk(f'w_{role}', role)
+            for module, level in expected.items():
+                url, body = self.ENDPOINTS[module]
+                if body is None:
+                    continue                      # no simple create body for these
+                self.assertEqual(self.can_write(user, url, body), level == 'rw',
+                                 f'{role} on {module} ({level})')
+
+    def test_a_store_keeper_cannot_touch_the_item_master(self):
+        keeper = mk('sk_only', 'store_keeper')
+        item = StockItem.objects.create(code='SK-1', category='Solar Panel')
+        self.assertTrue(self.can_read(keeper, '/api/stock-items/'))
+        for method, kwargs in ((self.client.post, {'data': {'code': 'SK-2'}}),
+                               (self.client.patch, {'data': {'brand': 'X'}})):
+            url = '/api/stock-items/' if method is self.client.post else f'/api/stock-items/{item.id}/'
+            r = method(url, content_type='application/json',
+                       HTTP_AUTHORIZATION=token_for(keeper), **kwargs)
+            self.assertEqual(r.status_code, 403, f'{url}')
+        self.assertEqual(
+            self.client.delete(f'/api/stock-items/{item.id}/',
+                               HTTP_AUTHORIZATION=token_for(keeper)).status_code, 403)
+
+    def test_a_store_manager_keeps_the_item_master(self):
+        manager = mk('sm_only', 'store_manager')
+        r = self.client.post('/api/stock-items/', data={'code': 'SM-1', 'category': 'Solar Panel'},
+                             content_type='application/json', HTTP_AUTHORIZATION=token_for(manager))
+        self.assertEqual(r.status_code, 201, r.content[:200])
+
+    def test_a_store_manager_cannot_write_a_dispatch(self):
+        manager = mk('sm_disp', 'store_manager')
+        item = StockItem.objects.create(code='SM-D', category='Solar Panel', opening_stock=10)
+        r = self.client.post('/api/stock-dispatches/',
+                             data={'item': item.id, 'date': '2026-08-04', 'quantity': '1', 'rate': '10'},
+                             content_type='application/json', HTTP_AUTHORIZATION=token_for(manager))
+        self.assertEqual(r.status_code, 403)
+
+    def test_the_me_payload_matches_what_the_api_enforces(self):
+        """The sidebar is built from this, so it has to agree with the server."""
+        for role, expected in self.EXPECTED.items():
+            user = mk(f'me_{role}', role)
+            r = self.client.get('/api/users/me/', HTTP_AUTHORIZATION=token_for(user))
+            self.assertEqual(r.status_code, 200, r.content[:200])
+            self.assertEqual(r.json()['b2b_access'], expected, role)
+
+    def test_the_unrestricted_roles_still_have_everything(self):
+        for role in ('superadmin', 'coo', 'purchase_staff'):
+            user = mk(f'un_{role}', role)
+            for module, (url, _) in self.ENDPOINTS.items():
+                self.assertTrue(self.can_read(user, url), f'{role} {module}')

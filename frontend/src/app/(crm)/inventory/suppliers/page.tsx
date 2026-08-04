@@ -17,12 +17,12 @@ const COLUMNS: PartyCol[] = [
 ];
 
 export default function StockSuppliersPage() {
-  const { suppliers, loading, denied, save, remove } = useStock(["suppliers"]);
+  const { suppliers, loading, denied, readOnly, save, remove } = useStock(["suppliers"], "suppliers");
 
   return (
     <PartyScreen
       title="Suppliers" subtitle="The suppliers you purchase stock from." noun="Supplier"
-      columns={COLUMNS} rows={suppliers} loading={loading} denied={denied}
+      columns={COLUMNS} readOnly={readOnly} rows={suppliers} loading={loading} denied={denied}
       onSave={(body, id) => save("suppliers", body, id)}
       onDelete={(id) => remove("suppliers", id, "supplier")} />
   );

@@ -778,15 +778,21 @@ export default function DashboardLayout({
 
   // The wholesale side's Inventory module is the stock register — that is the
   // whole of B2B, so it keeps its own sub-modules.
+  // Each entry names the module it serves; the sidebar then shows only what the
+  // server's access matrix admits for this role (`b2b_access` on /users/me/).
   const b2bInventoryItems = [
-    { href: `/inventory`,            label: "Dashboard",          Icon: Nav.Dashboard, exact: true },
-    { href: `/inventory/items`,      label: "Item Master",        Icon: Nav.Products },
-    { href: `/inventory/suppliers`,  label: "Suppliers",          Icon: Nav.Vendor },
-    { href: `/inventory/customers`,  label: "Customers",          Icon: Nav.Team },
-    { href: `/inventory/quotes`,     label: "Proforma Invoice",   Icon: Nav.Quote },
-    { href: `/inventory/dispatch`,   label: "Sales / Dispatches",  Icon: Nav.StockOut },
-    { href: `/inventory/purchase-orders`, label: "Purchases",     Icon: Nav.StockIn },
-  ];
+    { href: `/inventory`,            label: "Dashboard",          Icon: Nav.Dashboard, exact: true, mod: "dashboard" },
+    { href: `/inventory/items`,      label: "Item Master",        Icon: Nav.Products, mod: "items" },
+    { href: `/inventory/suppliers`,  label: "Suppliers",          Icon: Nav.Vendor, mod: "suppliers" },
+    { href: `/inventory/customers`,  label: "Customers",          Icon: Nav.Team, mod: "customers" },
+    { href: `/inventory/quotes`,     label: "Proforma Invoice",   Icon: Nav.Quote, mod: "proforma" },
+    { href: `/inventory/dispatch`,   label: "Sales / Dispatches",  Icon: Nav.StockOut, mod: "dispatch" },
+    { href: `/inventory/purchase-orders`, label: "Purchases",     Icon: Nav.StockIn, mod: "purchases" },
+  ].filter(i => {
+    // Until `me` has answered, show the group rather than flashing it in.
+    const access = currentUser?.b2b_access;
+    return !access || !!access[i.mod];
+  });
 
   const inventoryItems = bizMode === "b2b" ? b2bInventoryItems : b2cInventoryItems;
   const inventoryActive = inventoryItems.some(i => pathname.startsWith(i.href));

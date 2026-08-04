@@ -35,8 +35,8 @@ const STATUS_STYLE: Record<string, string> = {
 };
 
 export default function StockQuotesPage() {
-  const { quotes, items, customers, loading, denied, save, remove, act, reload } =
-    useStock(["quotes", "items", "customers"]);
+  const { quotes, items, customers, loading, denied, readOnly, save, remove, act, reload } =
+    useStock(["quotes", "items", "customers"], "proforma");
   // StockPage's children are evaluated before it swaps in the spinner, so every
   // collection has to be safe on the first render.
   const itemList: any[] = items || [];
@@ -210,9 +210,9 @@ export default function StockQuotesPage() {
                 onDownload={() => download(q)}
                 onEmail={() => sendTo(q, "email")}
                 onWhatsApp={() => sendTo(q, "whatsapp")}
-                onDispatch={q.status === "converted" ? undefined : () => convert(q)}
-                onEdit={q.status === "converted" ? undefined : () => openEdit(q)}
-                onDelete={() => remove("quotes", q.id, "proforma invoice",
+                onDispatch={readOnly || q.status === "converted" ? undefined : () => convert(q)}
+                onEdit={readOnly || q.status === "converted" ? undefined : () => openEdit(q)}
+                onDelete={readOnly ? undefined : () => remove("quotes", q.id, "proforma invoice",
                   q.status === "converted"
                     ? `${q.number} has already been dispatched. Deleting it removes the proforma invoice only — the dispatch, its invoice and the stock movement stay. Delete it?`
                     : `Delete ${q.number}?`)} />,

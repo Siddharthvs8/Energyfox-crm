@@ -104,12 +104,22 @@ class UserSerializer(serializers.ModelSerializer):
             return False
         return bool(actor.pk == obj.pk or actor.can_manage(obj))
 
+    # Which wholesale modules this user reaches, and whether they may write:
+    # {'items': 'rw', 'proforma': 'r', …}. Sent so the sidebar and the write
+    # controls are decided from the same table the API enforces.
+    b2b_access = serializers.SerializerMethodField()
+
+    def get_b2b_access(self, obj):
+        from inventory.b2b_access import access_map
+        return access_map(obj)
+
     class Meta:
         model = User
         fields = ['id', 'username', 'first_name', 'last_name', 'email', 'password',
                   'role', 'role_label', 'branch', 'branch_name', 'can_manage',
                   'avatar', 'avatar_url', 'custom_role', 'custom_role_name', 'permissions',
-                  'is_staff', 'is_manager', 'is_general_manager', 'team', 'phone', 'voxbay_extension']
+                  'is_staff', 'is_manager', 'is_general_manager', 'team', 'phone',
+                  'voxbay_extension', 'b2b_access']
         extra_kwargs = {
             'password': {'write_only': True},
         }

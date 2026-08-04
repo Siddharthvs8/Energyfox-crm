@@ -23,7 +23,7 @@ const STATUS_STYLE: Record<string, string> = {
 };
 
 export default function StockDashboardPage() {
-  const { summary, loading, denied } = useStock(["summary"]);
+  const { summary, loading, denied } = useStock(["summary"], "dashboard");
   const d = summary || null;
 
   const chart = ((d?.monthly || []) as any[]).map(m => ({
