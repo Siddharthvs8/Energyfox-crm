@@ -1039,6 +1039,11 @@ class MaintenanceVisit(models.Model):
     plan = models.ForeignKey(PeriodicMaintenance, on_delete=models.CASCADE, related_name='visits')
     sequence = models.PositiveIntegerField()
     due_date = models.DateField()
+    # A visit can be moved — the customer is away, the weather is against it. The
+    # date it was originally due is kept so the slip is visible rather than the
+    # schedule quietly rewriting itself; set once, on the first move.
+    original_due_date = models.DateField(null=True, blank=True)
+    reschedule_reason = models.CharField(max_length=255, blank=True, default='')
 
     # ── Readings / checks ──
     dc_voltage = models.CharField(max_length=60, blank=True, default='')
@@ -1063,6 +1068,10 @@ class MaintenanceVisit(models.Model):
 
     class Meta:
         ordering = ['sequence']
+
+    @property
+    def is_rescheduled(self):
+        return self.original_due_date is not None and self.original_due_date != self.due_date
 
     def __str__(self):
         return f"Visit {self.sequence} — {self.plan.lead}"

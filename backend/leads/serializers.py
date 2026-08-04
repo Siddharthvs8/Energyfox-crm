@@ -324,12 +324,15 @@ class ServiceEntrySerializer(serializers.ModelSerializer):
 
 class MaintenanceVisitSerializer(serializers.ModelSerializer):
     completed_by_name = serializers.SerializerMethodField()
+    is_rescheduled = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = MaintenanceVisit
         fields = '__all__'
-        # Photos go through the dedicated upload endpoint; completion is stamped by the view.
-        read_only_fields = ['plan', 'sequence', 'due_date', 'panel_before', 'panel_after',
+        # Photos go through the dedicated upload endpoint, the due date through
+        # the reschedule action, and completion is stamped by the view.
+        read_only_fields = ['plan', 'sequence', 'due_date', 'original_due_date',
+                            'reschedule_reason', 'panel_before', 'panel_after',
                             'completed_at', 'completed_by', 'updated_at']
 
     def get_completed_by_name(self, obj):

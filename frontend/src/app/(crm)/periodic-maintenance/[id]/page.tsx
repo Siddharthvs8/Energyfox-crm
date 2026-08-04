@@ -8,6 +8,8 @@ import Link from "next/link";
 
 type Visit = {
   id: number; sequence: number; due_date: string;
+  // Set once a visit has been moved, so the slip stays visible.
+  original_due_date: string | null; reschedule_reason: string; is_rescheduled: boolean;
   dc_voltage: string; structure_damage: string; inverter_cleaned: boolean;
   ac_ne_voltage: string; ac_pn_voltage: string; ac_pe_voltage: string;
   monthly_production: string; error_codes: string;
@@ -68,6 +70,28 @@ export default function MaintenanceDetailPage({ params: paramsPromise }: { param
       is_complete: !!v.is_complete,
     });
     setOpenVisit(v);
+  };
+
+  /** Move a visit's due date. Its own endpoint, so the original date and the
+   *  reason are recorded rather than the schedule quietly rewriting itself. */
+  const reschedule = async (v: Visit) => {
+    const next = window.prompt(
+      `Reschedule visit ${v.sequence} — currently due ${v.due_date}.
+
+New date (YYYY-MM-DD):`,
+      v.due_date);
+    if (!next || next.trim() === v.due_date) return;
+    const reason = window.prompt("Why is it moving? (optional)", v.reschedule_reason || "") ?? "";
+    try {
+      const r = await fetch(
+        `${getApiBase(domain)}/api/leads/${id}/maintenance-visits/${v.id}/reschedule/`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
+          body: JSON.stringify({ due_date: next.trim(), reason }),
+        });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); alert(d.error || "Could not reschedule."); return; }
+      await load();
+    } catch { alert("Network error while rescheduling."); }
   };
 
   const patchVisit = async (visitId: number, body: any) => {
@@ -162,7 +186,15 @@ export default function MaintenanceDetailPage({ params: paramsPromise }: { param
                 return (
                   <tr key={v.id} className="border-b border-slate-50 hover:bg-slate-50/60">
                     <td className="px-5 py-3 font-bold text-slate-700">{v.sequence}</td>
-                    <td className="px-5 py-3 text-slate-600">{new Date(v.due_date).toLocaleDateString("en-IN")}</td>
+                    <td className="px-5 py-3 text-slate-600 whitespace-nowrap">
+                      {new Date(v.due_date).toLocaleDateString("en-IN")}
+                      {v.is_rescheduled && v.original_due_date && (
+                        <span className="block text-[10px] text-slate-400"
+                          title={v.reschedule_reason || "Rescheduled"}>
+                          moved from {new Date(v.original_due_date).toLocaleDateString("en-IN")}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-5 py-3">
                       <span className={`text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${v.is_complete ? "bg-emerald-50 text-emerald-700" : overdue ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-700"}`}>
                         {v.is_complete ? "Done" : overdue ? "Overdue" : "Scheduled"}
@@ -173,7 +205,13 @@ export default function MaintenanceDetailPage({ params: paramsPromise }: { param
                       {v.panel_after ? <a className="text-emerald-600 font-semibold hover:underline" href={fileHref(v.panel_after)!} target="_blank" rel="noreferrer">after</a> : <span className="text-slate-300">after</span>}
                     </td>
                     <td className="px-5 py-3 text-slate-600">{v.monthly_production || "—"}</td>
-                    <td className="px-5 py-3 text-right">
+                    <td className="px-5 py-3 text-right whitespace-nowrap">
+                      {data.can_edit && !v.is_complete && (
+                        <button onClick={() => reschedule(v)}
+                          className="text-[12px] font-semibold text-slate-500 hover:text-slate-800 mr-3">
+                          Reschedule
+                        </button>
+                      )}
                       <button onClick={() => openForm(v)} className="text-[12px] font-semibold text-indigo-600 hover:text-indigo-800">
                         {data.can_edit && !v.is_complete ? "Fill visit" : "View"}
                       </button>

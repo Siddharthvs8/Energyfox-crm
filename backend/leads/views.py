@@ -3623,6 +3623,60 @@ class LeadViewSet(viewsets.ModelViewSet):
             visit.save(update_fields=['completed_at', 'completed_by', 'updated_at'])
         return Response(MaintenanceVisitSerializer(visit, context={'request': request}).data)
 
+    @action(detail=True, methods=['post'],
+            url_path='maintenance-visits/(?P<visit_id>[0-9]+)/reschedule')
+    def maintenance_visit_reschedule(self, request, pk=None, visit_id=None):
+        """Move a visit's due date.
+
+        Its own action rather than a field on the general PATCH, because moving a
+        scheduled visit is a decision worth recording: the original date is kept
+        and the change is written to the customer's timeline.
+        """
+        from datetime import date as _date
+        from .access import can_access_liasoning
+        lead = self.get_object()
+        if not can_access_liasoning(request.user):
+            return Response({'error': 'You do not have access to periodic maintenance.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        try:
+            visit = MaintenanceVisit.objects.get(pk=visit_id, plan__lead=lead)
+        except MaintenanceVisit.DoesNotExist:
+            return Response({'error': 'Visit not found.'}, status=status.HTTP_404_NOT_FOUND)
+        if visit.is_complete:
+            return Response({'error': 'This visit is already done — there is nothing to reschedule.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        raw = (request.data.get('due_date') or '').strip()
+        try:
+            new_date = _date.fromisoformat(raw)
+        except ValueError:
+            return Response({'error': 'Give the new date as YYYY-MM-DD.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        was = visit.due_date
+        if new_date == was:
+            return Response({'error': 'That is the date it is already due on.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        # Remember where it started, so a visit moved twice still shows the date
+        # the schedule originally called for.
+        if visit.original_due_date is None:
+            visit.original_due_date = was
+        visit.due_date = new_date
+        visit.reschedule_reason = (request.data.get('reason') or '').strip()[:255]
+        visit.save(update_fields=['due_date', 'original_due_date', 'reschedule_reason', 'updated_at'])
+
+        ActivityLog.objects.create(
+            activity_type='note_added', lead=lead,
+            actor=request.user if request.user.is_authenticated else None,
+            description=(f'Maintenance visit {visit.sequence} rescheduled from '
+                         f'{was.isoformat()} to {new_date.isoformat()}'
+                         + (f' — {visit.reschedule_reason}' if visit.reschedule_reason else '.')),
+            extra={'auto_generated': True, 'visit': visit.sequence,
+                   'from': was.isoformat(), 'to': new_date.isoformat()},
+        )
+        return Response(MaintenanceVisitSerializer(visit, context={'request': request}).data)
+
     @action(detail=True, methods=['post'], url_path='maintenance-visits/(?P<visit_id>[0-9]+)/photos')
     def maintenance_visit_photo(self, request, pk=None, visit_id=None):
         """Upload the panel-wash photo for a visit; ``slot`` is 'before' or 'after'

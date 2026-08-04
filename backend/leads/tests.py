@@ -2842,3 +2842,94 @@ class LiasoningWaitsForThePlantPhotoTests(TestCase):
                              HTTP_AUTHORIZATION=token_for(mk('lp_bde', 'bde')))
         self.assertIn(r.status_code, (403, 404), r.content[:200])
         self.assertEqual(self.rec.documents.count(), 0)
+
+
+class MaintenanceVisitRescheduleTests(TestCase):
+    """A scheduled visit can be moved, and the date it was originally due for is
+    kept so the slip stays visible."""
+
+    def setUp(self):
+        from datetime import date
+        from .models import PeriodicMaintenance, MaintenanceVisit
+        self.officer = mk('mr_officer', 'liasoning_officer')
+        self.lead = Lead.objects.create(first_name='Asha', last_name='Devi T',
+                                        phone='9895271486', status='converted',
+                                        pushed_to_liasoning=True,
+                                        pushed_to_liasoning_at=timezone.now())
+        self.plan = PeriodicMaintenance.objects.create(lead=self.lead,
+                                                       start_date=date(2026, 8, 4))
+        self.visit = MaintenanceVisit.objects.create(plan=self.plan, sequence=1,
+                                                     due_date=date(2027, 2, 4))
+
+    def move(self, to, reason='', visit=None):
+        return self.client.post(
+            f'/api/leads/{self.lead.id}/maintenance-visits/{(visit or self.visit).id}/reschedule/',
+            data={'due_date': to, 'reason': reason}, content_type='application/json',
+            HTTP_AUTHORIZATION=token_for(self.officer))
+
+    def test_a_visit_can_be_moved(self):
+        from datetime import date
+        r = self.move('2027-03-15', 'customer away')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.visit.refresh_from_db()
+        self.assertEqual(self.visit.due_date, date(2027, 3, 15))
+        self.assertEqual(self.visit.original_due_date, date(2027, 2, 4))
+        self.assertEqual(self.visit.reschedule_reason, 'customer away')
+        self.assertTrue(self.visit.is_rescheduled)
+
+    def test_moving_it_twice_keeps_the_first_date(self):
+        from datetime import date
+        self.move('2027-03-15')
+        self.move('2027-04-20')
+        self.visit.refresh_from_db()
+        self.assertEqual(self.visit.due_date, date(2027, 4, 20))
+        self.assertEqual(self.visit.original_due_date, date(2027, 2, 4))
+
+    def test_it_lands_on_the_activity_timeline(self):
+        self.move('2027-03-15', 'monsoon')
+        r = self.client.get(f'/api/leads/{self.lead.id}/activity-timeline/',
+                            HTTP_AUTHORIZATION=token_for(self.officer))
+        entries = [e['description'] for e in r.json()['entries']]
+        self.assertTrue(any('2027-02-04' in e and '2027-03-15' in e and 'monsoon' in e
+                            for e in entries), entries)
+
+    def test_a_completed_visit_cannot_be_moved(self):
+        self.visit.is_complete = True
+        self.visit.save(update_fields=['is_complete'])
+        r = self.move('2027-03-15')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('already done', r.json()['error'])
+
+    def test_a_bad_date_is_refused(self):
+        for bad in ('15-03-2027', 'soon', '', '2027-13-40'):
+            r = self.move(bad)
+            self.assertEqual(r.status_code, 400, bad)
+        self.visit.refresh_from_db()
+        self.assertIsNone(self.visit.original_due_date)
+
+    def test_moving_it_to_the_same_date_is_refused(self):
+        r = self.move('2027-02-04')
+        self.assertEqual(r.status_code, 400)
+        self.visit.refresh_from_db()
+        self.assertIsNone(self.visit.original_due_date)
+
+    def test_the_general_patch_still_cannot_change_the_date(self):
+        """The date moves through the reschedule action, which records it."""
+        from datetime import date
+        r = self.client.patch(
+            f'/api/leads/{self.lead.id}/maintenance-visits/{self.visit.id}/',
+            data={'due_date': '2029-01-01', 'dc_voltage': '620'},
+            content_type='application/json', HTTP_AUTHORIZATION=token_for(self.officer))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.visit.refresh_from_db()
+        self.assertEqual(self.visit.due_date, date(2027, 2, 4))   # unmoved
+        self.assertEqual(self.visit.dc_voltage, '620')            # the rest saved
+
+    def test_someone_outside_liasoning_cannot_move_it(self):
+        r = self.client.post(
+            f'/api/leads/{self.lead.id}/maintenance-visits/{self.visit.id}/reschedule/',
+            data={'due_date': '2027-03-15'}, content_type='application/json',
+            HTTP_AUTHORIZATION=token_for(mk('mr_bde', 'bde')))
+        self.assertIn(r.status_code, (403, 404))
+        self.visit.refresh_from_db()
+        self.assertIsNone(self.visit.original_due_date)
