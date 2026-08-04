@@ -249,11 +249,20 @@ export function Row({ cols = 2, children }: { cols?: 2 | 3; children: React.Reac
 }
 
 /** Edit / Delete text links, as the retail tables use. */
+/** Edit / delete on a list row. Icons, matching the document tables — the words
+ *  cost a column's worth of width on the wider tables. */
 export function RowActions({ onEdit, onDelete }: { onEdit?: () => void; onDelete?: () => void }) {
+  const btn = "w-8 h-8 inline-flex items-center justify-center rounded-lg transition-colors";
   return (
-    <span className="whitespace-nowrap">
-      {onEdit && <button onClick={onEdit} className="text-indigo-600 hover:text-indigo-900 text-sm font-medium mr-4">Edit</button>}
-      {onDelete && <button onClick={onDelete} className="text-rose-600 hover:text-rose-900 text-sm font-medium">Delete</button>}
+    <span className="inline-flex items-center gap-1 whitespace-nowrap">
+      {onEdit && (
+        <button onClick={onEdit} title="Edit" aria-label="Edit"
+          className={`${btn} text-slate-500 hover:text-slate-900 hover:bg-slate-100`}><I.Edit /></button>
+      )}
+      {onDelete && (
+        <button onClick={onDelete} title="Delete" aria-label="Delete"
+          className={`${btn} text-rose-500 hover:text-rose-700 hover:bg-rose-50`}><I.Trash /></button>
+      )}
     </span>
   );
 }
@@ -308,15 +317,19 @@ export function DocActions({ busy, onDownload, onEmail, onWhatsApp, onDispatch, 
 export type Col = { label: string; align?: "left" | "right" | "center" };
 
 /** Card table with the retail look: grey header, roomy cells, illustrated empty state. */
-export function DataTable({ columns, rows, empty, minWidth = 720, onRowClick, rowTitle }: {
+export function DataTable({ columns, rows, empty, minWidth = 720, onRowClick, rowTitle, compact }: {
   columns: (string | Col)[]; rows: React.ReactNode[][];
   empty?: { title: string; hint?: string }; minWidth?: number;
   // Opening a row is a read action (a document preview); the buttons inside the
   // Actions cell stop the event so they never trigger it by accident.
   onRowClick?: (index: number) => void; rowTitle?: string;
+  // Tighter cells, for the document tables — eight columns at the roomy padding
+  // run wider than the page and force a horizontal scroll.
+  compact?: boolean;
 }) {
   const cols: Col[] = columns.map(c => (typeof c === "string" ? { label: c } : c));
   const align = (a?: string) => (a === "right" ? "text-right" : a === "center" ? "text-center" : "text-left");
+  const cell = compact ? "py-3 px-3" : "py-4 px-6";
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
@@ -324,7 +337,7 @@ export function DataTable({ columns, rows, empty, minWidth = 720, onRowClick, ro
         <table className="w-full text-left border-collapse" style={{ minWidth }}>
           <thead>
             <tr className="bg-slate-50 border-b border-slate-200 text-xs uppercase tracking-wider text-slate-500 font-semibold">
-              {cols.map((c, i) => <th key={i} className={`py-4 px-6 ${align(c.align)} whitespace-nowrap`}>{c.label}</th>)}
+              {cols.map((c, i) => <th key={i} className={`${cell} ${align(c.align)} whitespace-nowrap`}>{c.label}</th>)}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -341,8 +354,8 @@ export function DataTable({ columns, rows, empty, minWidth = 720, onRowClick, ro
                 onClick={onRowClick ? () => onRowClick(ri) : undefined}
                 title={onRowClick ? rowTitle : undefined}
                 className={`hover:bg-slate-50/50 transition-colors ${onRowClick ? "cursor-pointer" : ""}`}>
-                {row.map((cell, ci) => (
-                  <td key={ci} className={`py-4 px-6 text-sm text-slate-700 ${align(cols[ci]?.align)}`}>{cell}</td>
+                {row.map((c, ci) => (
+                  <td key={ci} className={`${cell} text-sm text-slate-700 ${align(cols[ci]?.align)}`}>{c}</td>
                 ))}
               </tr>
             ))}

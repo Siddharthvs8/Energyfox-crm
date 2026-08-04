@@ -182,7 +182,7 @@ export default function StockPurchaseOrderPage() {
       <SearchBar value={search} onChange={setSearch} placeholder="Search purchase orders..." />
 
       <DataTable
-        minWidth={1080}
+        minWidth={820} compact
         columns={[
           "PO No.", "Date", "Supplier", { label: "Items", align: "right" },
           { label: "Total", align: "right" }, "Status", { label: "Actions", align: "right" },
@@ -191,8 +191,8 @@ export default function StockPurchaseOrderPage() {
         onRowClick={i => setPreview(filtered[i])}
         rowTitle="Open the purchase order"
         rows={filtered.map(r => [
-          <span className="font-mono text-xs font-semibold text-slate-900">{r.number || "—"}</span>,
-          <span className="font-mono text-xs text-slate-500">{r.po_date || "—"}</span>,
+          <span className="font-mono text-xs font-semibold text-slate-900 whitespace-nowrap">{r.number || "—"}</span>,
+          <span className="font-mono text-xs text-slate-500 whitespace-nowrap">{r.po_date || "—"}</span>,
           r.supplier_name || "—",
           <span className="tabular-nums">{(r.items || []).length}</span>,
           <span className="tabular-nums font-semibold">{rupee(r.total)}</span>,

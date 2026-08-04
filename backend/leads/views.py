@@ -9,6 +9,9 @@ import logging
 from .models import Lead, IntegrationSettings, ActivityLog, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, LeadDocument, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, Warranty, WarrantyDocument, EmergencyService, PeriodicMaintenance, MaintenanceVisit, ModuleSeen, ReceiptVoucher
 from .serializers import LeadSerializer, IntegrationSettingsSerializer, LeadAttachmentSerializer, ProductSerializer, SiteVisitSerializer, DocumentationStage1Serializer, SiteVisitDocumentSerializer, DocumentationStage1DocumentSerializer, PaymentVerificationSerializer, PurchaseLogisticsSerializer, ProjectSerializer, ProjectDocumentSerializer, ServiceEntrySerializer, BalancePaymentSerializer, DocumentationStage2Serializer, DocumentationStage2DocumentSerializer, LiasoningServiceSerializer, WarrantySerializer, WarrantyDocumentSerializer, EmergencyServiceSerializer, PeriodicMaintenanceSerializer, MaintenanceVisitSerializer, ReceiptVoucherSerializer
 from .document_kinds import SHARED_KIND_LABELS, kind_for
+# Module-level: the nine module payloads all report this one rule, and
+# access.py imports nothing, so there is no cycle to dodge.
+from .access import can_cleanup_deleted_lead
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
@@ -409,10 +412,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             # A trashed lead leaves this row behind and its detail page will
             # not open, so the list flags it and offers admins the broom.
             'lead_deleted': lead.is_trashed,
-            'can_cleanup': lead.is_trashed and bool(
-                getattr(request, 'user', None)
-                and (request.user.is_staff
-                     or getattr(request.user, 'is_general_manager', False))),
+            'can_cleanup': lead.is_trashed and can_cleanup_deleted_lead(getattr(request, 'user', None)),
             'first_name': lead.first_name,
             'last_name': lead.last_name,
             'phone': lead.phone,
@@ -486,8 +486,8 @@ class LeadViewSet(viewsets.ModelViewSet):
         workflow someone is part-way through.
         """
         user = request.user
-        if not (user.is_staff or getattr(user, 'is_general_manager', False)):
-            return Response({'error': 'Only an admin can remove a deleted lead from a module.'},
+        if not can_cleanup_deleted_lead(user):
+            return Response({'error': 'Only a super admin can remove a deleted lead from a module.'},
                             status=status.HTTP_403_FORBIDDEN)
 
         module = (request.data.get('module') or request.query_params.get('module') or '').strip()
@@ -913,10 +913,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             # `can_cleanup` is decided here so the six module screens don't each
             # have to fetch the current user to know whether to offer the button.
             'lead_deleted': lead.is_trashed,
-            'can_cleanup': lead.is_trashed and bool(
-                getattr(request, 'user', None)
-                and (request.user.is_staff
-                     or getattr(request.user, 'is_general_manager', False))),
+            'can_cleanup': lead.is_trashed and can_cleanup_deleted_lead(getattr(request, 'user', None)),
             'first_name': lead.first_name,
             'last_name': lead.last_name,
             'phone': lead.phone,
@@ -983,8 +980,7 @@ class LeadViewSet(viewsets.ModelViewSet):
                 # A trashed lead leaves this row behind and its detail page will
                 # not open, so the tracker flags it and offers admins the broom.
                 'lead_deleted': lead.is_trashed,
-                'can_cleanup': lead.is_trashed and bool(
-                    user.is_staff or getattr(user, 'is_general_manager', False)),
+                'can_cleanup': lead.is_trashed and can_cleanup_deleted_lead(user),
                 'name': f"{lead.first_name} {lead.last_name or ''}".strip(),
                 'phone': lead.phone,
                 'location': lead.company,
@@ -1369,10 +1365,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             # `can_cleanup` is decided here so the six module screens don't each
             # have to fetch the current user to know whether to offer the button.
             'lead_deleted': lead.is_trashed,
-            'can_cleanup': lead.is_trashed and bool(
-                getattr(request, 'user', None)
-                and (request.user.is_staff
-                     or getattr(request.user, 'is_general_manager', False))),
+            'can_cleanup': lead.is_trashed and can_cleanup_deleted_lead(getattr(request, 'user', None)),
             'first_name': lead.first_name,
             'last_name': lead.last_name,
             'phone': lead.phone,
@@ -2230,10 +2223,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             # `can_cleanup` is decided here so the six module screens don't each
             # have to fetch the current user to know whether to offer the button.
             'lead_deleted': lead.is_trashed,
-            'can_cleanup': lead.is_trashed and bool(
-                getattr(request, 'user', None)
-                and (request.user.is_staff
-                     or getattr(request.user, 'is_general_manager', False))),
+            'can_cleanup': lead.is_trashed and can_cleanup_deleted_lead(getattr(request, 'user', None)),
             'first_name': lead.first_name,
             'last_name': lead.last_name,
             'phone': lead.phone,
@@ -2455,10 +2445,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             # `can_cleanup` is decided here so the six module screens don't each
             # have to fetch the current user to know whether to offer the button.
             'lead_deleted': lead.is_trashed,
-            'can_cleanup': lead.is_trashed and bool(
-                getattr(request, 'user', None)
-                and (request.user.is_staff
-                     or getattr(request.user, 'is_general_manager', False))),
+            'can_cleanup': lead.is_trashed and can_cleanup_deleted_lead(getattr(request, 'user', None)),
             'first_name': lead.first_name,
             'last_name': lead.last_name,
             'phone': lead.phone,
@@ -2669,10 +2656,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             # `can_cleanup` is decided here so the six module screens don't each
             # have to fetch the current user to know whether to offer the button.
             'lead_deleted': lead.is_trashed,
-            'can_cleanup': lead.is_trashed and bool(
-                getattr(request, 'user', None)
-                and (request.user.is_staff
-                     or getattr(request.user, 'is_general_manager', False))),
+            'can_cleanup': lead.is_trashed and can_cleanup_deleted_lead(getattr(request, 'user', None)),
             'first_name': lead.first_name,
             'last_name': lead.last_name,
             'phone': lead.phone,
@@ -3051,10 +3035,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             # A trashed lead leaves this row behind and its detail page will
             # not open, so the list flags it and offers admins the broom.
             'lead_deleted': lead.is_trashed,
-            'can_cleanup': lead.is_trashed and bool(
-                getattr(request, 'user', None)
-                and (request.user.is_staff
-                     or getattr(request.user, 'is_general_manager', False))),
+            'can_cleanup': lead.is_trashed and can_cleanup_deleted_lead(getattr(request, 'user', None)),
             'first_name': lead.first_name,
             'last_name': lead.last_name,
             'phone': lead.phone,
@@ -3327,10 +3308,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             # `can_cleanup` is decided here so the six module screens don't each
             # have to fetch the current user to know whether to offer the button.
             'lead_deleted': lead.is_trashed,
-            'can_cleanup': lead.is_trashed and bool(
-                getattr(request, 'user', None)
-                and (request.user.is_staff
-                     or getattr(request.user, 'is_general_manager', False))),
+            'can_cleanup': lead.is_trashed and can_cleanup_deleted_lead(getattr(request, 'user', None)),
             'first_name': lead.first_name,
             'last_name': lead.last_name,
             'phone': lead.phone,

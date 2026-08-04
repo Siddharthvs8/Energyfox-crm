@@ -163,7 +163,7 @@ export default function StockDispatchPage() {
       <SearchBar value={search} onChange={setSearch} placeholder="Search dispatches..." />
 
       <DataTable
-        minWidth={1180}
+        minWidth={880} compact
         columns={[
           "Invoice No.", "Customer", "Date", "Item", "Serial No.",
           { label: "Qty", align: "right" }, { label: "Total", align: "right" },
@@ -173,9 +173,9 @@ export default function StockDispatchPage() {
         onRowClick={i => setPreview(filtered[i])}
         rowTitle="Open the invoice"
         rows={filtered.map(r => [
-          <span className="font-mono text-xs font-semibold text-slate-900">{r.invoice_no || "—"}</span>,
+          <span className="font-mono text-xs font-semibold text-slate-900 whitespace-nowrap">{r.invoice_no || "—"}</span>,
           r.customer_name || "—",
-          <span className="font-mono text-xs text-slate-500">{r.date || "—"}</span>,
+          <span className="font-mono text-xs text-slate-500 whitespace-nowrap">{r.date || "—"}</span>,
           <span><span className="font-mono text-xs">{r.item_code}</span>{" "}
             <span className="text-slate-400">— {r.item_label}</span></span>,
           <span className="font-mono text-[10px] text-slate-500">{r.serial_numbers || "—"}</span>,

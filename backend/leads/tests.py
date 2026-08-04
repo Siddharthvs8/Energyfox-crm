@@ -1678,14 +1678,14 @@ class ActivityTimelineTests(TestCase):
 
 
 class DeletedLeadModuleCleanupTests(TestCase):
-    """Trashing a lead leaves its rows in the modules it had reached; an admin
-    clears those out module by module."""
+    """Trashing a lead leaves its rows in the modules it had reached; a super
+    admin clears those out module by module."""
 
     def setUp(self):
         from .models import PaymentVerification
-        self.admin = mk('dc_admin', 'admin')
-        self.admin.is_staff = True
-        self.admin.save()
+        # Super admin: the cleanup destroys another department's record, so it
+        # sits above the admin tier. See can_cleanup_deleted_lead.
+        self.admin = mk('dc_admin', 'superadmin')
         self.accounts = mk('dc_acc', 'accounts_staff')
         self.caller = mk('dc_caller', 'tele_caller')
 
@@ -1839,9 +1839,8 @@ class DeletedLeadFlaggedOnTheDocumentationTrackerTests(TestCase):
     queues do."""
 
     def setUp(self):
-        self.admin = mk('dt_admin', 'admin')
-        self.admin.is_staff = True
-        self.admin.save()
+        # The cleanup button is a super admin's; see can_cleanup_deleted_lead.
+        self.admin = mk('dt_admin', 'superadmin')
         self.caller = mk('dt_caller', 'tele_caller')
         self.lead = Lead.objects.create(first_name='Sidharth1', last_name='',
                                         phone='9993400001', status='new',
@@ -1860,7 +1859,7 @@ class DeletedLeadFlaggedOnTheDocumentationTrackerTests(TestCase):
         self.assertFalse(row['lead_deleted'])
         self.assertFalse(row['can_cleanup'])
 
-    def test_a_deleted_lead_is_flagged_for_the_admin(self):
+    def test_a_deleted_lead_is_flagged_for_the_super_admin(self):
         self.lead.is_trashed = True
         self.lead.trashed_at = timezone.now()
         self.lead.save(update_fields=['is_trashed', 'trashed_at'])
@@ -1883,9 +1882,7 @@ class WarrantyAndFeasibilityCleanupTests(TestCase):
     def setUp(self):
         from datetime import date
         from .models import SiteVisit, Warranty
-        self.admin = mk('wf_admin', 'admin')
-        self.admin.is_staff = True
-        self.admin.save()
+        self.admin = mk('wf_admin', 'superadmin')
         self.caller = mk('wf_caller', 'tele_caller')
         self.bde = mk('wf_bde', 'bde')
 
@@ -2549,3 +2546,57 @@ class LandTaxFlowsFromTheSiteVisitTests(TestCase):
         r = self.client.get(f'/api/leads/{self.lead.id}/documentation-stage1/',
                             HTTP_AUTHORIZATION=token_for(self.doc))
         self.assertIn('nc_landtax', self.slots_holding(r.json()['documents'], 'land_tax'))
+
+
+class ModuleCleanupIsSuperAdminOnlyTests(TestCase):
+    """Clearing a deleted lead out of a module destroys another department's
+    record of that customer, so it is a super admin's call alone."""
+
+    def setUp(self):
+        from .models import PaymentVerification
+        self.lead = Lead.objects.create(first_name='Gone', last_name='Lead',
+                                        phone='9993900001', status='new',
+                                        pushed_to_accounts=True,
+                                        pushed_to_accounts_at=timezone.now())
+        PaymentVerification.objects.create(lead=self.lead)
+        self.lead.is_trashed = True
+        self.lead.trashed_at = timezone.now()
+        self.lead.save(update_fields=['is_trashed', 'trashed_at'])
+
+    def remove(self, actor):
+        return self.client.delete(
+            f'/api/leads/{self.lead.id}/remove-from-module/?module=accounts',
+            HTTP_AUTHORIZATION=token_for(actor))
+
+    def offered_to(self, actor):
+        r = self.client.get('/api/leads/accounts/', HTTP_AUTHORIZATION=token_for(actor))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        row = next((x for x in r.json() if x['id'] == self.lead.id), None)
+        self.assertIsNotNone(row, 'the dead row should still be listed')
+        return row['can_cleanup']
+
+    def test_a_super_admin_may(self):
+        boss = mk('cl_super', 'superadmin')
+        self.assertTrue(self.offered_to(boss))
+        self.assertEqual(self.remove(boss).status_code, 200)
+
+    def test_an_admin_may_not(self):
+        admin = mk('cl_admin', 'admin')
+        self.assertFalse(self.offered_to(admin))
+        self.assertEqual(self.remove(admin).status_code, 403)
+
+    def test_a_documentation_manager_may_not(self):
+        docman = mk('cl_docman', 'documentation_manager')
+        self.assertEqual(self.remove(docman).status_code, 403)
+
+    def test_no_other_tier_may(self):
+        for role in ('coo', 'sales_manager', 'branch_manager', 'accounts_staff',
+                     'documentation_staff', 'project_manager', 'tele_caller', 'bde'):
+            self.assertEqual(self.remove(mk(f'cl_{role}', role)).status_code, 403, role)
+
+    def test_the_row_survives_a_refused_attempt(self):
+        from .models import PaymentVerification
+        self.remove(mk('cl_admin2', 'admin'))
+        self.lead.refresh_from_db()
+        self.assertTrue(self.lead.pushed_to_accounts)
+        self.assertTrue(PaymentVerification.objects.filter(lead=self.lead).exists())

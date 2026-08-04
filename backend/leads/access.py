@@ -445,3 +445,16 @@ def can_edit_documentation_stage1(user, lead):
     if is_plain_doc_staff:
         return bool(lead.documentation_staff_id and lead.documentation_staff_id == user.id)
     return True
+
+
+def can_cleanup_deleted_lead(user):
+    """Who may clear a deleted lead's leftovers out of a module.
+
+    Super admin only, and deliberately not grantable through a custom role. The
+    button destroys a module's record of a customer outright — the paperwork
+    another department filed — so it sits above the admin tier rather than
+    beside it.
+    """
+    if not user or not getattr(user, 'is_authenticated', False):
+        return False
+    return bool(getattr(user, 'is_superuser', False))

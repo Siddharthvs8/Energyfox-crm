@@ -186,7 +186,7 @@ export default function StockQuotesPage() {
           <SearchBar value={search} onChange={setSearch} placeholder="Search proforma invoices..." />
 
           <DataTable
-            minWidth={1080}
+            minWidth={800} compact
             columns={[
               "Invoice No.", "Customer", "Date", { label: "Status", align: "center" },
               { label: "Total", align: "right" }, { label: "Actions", align: "right" },
@@ -199,7 +199,7 @@ export default function StockQuotesPage() {
                 className="font-mono text-xs font-semibold text-indigo-600 hover:text-indigo-900"
                 title="Show the lines on this invoice">{q.number}</button>,
               q.customer_name || "—",
-              <span className="font-mono text-xs text-slate-500">{q.quote_date || "—"}</span>,
+              <span className="font-mono text-xs text-slate-500 whitespace-nowrap">{q.quote_date || "—"}</span>,
               <span className={`inline-flex text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full ${STATUS_STYLE[q.status] || "bg-slate-100 text-slate-600"}`}>
                 {q.status}
               </span>,

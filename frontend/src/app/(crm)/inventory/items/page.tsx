@@ -70,7 +70,7 @@ export default function StockItemMasterPage() {
       <SearchBar value={search} onChange={setSearch} placeholder="Search items..." />
 
       <DataTable
-        minWidth={1140}
+        minWidth={980} compact
         columns={[
           "Code", "Category", "Brand / Model", "HSN / SAC",
           { label: "Opening", align: "right" }, { label: "In", align: "right" }, { label: "Out", align: "right" },
@@ -79,14 +79,14 @@ export default function StockItemMasterPage() {
         ]}
         empty={{ title: "No items found", hint: "Add your first stock item to get started." }}
         rows={filtered.map(r => [
-          <span className="font-mono text-xs font-semibold text-slate-900">{r.code}</span>,
+          <span className="font-mono text-xs font-semibold text-slate-900 whitespace-nowrap">{r.code}</span>,
           r.category,
           <span>{`${r.brand} ${r.model_name}`.trim() || "—"}</span>,
           <span className="font-mono text-xs text-slate-500">{r.hsn || "—"}</span>,
           <span className="tabular-nums text-slate-500">{num(r.opening_stock)}</span>,
           <span className="tabular-nums text-emerald-600">+{num(r.received)}</span>,
           <span className="tabular-nums text-rose-600">−{num(r.dispatched)}</span>,
-          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${
+          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${
             r.status === "REORDER" ? "bg-rose-50 text-rose-600" : "bg-emerald-50 text-emerald-600"}`}>
             {r.status === "REORDER" && <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />}
             {num(r.closing_stock)} {r.unit}
