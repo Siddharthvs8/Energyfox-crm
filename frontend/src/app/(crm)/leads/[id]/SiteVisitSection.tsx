@@ -460,12 +460,16 @@ ${field}: ${Array.isArray(msg) ? msg[0] : msg}`;
           <MultiFileField docType="aadhaar_card" label="Aadhaar Card" />
           <MultiFileField docType="pan_card" label="PAN Card" />
           <MultiFileField docType="passbook" label="Passbook" />
+          {/* Land tax is captured here rather than under Name Change, because
+              Documentation Stage 1 needs it for the loan paperwork too — and a
+              loan customer may have no name change at all. One upload, inherited
+              by both stages. */}
+          <MultiFileField docType="land_tax" label="Land Tax Details" />
 
           {/* Name-change documents — only relevant (and shown) when Name Change = Yes */}
           {form.name_change === "yes" && (
             <>
               <SectionTitle>Name Change Documents</SectionTitle>
-              <MultiFileField docType="land_tax" label="Land Tax Details" />
               <MultiFileField docType="ownership_certificate" label="Ownership Certificate" />
               <MultiFileField docType="customer_passport_photo" label="Customer Passport Photo" />
               <MultiFileField docType="building_certificate" label="Building Certificate" />

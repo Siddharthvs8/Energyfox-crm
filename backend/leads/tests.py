@@ -916,6 +916,7 @@ class Stage1NeedsFeasibilityTests(TestCase):
         self.sv = SiteVisit.objects.create(lead=self.lead)
         # Everything the MNRE gate needs, so feasibility is the only thing left.
         self.stage1.mnre_plant_capacity = '5 kW'
+        self.stage1.mnre_completed = True
         self.stage1.save()
         # Every mandatory MNRE slot is a shared *kind*, satisfied from the lead's
         # shared document pool rather than a stage-local row.
@@ -961,6 +962,35 @@ class Stage1NeedsFeasibilityTests(TestCase):
         self.assertEqual(r.status_code, 400)
         self.assertIn('missing', r.json())
         self.assertNotIn('kseb_feasibility_pending', r.json())
+
+    def test_the_mnre_completed_tick_is_mandatory(self):
+        """The uploads don't prove the portal submission was filed, so the staff
+        member's own sign-off is part of the gate."""
+        self.sv.kseb_feasibility_complete = True
+        self.sv.save(update_fields=['kseb_feasibility_complete'])
+        self.stage1.mnre_completed = False
+        self.stage1.save(update_fields=['mnre_completed'])
+        self.assertIn('mnre_completed', self.stage1.missing_mandatory_fields())
+
+        r = self.push()
+        self.assertEqual(r.status_code, 400, r.content[:300])
+        self.assertIn('mnre_completed', r.json()['missing'])
+        self.stage1.refresh_from_db()
+        self.assertFalse(self.stage1.is_complete)
+
+        # Ticking it is the only thing standing in the way.
+        self.stage1.mnre_completed = True
+        self.stage1.save(update_fields=['mnre_completed'])
+        self.assertEqual(self.push().status_code, 200)
+
+    def test_the_tick_saves_through_the_record_endpoint(self):
+        r = self.client.patch(f'/api/leads/{self.lead.id}/documentation-stage1/',
+                              data={'mnre_completed': False}, content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.doc))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertIs(r.json()['mnre_completed'], False)
+        self.stage1.refresh_from_db()
+        self.assertFalse(self.stage1.mnre_completed)
 
     def test_the_documentation_payload_carries_the_feasibility_status(self):
         """The read-only card on Stage 1 reads this off the site visit."""
@@ -2467,3 +2497,55 @@ class AccountsManagerTests(TestCase):
         self.assertEqual(role_rank('accounts_manager'), role_rank('documentation_manager'))
         self.assertLess(role_rank('accounts_manager'), role_rank('admin'))
         self.assertGreater(role_rank('accounts_manager'), role_rank('accounts_staff'))
+
+
+class LandTaxFlowsFromTheSiteVisitTests(TestCase):
+    """Land tax is captured once on the site visit and inherited by the stages
+    that need it — including Documentation Stage 1's loan paperwork, which a
+    customer reaches whether or not they are also changing the name."""
+
+    def setUp(self):
+        from .models import DocumentationStage1, SiteVisit
+        self.bde = mk('lt_bde', 'bde')
+        self.doc = mk('lt_doc', 'documentation_staff')
+        self.lead = Lead.objects.create(first_name='L', last_name='Tax', phone='9994200001',
+                                        status='converted', bde=self.bde,
+                                        pushed_to_documentation=True, documentation_staff=self.doc)
+        # A loan customer with no name change — the case the old form missed.
+        self.sv = SiteVisit.objects.create(lead=self.lead, loan='yes', name_change='no')
+        self.stage1 = DocumentationStage1.objects.create(lead=self.lead)
+
+    def upload(self):
+        from .models import LeadDocument
+        return LeadDocument.objects.create(lead=self.lead, kind='land_tax',
+                                           file='lead_documents/land_tax.pdf')
+
+    def slots_holding(self, payload, kind):
+        return {d['doc_type'] for d in payload if d.get('kind') == kind}
+
+    def test_it_reaches_the_stage_1_loan_slot(self):
+        self.upload()
+        r = self.client.get(f'/api/leads/{self.lead.id}/documentation-stage1/',
+                            HTTP_AUTHORIZATION=token_for(self.doc))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        slots = self.slots_holding(r.json()['documents'], 'land_tax')
+        self.assertIn('loan_land_tax', slots)
+
+    def test_it_shows_on_the_site_visit_that_captured_it(self):
+        self.upload()
+        r = self.client.get(f'/api/leads/{self.lead.id}/site-visit/',
+                            HTTP_AUTHORIZATION=token_for(self.bde))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertIn('land_tax', self.slots_holding(r.json()['documents'], 'land_tax'))
+
+    def test_one_upload_is_not_copied_per_stage(self):
+        """A single shared row backs every slot — correcting it corrects all."""
+        from .models import LeadDocument
+        self.upload()
+        self.assertEqual(LeadDocument.objects.filter(lead=self.lead, kind='land_tax').count(), 1)
+
+    def test_the_name_change_slot_still_sees_it(self):
+        self.upload()
+        r = self.client.get(f'/api/leads/{self.lead.id}/documentation-stage1/',
+                            HTTP_AUTHORIZATION=token_for(self.doc))
+        self.assertIn('nc_landtax', self.slots_holding(r.json()['documents'], 'land_tax'))

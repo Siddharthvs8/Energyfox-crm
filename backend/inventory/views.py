@@ -847,15 +847,10 @@ class StockQuoteViewSet(ProformaDocumentMixin, viewsets.ModelViewSet):
             qs = qs.filter(status=status_f)
         return qs
 
-    def destroy(self, request, *args, **kwargs):
-        quote = self.get_object()
-        if quote.status == 'converted':
-            return Response(
-                {'error': f'{quote.number} has been dispatched. Delete those dispatch '
-                          f'rows first if this was a mistake.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        return super().destroy(request, *args, **kwargs)
+    # Deleting a dispatched proforma is allowed: the dispatch rows it produced
+    # do not reference it — they carry their own invoice number and their own
+    # stock movement — so removing the proforma takes the offer off the books
+    # without unwinding the sale. See StockQuoteDeletionTests.
 
     def proforma_party(self, quote):
         """A wholesale invoice is addressed to the trade customer."""

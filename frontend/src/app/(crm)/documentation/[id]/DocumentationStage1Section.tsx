@@ -44,7 +44,7 @@ const LOAN_ITR: readonly [string, string] = ["loan_itr", "ITR"];
 const LOAN_PDF: readonly [string, string] = ["loan_agreement_purchase_order", "Agreement / Purchase Order"];
 
 // Non-file inputs → saved via JSON PATCH.
-const BOOL_KEYS = ["name_change_completed", "load_enhancement_completed"] as const;
+const BOOL_KEYS = ["name_change_completed", "load_enhancement_completed", "mnre_completed"] as const;
 // ITR is only required above this loan amount (read from the site visit).
 const ITR_REQUIRED_ABOVE = 200000;
 const TEXT_KEYS = ["mnre_plant_capacity"] as const;
@@ -262,6 +262,7 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
 
   const readOnly = !canEdit || isComplete;
   const setText = (k: string, v: string) => { setTexts(p => ({ ...p, [k]: v })); setSaved(false); };
+  const setBool = (k: string, v: boolean) => { setBools(p => ({ ...p, [k]: v })); setSaved(false); };
 
   // Re-pull just the document list so shared documents re-merge across every
   // same-kind slot — without clobbering unsaved checkbox / plant-capacity edits.
@@ -345,7 +346,9 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
   };
 
   const hasDoc = (dt: string) => documents.some(d => d.doc_type === dt);
-  const mnreReady = MNRE_REQUIRED_DOC_TYPES.every(hasDoc) && !!(texts["mnre_plant_capacity"] || "").trim();
+  const mnreReady = MNRE_REQUIRED_DOC_TYPES.every(hasDoc)
+    && !!(texts["mnre_plant_capacity"] || "").trim()
+    && !!bools["mnre_completed"];
 
   // Read-only mirror of the BDE's KSEB Feasibility section — accounts price the
   // job off the sanctioned capacity, so the hand-off waits for it.
@@ -354,7 +357,7 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
   const feasibilityDue = siteVisit?.kseb_feasibility_due_date || null;
 
   const complete = async () => {
-    if (!mnreReady) { alert("Fill the mandatory For-MNRE section (all documents + plant capacity) before completing."); return; }
+    if (!mnreReady) { alert("Fill the mandatory For-MNRE section — all documents, the plant capacity, and the MNRE Completed tick — before completing."); return; }
     // The button stays live so the reason can be explained, rather than leaving a
     // disabled control with no clue why.
     if (!feasibilityDone) { setFeasibilityWarning(true); return; }
@@ -522,6 +525,18 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
           </div>
           <PdfMultiField docType={MNRE_PDF[0]} label={MNRE_PDF[1]} />
         </div>
+
+        {/* The uploads don't prove the portal submission was filed, so the staff
+            member signs that off themselves. Stage 1 waits on it. */}
+        <label className={`mt-4 flex items-center gap-2.5 w-fit ${readOnly ? "opacity-70" : "cursor-pointer"}`}>
+          <input type="checkbox" checked={!!bools["mnre_completed"]} disabled={readOnly}
+            onChange={e => setBool("mnre_completed", e.target.checked)}
+            className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500/30" />
+          <span className={`text-sm font-semibold ${bools["mnre_completed"] ? "text-emerald-600" : "text-slate-700"}`}>
+            MNRE completed
+          </span>
+          <span className="text-rose-500 text-xs font-semibold">(mandatory)</span>
+        </label>
       </div>
       )}
 
@@ -585,7 +600,7 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
           {/* Completing Stage 1 is what sets pushed_to_accounts server-side, so
               the button is named for the hand-off it performs. */}
           <button onClick={complete} disabled={completing || saving || !mnreReady}
-            title={!mnreReady ? "Complete the mandatory For-MNRE section first"
+            title={!mnreReady ? "Complete the mandatory For-MNRE section and tick MNRE Completed first"
                               : "Completes Stage 1 and hands the customer to accounts"}
             className="px-5 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition">
             {completing ? "Pushing…" : "Push to Accounts"}

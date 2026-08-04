@@ -528,6 +528,10 @@ class DocumentationStage1(models.Model):
 
     # ── For MNRE (always shown, mandatory) ──
     mnre_plant_capacity = models.CharField(max_length=120, blank=True, default='')
+    # The staff member's own sign-off that the MNRE portal submission is done —
+    # the uploads alone don't prove it was filed. Required before Stage 1 can be
+    # completed, alongside the documents and the plant capacity.
+    mnre_completed = models.BooleanField(default=False)
 
     # ── For Loan ──
     loan_above_2_lakh = models.BooleanField(default=False)
@@ -570,6 +574,8 @@ class DocumentationStage1(models.Model):
                 missing.append(dt)
         if not (self.mnre_plant_capacity or '').strip():
             missing.append('mnre_plant_capacity')
+        if not self.mnre_completed:
+            missing.append('mnre_completed')
         return missing
 
     def __str__(self):

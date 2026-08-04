@@ -589,3 +589,75 @@ Headers: {"HTTP_COOKIE": "", "SERVER_NAME": "testserver", "CONTENT_LENGTH": "189
 Payload: {"calluuid": "voxbay_uuid_inbound_123", "status": "Answered", "duration": "180", "recording_url": "rec_inbound.wav", "callerNumber": "8887776665", "AgentNumber": "105", "did": "9900112233"}
 ============================================================
 
+=== WEBHOOK RECEIVED AT 2026-08-04 11:18:38 ===
+Method: POST
+Host: testserver
+Matched Call ID: 7
+Notes:
+Method: POST
+Full Path: /api/calls/webhook/voxbay/
+Host: testserver
+Payload keys: ['calluuid', 'status', 'duration', 'recording_url', 'callerNumber', 'AgentNumber', 'did']
+Extracted: uuid=voxbay_uuid_inbound_123, agent=105, customer=8887776665, virtual=9900112233
+Extracted: duration=180, status=Answered, recording=rec_inbound.wav, event=None
+Recent logs in 48h: 0
+No match found. Processing as Inbound Call...
+CREATED Inbound CallLog id=7
+Headers: {"HTTP_COOKIE": "", "SERVER_NAME": "testserver", "CONTENT_LENGTH": "189", "CONTENT_TYPE": "application/json"}
+Payload: {"calluuid": "voxbay_uuid_inbound_123", "status": "Answered", "duration": "180", "recording_url": "rec_inbound.wav", "callerNumber": "8887776665", "AgentNumber": "105", "did": "9900112233"}
+============================================================
+
+=== WEBHOOK RECEIVED AT 2026-08-04 11:27:36 ===
+Method: POST
+Host: testserver
+Matched Call ID: 7
+Notes:
+Method: POST
+Full Path: /api/calls/webhook/voxbay/
+Host: testserver
+Payload keys: ['calluuid', 'status', 'duration', 'recording_url', 'callerNumber', 'AgentNumber', 'did']
+Extracted: uuid=voxbay_uuid_inbound_123, agent=105, customer=8887776665, virtual=9900112233
+Extracted: duration=180, status=Answered, recording=rec_inbound.wav, event=None
+Recent logs in 48h: 0
+No match found. Processing as Inbound Call...
+CREATED Inbound CallLog id=7
+Headers: {"HTTP_COOKIE": "", "SERVER_NAME": "testserver", "CONTENT_LENGTH": "189", "CONTENT_TYPE": "application/json"}
+Payload: {"calluuid": "voxbay_uuid_inbound_123", "status": "Answered", "duration": "180", "recording_url": "rec_inbound.wav", "callerNumber": "8887776665", "AgentNumber": "105", "did": "9900112233"}
+============================================================
+
+=== WEBHOOK RECEIVED AT 2026-08-04 11:38:01 ===
+Method: POST
+Host: testserver
+Matched Call ID: 7
+Notes:
+Method: POST
+Full Path: /api/calls/webhook/voxbay/
+Host: testserver
+Payload keys: ['calluuid', 'status', 'duration', 'recording_url', 'callerNumber', 'AgentNumber', 'did']
+Extracted: uuid=voxbay_uuid_inbound_123, agent=105, customer=8887776665, virtual=9900112233
+Extracted: duration=180, status=Answered, recording=rec_inbound.wav, event=None
+Recent logs in 48h: 0
+No match found. Processing as Inbound Call...
+CREATED Inbound CallLog id=7
+Headers: {"HTTP_COOKIE": "", "SERVER_NAME": "testserver", "CONTENT_LENGTH": "189", "CONTENT_TYPE": "application/json"}
+Payload: {"calluuid": "voxbay_uuid_inbound_123", "status": "Answered", "duration": "180", "recording_url": "rec_inbound.wav", "callerNumber": "8887776665", "AgentNumber": "105", "did": "9900112233"}
+============================================================
+
+=== WEBHOOK RECEIVED AT 2026-08-04 11:42:54 ===
+Method: POST
+Host: testserver
+Matched Call ID: 7
+Notes:
+Method: POST
+Full Path: /api/calls/webhook/voxbay/
+Host: testserver
+Payload keys: ['calluuid', 'status', 'duration', 'recording_url', 'callerNumber', 'AgentNumber', 'did']
+Extracted: uuid=voxbay_uuid_inbound_123, agent=105, customer=8887776665, virtual=9900112233
+Extracted: duration=180, status=Answered, recording=rec_inbound.wav, event=None
+Recent logs in 48h: 0
+No match found. Processing as Inbound Call...
+CREATED Inbound CallLog id=7
+Headers: {"HTTP_COOKIE": "", "SERVER_NAME": "testserver", "CONTENT_LENGTH": "189", "CONTENT_TYPE": "application/json"}
+Payload: {"calluuid": "voxbay_uuid_inbound_123", "status": "Answered", "duration": "180", "recording_url": "rec_inbound.wav", "callerNumber": "8887776665", "AgentNumber": "105", "did": "9900112233"}
+============================================================
+

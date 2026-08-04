@@ -13,7 +13,7 @@ import { getApiBase } from "@/lib/mock-data";
 import { buildPurchaseOrderPdf, purchaseOrderFileName } from "@/lib/purchaseOrderPdf";
 import {
   FIELD, rupee, num, todayISO, useStock, StockPage, AddButton, SearchBar,
-  DataTable, Modal, Fld, Row, RowActions, DocumentPreview, I,
+  DataTable, Modal, Fld, Row, DocActions, DocumentPreview, I,
 } from "../shared";
 
 type Line = {
@@ -199,18 +199,12 @@ export default function StockPurchaseOrderPage() {
           <span className={`text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${STATUS_TONE[r.status] || STATUS_TONE.draft}`}>
             {r.status}
           </span>,
-          // The row itself opens the preview, so these stop the click reaching it.
-          <span className="inline-flex items-center gap-3 whitespace-nowrap" onClick={e => e.stopPropagation()}>
-            <button onClick={() => download(r)} disabled={busy === r.id}
-              className="text-[12px] font-semibold text-indigo-600 hover:text-indigo-800 disabled:opacity-40">
-              {busy === r.id ? "…" : "PDF"}
-            </button>
-            <button onClick={() => sendTo(r, "email")} disabled={busy === r.id}
-              className="text-[12px] font-semibold text-slate-500 hover:text-slate-800 disabled:opacity-40">Email</button>
-            <button onClick={() => sendTo(r, "whatsapp")} disabled={busy === r.id}
-              className="text-[12px] font-semibold text-emerald-600 hover:text-emerald-800 disabled:opacity-40">WhatsApp</button>
-            <RowActions onEdit={() => openEdit(r)} onDelete={() => remove("purchaseOrders", r.id, "purchase order")} />
-          </span>,
+          <DocActions busy={busy === r.id}
+            onDownload={() => download(r)}
+            onEmail={() => sendTo(r, "email")}
+            onWhatsApp={() => sendTo(r, "whatsapp")}
+            onEdit={() => openEdit(r)}
+            onDelete={() => remove("purchaseOrders", r.id, "purchase order")} />,
         ])} />
 
       <DocumentPreview

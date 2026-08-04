@@ -23,6 +23,12 @@ export const I = {
   Alert: () => <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3z" /><path d="M12 9v4" /><path d="M12 17h.01" /></svg>,
   Check: () => <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path d="m9 12 2 2 4-4" /></svg>,
   Box: () => <svg width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" /><line x1="7" y1="7" x2="7.01" y2="7" /></svg>,
+  // ── Document row actions ──
+  Download: () => <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>,
+  Mail: () => <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" /><polyline points="22,6 12,13 2,6" /></svg>,
+  WhatsApp: () => <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M17.47 14.38c-.29-.15-1.71-.84-1.97-.94-.26-.1-.46-.15-.65.14-.19.29-.75.94-.92 1.13-.17.19-.34.21-.63.07-.29-.15-1.22-.45-2.33-1.44-.86-.77-1.44-1.72-1.61-2.01-.17-.29-.02-.44.13-.59.13-.13.29-.34.44-.51.15-.17.19-.29.29-.48.1-.19.05-.36-.02-.51-.07-.15-.65-1.57-.89-2.15-.24-.56-.48-.49-.65-.5-.17-.01-.36-.01-.56-.01-.19 0-.51.07-.78.36-.27.29-1.02 1-1.02 2.42 0 1.43 1.04 2.81 1.19 3 .15.19 2.05 3.13 4.97 4.39.69.3 1.23.48 1.65.61.69.22 1.32.19 1.82.12.56-.08 1.71-.7 1.95-1.37.24-.67.24-1.25.17-1.37-.07-.12-.26-.19-.55-.34z" /><path d="M20.52 3.44A11.86 11.86 0 0012.05 0C5.5 0 .18 5.31.17 11.85c0 2.09.55 4.13 1.59 5.93L0 24l6.38-1.67a11.87 11.87 0 005.67 1.44h.01c6.55 0 11.87-5.31 11.87-11.85 0-3.17-1.23-6.15-3.41-8.48zM12.06 21.2h-.01a9.86 9.86 0 01-5.02-1.37l-.36-.21-3.79.99 1.01-3.69-.23-.38a9.82 9.82 0 01-1.51-5.24c0-5.44 4.43-9.86 9.9-9.86 2.64 0 5.13 1.03 7 2.9a9.82 9.82 0 012.9 6.97c0 5.44-4.43 9.86-9.89 9.86z" /></svg>,
+  Edit: () => <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z" /></svg>,
+  Truck: () => <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M14 18V6a2 2 0 0 0-2-2H3a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h2" /><path d="M14 9h4l4 4v4a1 1 0 0 1-1 1h-1" /><circle cx="7" cy="18" r="2" /><circle cx="17" cy="18" r="2" /></svg>,
 };
 
 export const CATS = ["Solar Panel", "Inverter", "Battery", "Mounting Structure", "Cable", "BOS Accessory", "Other"];
@@ -114,8 +120,9 @@ export function useStock(want: (keyof typeof SOURCES)[]) {
     return saved;
   };
 
-  const remove = async (source: keyof typeof SOURCES, id: number, label: string) => {
-    if (!confirm(`Delete this ${label}?`)) return;
+  /** `ask` overrides the confirmation when the consequences need spelling out. */
+  const remove = async (source: keyof typeof SOURCES, id: number, label: string, ask?: string) => {
+    if (!confirm(ask || `Delete this ${label}?`)) return;
     const r = await fetch(`${api}/api/${SOURCES[source]}/${id}/`, { method: "DELETE", headers: authJson() });
     if (!r.ok) { alert(await explain(r, "Could not delete.")); return; }
     load();
@@ -247,6 +254,53 @@ export function RowActions({ onEdit, onDelete }: { onEdit?: () => void; onDelete
     <span className="whitespace-nowrap">
       {onEdit && <button onClick={onEdit} className="text-indigo-600 hover:text-indigo-900 text-sm font-medium mr-4">Edit</button>}
       {onDelete && <button onClick={onDelete} className="text-rose-600 hover:text-rose-900 text-sm font-medium">Delete</button>}
+    </span>
+  );
+}
+
+/**
+ * The action set on a document row — download, send, edit, delete.
+ *
+ * Icons rather than words: the three document tables carry five actions each,
+ * and spelled out they crowded the row off the side of the table. Every button
+ * keeps a title so the meaning is still one hover away.
+ *
+ * The wrapper stops clicks reaching the row, which opens the preview.
+ */
+export function DocActions({ busy, onDownload, onEmail, onWhatsApp, onDispatch, onEdit, onDelete }: {
+  busy?: boolean;
+  onDownload?: () => void; onEmail?: () => void; onWhatsApp?: () => void;
+  onDispatch?: () => void; onEdit?: () => void; onDelete?: () => void;
+}) {
+  const btn = "w-8 h-8 inline-flex items-center justify-center rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed";
+  return (
+    <span className="inline-flex items-center gap-1 whitespace-nowrap" onClick={e => e.stopPropagation()}>
+      {onDownload && (
+        <button onClick={onDownload} disabled={busy} title="Download PDF" aria-label="Download PDF"
+          className={`${btn} text-slate-500 hover:text-indigo-700 hover:bg-indigo-50`}>
+          {busy ? <span className="w-3.5 h-3.5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" /> : <I.Download />}
+        </button>
+      )}
+      {onEmail && (
+        <button onClick={onEmail} disabled={busy} title="Send by email" aria-label="Send by email"
+          className={`${btn} text-slate-500 hover:text-indigo-700 hover:bg-indigo-50`}><I.Mail /></button>
+      )}
+      {onWhatsApp && (
+        <button onClick={onWhatsApp} disabled={busy} title="Send on WhatsApp" aria-label="Send on WhatsApp"
+          className={`${btn} text-emerald-600 hover:text-emerald-800 hover:bg-emerald-50`}><I.WhatsApp /></button>
+      )}
+      {onDispatch && (
+        <button onClick={onDispatch} disabled={busy} title="Dispatch this invoice" aria-label="Dispatch this invoice"
+          className={`${btn} text-amber-600 hover:text-amber-800 hover:bg-amber-50`}><I.Truck /></button>
+      )}
+      {onEdit && (
+        <button onClick={onEdit} disabled={busy} title="Edit" aria-label="Edit"
+          className={`${btn} text-slate-500 hover:text-slate-900 hover:bg-slate-100`}><I.Edit /></button>
+      )}
+      {onDelete && (
+        <button onClick={onDelete} disabled={busy} title="Delete" aria-label="Delete"
+          className={`${btn} text-rose-500 hover:text-rose-700 hover:bg-rose-50`}><I.Trash /></button>
+      )}
     </span>
   );
 }

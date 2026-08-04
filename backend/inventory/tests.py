@@ -334,14 +334,18 @@ class StockQuoteTests(TestCase):
         self.assertEqual(r.status_code, 400)
         self.assertEqual(StockDispatch.objects.count(), 0)
 
-    def test_a_converted_quote_is_locked(self):
+    def test_a_converted_quote_can_no_longer_be_edited(self):
+        """Editing it would diverge from the dispatches already written from it.
+
+        Deleting is a different matter and is allowed — the dispatch stands on
+        its own; see StockQuoteDeletionTests.
+        """
         qid = self.make_quote().json()['id']
         self.client.post(f'/api/stock-quotes/{qid}/convert/', **self.auth())
         r = self.client.patch(f'/api/stock-quotes/{qid}/', data={'tax_percent': '0'},
                               content_type='application/json', **self.auth())
         self.assertEqual(r.status_code, 400)
-        r = self.client.delete(f'/api/stock-quotes/{qid}/', **self.auth())
-        self.assertEqual(r.status_code, 400)
+        self.assertEqual(self.client.delete(f'/api/stock-quotes/{qid}/', **self.auth()).status_code, 204)
 
     def test_an_open_quote_can_be_edited_and_deleted(self):
         qid = self.make_quote().json()['id']
@@ -971,3 +975,57 @@ class DocumentNumbersAreSpentOnceTests(TestCase):
         self.assertEqual(peek_document_number('PO', on=date(2026, 8, 3)), 'REN2627-PO001')
         self.assertEqual(peek_document_number('PO', on=date(2026, 8, 3)), 'REN2627-PO001')
         self.assertEqual(self.order().number, 'REN2627-PO001')
+
+
+class StockQuoteDeletionTests(TestCase):
+    """A proforma invoice can be deleted at any point in its life, including
+    after it has been dispatched."""
+
+    def setUp(self):
+        self.admin = mk('del_admin', 'admin')
+        self.customer = StockCustomer.objects.create(name='Ananthapuri')
+        self.item = StockItem.objects.create(code='DEL-1', category='Solar Panel',
+                                             opening_stock=100)
+
+    def make_quote(self):
+        q = StockQuote.objects.create(customer=self.customer, quote_date=date(2026, 8, 3))
+        StockQuoteItem.objects.create(quote=q, item=self.item, quantity=2, unit_price=Decimal('100'))
+        return q
+
+    def delete(self, q):
+        return self.client.delete(f'/api/stock-quotes/{q.id}/',
+                                  HTTP_AUTHORIZATION=token_for(self.admin))
+
+    def test_a_draft_can_be_deleted(self):
+        q = self.make_quote()
+        self.assertEqual(self.delete(q).status_code, 204)
+        self.assertFalse(StockQuote.objects.filter(pk=q.pk).exists())
+
+    def test_a_dispatched_one_can_be_deleted_too(self):
+        q = self.make_quote()
+        self.client.post(f'/api/stock-quotes/{q.id}/convert/',
+                         HTTP_AUTHORIZATION=token_for(self.admin))
+        q.refresh_from_db()
+        self.assertEqual(q.status, 'converted')
+        self.assertEqual(self.delete(q).status_code, 204)
+
+    def test_deleting_it_leaves_the_sale_alone(self):
+        """The dispatch keeps its invoice number and its stock movement."""
+        q = self.make_quote()
+        self.client.post(f'/api/stock-quotes/{q.id}/convert/',
+                         HTTP_AUTHORIZATION=token_for(self.admin))
+        dispatched = list(StockDispatch.objects.values_list('invoice_no', flat=True))
+        self.item.refresh_from_db()
+        stock_after_dispatch = self.item.closing_stock
+
+        self.delete(q)
+        self.assertEqual(list(StockDispatch.objects.values_list('invoice_no', flat=True)), dispatched)
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.closing_stock, stock_after_dispatch)
+
+    def test_its_number_stays_spent(self):
+        q = self.make_quote()
+        number = q.number
+        self.delete(q)
+        nxt = StockQuote.objects.create(customer=self.customer, quote_date=date(2026, 8, 3))
+        self.assertNotEqual(nxt.number, number)

@@ -13,7 +13,7 @@ import { buildProformaPdf, proformaFileName } from "@/lib/proformaPdf";
 import { STATES, HOME_STATE } from "@/lib/states";
 import {
   FIELD, rupee, num, todayISO, useStock, StockPage, AddButton, SearchBar,
-  DataTable, Modal, Fld, Row, RowActions, DocumentPreview, I,
+  DataTable, Modal, Fld, Row, DocActions, DocumentPreview, I,
 } from "../shared";
 
 type Line = { item: string; description: string; quantity: string; unit_price: string };
@@ -204,28 +204,18 @@ export default function StockQuotesPage() {
                 {q.status}
               </span>,
               <span className="tabular-nums font-semibold">{rupee(q.total)}</span>,
-              <span className="whitespace-nowrap" onClick={e => e.stopPropagation()}>
-                <button onClick={() => download(q)} disabled={busy === q.id}
-                  className="text-slate-600 hover:text-slate-900 text-sm font-medium mr-3 disabled:opacity-40">
-                  {busy === q.id ? "…" : "PDF"}
-                </button>
-                <button onClick={() => sendTo(q, "email")} disabled={busy === q.id}
-                  className="text-indigo-600 hover:text-indigo-900 text-sm font-medium mr-3 disabled:opacity-40">
-                  Email
-                </button>
-                <button onClick={() => sendTo(q, "whatsapp")} disabled={busy === q.id}
-                  className="text-emerald-600 hover:text-emerald-800 text-sm font-medium mr-3 disabled:opacity-40">
-                  WhatsApp
-                </button>
-                {q.status === "converted" ? (
-                  <span className="text-xs text-slate-400">Dispatched</span>
-                ) : (
-                  <>
-                    <button onClick={() => convert(q)} className="text-amber-600 hover:text-amber-800 text-sm font-medium mr-3">Dispatch</button>
-                    <RowActions onEdit={() => openEdit(q)} onDelete={() => remove("quotes", q.id, "proforma invoice")} />
-                  </>
-                )}
-              </span>,
+              // A converted invoice can no longer be dispatched or edited — its
+              // stock has already gone out — but it can still be deleted.
+              <DocActions busy={busy === q.id}
+                onDownload={() => download(q)}
+                onEmail={() => sendTo(q, "email")}
+                onWhatsApp={() => sendTo(q, "whatsapp")}
+                onDispatch={q.status === "converted" ? undefined : () => convert(q)}
+                onEdit={q.status === "converted" ? undefined : () => openEdit(q)}
+                onDelete={() => remove("quotes", q.id, "proforma invoice",
+                  q.status === "converted"
+                    ? `${q.number} has already been dispatched. Deleting it removes the proforma invoice only — the dispatch, its invoice and the stock movement stay. Delete it?`
+                    : `Delete ${q.number}?`)} />,
             ])} />
         </>
       )}

@@ -14,7 +14,7 @@ import { getApiBase } from "@/lib/mock-data";
 import { buildProformaPdf, proformaFileName } from "@/lib/proformaPdf";
 import {
   FIELD, rupee, num, todayISO, useStock, StockPage, AddButton, SearchBar,
-  DataTable, Modal, Fld, Row, RowActions, DocumentPreview, I,
+  DataTable, Modal, Fld, Row, DocActions, DocumentPreview, I,
 } from "../shared";
 
 type Line = { item: string; serial_numbers: string; quantity: string; rate: string };
@@ -181,21 +181,12 @@ export default function StockDispatchPage() {
           <span className="font-mono text-[10px] text-slate-500">{r.serial_numbers || "—"}</span>,
           <span className="tabular-nums">{num(r.quantity)}</span>,
           <span className="tabular-nums font-semibold">{rupee(r.total)}</span>,
-          <span className="whitespace-nowrap" onClick={e => e.stopPropagation()}>
-            <button onClick={() => download(r)} disabled={busy === r.id}
-              className="text-slate-600 hover:text-slate-900 text-sm font-medium mr-3 disabled:opacity-40">
-              {busy === r.id ? "…" : "PDF"}
-            </button>
-            <button onClick={() => sendTo(r, "email")} disabled={busy === r.id}
-              className="text-indigo-600 hover:text-indigo-900 text-sm font-medium mr-3 disabled:opacity-40">
-              Email
-            </button>
-            <button onClick={() => sendTo(r, "whatsapp")} disabled={busy === r.id}
-              className="text-emerald-600 hover:text-emerald-800 text-sm font-medium mr-3 disabled:opacity-40">
-              WhatsApp
-            </button>
-            <RowActions onEdit={() => openEdit(r)} onDelete={() => remove("dispatches", r.id, "dispatch")} />
-          </span>,
+          <DocActions busy={busy === r.id}
+            onDownload={() => download(r)}
+            onEmail={() => sendTo(r, "email")}
+            onWhatsApp={() => sendTo(r, "whatsapp")}
+            onEdit={() => openEdit(r)}
+            onDelete={() => remove("dispatches", r.id, "dispatch")} />,
         ])} />
 
       <DocumentPreview
