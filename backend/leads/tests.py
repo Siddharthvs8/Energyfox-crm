@@ -1399,6 +1399,53 @@ class LoanRemarksAndReceiptSendTests(TestCase):
         self.assertTrue(kwargs['link'].startswith('http'))
         self.assertTrue(kwargs['filename'].endswith('.pdf'))
 
+    def test_a_sent_receipt_lands_on_the_activity_timeline(self):
+        """Sending a receipt is something that happened to this customer, so it
+        belongs beside the payment it acknowledges."""
+        from unittest.mock import patch
+        voucher = self._receipt()
+        with patch('messaging.email.send_and_log') as send:
+            send.return_value = type('L', (), {'status': 'sent', 'error': ''})()
+            self.client.post(f'/api/leads/{self.lead.id}/send-receipt/', {
+                'pdf': self._pdf(), 'channels': 'email', 'email': 'asha@example.com',
+                'receipt_id': voucher.id,
+            }, HTTP_AUTHORIZATION=token_for(self.admin))
+
+        r = self.client.get(f'/api/leads/{self.lead.id}/activity-timeline/',
+                            HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        entries = [e['description'] for e in r.json()['entries']]
+        self.assertTrue(any(voucher.number in e and 'asha@example.com' in e for e in entries),
+                        entries)
+
+    def test_a_whatsapp_send_is_recorded_too(self):
+        from unittest.mock import patch
+        voucher = self._receipt()
+        with patch('messaging.whatsapp.send_document'):
+            self.client.post(f'/api/leads/{self.lead.id}/send-receipt/', {
+                'pdf': self._pdf(), 'channels': 'whatsapp', 'phone': '9895271484',
+                'receipt_id': voucher.id,
+            }, HTTP_AUTHORIZATION=token_for(self.admin))
+        entries = [e['description'] for e in self.client.get(
+            f'/api/leads/{self.lead.id}/activity-timeline/',
+            HTTP_AUTHORIZATION=token_for(self.admin)).json()['entries']]
+        self.assertTrue(any('WhatsApp to 9895271484' in e for e in entries), entries)
+
+    def test_a_failed_send_is_not_recorded_as_one(self):
+        """A refusal is not an event — the timeline records deliveries."""
+        from unittest.mock import patch
+        from .models import ActivityLog
+        voucher = self._receipt()
+        before = ActivityLog.objects.filter(lead=self.lead).count()
+        with patch('messaging.email.send_and_log') as send:
+            send.return_value = type('L', (), {'status': 'failed', 'error': 'SMTP refused'})()
+            r = self.client.post(f'/api/leads/{self.lead.id}/send-receipt/', {
+                'pdf': self._pdf(), 'channels': 'email', 'email': 'asha@example.com',
+                'receipt_id': voucher.id,
+            }, HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.json()['sent']['email'], 'failed')
+        self.assertEqual(ActivityLog.objects.filter(lead=self.lead).count(), before)
+
     def test_sending_without_a_receipt_says_so(self):
         r = self.client.post(f'/api/leads/{self.lead.id}/send-receipt/',
                              {'pdf': self._pdf(), 'channels': 'email'},

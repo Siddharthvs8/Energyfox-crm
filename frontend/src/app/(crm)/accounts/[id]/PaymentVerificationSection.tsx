@@ -24,8 +24,10 @@ const toNum = (v: any) => {
   return Number.isFinite(n) ? n : 0;
 };
 
-export default function PaymentVerificationSection({ leadId, canEdit, canReopen, dealValue, onChanged }: {
-  leadId: number | string; canEdit: boolean; canReopen?: boolean; dealValue: number; onChanged?: () => void;
+export default function PaymentVerificationSection({ leadId, canEdit, canReopen, dealValue,
+                                                     customerEmail, customerPhone, onChanged }: {
+  leadId: number | string; canEdit: boolean; canReopen?: boolean; dealValue: number;
+  customerEmail?: string | null; customerPhone?: string | null; onChanged?: () => void;
 }) {
   const apiBase = getApiBase(APP_SLUG);
   const url = `${apiBase}/api/leads/${leadId}/payment-verification/`;
@@ -146,7 +148,10 @@ export default function PaymentVerificationSection({ leadId, canEdit, canReopen,
   /** Ask where it should go, then render and hand it to the server. */
   const askAndSend = async (channel: "email" | "whatsapp") => {
     const label = channel === "email" ? "email address" : "WhatsApp number";
-    const to = window.prompt(`Send the receipt to which ${label}?`, "");
+    // Pre-filled from the customer's own record — still editable, because a
+    // receipt sometimes goes to a spouse or an accountant instead.
+    const known = (channel === "email" ? customerEmail : customerPhone) || "";
+    const to = window.prompt(`Send the receipt to which ${label}?`, known);
     if (!to) return;
     setSending(true);
     try {

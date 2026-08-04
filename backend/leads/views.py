@@ -2048,7 +2048,7 @@ class LeadViewSet(viewsets.ModelViewSet):
                             status=status.HTTP_400_BAD_REQUEST)
 
         channels = [c.strip() for c in str(request.data.get('channels', 'email')).split(',') if c.strip()]
-        results, failures = {}, []
+        results, failures, delivered = {}, [], []
         who = voucher.received_from or f"{lead.first_name} {lead.last_name or ''}".strip()
         filename = f"Receipt_{(voucher.number or 'receipt').replace('/', '_')}.pdf"
 
@@ -2074,7 +2074,9 @@ class LeadViewSet(viewsets.ModelViewSet):
                     created_by=request.user if request.user.is_authenticated else None,
                 )
                 results['email'] = log.status
-                if log.status != 'sent':
+                if log.status == 'sent':
+                    delivered.append(f"email to {', '.join(recipients)}")
+                else:
                     failures.append(f'Email failed: {log.error}')
 
         if 'whatsapp' in channels:
@@ -2091,11 +2093,23 @@ class LeadViewSet(viewsets.ModelViewSet):
                         caption=f"Receipt {voucher.number}",
                     )
                     results['whatsapp'] = 'sent'
+                    delivered.append(f'WhatsApp to {to}')
                 except Exception as exc:                     # surfaced to the user
                     failures.append(f'WhatsApp failed: {exc}')
 
         if failures and not results:
             return Response({'error': ' '.join(failures)}, status=status.HTTP_502_BAD_GATEWAY)
+        # Sending a receipt is something that happened to this customer, so it
+        # belongs on their Activity Timeline beside the payment it acknowledges.
+        # Only actual deliveries are recorded — a failed send is not an event.
+        if delivered:
+            ActivityLog.objects.create(
+                activity_type='note_added', lead=lead,
+                actor=request.user if request.user.is_authenticated else None,
+                description=f"Receipt {voucher.number} sent by {' and '.join(delivered)}.",
+                extra={'auto_generated': True, 'receipt': voucher.number,
+                       'channels': sorted(results)},
+            )
         return Response({'sent': results, 'warnings': failures,
                          'number': voucher.number,
                          'pdf': request.build_absolute_uri(voucher.pdf.url)})

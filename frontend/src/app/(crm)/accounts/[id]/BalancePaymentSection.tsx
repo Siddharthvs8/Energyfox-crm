@@ -24,8 +24,9 @@ type Summary = { deal_value: string; amount_received: string; discount_value: st
 
 const num = (v: any) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
 
-export default function BalancePaymentSection({ leadId, canEdit, onChanged }: {
-  leadId: number | string; canEdit: boolean; onChanged?: () => void;
+export default function BalancePaymentSection({ leadId, canEdit, customerEmail, customerPhone, onChanged }: {
+  leadId: number | string; canEdit: boolean;
+  customerEmail?: string | null; customerPhone?: string | null; onChanged?: () => void;
 }) {
   const apiBase = getApiBase(APP_SLUG);
   const url = `${apiBase}/api/leads/${leadId}/balance-payments/`;
@@ -37,7 +38,10 @@ export default function BalancePaymentSection({ leadId, canEdit, onChanged }: {
   /** Ask where this receipt should go, then render and hand it to the server. */
   const sendReceipt = async (channel: "email" | "whatsapp", receiptId: number) => {
     const label = channel === "email" ? "email address" : "WhatsApp number";
-    const to = window.prompt(`Send the receipt to which ${label}?`, "");
+    // Pre-filled from the customer's own record — still editable, because a
+    // receipt sometimes goes to a spouse or an accountant instead.
+    const known = (channel === "email" ? customerEmail : customerPhone) || "";
+    const to = window.prompt(`Send the receipt to which ${label}?`, known);
     if (!to) return;
     try {
       await sendLeadReceipt(leadId, channel, to, { receiptId });

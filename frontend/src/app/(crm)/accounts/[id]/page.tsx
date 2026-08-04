@@ -145,6 +145,8 @@ export default function AccountsDetailPage({ params: paramsPromise }: { params: 
         canEdit={data.can_edit_payment}
         canReopen={data.can_reopen_payment}
         dealValue={data.value}
+        customerEmail={data.email}
+        customerPhone={data.phone}
         onChanged={load}
       />
 
@@ -153,6 +155,8 @@ export default function AccountsDetailPage({ params: paramsPromise }: { params: 
         <BalancePaymentSection
           leadId={data.id}
           canEdit={data.can_edit_payment}
+          customerEmail={data.email}
+          customerPhone={data.phone}
           onChanged={load}
         />
       )}
