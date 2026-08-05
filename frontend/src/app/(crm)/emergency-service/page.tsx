@@ -96,15 +96,14 @@ const labelCls = "block text-[10px] font-bold text-slate-400 uppercase tracking-
  * it, and the input loses focus after a single character.
  */
 function Reading({
-  text, slot, label, ph, value, apiBase, stored, queued,
-  onChange, onAdd, onDropStored, onDropQueued,
+  text, slot, label, ph, value, apiBase, stored, busy,
+  onChange, onAdd, onDropStored,
 }: {
   text: string; slot: string; label: string; ph: string;
-  value: string; apiBase: string; stored: EntryDoc[]; queued: File[];
+  value: string; apiBase: string; stored: EntryDoc[]; busy: boolean;
   onChange: (v: string) => void;
   onAdd: (files: File[]) => void;
   onDropStored: (doc: EntryDoc) => void;
-  onDropQueued: (index: number) => void;
 }) {
   return (
     <div>
@@ -112,7 +111,7 @@ function Reading({
       <input value={value} onChange={e => onChange(e.target.value)}
         className={inputCls} placeholder={ph} />
 
-      {(stored.length > 0 || queued.length > 0) && (
+      {stored.length > 0 && (
         <ul className="mt-2 space-y-1">
           {stored.map(d => {
             const href = d.file.startsWith("http") ? d.file : `${apiBase}${d.file}`;
@@ -126,20 +125,12 @@ function Reading({
               </li>
             );
           })}
-          {queued.map((f, n) => (
-            <li key={`q-${n}`} className="flex items-center gap-2 text-[11px]">
-              <span className="text-slate-500 truncate max-w-[150px]" title={f.name}>{f.name}</span>
-              <span className="text-[10px] text-amber-600 whitespace-nowrap">attaches on save</span>
-              <button type="button" onClick={() => onDropQueued(n)} title="Remove"
-                className="font-bold text-rose-500 hover:text-rose-700">✕</button>
-            </li>
-          ))}
         </ul>
       )}
 
-      <label className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 cursor-pointer transition">
-        + Add file(s)
-        <input type="file" accept="image/*,application/pdf" multiple capture="environment" className="hidden"
+      <label className={`mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold transition ${busy ? "bg-slate-100 text-slate-400 cursor-not-allowed" : "bg-slate-100 text-slate-700 hover:bg-slate-200 cursor-pointer"}`}>
+        {busy ? "Uploading…" : "+ Add file(s)"}
+        <input type="file" accept="image/*,application/pdf" multiple capture="environment" disabled={busy} className="hidden"
           onChange={e => { const fs = Array.from(e.target.files || []); e.currentTarget.value = ""; onAdd(fs); }} />
       </label>
     </div>
@@ -202,42 +193,44 @@ export default function EmergencyServicePage() {
       ).filter(c => fullName(c).toLowerCase() !== sugQuery).slice(0, 8)
     : customers.slice(0, 8);
 
-  // Files chosen but not yet saved, per slot. A new entry has no id to hang
-  // them on, so they wait here and go up once it exists.
-  const [pending, setPending] = useState<Record<string, File[]>>({});
-  // Photos already stored against the entry being edited.
+  // Photos stored against the entry being filled in or edited.
   const [stored, setStored] = useState<EntryDoc[]>([]);
-
-
+  const [uploading, setUploading] = useState<string | null>(null);
 
   const resetForm = () => {
-    setForm({ ...BLANK }); setEditingId(null);
-    setPending({}); setStored([]);
+    setForm({ ...BLANK }); setEditingId(null); setStored([]);
   };
 
-  const addFiles = (slot: string, files: File[]) => {
+  /** Attach straight away, the way the site visit does.
+   *
+   *  Photos hang off a saved entry, so the first attachment on a new form
+   *  creates the entry — from then on the form is editing it, and the button
+   *  says Update. That is the price of uploading before save rather than after.
+   */
+  const addFiles = async (slot: string, files: File[]) => {
     if (!files.length) return;
-    setPending(p => ({ ...p, [slot]: [...(p[slot] || []), ...files] }));
-  };
-
-  const dropPending = (slot: string, index: number) =>
-    setPending(p => ({ ...p, [slot]: (p[slot] || []).filter((_, n) => n !== index) }));
-
-  /** Stored photos are removed straight away — the entry already exists. */
-  const dropStored = async (doc: EntryDoc) => {
-    if (!window.confirm("Remove this photo?")) return;
+    let entryId = editingId;
+    if (!entryId && !form.customer_name.trim() && !form.service.trim()) {
+      alert("Enter the customer or the service done before attaching photos.");
+      return;
+    }
+    setUploading(slot);
     try {
-      const r = await fetch(`${base}${editingId}/documents/${doc.id}/`, {
-        method: "DELETE", headers: { Authorization: `Bearer ${token()}` },
-      });
-      if (r.ok || r.status === 204) setStored(list => list.filter(d => d.id !== doc.id));
-      else alert("Could not remove the photo.");
-    } catch { alert("Network error."); }
-  };
-
-  /** Push everything queued for this entry, one request per file. */
-  const uploadPending = async (entryId: number) => {
-    for (const [slot, files] of Object.entries(pending)) {
+      if (!entryId) {
+        const r = await fetch(base, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
+          body: JSON.stringify(form),
+        });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          alert(e.detail || e.error || "Could not start this entry.");
+          return;
+        }
+        entryId = (await r.json()).id;
+        setEditingId(entryId);
+      }
+      const added: EntryDoc[] = [];
       for (const file of files) {
         const body = new FormData();
         body.append("file", file);
@@ -248,19 +241,34 @@ export default function EmergencyServicePage() {
         if (!r.ok) {
           const e = await r.json().catch(() => ({}));
           alert(e.error || `Could not upload ${file.name}.`);
-          return false;
+          break;
         }
+        added.push(await r.json());
       }
-    }
-    return true;
+      if (added.length) setStored(list => [...list, ...added]);
+      loadRows();
+    } catch { alert("Network error while uploading."); }
+    finally { setUploading(null); }
+  };
+
+  /** Stored photos are removed straight away — the entry exists. */
+  const dropStored = async (doc: EntryDoc) => {
+    if (!window.confirm("Remove this photo?")) return;
+    try {
+      const r = await fetch(`${base}${editingId}/documents/${doc.id}/`, {
+        method: "DELETE", headers: { Authorization: `Bearer ${token()}` },
+      });
+      if (r.ok || r.status === 204) { setStored(list => list.filter(d => d.id !== doc.id)); loadRows(); }
+      else alert("Could not remove the photo.");
+    } catch { alert("Network error."); }
   };
 
   const submit = async () => {
     if (!form.customer_name.trim() && !form.service.trim()) { alert("Enter the customer or the service done."); return; }
     setSaving(true);
     try {
-      // The readings save first; the photos hang off the saved entry, so they
-      // follow once it has an id.
+      // Photos are already up — attaching one created the entry if it was new,
+      // so this only ever saves the readings.
       const r = await fetch(editingId ? `${base}${editingId}/` : base, {
         method: editingId ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
@@ -271,8 +279,6 @@ export default function EmergencyServicePage() {
         alert(e.detail || e.error || "Failed to save.");
         return;
       }
-      const saved = await r.json();
-      if (!(await uploadPending(saved.id))) { loadRows(); return; }
       resetForm(); loadRows();
     } catch { alert("Network error."); }
     finally { setSaving(false); }
@@ -288,7 +294,6 @@ export default function EmergencyServicePage() {
       dc_side_condition: s.dc_side_condition || "", ac_side_condition: s.ac_side_condition || "",
       replacement: s.replacement || "",
     });
-    setPending({});
     setStored(s.documents || []);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -345,20 +350,18 @@ export default function EmergencyServicePage() {
           </div>
           <div className="lg:col-span-2"><label className={labelCls}>Service</label><input value={form.service} onChange={e => setForm({ ...form, service: e.target.value })} className={inputCls} placeholder="Service done" /></div>
           {TOP_READINGS.map(r => <Reading key={r.slot} {...r} value={(form as any)[r.text] || ""} apiBase={apiBase}
-              stored={stored.filter(d => d.doc_type === r.slot)} queued={pending[r.slot] || []}
+              stored={stored.filter(d => d.doc_type === r.slot)} busy={uploading === r.slot}
               onChange={v => setForm({ ...form, [r.text]: v })}
-              onAdd={fs => addFiles(r.slot, fs)}
-              onDropStored={dropStored} onDropQueued={n => dropPending(r.slot, n)} />)}
+              onAdd={fs => addFiles(r.slot, fs)} onDropStored={dropStored} />)}
         </div>
         <div className="mt-4 bg-slate-50/70 border border-slate-100 rounded-xl p-4">
           <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-wide mb-3">AC Voltage</p>
           <p className="text-[11px] text-slate-400 -mt-2 mb-3">Type the reading and attach the meter photo(s).</p>
           <div className="grid sm:grid-cols-3 gap-3">
             {AC_READINGS.map(r => <Reading key={r.slot} {...r} value={(form as any)[r.text] || ""} apiBase={apiBase}
-              stored={stored.filter(d => d.doc_type === r.slot)} queued={pending[r.slot] || []}
+              stored={stored.filter(d => d.doc_type === r.slot)} busy={uploading === r.slot}
               onChange={v => setForm({ ...form, [r.text]: v })}
-              onAdd={fs => addFiles(r.slot, fs)}
-              onDropStored={dropStored} onDropQueued={n => dropPending(r.slot, n)} />)}
+              onAdd={fs => addFiles(r.slot, fs)} onDropStored={dropStored} />)}
           </div>
         </div>
         <div className="mt-4 bg-slate-50/70 border border-slate-100 rounded-xl p-4">

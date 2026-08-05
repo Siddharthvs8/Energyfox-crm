@@ -1060,14 +1060,15 @@ class MaintenanceVisit(models.Model):
     error_codes = models.CharField(max_length=255, blank=True, default='')
 
     # Photo slots (MaintenanceVisitDocument.doc_type), in the order the form
-    # lays them out. The four picture-only slots are evidence of the wash and of
-    # what the plant was producing either side of it — there is no number to
-    # type for those, only the photograph.
+    # lays them out. The picture-only slots are evidence of the wash, of what
+    # the plant was producing either side of it, and of the cleaned inverter —
+    # there is no number to type for those, only the photograph.
     PICTURE_ONLY_SLOTS = [
         ('panel_before', 'Panel Before'),
         ('panel_after', 'Panel After'),
         ('production_before', 'Production Before Service'),
         ('production_after', 'Production After Service'),
+        ('inverter_cleaned', 'Inverter Cleaned'),
     ]
     READING_SLOTS = [
         ('dc_voltage', 'DC Voltage'),

@@ -3107,10 +3107,12 @@ class EmergencyServiceConditionTests(TestCase):
 
 
 class MaintenanceVisitPhotoSlotsTests(TestCase):
-    """A visit records the wash, what the plant made either side of it, and every
-    reading — each slot holding as many photos as the job needed."""
+    """A visit records the wash, what the plant made either side of it, the
+    cleaned inverter and every reading — each slot holding as many photos as the
+    job needed."""
 
-    PICTURE_ONLY = ['panel_before', 'panel_after', 'production_before', 'production_after']
+    PICTURE_ONLY = ['panel_before', 'panel_after', 'production_before', 'production_after',
+                    'inverter_cleaned']
     READINGS = ['dc_voltage', 'dc_floating_voltage', 'error_codes', 'structure_damage',
                 'monthly_production', 'ac_ne', 'ac_pn', 'ac_pe']
 

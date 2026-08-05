@@ -437,13 +437,17 @@ export default function MaintenanceDetailPage({ params: paramsPromise }: { param
                         onAdd={(fs: File[]) => uploadPhotos(slot, fs)} onDelete={deletePhoto} /></div>
                   </div>
                 ))}
-                <div className="flex items-end pb-1">
+                {/* Ticked and photographed — the box is the claim, the photo the evidence. */}
+                <div>
                   <label className={`inline-flex items-center gap-2 text-sm font-medium ${!data.can_edit ? "text-slate-400" : "text-slate-700 cursor-pointer"}`}>
                     <input type="checkbox" checked={!!draft.inverter_cleaned} disabled={!data.can_edit}
                       onChange={e => setDraft({ ...draft, inverter_cleaned: e.target.checked })}
                       className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500/30" />
                     Inverter cleaned
                   </label>
+                  <div className="mt-1.5"><PhotoSlot slot="inverter_cleaned" docs={openVisit.documents || []} canEdit={!!data.can_edit}
+                      busy={uploadingSlot === "inverter_cleaned"} fileHref={fileHref}
+                      onAdd={(fs: File[]) => uploadPhotos("inverter_cleaned", fs)} onDelete={deletePhoto} /></div>
                 </div>
               </div>
 
