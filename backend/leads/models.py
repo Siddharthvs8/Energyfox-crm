@@ -1102,12 +1102,14 @@ class MaintenanceVisit(models.Model):
 class EmergencyService(models.Model):
     """Emergency Service — urgent service visits logged by the liasoning officer.
     Each entry records the service done plus the electrical readings taken on
-    site: DC voltage, inverter error codes, the AC voltages (N-E / P-N / P-E)
-    and the plant's monthly production."""
+    site: DC voltage and floating voltage, inverter error codes, the AC voltages
+    (N-E / P-N / P-E) and the plant's monthly production, along with the panel
+    wash and production photos taken either side of the visit."""
     customer_name = models.CharField(max_length=255, blank=True, default='')
     service = models.TextField(blank=True, default='')
     remarks = models.CharField(max_length=255, blank=True, default='')
     dc_voltage = models.CharField(max_length=60, blank=True, default='')
+    dc_floating_voltage = models.CharField(max_length=60, blank=True, default='')
     error_codes = models.CharField(max_length=255, blank=True, default='')
     # ── AC voltage readings ──
     # Every reading is typed *and* photographed: the number is what gets
@@ -1144,14 +1146,25 @@ class EmergencyService(models.Model):
     ]
     # Photo slots (EmergencyServiceDocument.doc_type), in the order the form
     # lays them out. Every reading on the entry can carry several shots.
-    PHOTO_SLOTS = [
+    # The picture-only slots are the panel wash and what the plant was making
+    # either side of the visit — there is no number to type for those, only the
+    # photograph.
+    PICTURE_ONLY_SLOTS = [
+        ('panel_before', 'Panel Wash — Before'),
+        ('panel_after', 'Panel Wash — After'),
+        ('production_before', 'Production Before Service'),
+        ('production_after', 'Production After Service'),
+    ]
+    READING_SLOTS = [
         ('dc_voltage', 'DC Voltage'),
+        ('dc_floating_voltage', 'DC Floating Voltages'),
         ('error_codes', 'Error Codes'),
         ('monthly_production', 'Monthly Production'),
         ('ac_ne', 'N-E Voltage'),
         ('ac_pn', 'P-N'),
         ('ac_pe', 'P-E'),
     ]
+    PHOTO_SLOTS = PICTURE_ONLY_SLOTS + READING_SLOTS
 
     dc_side_condition = models.CharField(max_length=40, blank=True, default='', choices=DC_SIDE_CHOICES)
     ac_side_condition = models.CharField(max_length=40, blank=True, default='', choices=AC_SIDE_CHOICES)

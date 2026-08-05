@@ -2939,7 +2939,10 @@ class EmergencyServiceReadingPhotosTests(TestCase):
     """Every reading on an entry can carry photos — several of them. The number
     is what gets reported, the shots are the evidence behind it."""
 
-    SLOTS = ['dc_voltage', 'error_codes', 'monthly_production', 'ac_ne', 'ac_pn', 'ac_pe']
+    SLOTS = ['dc_voltage', 'dc_floating_voltage', 'error_codes', 'monthly_production',
+             'ac_ne', 'ac_pn', 'ac_pe']
+    # No number to type for these — only the photograph.
+    PICTURE_ONLY = ['panel_before', 'panel_after', 'production_before', 'production_after']
 
     def setUp(self):
         self.officer = mk('es_officer', 'liasoning_officer')
@@ -2973,6 +2976,20 @@ class EmergencyServiceReadingPhotosTests(TestCase):
         for slot in self.SLOTS:
             self.assertEqual(self.upload(slot, f'{slot}.jpg').status_code, 201, slot)
         self.assertEqual({d['doc_type'] for d in self.docs()}, set(self.SLOTS))
+
+    def test_the_wash_and_production_shots_have_their_own_slots(self):
+        """Panel wash and production either side of the visit are photo-only."""
+        for slot in self.PICTURE_ONLY:
+            self.assertEqual(self.upload(slot, f'{slot}.jpg').status_code, 201, slot)
+        self.assertEqual({d['doc_type'] for d in self.docs()}, set(self.PICTURE_ONLY))
+
+    def test_the_dc_floating_reading_saves(self):
+        r = self.client.patch(f'/api/emergency-services/{self.entry_id}/',
+                              data={'dc_voltage': '240', 'dc_floating_voltage': '12'},
+                              content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.officer))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual((r.json()['dc_voltage'], r.json()['dc_floating_voltage']), ('240', '12'))
 
     def test_a_reading_takes_several_photos(self):
         """A meter is often shot twice, and a burned board needs more angles."""

@@ -11,6 +11,7 @@ type Entry = {
   service: string;
   remarks: string;
   dc_voltage: string;
+  dc_floating_voltage: string;
   error_codes: string;
   ac_ne_voltage: string;
   ac_pn_voltage: string;
@@ -30,8 +31,8 @@ type EntryDoc = { id: number; doc_type: string; file: string; uploaded_at: strin
 type CustomerSug = { id: number; first_name: string; last_name: string | null; phone: string | null; location: string | null };
 
 const BLANK = {
-  customer_name: "", service: "", remarks: "", dc_voltage: "", error_codes: "",
-  ac_ne_voltage: "", ac_pn_voltage: "", ac_pe_voltage: "", monthly_production: "",
+  customer_name: "", service: "", remarks: "", dc_voltage: "", dc_floating_voltage: "",
+  error_codes: "", ac_ne_voltage: "", ac_pn_voltage: "", ac_pe_voltage: "", monthly_production: "",
   dc_side_condition: "", ac_side_condition: "", replacement: "",
 };
 
@@ -79,42 +80,48 @@ const AC_READINGS = [
 /** The readings above the AC block, which take photos too. */
 const TOP_READINGS = [
   { text: "dc_voltage", slot: "dc_voltage", label: "DC Voltage", ph: "e.g. 240 V" },
+  { text: "dc_floating_voltage", slot: "dc_floating_voltage", label: "DC Floating Voltages", ph: "e.g. 12 V" },
   { text: "error_codes", slot: "error_codes", label: "Error Codes (if any)", ph: "Error codes" },
   { text: "monthly_production", slot: "monthly_production", label: "Monthly Production", ph: "e.g. 550 kWh" },
 ] as const;
+
+/** Picture-only slots: the panel wash and what the plant made either side of the
+ *  visit. Nothing to type for these, only the photograph. */
+const PICTURE_SLOTS = [
+  ["panel_before", "Panel Wash — Before"],
+  ["panel_after", "Panel Wash — After"],
+  ["production_before", "Production Before Service"],
+  ["production_after", "Production After Service"],
+] as const;
+
+/** The API returns an absolute URL when it has the request in hand and a
+ *  relative one otherwise; either has to open against the backend, not the app. */
+const hrefFor = (apiBase: string, file: string) =>
+  file.startsWith("http") ? file : `${apiBase}${file}`;
 
 const inputCls = "w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all";
 const labelCls = "block text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1.5";
 
 
 /**
- * A reading: the typed value, then its photos as a filename list with a
- * "+ Add file(s)" button — the same shape the site visit uses.
+ * A slot's files: green links with a ✕, then "+ Add file(s)". Shared by the
+ * readings and by the picture-only slots, which have no value to type.
  *
  * Defined here rather than inside the page: a component declared during render
  * is a new type on every keystroke, so React tears the subtree down and rebuilds
  * it, and the input loses focus after a single character.
  */
-function Reading({
-  text, slot, label, ph, value, apiBase, stored, busy,
-  onChange, onAdd, onDropStored,
-}: {
-  text: string; slot: string; label: string; ph: string;
-  value: string; apiBase: string; stored: EntryDoc[]; busy: boolean;
-  onChange: (v: string) => void;
+function FileSlot({ apiBase, stored, busy, onAdd, onDropStored }: {
+  apiBase: string; stored: EntryDoc[]; busy: boolean;
   onAdd: (files: File[]) => void;
   onDropStored: (doc: EntryDoc) => void;
 }) {
   return (
-    <div>
-      <label className={labelCls}>{label}</label>
-      <input value={value} onChange={e => onChange(e.target.value)}
-        className={inputCls} placeholder={ph} />
-
+    <>
       {stored.length > 0 && (
         <ul className="mt-2 space-y-1">
           {stored.map(d => {
-            const href = d.file.startsWith("http") ? d.file : `${apiBase}${d.file}`;
+            const href = hrefFor(apiBase, d.file);
             const name = decodeURIComponent(d.file.split("/").pop() || "file");
             return (
               <li key={d.id} className="flex items-center gap-2 text-[11px]">
@@ -133,6 +140,26 @@ function Reading({
         <input type="file" accept="image/*,application/pdf" multiple capture="environment" disabled={busy} className="hidden"
           onChange={e => { const fs = Array.from(e.target.files || []); e.currentTarget.value = ""; onAdd(fs); }} />
       </label>
+    </>
+  );
+}
+
+/** A reading: the typed value, then its photos. */
+function Reading({
+  label, ph, value, apiBase, stored, busy, onChange, onAdd, onDropStored,
+}: {
+  slot: string; text: string; label: string; ph: string;
+  value: string; apiBase: string; stored: EntryDoc[]; busy: boolean;
+  onChange: (v: string) => void;
+  onAdd: (files: File[]) => void;
+  onDropStored: (doc: EntryDoc) => void;
+}) {
+  return (
+    <div>
+      <label className={labelCls}>{label}</label>
+      <input value={value} onChange={e => onChange(e.target.value)}
+        className={inputCls} placeholder={ph} />
+      <FileSlot apiBase={apiBase} stored={stored} busy={busy} onAdd={onAdd} onDropStored={onDropStored} />
     </div>
   );
 }
@@ -288,7 +315,8 @@ export default function EmergencyServicePage() {
     setEditingId(s.id);
     setForm({
       customer_name: s.customer_name || "", service: s.service || "", remarks: s.remarks || "",
-      dc_voltage: s.dc_voltage || "", error_codes: s.error_codes || "",
+      dc_voltage: s.dc_voltage || "", dc_floating_voltage: s.dc_floating_voltage || "",
+      error_codes: s.error_codes || "",
       ac_ne_voltage: s.ac_ne_voltage || "", ac_pn_voltage: s.ac_pn_voltage || "", ac_pe_voltage: s.ac_pe_voltage || "",
       monthly_production: s.monthly_production || "",
       dc_side_condition: s.dc_side_condition || "", ac_side_condition: s.ac_side_condition || "",
@@ -364,6 +392,20 @@ export default function EmergencyServicePage() {
               onAdd={fs => addFiles(r.slot, fs)} onDropStored={dropStored} />)}
           </div>
         </div>
+        {/* Pictures — the wash, and what the plant made either side of the visit.
+            Nothing to type for these, only the photograph. */}
+        <div className="mt-4 bg-slate-50/70 border border-slate-100 rounded-xl p-4">
+          <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-wide mb-3">Photos</p>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {PICTURE_SLOTS.map(([slot, label]) => (
+              <div key={slot}>
+                <label className={labelCls}>{label}</label>
+                <FileSlot apiBase={apiBase} stored={stored.filter(d => d.doc_type === slot)}
+                  busy={uploading === slot} onAdd={fs => addFiles(slot, fs)} onDropStored={dropStored} />
+              </div>
+            ))}
+          </div>
+        </div>
         <div className="mt-4 bg-slate-50/70 border border-slate-100 rounded-xl p-4">
           <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-wide mb-3">Service Condition</p>
           <div className="grid sm:grid-cols-3 gap-3">
@@ -421,7 +463,14 @@ export default function EmergencyServicePage() {
                   <tr key={s.id} className="border-b border-slate-50 hover:bg-slate-50/60 align-top">
                     <td className="px-4 py-3 font-semibold text-slate-800">{s.customer_name || "—"}</td>
                     <td className="px-4 py-3 text-slate-600 max-w-[220px]"><span className="line-clamp-2">{s.service || "—"}</span></td>
-                    <td className="px-4 py-3 text-slate-600">{s.dc_voltage || "—"}</td>
+                    {/* Floating voltage sits under the DC reading rather than
+                        claiming a column of its own. */}
+                    <td className="px-4 py-3 text-slate-600">
+                      {s.dc_voltage || "—"}
+                      {s.dc_floating_voltage && (
+                        <span className="block text-[11px] text-slate-400">Float {s.dc_floating_voltage}</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-slate-600">{s.error_codes || "—"}</td>
                     <td className="px-4 py-3 text-slate-600 whitespace-nowrap">
                       {/* Each reading links to its photos; a reading can have several. */}
@@ -433,7 +482,7 @@ export default function EmergencyServicePage() {
                             <span key={text} className="inline-flex items-center">
                               {n > 0 && <span className="text-slate-300 mx-1">/</span>}
                               {shots.length ? (
-                                <a href={shots[0].file} target="_blank" rel="noreferrer"
+                                <a href={hrefFor(apiBase, shots[0].file)} target="_blank" rel="noreferrer"
                                   title={`${shots.length} photo(s)`}
                                   className="text-indigo-600 hover:text-indigo-800 font-semibold underline decoration-dotted">
                                   {value}{shots.length > 1 ? ` (${shots.length})` : ""}
