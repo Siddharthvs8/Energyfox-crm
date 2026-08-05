@@ -2933,3 +2933,157 @@ class MaintenanceVisitRescheduleTests(TestCase):
         self.assertIn(r.status_code, (403, 404))
         self.visit.refresh_from_db()
         self.assertIsNone(self.visit.original_due_date)
+
+
+class EmergencyServiceReadingPhotosTests(TestCase):
+    """Each AC reading is typed and photographed — the number is what gets
+    reported, the meter shot is the evidence behind it."""
+
+    def setUp(self):
+        self.officer = mk('es_officer', 'liasoning_officer')
+
+    def photo(self, name):
+        """A real image — ImageField runs it through Pillow, which is the point:
+        a meter photo has to actually be a photo."""
+        from io import BytesIO
+        from PIL import Image
+        buf = BytesIO()
+        Image.new('RGB', (2, 2), (20, 20, 20)).save(buf, format='JPEG')
+        return SimpleUploadedFile(name, buf.getvalue(), content_type='image/jpeg')
+
+    def test_an_entry_saves_readings_and_their_photos_together(self):
+        from .models import EmergencyService
+        r = self.client.post('/api/emergency-services/', data={
+            'customer_name': 'Asha Devi T', 'service': 'Inverter reset',
+            'ac_ne_voltage': '2', 'ac_ne_photo': self.photo('ne.jpg'),
+            'ac_pn_voltage': '240', 'ac_pn_photo': self.photo('pn.jpg'),
+            'ac_pe_voltage': '239', 'ac_pe_photo': self.photo('pe.jpg'),
+        }, HTTP_AUTHORIZATION=token_for(self.officer))
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        entry = EmergencyService.objects.get(pk=r.json()['id'])
+        self.assertEqual((entry.ac_ne_voltage, entry.ac_pn_voltage, entry.ac_pe_voltage),
+                         ('2', '240', '239'))
+        for f in (entry.ac_ne_photo, entry.ac_pn_photo, entry.ac_pe_photo):
+            self.assertTrue(f, 'every reading should keep its photo')
+
+    def test_a_reading_can_still_be_saved_without_a_photo(self):
+        """The photo is evidence, not a requirement — a reading typed on its own
+        is still recorded."""
+        r = self.client.post('/api/emergency-services/', data={
+            'customer_name': 'No Photo', 'ac_ne_voltage': '3',
+        }, HTTP_AUTHORIZATION=token_for(self.officer))
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        self.assertEqual(r.json()['ac_ne_voltage'], '3')
+        self.assertIsNone(r.json()['ac_ne_photo'])
+
+    def test_editing_the_text_does_not_wipe_a_stored_photo(self):
+        from .models import EmergencyService
+        created = self.client.post('/api/emergency-services/', data={
+            'customer_name': 'Keep It', 'ac_ne_voltage': '2',
+            'ac_ne_photo': self.photo('ne.jpg'),
+        }, HTTP_AUTHORIZATION=token_for(self.officer)).json()
+        before = EmergencyService.objects.get(pk=created['id']).ac_ne_photo.name
+
+        r = self.client.patch(f"/api/emergency-services/{created['id']}/",
+                              data={'ac_ne_voltage': '5'}, content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.officer))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        entry = EmergencyService.objects.get(pk=created['id'])
+        self.assertEqual(entry.ac_ne_voltage, '5')
+        self.assertEqual(entry.ac_ne_photo.name, before)
+
+    def test_a_photo_can_be_replaced(self):
+        from .models import EmergencyService
+        created = self.client.post('/api/emergency-services/', data={
+            'customer_name': 'Replace', 'ac_pn_photo': self.photo('first.jpg'),
+        }, HTTP_AUTHORIZATION=token_for(self.officer)).json()
+        first = EmergencyService.objects.get(pk=created['id']).ac_pn_photo.name
+
+        # Django's test client does not default PATCH to multipart, so encode it.
+        from django.test.client import encode_multipart, BOUNDARY, MULTIPART_CONTENT
+        self.client.patch(
+            f"/api/emergency-services/{created['id']}/",
+            data=encode_multipart(BOUNDARY, {'ac_pn_photo': self.photo('second.jpg')}),
+            content_type=MULTIPART_CONTENT,
+            HTTP_AUTHORIZATION=token_for(self.officer))
+        entry = EmergencyService.objects.get(pk=created['id'])
+        self.assertNotEqual(entry.ac_pn_photo.name, first)
+        self.assertIn('second', entry.ac_pn_photo.name)
+
+    def test_the_module_is_still_liasoning_only(self):
+        r = self.client.post('/api/emergency-services/', data={'customer_name': 'Nope'},
+                             HTTP_AUTHORIZATION=token_for(mk('es_bde', 'bde')))
+        self.assertEqual(r.status_code, 403)
+
+
+class EmergencyServiceConditionTests(TestCase):
+    """Service Condition: what was found wrong on each side, and what was
+    replaced. Each is one optional pick."""
+
+    # Spelled out here independently of the model, so a value that quietly
+    # changes name breaks a test rather than a form the officer is using.
+    DC_SIDE = ['inverter_damage', 'dc_fuse_damage', 'dc_mcb_damage',
+               'dc_box_burned', 'dc_spd_damage']
+    AC_SIDE = ['ac_spd_damage', 'ac_mcb_isolator_damage',
+               'generation_meter_faulty', 'termination_point_damage']
+    REPLACEMENTS = ['inverter', 'panel', 'dc_db', 'ac_db',
+                    'dc_db_components', 'ac_db_components']
+
+    def setUp(self):
+        self.officer = mk('sc_officer', 'liasoning_officer')
+
+    def create(self, **fields):
+        return self.client.post('/api/emergency-services/', data={
+            'customer_name': 'Asha Devi T', **fields,
+        }, content_type='application/json', HTTP_AUTHORIZATION=token_for(self.officer))
+
+    def test_every_dc_side_option_is_accepted(self):
+        for value in self.DC_SIDE:
+            r = self.create(dc_side_condition=value)
+            self.assertEqual(r.status_code, 201, f'{value}: {r.content[:200]}')
+            self.assertEqual(r.json()['dc_side_condition'], value)
+
+    def test_every_ac_side_option_is_accepted(self):
+        for value in self.AC_SIDE:
+            r = self.create(ac_side_condition=value)
+            self.assertEqual(r.status_code, 201, f'{value}: {r.content[:200]}')
+
+    def test_every_replacement_option_is_accepted(self):
+        for value in self.REPLACEMENTS:
+            r = self.create(replacement=value)
+            self.assertEqual(r.status_code, 201, f'{value}: {r.content[:200]}')
+
+    def test_the_lists_are_exactly_what_the_form_offers(self):
+        from .models import EmergencyService
+        self.assertEqual([v for v, _ in EmergencyService.DC_SIDE_CHOICES], self.DC_SIDE)
+        self.assertEqual([v for v, _ in EmergencyService.AC_SIDE_CHOICES], self.AC_SIDE)
+        self.assertEqual([v for v, _ in EmergencyService.REPLACEMENT_CHOICES], self.REPLACEMENTS)
+
+    def test_an_unknown_option_is_refused(self):
+        r = self.create(dc_side_condition='something_else')
+        self.assertEqual(r.status_code, 400)
+
+    def test_all_three_are_optional(self):
+        """Plenty of visits find nothing on one side and replace nothing."""
+        r = self.create(service='Routine check')
+        self.assertEqual(r.status_code, 201, r.content[:200])
+        for f in ('dc_side_condition', 'ac_side_condition', 'replacement'):
+            self.assertEqual(r.json()[f], '')
+
+    def test_the_readable_label_comes_back_for_the_list(self):
+        r = self.create(dc_side_condition='dc_box_burned',
+                        ac_side_condition='ac_spd_damage',
+                        replacement='dc_db_components')
+        d = r.json()
+        self.assertEqual(d['dc_side_condition_label'], 'DC box burned')
+        self.assertEqual(d['ac_side_condition_label'], 'AC SPD damage')
+        self.assertEqual(d['replacement_label'], 'DC DB components')
+
+    def test_all_three_can_be_recorded_on_one_visit(self):
+        from .models import EmergencyService
+        r = self.create(dc_side_condition='inverter_damage',
+                        ac_side_condition='termination_point_damage',
+                        replacement='inverter')
+        entry = EmergencyService.objects.get(pk=r.json()['id'])
+        self.assertEqual((entry.dc_side_condition, entry.ac_side_condition, entry.replacement),
+                         ('inverter_damage', 'termination_point_damage', 'inverter'))

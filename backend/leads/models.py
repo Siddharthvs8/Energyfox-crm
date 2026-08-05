@@ -1088,10 +1088,43 @@ class EmergencyService(models.Model):
     dc_voltage = models.CharField(max_length=60, blank=True, default='')
     error_codes = models.CharField(max_length=255, blank=True, default='')
     # ── AC voltage readings ──
+    # Each reading is typed *and* photographed: the number is what gets reported,
+    # the meter shot is the evidence behind it.
     ac_ne_voltage = models.CharField(max_length=60, blank=True, default='')   # N-E
+    ac_ne_photo = models.ImageField(upload_to='emergency-service/', null=True, blank=True)
     ac_pn_voltage = models.CharField(max_length=60, blank=True, default='')   # P-N
+    ac_pn_photo = models.ImageField(upload_to='emergency-service/', null=True, blank=True)
     ac_pe_voltage = models.CharField(max_length=60, blank=True, default='')   # P-E
+    ac_pe_photo = models.ImageField(upload_to='emergency-service/', null=True, blank=True)
     monthly_production = models.CharField(max_length=60, blank=True, default='')
+
+    # ── Service condition ──
+    # What was found wrong and what was swapped out. Each is a single pick and
+    # optional — plenty of visits find nothing on one side, or replace nothing.
+    DC_SIDE_CHOICES = [
+        ('inverter_damage', 'Inverter damage'),
+        ('dc_fuse_damage', 'DC fuse damage'),
+        ('dc_mcb_damage', 'DC MCB damage'),
+        ('dc_box_burned', 'DC box burned'),
+        ('dc_spd_damage', 'DC SPD damage'),
+    ]
+    AC_SIDE_CHOICES = [
+        ('ac_spd_damage', 'AC SPD damage'),
+        ('ac_mcb_isolator_damage', 'AC MCB / isolator damage'),
+        ('generation_meter_faulty', 'Generation meter faulty / burned'),
+        ('termination_point_damage', 'Termination point damage'),
+    ]
+    REPLACEMENT_CHOICES = [
+        ('inverter', 'Inverter'),
+        ('panel', 'Panel'),
+        ('dc_db', 'DC DB'),
+        ('ac_db', 'AC DB'),
+        ('dc_db_components', 'DC DB components'),
+        ('ac_db_components', 'AC DB components'),
+    ]
+    dc_side_condition = models.CharField(max_length=40, blank=True, default='', choices=DC_SIDE_CHOICES)
+    ac_side_condition = models.CharField(max_length=40, blank=True, default='', choices=AC_SIDE_CHOICES)
+    replacement = models.CharField(max_length=40, blank=True, default='', choices=REPLACEMENT_CHOICES)
 
     created_by = models.ForeignKey('users.User', on_delete=models.SET_NULL, null=True, blank=True,
                                    related_name='created_emergency_services')

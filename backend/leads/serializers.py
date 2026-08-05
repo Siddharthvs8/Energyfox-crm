@@ -353,6 +353,11 @@ class PeriodicMaintenanceSerializer(serializers.ModelSerializer):
 
 class EmergencyServiceSerializer(serializers.ModelSerializer):
     created_by_name = serializers.SerializerMethodField()
+    # Readable labels for the service-condition picks, so the list does not have
+    # to keep its own copy of the choice text.
+    dc_side_condition_label = serializers.CharField(source='get_dc_side_condition_display', read_only=True)
+    ac_side_condition_label = serializers.CharField(source='get_ac_side_condition_display', read_only=True)
+    replacement_label = serializers.CharField(source='get_replacement_display', read_only=True)
 
     class Meta:
         model = EmergencyService

@@ -15,7 +15,14 @@ type Entry = {
   ac_ne_voltage: string;
   ac_pn_voltage: string;
   ac_pe_voltage: string;
+  // Each AC reading is typed and photographed — the meter shot is the evidence.
+  ac_ne_photo: string | null;
+  ac_pn_photo: string | null;
+  ac_pe_photo: string | null;
   monthly_production: string;
+  // What was found wrong, and what was swapped out.
+  dc_side_condition: string; ac_side_condition: string; replacement: string;
+  dc_side_condition_label: string; ac_side_condition_label: string; replacement_label: string;
   created_by_name: string | null;
   created_at: string;
 };
@@ -25,7 +32,49 @@ type CustomerSug = { id: number; first_name: string; last_name: string | null; p
 const BLANK = {
   customer_name: "", service: "", remarks: "", dc_voltage: "", error_codes: "",
   ac_ne_voltage: "", ac_pn_voltage: "", ac_pe_voltage: "", monthly_production: "",
+  dc_side_condition: "", ac_side_condition: "", replacement: "",
 };
+
+/** Service condition — values must match EmergencyService's choices. */
+const SERVICE_CONDITION = [
+  {
+    field: "dc_side_condition", label: "DC Side",
+    options: [
+      ["inverter_damage", "Inverter damage"],
+      ["dc_fuse_damage", "DC fuse damage"],
+      ["dc_mcb_damage", "DC MCB damage"],
+      ["dc_box_burned", "DC box burned"],
+      ["dc_spd_damage", "DC SPD damage"],
+    ],
+  },
+  {
+    field: "ac_side_condition", label: "AC Side",
+    options: [
+      ["ac_spd_damage", "AC SPD damage"],
+      ["ac_mcb_isolator_damage", "AC MCB / isolator damage"],
+      ["generation_meter_faulty", "Generation meter faulty / burned"],
+      ["termination_point_damage", "Termination point damage"],
+    ],
+  },
+  {
+    field: "replacement", label: "Replacements",
+    options: [
+      ["inverter", "Inverter"],
+      ["panel", "Panel"],
+      ["dc_db", "DC DB"],
+      ["ac_db", "AC DB"],
+      ["dc_db_components", "DC DB components"],
+      ["ac_db_components", "AC DB components"],
+    ],
+  },
+] as const;
+
+/** The three AC readings, each with its text field and its photo field. */
+const AC_READINGS = [
+  { text: "ac_ne_voltage", photo: "ac_ne_photo", label: "N-E Voltage", ph: "N-E" },
+  { text: "ac_pn_voltage", photo: "ac_pn_photo", label: "P-N", ph: "P-N" },
+  { text: "ac_pe_voltage", photo: "ac_pe_photo", label: "P-E", ph: "P-E" },
+] as const;
 
 const inputCls = "w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all";
 const labelCls = "block text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1.5";
@@ -85,16 +134,32 @@ export default function EmergencyServicePage() {
       ).filter(c => fullName(c).toLowerCase() !== sugQuery).slice(0, 8)
     : customers.slice(0, 8);
 
-  const resetForm = () => { setForm({ ...BLANK }); setEditingId(null); };
+  // Chosen files live outside `form`, which only carries the text values.
+  const [photos, setPhotos] = useState<Record<string, File | null>>({});
+  // What is already stored, so editing shows the shot rather than an empty box.
+  const [existing, setExisting] = useState<Record<string, string | null>>({});
+
+  const resetForm = () => {
+    setForm({ ...BLANK }); setEditingId(null);
+    setPhotos({}); setExisting({});
+  };
 
   const submit = async () => {
     if (!form.customer_name.trim() && !form.service.trim()) { alert("Enter the customer or the service done."); return; }
     setSaving(true);
     try {
+      // Multipart, because the readings carry photos. Only the photos actually
+      // chosen are sent, so editing text does not wipe a stored shot.
+      const body = new FormData();
+      Object.entries(form).forEach(([k, v]) => body.append(k, String(v ?? "")));
+      AC_READINGS.forEach(({ photo }) => {
+        const f = photos[photo];
+        if (f) body.append(photo, f);
+      });
       const r = await fetch(editingId ? `${base}${editingId}/` : base, {
         method: editingId ? "PATCH" : "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
-        body: JSON.stringify(form),
+        headers: { Authorization: `Bearer ${token()}` },
+        body,
       });
       if (r.ok) { resetForm(); loadRows(); }
       else { const e = await r.json().catch(() => ({})); alert(e.detail || e.error || "Failed to save."); }
@@ -109,7 +174,11 @@ export default function EmergencyServicePage() {
       dc_voltage: s.dc_voltage || "", error_codes: s.error_codes || "",
       ac_ne_voltage: s.ac_ne_voltage || "", ac_pn_voltage: s.ac_pn_voltage || "", ac_pe_voltage: s.ac_pe_voltage || "",
       monthly_production: s.monthly_production || "",
+      dc_side_condition: s.dc_side_condition || "", ac_side_condition: s.ac_side_condition || "",
+      replacement: s.replacement || "",
     });
+    setPhotos({});
+    setExisting({ ac_ne_photo: s.ac_ne_photo, ac_pn_photo: s.ac_pn_photo, ac_pe_photo: s.ac_pe_photo });
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -170,12 +239,54 @@ export default function EmergencyServicePage() {
         </div>
         <div className="mt-4 bg-slate-50/70 border border-slate-100 rounded-xl p-4">
           <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-wide mb-3">AC Voltage</p>
+          <p className="text-[11px] text-slate-400 -mt-2 mb-3">Type the reading and attach the meter photo.</p>
           <div className="grid sm:grid-cols-3 gap-3">
-            <div><label className={labelCls}>N-E Voltage</label><input value={form.ac_ne_voltage} onChange={e => setForm({ ...form, ac_ne_voltage: e.target.value })} className={inputCls} placeholder="N-E" /></div>
-            <div><label className={labelCls}>P-N</label><input value={form.ac_pn_voltage} onChange={e => setForm({ ...form, ac_pn_voltage: e.target.value })} className={inputCls} placeholder="P-N" /></div>
-            <div><label className={labelCls}>P-E</label><input value={form.ac_pe_voltage} onChange={e => setForm({ ...form, ac_pe_voltage: e.target.value })} className={inputCls} placeholder="P-E" /></div>
+            {AC_READINGS.map(({ text, photo, label, ph }) => {
+              const chosen = photos[photo];
+              const stored = existing[photo];
+              const preview = chosen ? URL.createObjectURL(chosen) : stored;
+              return (
+                <div key={text}>
+                  <label className={labelCls}>{label}</label>
+                  <input value={(form as any)[text]}
+                    onChange={e => setForm({ ...form, [text]: e.target.value })}
+                    className={inputCls} placeholder={ph} />
+
+                  {preview && (
+                    <a href={preview} target="_blank" rel="noreferrer"
+                      className="block mt-2 h-20 rounded-lg border border-slate-200 overflow-hidden bg-white">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={preview} alt={`${label} reading`} className="w-full h-full object-cover" />
+                    </a>
+                  )}
+                  <input type="file" accept="image/*" capture="environment"
+                    onChange={e => setPhotos(p => ({ ...p, [photo]: e.target.files?.[0] ?? null }))}
+                    className="mt-2 block w-full text-[11px] text-slate-500 file:mr-2 file:py-1 file:px-2 file:rounded-md file:border-0 file:text-[11px] file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition cursor-pointer" />
+                  {chosen && <p className="text-[10px] text-emerald-600 mt-1 truncate">{chosen.name}</p>}
+                </div>
+              );
+            })}
           </div>
         </div>
+        <div className="mt-4 bg-slate-50/70 border border-slate-100 rounded-xl p-4">
+          <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-wide mb-3">Service Condition</p>
+          <div className="grid sm:grid-cols-3 gap-3">
+            {SERVICE_CONDITION.map(({ field, label, options }) => (
+              <div key={field}>
+                <label className={labelCls}>{label}</label>
+                <select value={(form as any)[field]}
+                  onChange={e => setForm({ ...form, [field]: e.target.value })}
+                  className={inputCls}>
+                  <option value="">—</option>
+                  {options.map(([value, text]) => (
+                    <option key={value} value={value}>{text}</option>
+                  ))}
+                </select>
+              </div>
+            ))}
+          </div>
+        </div>
+
         <div className="mt-4">
           <label className={labelCls}>Remarks</label>
           <input value={form.remarks} onChange={e => setForm({ ...form, remarks: e.target.value })} className={inputCls} placeholder="Remarks" />
@@ -202,6 +313,7 @@ export default function EmergencyServicePage() {
                   <th className="px-4 py-3">DC Voltage</th>
                   <th className="px-4 py-3">Error Codes</th>
                   <th className="px-4 py-3">AC Voltage (N-E / P-N / P-E)</th>
+                  <th className="px-4 py-3">Service Condition</th>
                   <th className="px-4 py-3">Monthly Production</th>
                   <th className="px-4 py-3">Remarks</th>
                   <th className="px-4 py-3">Date</th>
@@ -216,7 +328,46 @@ export default function EmergencyServicePage() {
                     <td className="px-4 py-3 text-slate-600">{s.dc_voltage || "—"}</td>
                     <td className="px-4 py-3 text-slate-600">{s.error_codes || "—"}</td>
                     <td className="px-4 py-3 text-slate-600 whitespace-nowrap">
-                      {[s.ac_ne_voltage || "—", s.ac_pn_voltage || "—", s.ac_pe_voltage || "—"].join(" / ")}
+                      {/* Each reading links to its meter photo when there is one. */}
+                      <span className="inline-flex items-center gap-1">
+                        {AC_READINGS.map(({ text, photo }, n) => {
+                          const value = (s as any)[text] || "—";
+                          const shot = (s as any)[photo] as string | null;
+                          return (
+                            <span key={text} className="inline-flex items-center">
+                              {n > 0 && <span className="text-slate-300 mx-1">/</span>}
+                              {shot ? (
+                                <a href={shot} target="_blank" rel="noreferrer"
+                                  title="Open the meter photo"
+                                  className="text-indigo-600 hover:text-indigo-800 font-semibold underline decoration-dotted">
+                                  {value}
+                                </a>
+                              ) : value}
+                            </span>
+                          );
+                        })}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-slate-600 min-w-[170px]">
+                      {/* Labels come from the server, so the list never keeps its
+                          own copy of the choice text. */}
+                      {(() => {
+                        const found = [
+                          ["DC", s.dc_side_condition_label],
+                          ["AC", s.ac_side_condition_label],
+                          ["Replaced", s.replacement_label],
+                        ].filter(([, v]) => !!v);
+                        if (!found.length) return <span className="text-slate-300">—</span>;
+                        return (
+                          <div className="space-y-0.5">
+                            {found.map(([k, v]) => (
+                              <p key={k as string} className="text-[11px] leading-tight">
+                                <span className="text-slate-400">{k}: </span>{v}
+                              </p>
+                            ))}
+                          </div>
+                        );
+                      })()}
                     </td>
                     <td className="px-4 py-3 text-slate-600">{s.monthly_production || "—"}</td>
                     <td className="px-4 py-3 text-slate-600 max-w-[180px]"><span className="line-clamp-2">{s.remarks || "—"}</span></td>

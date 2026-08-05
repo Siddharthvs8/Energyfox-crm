@@ -4911,6 +4911,9 @@ class EmergencyServiceViewSet(viewsets.ModelViewSet):
     readings, managed by the liasoning officer (and admins/general managers)."""
     serializer_class = EmergencyServiceSerializer
     permission_classes = [permissions.IsAuthenticated]
+    # The AC readings arrive as text plus a meter photo each, so the entry is
+    # submitted as multipart; JSON still works for an entry with no photos.
+    parser_classes = [parsers.MultiPartParser, parsers.FormParser, parsers.JSONParser]
     queryset = EmergencyService.objects.all()
 
     def _guard(self):
