@@ -3224,3 +3224,373 @@ class MaintenanceVisitPhotoSlotsTests(TestCase):
             data={'doc_type': 'panel_before', 'file': self.photo('x.jpg')},
             HTTP_AUTHORIZATION=token_for(mk('mv_bde', 'bde')))
         self.assertIn(r.status_code, (403, 404))
+
+
+class ProjectDeadlineTests(TestCase):
+    """The 20-day installation deadline.
+
+    The clock starts the day accounts first records money against the lead â€”
+    partial payment or full. Miss it and the project leaves the pending queue for
+    Overdue, where only a super admin can act: they release it back with a fresh
+    deadline and the project team resumes.
+    """
+
+    def setUp(self):
+        from .models import Project
+        self.pm = mk('pd_pm', 'project_manager')
+        self.superadmin = mk('pd_super', 'superadmin')
+        self.superadmin.is_superuser = True
+        self.superadmin.is_staff = True
+        self.superadmin.save()
+        self.admin = mk('pd_admin', 'admin')
+
+        self.lead = Lead.objects.create(
+            first_name='Asha', last_name='Devi T', phone='9895271487',
+            status='converted', value=Decimal('225000'),
+            pushed_to_project=True, pushed_to_project_at=timezone.now(),
+            project_manager=self.pm)
+        self.project = Project.objects.create(lead=self.lead)
+
+    def paid_days_ago(self, days, amount='50000'):
+        """Accounts records a payment `days` ago â€” the deadline counts from there."""
+        pv = PaymentVerification.objects.create(
+            lead=self.lead, amount_received=Decimal(amount), payment_mode='upi',
+            utr_details='X1', is_complete=True)
+        when = timezone.now() - timedelta(days=days)
+        PaymentVerification.objects.filter(pk=pv.pk).update(completed_at=when, created_at=when)
+        return pv
+
+    def row(self, user=None):
+        r = self.client.get('/api/leads/project/', HTTP_AUTHORIZATION=token_for(user or self.pm))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return next(x for x in r.json() if x['id'] == self.lead.id)
+
+    # â”€â”€ The clock â”€â”€
+    def test_no_payment_means_no_deadline(self):
+        """Nothing is late before the customer has paid anything."""
+        row = self.row()
+        self.assertIsNone(row['deadline_date'])
+        self.assertFalse(row['project_overdue'])
+
+    def test_a_partial_payment_starts_the_clock(self):
+        self.paid_days_ago(0, amount='50000')
+        row = self.row()
+        expected = (timezone.localdate() + timedelta(days=20)).isoformat()
+        self.assertEqual(row['deadline_date'], expected)
+        self.assertEqual(row['days_to_deadline'], 20)
+        self.assertFalse(row['project_overdue'])
+
+    def test_a_balance_payment_can_start_the_clock(self):
+        """A lead paid only through the balance ledger still has a deadline."""
+        from .models import BalancePayment
+        pv = PaymentVerification.objects.create(lead=self.lead, amount_received=Decimal('0'))
+        bp = BalancePayment.objects.create(lead=self.lead, amount=Decimal('10000'))
+        when = timezone.now() - timedelta(days=25)
+        BalancePayment.objects.filter(pk=bp.pk).update(created_at=when)
+        PaymentVerification.objects.filter(pk=pv.pk).update(created_at=when)
+        self.assertTrue(self.row()['project_overdue'])
+
+    def test_the_earliest_payment_is_the_one_that_counts(self):
+        """A later installment must not push the deadline out."""
+        from .models import BalancePayment
+        self.paid_days_ago(25)
+        BalancePayment.objects.create(lead=self.lead, amount=Decimal('10000'))
+        row = self.row()
+        self.assertEqual(row['payment_started_on'],
+                         (timezone.localdate() - timedelta(days=25)).isoformat())
+        self.assertTrue(row['project_overdue'])
+
+    def test_day_twenty_is_still_inside_the_deadline(self):
+        self.paid_days_ago(20)
+        row = self.row()
+        self.assertEqual(row['days_to_deadline'], 0)
+        self.assertFalse(row['project_overdue'])
+
+    def test_day_twenty_one_is_overdue(self):
+        self.paid_days_ago(21)
+        row = self.row()
+        self.assertEqual(row['days_to_deadline'], -1)
+        self.assertTrue(row['project_overdue'])
+
+    def test_a_completed_project_is_never_overdue(self):
+        """Finishing late is still finished â€” it does not sit in Overdue."""
+        self.paid_days_ago(40)
+        self.project.is_complete = True
+        self.project.completed_at = timezone.now()
+        self.project.save()
+        self.assertFalse(self.row()['project_overdue'])
+
+    # â”€â”€ The lock â”€â”€
+    def test_the_project_manager_cannot_edit_an_overdue_project(self):
+        self.paid_days_ago(30)
+        r = self.client.patch(f'/api/leads/{self.lead.id}/project-record/',
+                              data={'structure_work_start_date': '2026-08-01'},
+                              content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.pm))
+        self.assertEqual(r.status_code, 403, r.content[:200])
+        self.assertFalse(self.row()['can_edit_project'])
+
+    def test_an_admin_cannot_edit_an_overdue_project_either(self):
+        """The lock is not about rank below super admin â€” it holds for admins."""
+        self.paid_days_ago(30)
+        r = self.client.patch(f'/api/leads/{self.lead.id}/project-record/',
+                              data={'structure_work_start_date': '2026-08-01'},
+                              content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 403, r.content[:200])
+
+    def test_the_super_admin_can_edit_an_overdue_project(self):
+        self.paid_days_ago(30)
+        r = self.client.patch(f'/api/leads/{self.lead.id}/project-record/',
+                              data={'structure_work_start_date': '2026-08-01'},
+                              content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.superadmin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+
+    def test_an_overdue_project_cannot_be_completed_by_the_project_team(self):
+        self.paid_days_ago(30)
+        r = self.client.post(f'/api/leads/{self.lead.id}/complete-project/',
+                             HTTP_AUTHORIZATION=token_for(self.pm))
+        self.assertEqual(r.status_code, 403, r.content[:200])
+        self.project.refresh_from_db()
+        self.assertFalse(self.project.is_complete)
+
+    def test_photos_cannot_be_uploaded_to_an_overdue_project(self):
+        self.paid_days_ago(30)
+        r = self.client.post(f'/api/leads/{self.lead.id}/project-record/documents/',
+                             data={'doc_type': 'plant_photo',
+                                   'file': SimpleUploadedFile('p.txt', b'x')},
+                             HTTP_AUTHORIZATION=token_for(self.pm))
+        self.assertEqual(r.status_code, 403, r.content[:200])
+
+    def test_a_project_inside_its_deadline_is_still_editable(self):
+        self.paid_days_ago(5)
+        r = self.client.patch(f'/api/leads/{self.lead.id}/project-record/',
+                              data={'structure_work_start_date': '2026-08-01'},
+                              content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.pm))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+
+    def test_the_project_team_cannot_extend_its_own_deadline(self):
+        """The release fields are read-only, or the lock would never bite."""
+        self.paid_days_ago(5)
+        far = (timezone.localdate() + timedelta(days=900)).isoformat()
+        r = self.client.patch(f'/api/leads/{self.lead.id}/project-record/',
+                              data={'extended_deadline': far},
+                              content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.pm))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.project.refresh_from_db()
+        self.assertIsNone(self.project.extended_deadline)
+
+    # â”€â”€ The release â”€â”€
+    def test_only_the_super_admin_can_release(self):
+        self.paid_days_ago(30)
+        for user in (self.pm, self.admin):
+            r = self.client.post(f'/api/leads/{self.lead.id}/release-project/',
+                                 HTTP_AUTHORIZATION=token_for(user))
+            self.assertEqual(r.status_code, 403, f'{user.username}: {r.content[:200]}')
+        self.project.refresh_from_db()
+        self.assertIsNone(self.project.extended_deadline)
+
+    def test_a_release_hands_the_project_back_with_a_new_deadline(self):
+        self.paid_days_ago(30)
+        r = self.client.post(f'/api/leads/{self.lead.id}/release-project/',
+                             data={'reason': 'Panel supply held up'},
+                             content_type='application/json',
+                             HTTP_AUTHORIZATION=token_for(self.superadmin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        body = r.json()
+        self.assertFalse(body['project_overdue'])
+        self.assertEqual(body['deadline_date'],
+                         (timezone.localdate() + timedelta(days=20)).isoformat())
+        self.assertEqual(body['release_reason'], 'Panel supply held up')
+        # And the project manager can work on it again.
+        self.assertTrue(self.row()['can_edit_project'])
+        r = self.client.patch(f'/api/leads/{self.lead.id}/project-record/',
+                              data={'structure_work_start_date': '2026-08-01'},
+                              content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.pm))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+
+    def test_a_release_can_name_its_own_deadline(self):
+        self.paid_days_ago(30)
+        wanted = (timezone.localdate() + timedelta(days=7)).isoformat()
+        r = self.client.post(f'/api/leads/{self.lead.id}/release-project/',
+                             data={'deadline': wanted}, content_type='application/json',
+                             HTTP_AUTHORIZATION=token_for(self.superadmin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertEqual(r.json()['deadline_date'], wanted)
+
+    def test_a_release_cannot_hand_back_a_deadline_already_gone(self):
+        """A past date would drop the row straight back into Overdue."""
+        self.paid_days_ago(30)
+        past = (timezone.localdate() - timedelta(days=1)).isoformat()
+        r = self.client.post(f'/api/leads/{self.lead.id}/release-project/',
+                             data={'deadline': past}, content_type='application/json',
+                             HTTP_AUTHORIZATION=token_for(self.superadmin))
+        self.assertEqual(r.status_code, 400, r.content[:200])
+        self.project.refresh_from_db()
+        self.assertIsNone(self.project.extended_deadline)
+
+    def test_a_released_project_goes_overdue_again_if_the_new_deadline_passes(self):
+        self.paid_days_ago(30)
+        self.project.extended_deadline = timezone.localdate() - timedelta(days=1)
+        self.project.released_at = timezone.now()
+        self.project.save()
+        self.assertTrue(self.row()['project_overdue'])
+
+    def test_a_project_inside_its_deadline_cannot_be_released(self):
+        self.paid_days_ago(5)
+        r = self.client.post(f'/api/leads/{self.lead.id}/release-project/',
+                             HTTP_AUTHORIZATION=token_for(self.superadmin))
+        self.assertEqual(r.status_code, 400, r.content[:200])
+
+    def test_the_release_is_written_to_the_timeline(self):
+        from .models import ActivityLog
+        self.paid_days_ago(30)
+        self.client.post(f'/api/leads/{self.lead.id}/release-project/',
+                         data={'reason': 'Customer away'}, content_type='application/json',
+                         HTTP_AUTHORIZATION=token_for(self.superadmin))
+        notes = [a.description for a in ActivityLog.objects.filter(lead=self.lead)]
+        self.assertTrue(any('released back to the project team' in n and 'Customer away' in n
+                            for n in notes), notes)
+
+
+class MaintenanceReminderTests(TestCase):
+    """A visit calls for attention the day before it is due, and the upcoming list
+    puts every outstanding visit in the order it falls due."""
+
+    def setUp(self):
+        from datetime import date
+        from .models import PeriodicMaintenance, MaintenanceVisit
+        self.officer = mk('mr_officer', 'liasoning_officer')
+        self.today = timezone.localdate()
+
+        def customer(name, phone):
+            lead = Lead.objects.create(
+                first_name=name, phone=phone, status='converted',
+                pushed_to_liasoning=True, pushed_to_liasoning_at=timezone.now())
+            return PeriodicMaintenance.objects.create(lead=lead, start_date=self.today)
+
+        # One plan whose visits sit either side of the reminder line.
+        self.plan = customer('Asha', '9895271487')
+        self.visits = {
+            'overdue': MaintenanceVisit.objects.create(
+                plan=self.plan, sequence=1, due_date=self.today - timedelta(days=3)),
+            'today': MaintenanceVisit.objects.create(
+                plan=self.plan, sequence=2, due_date=self.today),
+            'tomorrow': MaintenanceVisit.objects.create(
+                plan=self.plan, sequence=3, due_date=self.today + timedelta(days=1)),
+            'later': MaintenanceVisit.objects.create(
+                plan=self.plan, sequence=4, due_date=self.today + timedelta(days=30)),
+        }
+        # A second customer, so ordering has to cross plans.
+        self.other = customer('Bina', '9895271488')
+        self.other_visit = MaintenanceVisit.objects.create(
+            plan=self.other, sequence=1, due_date=self.today + timedelta(days=2))
+
+    def payload(self, user=None):
+        r = self.client.get('/api/leads/periodic-maintenance/',
+                            HTTP_AUTHORIZATION=token_for(user or self.officer))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return r.json()
+
+    def counts(self, user=None):
+        r = self.client.get('/api/leads/module-counts/',
+                            HTTP_AUTHORIZATION=token_for(user or self.officer))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return r.json()['counts']
+
+    # â”€â”€ The day-before reminder â”€â”€
+    def test_the_count_includes_tomorrows_visit(self):
+        """Overdue + today + tomorrow â€” the officer gets a day's notice."""
+        self.assertEqual(self.counts()['periodic-maintenance'], 3)
+
+    def test_a_visit_further_out_is_not_counted_yet(self):
+        """The 30-day visit must not be in the badge, or it never means anything."""
+        from .models import MaintenanceVisit
+        MaintenanceVisit.objects.filter(
+            pk__in=[self.visits['overdue'].pk, self.visits['today'].pk,
+                    self.visits['tomorrow'].pk, self.other_visit.pk]).delete()
+        self.assertEqual(self.counts()['periodic-maintenance'], 0)
+
+    def test_the_reminder_line_moves_with_the_lead_time(self):
+        """A visit two days out is outside the window; one day out is inside."""
+        from .models import MaintenanceVisit
+        MaintenanceVisit.objects.exclude(pk=self.visits['later'].pk).delete()
+        MaintenanceVisit.objects.filter(pk=self.visits['later'].pk).update(
+            due_date=self.today + timedelta(days=2))
+        self.assertEqual(self.counts()['periodic-maintenance'], 0)
+        MaintenanceVisit.objects.filter(pk=self.visits['later'].pk).update(
+            due_date=self.today + timedelta(days=MaintenanceVisit.REMINDER_LEAD_DAYS))
+        self.assertEqual(self.counts()['periodic-maintenance'], 1)
+
+    def test_a_finished_visit_stops_reminding(self):
+        from .models import MaintenanceVisit
+        MaintenanceVisit.objects.filter(
+            pk__in=[self.visits['overdue'].pk, self.visits['today'].pk]).update(is_complete=True)
+        self.assertEqual(self.counts()['periodic-maintenance'], 1)
+
+    # â”€â”€ The upcoming list â”€â”€
+    def test_upcoming_lists_every_outstanding_visit(self):
+        rows = self.payload()['upcoming']
+        self.assertEqual(len(rows), 5)
+
+    def test_upcoming_is_sorted_by_due_date_across_customers(self):
+        rows = self.payload()['upcoming']
+        self.assertEqual([r['due_date'] for r in rows], sorted(r['due_date'] for r in rows))
+        # Bina's visit (2 days out) sits between Asha's tomorrow and Asha's +30.
+        self.assertEqual([r['first_name'] for r in rows],
+                         ['Asha', 'Asha', 'Asha', 'Bina', 'Asha'])
+
+    def test_upcoming_flags_what_needs_attention(self):
+        rows = {(r['first_name'], r['sequence']): r for r in self.payload()['upcoming']}
+        self.assertTrue(rows[('Asha', 1)]['is_overdue'])
+        self.assertTrue(rows[('Asha', 1)]['is_due'])
+        self.assertFalse(rows[('Asha', 2)]['is_overdue'])
+        self.assertTrue(rows[('Asha', 2)]['is_due'])       # due today
+        self.assertTrue(rows[('Asha', 3)]['is_due'])       # due tomorrow
+        self.assertFalse(rows[('Bina', 1)]['is_due'])      # two days out
+        self.assertFalse(rows[('Asha', 4)]['is_due'])
+
+    def test_upcoming_reports_how_far_off_each_visit_is(self):
+        rows = {(r['first_name'], r['sequence']): r for r in self.payload()['upcoming']}
+        self.assertEqual(rows[('Asha', 1)]['days_to_due'], -3)
+        self.assertEqual(rows[('Asha', 2)]['days_to_due'], 0)
+        self.assertEqual(rows[('Asha', 3)]['days_to_due'], 1)
+        self.assertEqual(rows[('Asha', 4)]['days_to_due'], 30)
+
+    def test_a_finished_visit_leaves_the_upcoming_list(self):
+        from .models import MaintenanceVisit
+        MaintenanceVisit.objects.filter(pk=self.visits['overdue'].pk).update(is_complete=True)
+        rows = self.payload()['upcoming']
+        self.assertEqual(len(rows), 4)
+        self.assertNotIn(self.visits['overdue'].id, [r['visit_id'] for r in rows])
+
+    def test_upcoming_carries_the_reschedule_trail(self):
+        """A moved visit shows where it came from, so the slip stays visible."""
+        moved = self.visits['later']
+        r = self.client.post(
+            f'/api/leads/{self.plan.lead_id}/maintenance-visits/{moved.id}/reschedule/',
+            data={'due_date': (self.today + timedelta(days=45)).isoformat(),
+                  'reason': 'Customer travelling'},
+            content_type='application/json', HTTP_AUTHORIZATION=token_for(self.officer))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        row = next(x for x in self.payload()['upcoming'] if x['visit_id'] == moved.id)
+        self.assertTrue(row['is_rescheduled'])
+        self.assertEqual(row['original_due_date'], (self.today + timedelta(days=30)).isoformat())
+        self.assertEqual(row['reschedule_reason'], 'Customer travelling')
+        self.assertEqual(row['due_date'], (self.today + timedelta(days=45)).isoformat())
+
+    def test_an_unscheduled_customer_contributes_nothing_upcoming(self):
+        Lead.objects.create(first_name='Chandra', phone='9895271489', status='converted',
+                            pushed_to_liasoning=True, pushed_to_liasoning_at=timezone.now())
+        body = self.payload()
+        self.assertIn('Chandra', [r['first_name'] for r in body['eligible']])
+        self.assertNotIn('Chandra', [r['first_name'] for r in body['upcoming']])
+
+    def test_someone_outside_liasoning_cannot_read_the_list(self):
+        r = self.client.get('/api/leads/periodic-maintenance/',
+                            HTTP_AUTHORIZATION=token_for(mk('mr_bde', 'bde')))
+        self.assertEqual(r.status_code, 403)

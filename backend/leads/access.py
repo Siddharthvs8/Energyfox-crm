@@ -388,6 +388,19 @@ def can_assign_project(user):
     return user.is_staff or getattr(user, 'is_general_manager', False)
 
 
+def can_release_overdue_project(user):
+    """Who may release an overdue project back to the project team: the super
+    admin, and no one else.
+
+    Deliberately not routed through ``custom_grant`` — the whole point of the
+    Overdue queue is that a missed deadline stops being the project team's to
+    edit, so the release cannot be handed out as a role permission.
+    """
+    if not user or not user.is_authenticated:
+        return False
+    return bool(user.is_superuser)
+
+
 def can_edit_project(user, lead):
     """Who may fill/complete a lead's project:
 
@@ -395,10 +408,18 @@ def can_edit_project(user, lead):
     - a project_manager ONLY for leads assigned to them
 
     The lead must already have been moved to the project stage.
+
+    Once the 20-day deadline has passed the project is in the Overdue queue and
+    nobody but a super admin may touch it, whatever their role — that lock is
+    what the queue is for. Editing resumes when a super admin releases it with a
+    fresh deadline.
     """
     if not can_access_project(user):
         return False
     if not getattr(lead, 'pushed_to_project', False):
+        return False
+    project = getattr(lead, 'project', None)
+    if project is not None and project.is_overdue and not can_release_overdue_project(user):
         return False
     is_plain_pm = (
         getattr(user, 'role', '') == 'project_manager'

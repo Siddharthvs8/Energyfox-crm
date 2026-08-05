@@ -299,7 +299,12 @@ class ProjectSerializer(serializers.ModelSerializer):
     class Meta:
         model = Project
         fields = '__all__'
-        read_only_fields = ['lead', 'created_at', 'updated_at', 'is_complete', 'completed_at', 'completed_by']
+        # The release fields are set only by the super admin's release endpoint.
+        # Left writable, a project manager could PATCH themselves a new deadline
+        # before the current one runs out and never appear in Overdue at all.
+        read_only_fields = ['lead', 'created_at', 'updated_at', 'is_complete', 'completed_at',
+                            'completed_by', 'extended_deadline', 'released_at', 'released_by',
+                            'release_reason']
 
     def get_completed_by_name(self, obj):
         if obj.completed_by:

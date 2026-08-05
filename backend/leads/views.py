@@ -1802,8 +1802,12 @@ class LeadViewSet(viewsets.ModelViewSet):
             counts['liasoning'] = unseen(Lead.objects.filter(pushed_to_liasoning=True)
                                          .exclude(liasoning_service__is_complete=True), 'liasoning').count()
             # Maintenance visits that are due / overdue and not yet filled in.
+            # Counted from the day *before* they fall due, so the badge and the
+            # new-work pop-up give the officer a day's notice to arrange the trip.
             counts['periodic-maintenance'] = MaintenanceVisit.objects.filter(
-                is_complete=False, due_date__lte=timezone.localdate()).count()
+                is_complete=False,
+                due_date__lte=timezone.localdate() + timedelta(days=MaintenanceVisit.REMINDER_LEAD_DAYS),
+            ).count()
             # Approvals the officer still has to chase at the KSEB section.
             cutoff = timezone.now() - timedelta(days=7)
             counts['discom-followup'] = unseen(
@@ -2446,7 +2450,7 @@ class LeadViewSet(viewsets.ModelViewSet):
 
     # ── Project / installation ──
     def _project_payload(self, lead, request):
-        from .access import can_assign_project, can_edit_project
+        from .access import can_assign_project, can_edit_project, can_release_overdue_project
         pr = getattr(lead, 'project', None)
 
         def name(u):
@@ -2478,6 +2482,19 @@ class LeadViewSet(viewsets.ModelViewSet):
             'can_edit_project': can_edit_project(request.user, lead),
             'can_assign': can_assign_project(request.user),
             'can_reopen_project': can_assign_project(request.user),
+            # ── The 20-day deadline ──
+            # Counted from the day accounts first took money. Overdue rows leave
+            # the pending queue and only a super admin can act on them.
+            'payment_started_on': pr.payment_started_on if pr else None,
+            'deadline_date': pr.deadline_date if pr else None,
+            'days_to_deadline': pr.days_to_deadline if pr else None,
+            'project_overdue': bool(pr and pr.is_overdue),
+            'deadline_days': Project.DEADLINE_DAYS,
+            'extended_deadline': pr.extended_deadline if pr else None,
+            'released_at': pr.released_at if pr else None,
+            'released_by_name': name(pr.released_by) if pr else None,
+            'release_reason': (pr.release_reason if pr else '') or '',
+            'can_release_project': can_release_overdue_project(request.user),
         }
 
     @action(detail=False, methods=['get'], url_path='project')
@@ -2487,8 +2504,12 @@ class LeadViewSet(viewsets.ModelViewSet):
         user = request.user
         if not can_access_project(user):
             return Response({'error': 'You do not have access to projects.'}, status=status.HTTP_403_FORBIDDEN)
+        # The payments come along for the ride: every row's deadline is counted
+        # from the day accounts first took money.
         qs = (Lead.objects.filter(pushed_to_project=True)
-              .select_related('product', 'bde', 'project_manager', 'project')
+              .select_related('product', 'bde', 'project_manager', 'project',
+                              'payment_verification')
+              .prefetch_related('receipt_vouchers', 'balance_payments')
               .order_by('-pushed_to_project_at'))
         if (not user.is_staff and not getattr(user, 'is_general_manager', False)
                 and getattr(user, 'role', '') == 'project_manager'):
@@ -2634,6 +2655,57 @@ class LeadViewSet(viewsets.ModelViewSet):
         pr.completed_at = None
         pr.completed_by = None
         pr.save(update_fields=['is_complete', 'completed_at', 'completed_by', 'updated_at'])
+        return Response(self._project_payload(lead, request))
+
+    @action(detail=True, methods=['post'], url_path='release-project')
+    def release_project(self, request, pk=None):
+        """Super admin releases an overdue project back to the project team.
+
+        The release grants a fresh deadline — by default another 20 days from
+        today, or whatever date the super admin names. Until then the row sits in
+        Overdue and nobody else can edit it.
+        """
+        from datetime import date
+        from .access import can_release_overdue_project
+        lead = self.get_object()
+        if not can_release_overdue_project(request.user):
+            return Response({'error': 'Only a super admin can release an overdue project.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        pr = getattr(lead, 'project', None)
+        if not pr or not pr.is_overdue:
+            return Response({'error': 'This project is not overdue.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        raw = (request.data.get('deadline') or '').strip() if isinstance(request.data.get('deadline'), str) \
+            else request.data.get('deadline')
+        if raw:
+            try:
+                new_deadline = date.fromisoformat(str(raw))
+            except ValueError:
+                return Response({'error': 'Give the new deadline as YYYY-MM-DD.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+            # A deadline already in the past would send the row straight back to
+            # Overdue, which is not a release at all.
+            if new_deadline <= timezone.localdate():
+                return Response({'error': 'The new deadline has to be in the future.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+        else:
+            new_deadline = pr.default_extension()
+
+        pr.extended_deadline = new_deadline
+        pr.released_at = timezone.now()
+        pr.released_by = request.user if request.user.is_authenticated else None
+        pr.release_reason = (request.data.get('reason') or '').strip()[:255]
+        pr.save(update_fields=['extended_deadline', 'released_at', 'released_by',
+                               'release_reason', 'updated_at'])
+        actor = (f"{request.user.first_name} {request.user.last_name}".strip()
+                 or request.user.username) if request.user.is_authenticated else 'super admin'
+        note = f"Overdue project released back to the project team by {actor}, new deadline {new_deadline:%d %b %Y}."
+        if pr.release_reason:
+            note += f" Reason: {pr.release_reason}"
+        ActivityLog.objects.create(
+            activity_type='note_added', description=note,
+            actor=request.user if request.user.is_authenticated else None,
+            lead=lead, extra={'auto_generated': True})
         return Response(self._project_payload(lead, request))
 
     @action(detail=True, methods=['post'], url_path='assign-project')
@@ -3525,7 +3597,9 @@ class LeadViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='periodic-maintenance')
     def periodic_maintenance(self, request):
-        """Scheduled customer list, plus installed customers not yet scheduled."""
+        """Scheduled customer list, the customers not yet scheduled, and every
+        visit still to be done in the order it falls due."""
+        from datetime import timedelta
         from .access import can_access_liasoning
         if not can_access_liasoning(request.user):
             return Response({'error': 'You do not have access to periodic maintenance.'}, status=status.HTTP_403_FORBIDDEN)
@@ -3533,7 +3607,11 @@ class LeadViewSet(viewsets.ModelViewSet):
               .select_related('periodic_maintenance')
               .prefetch_related('periodic_maintenance__visits')
               .order_by('-pushed_to_liasoning_at'))
-        scheduled, eligible = [], []
+        today = timezone.localdate()
+        # A visit starts calling for attention the day before it is due — the same
+        # line the sidebar count and the pop-up use.
+        due_from = today + timedelta(days=MaintenanceVisit.REMINDER_LEAD_DAYS)
+        scheduled, eligible, upcoming = [], [], []
         for lead in qs:
             plan = getattr(lead, 'periodic_maintenance', None)
             base = {'id': lead.id, 'first_name': lead.first_name, 'last_name': lead.last_name,
@@ -3548,9 +3626,32 @@ class LeadViewSet(viewsets.ModelViewSet):
                                   'total_visits': len(visits),
                                   'next_due': nxt.due_date if nxt else None,
                                   'next_sequence': nxt.sequence if nxt else None})
+                for v in visits:
+                    if v.is_complete:
+                        continue
+                    upcoming.append({
+                        'lead_id': lead.id,
+                        'visit_id': v.id,
+                        'first_name': lead.first_name,
+                        'last_name': lead.last_name,
+                        'phone': lead.phone,
+                        'location': lead.company,
+                        'sequence': v.sequence,
+                        'due_date': v.due_date,
+                        'days_to_due': (v.due_date - today).days,
+                        # Past its date, or close enough that the officer is being
+                        # told about it now.
+                        'is_overdue': v.due_date < today,
+                        'is_due': v.due_date <= due_from,
+                        'is_rescheduled': v.is_rescheduled,
+                        'original_due_date': v.original_due_date,
+                        'reschedule_reason': v.reschedule_reason,
+                    })
             else:
                 eligible.append(base)
-        return Response({'scheduled': scheduled, 'eligible': eligible})
+        # Soonest first — an overdue visit sorts above everything still ahead.
+        upcoming.sort(key=lambda v: (v['due_date'], v['lead_id'], v['sequence']))
+        return Response({'scheduled': scheduled, 'eligible': eligible, 'upcoming': upcoming})
 
     @action(detail=True, methods=['post'], url_path='schedule-maintenance')
     def schedule_maintenance(self, request, pk=None):

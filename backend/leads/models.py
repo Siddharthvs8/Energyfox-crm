@@ -791,6 +791,81 @@ class Project(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # ── The 20-day installation deadline ──
+    # The clock starts the day accounts first records money against the lead,
+    # partial payment or full. Miss it and the project drops out of the pending
+    # queue into Overdue, where only a super admin can touch it.
+    #
+    # A super admin releases it by granting a fresh deadline: the row goes back
+    # to the project team with a date to work to, so a release restores the work
+    # without discarding the discipline. Overdue is derived from these dates
+    # rather than stored, so nothing has to run on a schedule to keep it true.
+    DEADLINE_DAYS = 20
+
+    extended_deadline = models.DateField(
+        null=True, blank=True,
+        help_text="New deadline granted when a super admin released this from Overdue")
+    released_at = models.DateTimeField(null=True, blank=True)
+    released_by = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='released_projects')
+    release_reason = models.CharField(max_length=255, blank=True, default='')
+
+    @property
+    def payment_started_on(self):
+        """The date accounts first took money for this lead, or None.
+
+        Whichever came first: the receipt for the verification payment, the
+        verification itself for leads predating receipts, or the earliest
+        balance payment.
+        """
+        lead = self.lead
+        dates = []
+        # ``.all()`` rather than ``.filter()`` so a prefetched list is used as-is;
+        # the project queue reads this for every row.
+        receipts = [r.date for r in lead.receipt_vouchers.all() if r.is_initial and r.date]
+        if receipts:
+            dates.append(min(receipts))
+        pv = getattr(lead, 'payment_verification', None)
+        if pv and (pv.amount_received or 0) > 0:
+            when = pv.completed_at or pv.created_at
+            if when:
+                dates.append(timezone.localdate(when))
+        balances = [b.created_at for b in lead.balance_payments.all() if b.created_at]
+        if balances:
+            dates.append(timezone.localdate(min(balances)))
+        return min(dates) if dates else None
+
+    @property
+    def deadline_date(self):
+        """The day this has to be finished by — None until accounts is paid."""
+        if self.extended_deadline:
+            return self.extended_deadline
+        started = self.payment_started_on
+        if not started:
+            return None
+        from datetime import timedelta
+        return started + timedelta(days=self.DEADLINE_DAYS)
+
+    @property
+    def days_to_deadline(self):
+        """Days left; negative once the deadline has passed. None without one."""
+        due = self.deadline_date
+        return (due - timezone.localdate()).days if due else None
+
+    @property
+    def is_overdue(self):
+        """Past its deadline and still unfinished — locked to super admins."""
+        if self.is_complete:
+            return False
+        due = self.deadline_date
+        return bool(due and timezone.localdate() > due)
+
+    def default_extension(self):
+        """The deadline a release grants unless the super admin names another."""
+        from datetime import timedelta
+        return timezone.localdate() + timedelta(days=self.DEADLINE_DAYS)
+
     # Geotagged installation photo slots (ProjectDocument.doc_type), in display order.
     PHOTO_SLOTS = [
         ('panel_serial_numbers', 'Panel Serial Numbers'),
@@ -1036,6 +1111,13 @@ class PeriodicMaintenance(models.Model):
 class MaintenanceVisit(models.Model):
     """A single scheduled maintenance visit with the on-site readings and the
     panel-wash before/after photos."""
+
+    # How far ahead a visit starts calling for attention. The officer is told the
+    # day before it is due, not on the day, so the trip can be arranged. Both the
+    # sidebar count and the upcoming list read this, so the badge, the pop-up and
+    # the list can never disagree about what counts as due.
+    REMINDER_LEAD_DAYS = 1
+
     plan = models.ForeignKey(PeriodicMaintenance, on_delete=models.CASCADE, related_name='visits')
     sequence = models.PositiveIntegerField()
     due_date = models.DateField()

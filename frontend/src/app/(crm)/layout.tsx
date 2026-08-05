@@ -217,6 +217,12 @@ const MODULE_LABELS: Record<string, string> = {
   "periodic-maintenance": "Periodic Maintenance",
 };
 
+// What the items in a module are called, where "customers" would read wrongly.
+// A maintenance reminder is about a visit falling due, not a new customer.
+const MODULE_NOUNS: Record<string, [string, string]> = {
+  "periodic-maintenance": ["visit due", "visits due"],
+};
+
 export default function DashboardLayout({
   children,
 }: {
@@ -487,7 +493,7 @@ export default function DashboardLayout({
         if (rest.length) {
           setToasts(t => [...t, ...rest.map(g => ({
             id: `${Date.now()}-${g.key}`,
-            message: `${g.added} new ${g.added === 1 ? "item" : "items"} in ${MODULE_LABELS[g.key] || g.key}`,
+            message: `${g.added} new ${(MODULE_NOUNS[g.key] || ["item", "items"])[g.added === 1 ? 0 : 1]} in ${MODULE_LABELS[g.key] || g.key}`,
             href: `/${g.key}`,
           }))]);
         }
@@ -1217,7 +1223,8 @@ export default function DashboardLayout({
                 {assignAlert.mine ? "New work assigned to you" : "New work in your queue"}
               </h2>
               <p className="text-slate-500 text-base mb-8 leading-relaxed">
-                <b className="text-slate-700">{assignAlert.added}</b> new {assignAlert.added === 1 ? "customer" : "customers"}
+                <b className="text-slate-700">{assignAlert.added}</b> new{" "}
+                {(MODULE_NOUNS[assignAlert.key] || ["customer", "customers"])[assignAlert.added === 1 ? 0 : 1]}
                 {assignAlert.mine ? " assigned to you in " : " waiting in "}
                 <b className="text-slate-700">{MODULE_LABELS[assignAlert.key] || assignAlert.key}</b>.
               </p>

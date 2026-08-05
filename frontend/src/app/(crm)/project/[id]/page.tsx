@@ -8,7 +8,10 @@ import Link from "next/link";
 import ProjectSection from "./ProjectSection";
 
 import ActivityTimeline from "@/components/ActivityTimeline";
-type ProjectDetail = {
+import { DeadlineBanner, type DeadlineInfo } from "@/components/ProjectDeadline";
+
+// The deadline block comes down with the rest of the project payload.
+type ProjectDetail = DeadlineInfo & {
   id: number;
   first_name: string; last_name: string | null;
   phone: string | null; email: string | null;
@@ -102,6 +105,14 @@ export default function ProjectDetailPage({ params: paramsPromise }: { params: P
         </div>
       </div>
 
+      <DeadlineBanner
+        leadId={data.id}
+        name={`${data.first_name} ${data.last_name || ""}`.trim()}
+        info={data}
+        domain={domain}
+        onReleased={load}
+      />
+
       {data.can_assign && (
         <div className="mt-5 bg-white border border-slate-200 rounded-2xl shadow-sm p-5">
           <h2 className="text-sm font-bold text-slate-900 mb-3">Assign Project Manager</h2>
@@ -135,6 +146,9 @@ export default function ProjectDetailPage({ params: paramsPromise }: { params: P
         leadId={data.id}
         canEdit={data.can_edit_project}
         canReopen={data.can_reopen_project}
+        lockedReason={data.project_overdue
+          ? "Locked — past the deadline. A super admin has to release it."
+          : undefined}
         onChanged={load}
       />
     </div>

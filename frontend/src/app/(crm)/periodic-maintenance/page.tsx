@@ -13,7 +13,25 @@ type ScheduledRow = {
 };
 type EligibleRow = { id: number; first_name: string; last_name: string | null; phone: string | null; location: string | null };
 
+/** Every visit still to be done, across all customers, soonest first. */
+type UpcomingRow = {
+  lead_id: number; visit_id: number;
+  first_name: string; last_name: string | null; phone: string | null; location: string | null;
+  sequence: number; due_date: string; days_to_due: number;
+  is_overdue: boolean; is_due: boolean;
+  is_rescheduled: boolean; original_due_date: string | null; reschedule_reason: string;
+};
+
 const today = () => new Date().toISOString().slice(0, 10);
+
+/** How far off a visit is, in words. */
+function dueNote(r: UpcomingRow) {
+  const d = r.days_to_due;
+  if (d < 0) return `${Math.abs(d)} day${Math.abs(d) === 1 ? "" : "s"} overdue`;
+  if (d === 0) return "Due today";
+  if (d === 1) return "Due tomorrow";
+  return `in ${d} days`;
+}
 
 export default function PeriodicMaintenancePage() {
   const domain = APP_SLUG;
@@ -22,6 +40,9 @@ export default function PeriodicMaintenancePage() {
   const [allowed, setAllowed] = useState(false);
   const [scheduled, setScheduled] = useState<ScheduledRow[]>([]);
   const [eligible, setEligible] = useState<EligibleRow[]>([]);
+  const [upcoming, setUpcoming] = useState<UpcomingRow[]>([]);
+  // The list runs five years ahead, so it opens on the near ones.
+  const [showAllUpcoming, setShowAllUpcoming] = useState(false);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [startDates, setStartDates] = useState<Record<number, string>>({});
@@ -44,8 +65,12 @@ export default function PeriodicMaintenancePage() {
 
   const load = () => {
     fetch(`${getApiBase(domain)}/api/leads/periodic-maintenance/`, { headers: { Authorization: `Bearer ${token()}` } })
-      .then(r => (r.ok ? r.json() : { scheduled: [], eligible: [] }))
-      .then(d => { setScheduled(d.scheduled || []); setEligible(d.eligible || []); })
+      .then(r => (r.ok ? r.json() : { scheduled: [], eligible: [], upcoming: [] }))
+      .then(d => {
+        setScheduled(d.scheduled || []);
+        setEligible(d.eligible || []);
+        setUpcoming(d.upcoming || []);
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
   };
@@ -79,6 +104,12 @@ export default function PeriodicMaintenancePage() {
     || (r.phone || "").toLowerCase().includes(q) || (r.location || "").toLowerCase().includes(q);
   const fScheduled = scheduled.filter(match);
   const fEligible = eligible.filter(match);
+  const fUpcoming = upcoming.filter(match);
+  // The ones already calling for attention — the same day-before line the sidebar
+  // badge and the pop-up use.
+  const dueNow = fUpcoming.filter(r => r.is_due).length;
+  const UPCOMING_PREVIEW = 12;
+  const shownUpcoming = showAllUpcoming ? fUpcoming : fUpcoming.slice(0, UPCOMING_PREVIEW);
   const isOverdue = (d: string | null) => !!d && new Date(d) < new Date(today());
 
   return (
@@ -101,6 +132,79 @@ export default function PeriodicMaintenancePage() {
         <div className="py-16 text-center text-sm text-slate-400">Loading…</div>
       ) : (
         <>
+          {/* Upcoming maintenance — every visit still to be done, soonest first.
+              This is the working view: the officer reads down it in order. */}
+          <div className="flex flex-wrap items-baseline gap-2 mb-3">
+            <h2 className="text-sm font-bold text-slate-900">
+              Upcoming Maintenance <span className="text-slate-400 font-medium">({fUpcoming.length})</span>
+            </h2>
+            {dueNow > 0 && (
+              <span className="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-rose-50 text-rose-700">
+                {dueNow} needing attention
+              </span>
+            )}
+          </div>
+          {fUpcoming.length === 0 ? (
+            <div className="mb-8 bg-white border border-dashed border-slate-200 rounded-2xl p-10 text-center text-sm text-slate-400">
+              {scheduled.length === 0
+                ? "Nothing scheduled yet — schedule a customer below."
+                : "Every scheduled visit is done."}
+            </div>
+          ) : (
+            <div className="mb-8 bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-[10px] font-bold text-slate-400 uppercase tracking-wide border-b border-slate-100 bg-slate-50/60">
+                    <th className="px-5 py-3">Customer</th>
+                    <th className="px-5 py-3">Visit</th>
+                    <th className="px-5 py-3">Due</th>
+                    <th className="px-5 py-3">When</th>
+                    <th className="px-5 py-3 text-right"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {shownUpcoming.map(r => (
+                    <tr key={r.visit_id}
+                      className={`border-b border-slate-50 hover:bg-slate-50/60 ${r.is_overdue ? "bg-rose-50/40" : r.is_due ? "bg-amber-50/40" : ""}`}>
+                      <td className="px-5 py-3">
+                        <p className="font-semibold text-slate-800">{r.first_name} {r.last_name}</p>
+                        <p className="text-[11px] text-slate-400">{r.phone || "—"}{r.location ? ` · ${r.location}` : ""}</p>
+                      </td>
+                      <td className="px-5 py-3 text-slate-600 whitespace-nowrap">#{r.sequence}</td>
+                      <td className="px-5 py-3 whitespace-nowrap">
+                        <span className="text-slate-700 font-medium">{new Date(r.due_date).toLocaleDateString("en-IN")}</span>
+                        {/* A moved visit shows where it came from, rather than the
+                            schedule quietly rewriting itself. */}
+                        {r.is_rescheduled && r.original_due_date && (
+                          <span className="block text-[11px] text-slate-400"
+                            title={r.reschedule_reason || undefined}>
+                            moved from {new Date(r.original_due_date).toLocaleDateString("en-IN")}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-5 py-3 whitespace-nowrap">
+                        <span className={`text-xs font-bold ${r.is_overdue ? "text-rose-600" : r.is_due ? "text-amber-600" : "text-slate-500"}`}>
+                          {dueNote(r)}
+                        </span>
+                      </td>
+                      <td className="px-5 py-3 text-right">
+                        <Link href={`/periodic-maintenance/${r.lead_id}`} className="text-[12px] font-semibold text-indigo-600 hover:text-indigo-800">Open →</Link>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {fUpcoming.length > UPCOMING_PREVIEW && (
+                <button onClick={() => setShowAllUpcoming(v => !v)}
+                  className="w-full py-3 text-[12px] font-semibold text-indigo-600 hover:bg-slate-50 transition border-t border-slate-100">
+                  {showAllUpcoming
+                    ? "Show fewer"
+                    : `Show all ${fUpcoming.length} — the schedule runs five years out`}
+                </button>
+              )}
+            </div>
+          )}
+
           {/* Scheduled customer list */}
           <h2 className="text-sm font-bold text-slate-900 mb-3">Scheduled Customer List <span className="text-slate-400 font-medium">({fScheduled.length})</span></h2>
           {fScheduled.length === 0 ? (

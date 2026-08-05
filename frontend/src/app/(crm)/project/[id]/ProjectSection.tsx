@@ -19,8 +19,11 @@ const labelCls = "block text-[10px] font-bold text-slate-400 uppercase tracking-
 
 type ProjDoc = { id: number; doc_type: string; file: string };
 
-export default function ProjectSection({ leadId, canEdit, canReopen, onChanged }: {
-  leadId: number | string; canEdit: boolean; canReopen?: boolean; onChanged?: () => void;
+export default function ProjectSection({ leadId, canEdit, canReopen, lockedReason, onChanged }: {
+  // `lockedReason` says why editing is off when it isn't simply about assignment
+  // — an overdue project is locked to everyone but a super admin.
+  leadId: number | string; canEdit: boolean; canReopen?: boolean;
+  lockedReason?: string; onChanged?: () => void;
 }) {
   const apiBase = getApiBase(APP_SLUG);
   const url = `${apiBase}/api/leads/${leadId}/project-record/`;
@@ -162,7 +165,7 @@ export default function ProjectSection({ leadId, canEdit, canReopen, onChanged }
             )}
           </div>
         ) : !canEdit ? (
-          <span className="text-xs text-slate-400">Read-only — not assigned to you.</span>
+          <span className="text-xs text-slate-400">{lockedReason || "Read-only — not assigned to you."}</span>
         ) : null}
       </div>
 
