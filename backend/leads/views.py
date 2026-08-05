@@ -6,8 +6,8 @@ from django.http import HttpResponse
 import csv
 import io
 import logging
-from .models import Lead, IntegrationSettings, ActivityLog, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, LeadDocument, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, LiasoningDocument, Warranty, WarrantyDocument, EmergencyService, PeriodicMaintenance, MaintenanceVisit, ModuleSeen, ReceiptVoucher
-from .serializers import LeadSerializer, IntegrationSettingsSerializer, LeadAttachmentSerializer, ProductSerializer, SiteVisitSerializer, DocumentationStage1Serializer, SiteVisitDocumentSerializer, DocumentationStage1DocumentSerializer, PaymentVerificationSerializer, PurchaseLogisticsSerializer, ProjectSerializer, ProjectDocumentSerializer, ServiceEntrySerializer, BalancePaymentSerializer, DocumentationStage2Serializer, DocumentationStage2DocumentSerializer, LiasoningServiceSerializer, LiasoningDocumentSerializer, WarrantySerializer, WarrantyDocumentSerializer, EmergencyServiceSerializer, PeriodicMaintenanceSerializer, MaintenanceVisitSerializer, ReceiptVoucherSerializer
+from .models import Lead, IntegrationSettings, ActivityLog, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, LeadDocument, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, LiasoningDocument, Warranty, WarrantyDocument, EmergencyService, EmergencyServiceDocument, PeriodicMaintenance, MaintenanceVisit, ModuleSeen, ReceiptVoucher
+from .serializers import LeadSerializer, IntegrationSettingsSerializer, LeadAttachmentSerializer, ProductSerializer, SiteVisitSerializer, DocumentationStage1Serializer, SiteVisitDocumentSerializer, DocumentationStage1DocumentSerializer, PaymentVerificationSerializer, PurchaseLogisticsSerializer, ProjectSerializer, ProjectDocumentSerializer, ServiceEntrySerializer, BalancePaymentSerializer, DocumentationStage2Serializer, DocumentationStage2DocumentSerializer, LiasoningServiceSerializer, LiasoningDocumentSerializer, WarrantySerializer, WarrantyDocumentSerializer, EmergencyServiceSerializer, EmergencyServiceDocumentSerializer, PeriodicMaintenanceSerializer, MaintenanceVisitSerializer, ReceiptVoucherSerializer
 from .document_kinds import SHARED_KIND_LABELS, kind_for
 # Module-level: the nine module payloads all report this one rule, and
 # access.py imports nothing, so there is no cycle to dodge.
@@ -4933,6 +4933,37 @@ class EmergencyServiceViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer):
         self._guard()
         serializer.save()
+
+    @action(detail=True, methods=['post'], url_path='documents',
+            parser_classes=[parsers.MultiPartParser, parsers.FormParser])
+    def add_document(self, request, pk=None):
+        """Attach one photo to a reading on this entry."""
+        self._guard()
+        entry = self.get_object()
+        file = request.FILES.get('file')
+        if not file:
+            return Response({'error': 'file is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        doc_type = (request.data.get('doc_type') or '').strip()
+        if doc_type not in {k for k, _ in EmergencyService.PHOTO_SLOTS}:
+            return Response({'error': 'Unknown photo slot.'}, status=status.HTTP_400_BAD_REQUEST)
+        doc = EmergencyServiceDocument.objects.create(
+            entry=entry, doc_type=doc_type, file=file,
+            uploaded_by=request.user if request.user.is_authenticated else None)
+        return Response(EmergencyServiceDocumentSerializer(doc, context={'request': request}).data,
+                        status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['delete'], url_path='documents/(?P<doc_id>[0-9]+)')
+    def delete_document(self, request, pk=None, doc_id=None):
+        """Remove one photo from this entry."""
+        self._guard()
+        entry = self.get_object()
+        try:
+            doc = EmergencyServiceDocument.objects.get(pk=doc_id, entry=entry)
+        except EmergencyServiceDocument.DoesNotExist:
+            return Response({'error': 'Photo not found.'}, status=status.HTTP_404_NOT_FOUND)
+        doc.file.delete(save=False)
+        doc.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     def perform_destroy(self, instance):
         self._guard()

@@ -1088,14 +1088,12 @@ class EmergencyService(models.Model):
     dc_voltage = models.CharField(max_length=60, blank=True, default='')
     error_codes = models.CharField(max_length=255, blank=True, default='')
     # ── AC voltage readings ──
-    # Each reading is typed *and* photographed: the number is what gets reported,
-    # the meter shot is the evidence behind it.
+    # Every reading is typed *and* photographed: the number is what gets
+    # reported, the meter shots are the evidence. Photos live in
+    # EmergencyServiceDocument, several per reading.
     ac_ne_voltage = models.CharField(max_length=60, blank=True, default='')   # N-E
-    ac_ne_photo = models.ImageField(upload_to='emergency-service/', null=True, blank=True)
     ac_pn_voltage = models.CharField(max_length=60, blank=True, default='')   # P-N
-    ac_pn_photo = models.ImageField(upload_to='emergency-service/', null=True, blank=True)
     ac_pe_voltage = models.CharField(max_length=60, blank=True, default='')   # P-E
-    ac_pe_photo = models.ImageField(upload_to='emergency-service/', null=True, blank=True)
     monthly_production = models.CharField(max_length=60, blank=True, default='')
 
     # ── Service condition ──
@@ -1122,6 +1120,17 @@ class EmergencyService(models.Model):
         ('dc_db_components', 'DC DB components'),
         ('ac_db_components', 'AC DB components'),
     ]
+    # Photo slots (EmergencyServiceDocument.doc_type), in the order the form
+    # lays them out. Every reading on the entry can carry several shots.
+    PHOTO_SLOTS = [
+        ('dc_voltage', 'DC Voltage'),
+        ('error_codes', 'Error Codes'),
+        ('monthly_production', 'Monthly Production'),
+        ('ac_ne', 'N-E Voltage'),
+        ('ac_pn', 'P-N'),
+        ('ac_pe', 'P-E'),
+    ]
+
     dc_side_condition = models.CharField(max_length=40, blank=True, default='', choices=DC_SIDE_CHOICES)
     ac_side_condition = models.CharField(max_length=40, blank=True, default='', choices=AC_SIDE_CHOICES)
     replacement = models.CharField(max_length=40, blank=True, default='', choices=REPLACEMENT_CHOICES)
@@ -1136,6 +1145,25 @@ class EmergencyService(models.Model):
 
     def __str__(self):
         return f"Emergency service — {self.customer_name}"
+
+
+class EmergencyServiceDocument(models.Model):
+    """A photo attached to one reading on an emergency service entry.
+
+    Several per reading: a meter is often shot twice, and a burned board needs
+    more than one angle.
+    """
+    entry = models.ForeignKey(EmergencyService, on_delete=models.CASCADE, related_name='documents')
+    doc_type = models.CharField(max_length=40, db_index=True)
+    file = models.FileField(upload_to='emergency-service/')
+    uploaded_by = models.ForeignKey('users.User', on_delete=models.SET_NULL, null=True, blank=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['uploaded_at', 'id']
+
+    def __str__(self):
+        return f"{self.doc_type} — {self.entry_id}"
 
 
 class TeamStatsConfig(models.Model):

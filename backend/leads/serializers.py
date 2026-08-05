@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.utils import timezone
-from .models import Lead, IntegrationSettings, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, LiasoningDocument, Warranty, WarrantyDocument, EmergencyService, PeriodicMaintenance, MaintenanceVisit
+from .models import Lead, IntegrationSettings, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, LiasoningDocument, Warranty, WarrantyDocument, EmergencyService, EmergencyServiceDocument, PeriodicMaintenance, MaintenanceVisit
 from .document_kinds import SLOT_TO_KIND, SITE_VISIT_SHARED_SLOTS, DOC_STAGE1_SHARED_SLOTS, shared_doc_entries
 
 from users.serializers import UserSerializer
@@ -351,8 +351,15 @@ class PeriodicMaintenanceSerializer(serializers.ModelSerializer):
         read_only_fields = ['lead', 'created_by', 'created_at']
 
 
+class EmergencyServiceDocumentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EmergencyServiceDocument
+        fields = ['id', 'doc_type', 'file', 'uploaded_at']
+
+
 class EmergencyServiceSerializer(serializers.ModelSerializer):
     created_by_name = serializers.SerializerMethodField()
+    documents = EmergencyServiceDocumentSerializer(many=True, read_only=True)
     # Readable labels for the service-condition picks, so the list does not have
     # to keep its own copy of the choice text.
     dc_side_condition_label = serializers.CharField(source='get_dc_side_condition_display', read_only=True)

@@ -15,10 +15,8 @@ type Entry = {
   ac_ne_voltage: string;
   ac_pn_voltage: string;
   ac_pe_voltage: string;
-  // Each AC reading is typed and photographed — the meter shot is the evidence.
-  ac_ne_photo: string | null;
-  ac_pn_photo: string | null;
-  ac_pe_photo: string | null;
+  // Every reading is typed and photographed; several shots per reading.
+  documents: EntryDoc[];
   monthly_production: string;
   // What was found wrong, and what was swapped out.
   dc_side_condition: string; ac_side_condition: string; replacement: string;
@@ -26,6 +24,8 @@ type Entry = {
   created_by_name: string | null;
   created_at: string;
 };
+
+type EntryDoc = { id: number; doc_type: string; file: string; uploaded_at: string };
 
 type CustomerSug = { id: number; first_name: string; last_name: string | null; phone: string | null; location: string | null };
 
@@ -69,11 +69,18 @@ const SERVICE_CONDITION = [
   },
 ] as const;
 
-/** The three AC readings, each with its text field and its photo field. */
+/** Photo slots, matching EmergencyService.PHOTO_SLOTS. */
 const AC_READINGS = [
-  { text: "ac_ne_voltage", photo: "ac_ne_photo", label: "N-E Voltage", ph: "N-E" },
-  { text: "ac_pn_voltage", photo: "ac_pn_photo", label: "P-N", ph: "P-N" },
-  { text: "ac_pe_voltage", photo: "ac_pe_photo", label: "P-E", ph: "P-E" },
+  { text: "ac_ne_voltage", slot: "ac_ne", label: "N-E Voltage", ph: "N-E" },
+  { text: "ac_pn_voltage", slot: "ac_pn", label: "P-N", ph: "P-N" },
+  { text: "ac_pe_voltage", slot: "ac_pe", label: "P-E", ph: "P-E" },
+] as const;
+
+/** The readings above the AC block, which take photos too. */
+const TOP_READINGS = [
+  { text: "dc_voltage", slot: "dc_voltage", label: "DC Voltage", ph: "e.g. 240 V" },
+  { text: "error_codes", slot: "error_codes", label: "Error Codes (if any)", ph: "Error codes" },
+  { text: "monthly_production", slot: "monthly_production", label: "Monthly Production", ph: "e.g. 550 kWh" },
 ] as const;
 
 const inputCls = "w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all";
@@ -93,7 +100,8 @@ export default function EmergencyServicePage() {
   const [sugOpen, setSugOpen] = useState(false);
 
   const token = () => localStorage.getItem(`${domain}_access`);
-  const base = `${getApiBase(domain)}/api/emergency-services/`;
+  const apiBase = getApiBase(domain);
+  const base = `${apiBase}/api/emergency-services/`;
 
   useEffect(() => {
     const t = token();
@@ -134,35 +142,123 @@ export default function EmergencyServicePage() {
       ).filter(c => fullName(c).toLowerCase() !== sugQuery).slice(0, 8)
     : customers.slice(0, 8);
 
-  // Chosen files live outside `form`, which only carries the text values.
-  const [photos, setPhotos] = useState<Record<string, File | null>>({});
-  // What is already stored, so editing shows the shot rather than an empty box.
-  const [existing, setExisting] = useState<Record<string, string | null>>({});
+  // Files chosen but not yet saved, per slot. A new entry has no id to hang
+  // them on, so they wait here and go up once it exists.
+  const [pending, setPending] = useState<Record<string, File[]>>({});
+  // Photos already stored against the entry being edited.
+  const [stored, setStored] = useState<EntryDoc[]>([]);
+
+
+  /** A reading: the typed value, then its photos as a filename list with a
+   *  "+ Add file(s)" button — the same shape the site visit uses. */
+  const Reading = ({ text, slot, label, ph }: { text: string; slot: string; label: string; ph: string }) => {
+    const mine = stored.filter(d => d.doc_type === slot);
+    const queued = pending[slot] || [];
+    return (
+      <div>
+        <label className={labelCls}>{label}</label>
+        <input value={(form as any)[text]}
+          onChange={e => setForm({ ...form, [text]: e.target.value })}
+          className={inputCls} placeholder={ph} />
+
+        {(mine.length > 0 || queued.length > 0) && (
+          <ul className="mt-2 space-y-1">
+            {mine.map(d => {
+              const href = d.file.startsWith("http") ? d.file : `${apiBase}${d.file}`;
+              const name = decodeURIComponent(d.file.split("/").pop() || "file");
+              return (
+                <li key={d.id} className="flex items-center gap-2 text-[11px]">
+                  <a href={href} target="_blank" rel="noreferrer" title={name}
+                    className="font-semibold text-emerald-600 hover:underline truncate max-w-[150px]">{name}</a>
+                  <button type="button" onClick={() => dropStored(d)} title="Delete file"
+                    className="font-bold text-rose-500 hover:text-rose-700">✕</button>
+                </li>
+              );
+            })}
+            {queued.map((f, n) => (
+              <li key={`q-${n}`} className="flex items-center gap-2 text-[11px]">
+                <span className="text-slate-500 truncate max-w-[150px]" title={f.name}>{f.name}</span>
+                <span className="text-[10px] text-amber-600">pending</span>
+                <button type="button" onClick={() => dropPending(slot, n)} title="Remove"
+                  className="font-bold text-rose-500 hover:text-rose-700">✕</button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <label className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 cursor-pointer transition">
+          + Add file(s)
+          <input type="file" accept="image/*,application/pdf" multiple capture="environment" className="hidden"
+            onChange={e => { const fs = Array.from(e.target.files || []); e.currentTarget.value = ""; addFiles(slot, fs); }} />
+        </label>
+      </div>
+    );
+  };
 
   const resetForm = () => {
     setForm({ ...BLANK }); setEditingId(null);
-    setPhotos({}); setExisting({});
+    setPending({}); setStored([]);
+  };
+
+  const addFiles = (slot: string, files: File[]) => {
+    if (!files.length) return;
+    setPending(p => ({ ...p, [slot]: [...(p[slot] || []), ...files] }));
+  };
+
+  const dropPending = (slot: string, index: number) =>
+    setPending(p => ({ ...p, [slot]: (p[slot] || []).filter((_, n) => n !== index) }));
+
+  /** Stored photos are removed straight away — the entry already exists. */
+  const dropStored = async (doc: EntryDoc) => {
+    if (!window.confirm("Remove this photo?")) return;
+    try {
+      const r = await fetch(`${base}${editingId}/documents/${doc.id}/`, {
+        method: "DELETE", headers: { Authorization: `Bearer ${token()}` },
+      });
+      if (r.ok || r.status === 204) setStored(list => list.filter(d => d.id !== doc.id));
+      else alert("Could not remove the photo.");
+    } catch { alert("Network error."); }
+  };
+
+  /** Push everything queued for this entry, one request per file. */
+  const uploadPending = async (entryId: number) => {
+    for (const [slot, files] of Object.entries(pending)) {
+      for (const file of files) {
+        const body = new FormData();
+        body.append("file", file);
+        body.append("doc_type", slot);
+        const r = await fetch(`${base}${entryId}/documents/`, {
+          method: "POST", headers: { Authorization: `Bearer ${token()}` }, body,
+        });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          alert(e.error || `Could not upload ${file.name}.`);
+          return false;
+        }
+      }
+    }
+    return true;
   };
 
   const submit = async () => {
     if (!form.customer_name.trim() && !form.service.trim()) { alert("Enter the customer or the service done."); return; }
     setSaving(true);
     try {
-      // Multipart, because the readings carry photos. Only the photos actually
-      // chosen are sent, so editing text does not wipe a stored shot.
-      const body = new FormData();
-      Object.entries(form).forEach(([k, v]) => body.append(k, String(v ?? "")));
-      AC_READINGS.forEach(({ photo }) => {
-        const f = photos[photo];
-        if (f) body.append(photo, f);
-      });
+      // The readings save first; the photos hang off the saved entry, so they
+      // follow once it has an id.
       const r = await fetch(editingId ? `${base}${editingId}/` : base, {
         method: editingId ? "PATCH" : "POST",
-        headers: { Authorization: `Bearer ${token()}` },
-        body,
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
+        body: JSON.stringify(form),
       });
-      if (r.ok) { resetForm(); loadRows(); }
-      else { const e = await r.json().catch(() => ({})); alert(e.detail || e.error || "Failed to save."); }
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        alert(e.detail || e.error || "Failed to save.");
+        return;
+      }
+      const saved = await r.json();
+      if (!(await uploadPending(saved.id))) { loadRows(); return; }
+      resetForm(); loadRows();
     } catch { alert("Network error."); }
     finally { setSaving(false); }
   };
@@ -177,8 +273,8 @@ export default function EmergencyServicePage() {
       dc_side_condition: s.dc_side_condition || "", ac_side_condition: s.ac_side_condition || "",
       replacement: s.replacement || "",
     });
-    setPhotos({});
-    setExisting({ ac_ne_photo: s.ac_ne_photo, ac_pn_photo: s.ac_pn_photo, ac_pe_photo: s.ac_pe_photo });
+    setPending({});
+    setStored(s.documents || []);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -233,39 +329,13 @@ export default function EmergencyServicePage() {
             )}
           </div>
           <div className="lg:col-span-2"><label className={labelCls}>Service</label><input value={form.service} onChange={e => setForm({ ...form, service: e.target.value })} className={inputCls} placeholder="Service done" /></div>
-          <div><label className={labelCls}>DC Voltage</label><input value={form.dc_voltage} onChange={e => setForm({ ...form, dc_voltage: e.target.value })} className={inputCls} placeholder="e.g. 240 V" /></div>
-          <div><label className={labelCls}>Error Codes (if any)</label><input value={form.error_codes} onChange={e => setForm({ ...form, error_codes: e.target.value })} className={inputCls} placeholder="Error codes" /></div>
-          <div><label className={labelCls}>Monthly Production</label><input value={form.monthly_production} onChange={e => setForm({ ...form, monthly_production: e.target.value })} className={inputCls} placeholder="e.g. 550 kWh" /></div>
+          {TOP_READINGS.map(r => <Reading key={r.slot} {...r} />)}
         </div>
         <div className="mt-4 bg-slate-50/70 border border-slate-100 rounded-xl p-4">
           <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-wide mb-3">AC Voltage</p>
-          <p className="text-[11px] text-slate-400 -mt-2 mb-3">Type the reading and attach the meter photo.</p>
+          <p className="text-[11px] text-slate-400 -mt-2 mb-3">Type the reading and attach the meter photo(s).</p>
           <div className="grid sm:grid-cols-3 gap-3">
-            {AC_READINGS.map(({ text, photo, label, ph }) => {
-              const chosen = photos[photo];
-              const stored = existing[photo];
-              const preview = chosen ? URL.createObjectURL(chosen) : stored;
-              return (
-                <div key={text}>
-                  <label className={labelCls}>{label}</label>
-                  <input value={(form as any)[text]}
-                    onChange={e => setForm({ ...form, [text]: e.target.value })}
-                    className={inputCls} placeholder={ph} />
-
-                  {preview && (
-                    <a href={preview} target="_blank" rel="noreferrer"
-                      className="block mt-2 h-20 rounded-lg border border-slate-200 overflow-hidden bg-white">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={preview} alt={`${label} reading`} className="w-full h-full object-cover" />
-                    </a>
-                  )}
-                  <input type="file" accept="image/*" capture="environment"
-                    onChange={e => setPhotos(p => ({ ...p, [photo]: e.target.files?.[0] ?? null }))}
-                    className="mt-2 block w-full text-[11px] text-slate-500 file:mr-2 file:py-1 file:px-2 file:rounded-md file:border-0 file:text-[11px] file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition cursor-pointer" />
-                  {chosen && <p className="text-[10px] text-emerald-600 mt-1 truncate">{chosen.name}</p>}
-                </div>
-              );
-            })}
+            {AC_READINGS.map(r => <Reading key={r.slot} {...r} />)}
           </div>
         </div>
         <div className="mt-4 bg-slate-50/70 border border-slate-100 rounded-xl p-4">
@@ -328,19 +398,19 @@ export default function EmergencyServicePage() {
                     <td className="px-4 py-3 text-slate-600">{s.dc_voltage || "—"}</td>
                     <td className="px-4 py-3 text-slate-600">{s.error_codes || "—"}</td>
                     <td className="px-4 py-3 text-slate-600 whitespace-nowrap">
-                      {/* Each reading links to its meter photo when there is one. */}
+                      {/* Each reading links to its photos; a reading can have several. */}
                       <span className="inline-flex items-center gap-1">
-                        {AC_READINGS.map(({ text, photo }, n) => {
+                        {AC_READINGS.map(({ text, slot }, n) => {
                           const value = (s as any)[text] || "—";
-                          const shot = (s as any)[photo] as string | null;
+                          const shots = (s.documents || []).filter(d => d.doc_type === slot);
                           return (
                             <span key={text} className="inline-flex items-center">
                               {n > 0 && <span className="text-slate-300 mx-1">/</span>}
-                              {shot ? (
-                                <a href={shot} target="_blank" rel="noreferrer"
-                                  title="Open the meter photo"
+                              {shots.length ? (
+                                <a href={shots[0].file} target="_blank" rel="noreferrer"
+                                  title={`${shots.length} photo(s)`}
                                   className="text-indigo-600 hover:text-indigo-800 font-semibold underline decoration-dotted">
-                                  {value}
+                                  {value}{shots.length > 1 ? ` (${shots.length})` : ""}
                                 </a>
                               ) : value}
                             </span>
