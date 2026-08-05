@@ -185,3 +185,135 @@ class B2BSettingsSaveTests(TestCase):
         org = OrgSettings.load()
         self.assertEqual(org.email_host, 'smtp.retail.test')
         self.assertEqual(org.email_host_password, 'retail-secret')
+
+
+class HtmlSignatureTests(TestCase):
+    """The signature can be plain, HTML, or both.
+
+    The plain one always goes out as the text part, so a client that refuses HTML
+    is never left with nothing. Setting an HTML one adds an HTML part carrying it.
+    """
+
+    def setUp(self):
+        self.org = OrgSettings.load()
+        self.org.email_host = 'smtp.retail.test'
+        self.org.email_host_user = 'retail@energyfox.in'
+        self.org.email_signature = 'Regards,\nEnergyFox'
+        self.org.save()
+
+    def build(self, body='Body line one.', **kwargs):
+        """The message send_and_log built, caught instead of sent."""
+        caught = {}
+
+        def capture(msg, *a, **kw):
+            caught['msg'] = msg
+
+        with patch.object(email, '_connection', return_value=None), \
+             patch('django.core.mail.EmailMultiAlternatives.send', new=capture):
+            log = email.send_and_log(to='someone@example.com', subject='Hi',
+                                     body=body, **kwargs)
+        self.assertEqual(log.status, 'sent', log.error)
+        return caught['msg']
+
+    # â”€â”€ The text part is untouched â”€â”€
+    def test_the_plain_signature_still_lands_in_the_text_part(self):
+        msg = self.build()
+        self.assertIn('Body line one.', msg.body)
+        self.assertTrue(msg.body.rstrip().endswith('EnergyFox'))
+
+    def test_with_no_html_signature_the_mail_stays_plain_text(self):
+        """Nothing richer to show, so no HTML part is invented."""
+        self.assertEqual(self.build().alternatives, [])
+
+    # â”€â”€ The HTML signature â”€â”€
+    def test_an_html_signature_adds_an_html_part(self):
+        self.org.email_signature_html = '<b>EnergyFox</b> &middot; <a href="https://x">x</a>'
+        self.org.save()
+        msg = self.build()
+        self.assertEqual(len(msg.alternatives), 1)
+        html, mime = msg.alternatives[0]
+        self.assertEqual(mime, 'text/html')
+        self.assertIn('<b>EnergyFox</b>', html)
+        # The body comes into the HTML part too, or the mail would arrive as a
+        # signature with no message above it.
+        self.assertIn('Body line one.', html)
+        # The text part is unchanged, still carrying the plain signature.
+        self.assertTrue(msg.body.rstrip().endswith('EnergyFox'))
+
+    def test_the_body_is_escaped_when_it_is_lifted_into_html(self):
+        """A plain-text body is not markup â€” angle brackets must not become tags."""
+        self.org.email_signature_html = '<b>EnergyFox</b>'
+        self.org.save()
+        html = self.build(body='5 < 6 & <script>x</script>').alternatives[0][0]
+        self.assertIn('&lt;script&gt;', html)
+        self.assertNotIn('<script>', html)
+
+    def test_line_breaks_in_the_body_survive_into_html(self):
+        self.org.email_signature_html = '<b>EnergyFox</b>'
+        self.org.save()
+        html = self.build(body='One\nTwo').alternatives[0][0]
+        self.assertIn('One<br>Two', html)
+
+    def test_a_callers_own_html_gets_the_signature_appended(self):
+        self.org.email_signature_html = '<b>EnergyFox</b>'
+        self.org.save()
+        html = self.build(html_body='<p>Invoice attached.</p>').alternatives[0][0]
+        self.assertIn('<p>Invoice attached.</p>', html)
+        self.assertIn('<b>EnergyFox</b>', html)
+
+    def test_a_callers_html_falls_back_to_the_plain_signature_as_html(self):
+        """No HTML signature set, so the plain one is converted rather than lost.
+
+        This was the gap before: mail built with its own HTML arrived with no
+        signature at all, because only the text part ever got one.
+        """
+        html = self.build(html_body='<p>Invoice attached.</p>').alternatives[0][0]
+        self.assertIn('<p>Invoice attached.</p>', html)
+        self.assertIn('Regards,<br>EnergyFox', html)
+
+    def test_no_signature_at_all_leaves_a_callers_html_alone(self):
+        self.org.email_signature = ''
+        self.org.save()
+        msg = self.build(html_body='<p>Invoice attached.</p>')
+        self.assertEqual(msg.alternatives[0][0], '<p>Invoice attached.</p>')
+
+    # â”€â”€ Per-channel â”€â”€
+    def test_wholesale_can_have_its_own_html_signature(self):
+        self.org.email_signature_html = '<b>Retail</b>'
+        self.org.b2b_email_signature_html = '<b>Wholesale</b>'
+        self.org.save()
+        self.assertIn('<b>Wholesale</b>', email._signature_html('b2b'))
+        self.assertIn('<b>Retail</b>', email._signature_html())
+
+    def test_a_blank_b2b_html_signature_falls_back_to_the_shared_one(self):
+        self.org.email_signature_html = '<b>Retail</b>'
+        self.org.save()
+        self.assertIn('<b>Retail</b>', email._signature_html('b2b'))
+
+    # â”€â”€ Settings â”€â”€
+    def test_the_html_signature_survives_a_settings_round_trip(self):
+        """Admins edit it in Settings, so it has to save and come back intact."""
+        admin = User.objects.create_user(username='sig_admin', password='Pw@123456')
+        admin.role = 'superadmin'
+        admin.is_superuser = True
+        admin.is_staff = True
+        admin.save()
+        markup = '<p style="color:#334155">Regards,<br><b>EnergyFox</b></p>'
+        r = self.client.patch('/api/org-settings/',
+                              data={'email_signature_html': markup},
+                              content_type='application/json',
+                              HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(admin).access_token}')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(r.json()['email_signature_html'], markup)
+        self.assertEqual(OrgSettings.load().email_signature_html, markup)
+
+    def test_a_non_admin_cannot_change_the_signature(self):
+        staff = User.objects.create_user(username='sig_bde', password='Pw@123456')
+        staff.role = 'bde'
+        staff.save()
+        r = self.client.patch('/api/org-settings/',
+                              data={'email_signature_html': '<b>nope</b>'},
+                              content_type='application/json',
+                              HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(staff).access_token}')
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(OrgSettings.load().email_signature_html, '')

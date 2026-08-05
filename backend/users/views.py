@@ -643,6 +643,7 @@ class TenantSettingsView(APIView):
             "email_from_name": org.email_from_name,
             "email_from_address": org.email_from_address,
             "email_signature": org.email_signature,
+            "email_signature_html": org.email_signature_html,
             # B2B (wholesale) email + WhatsApp. Blank means "use the shared one".
             "b2b_email_host": org.b2b_email_host,
             "b2b_email_port": org.b2b_email_port,
@@ -653,6 +654,7 @@ class TenantSettingsView(APIView):
             "b2b_email_from_name": org.b2b_email_from_name,
             "b2b_email_from_address": org.b2b_email_from_address,
             "b2b_email_signature": org.b2b_email_signature,
+            "b2b_email_signature_html": org.b2b_email_signature_html,
             "b2b_whatsapp_phone_number_id": org.b2b_whatsapp_phone_number_id,
             "b2b_whatsapp_business_account_id": org.b2b_whatsapp_business_account_id,
             "b2b_whatsapp_access_token": masked_b2b_whatsapp_token,
@@ -770,7 +772,7 @@ class TenantSettingsView(APIView):
 
         # Email (SMTP) integration — configured here instead of server env vars.
         for f in ['email_host', 'email_host_user', 'email_from_name', 'email_from_address',
-                  'email_signature']:
+                  'email_signature', 'email_signature_html']:
             v = request.data.get(f)
             if v is not None:
                 setattr(tenant, f, v)
@@ -793,7 +795,7 @@ class TenantSettingsView(APIView):
 
         # B2B (wholesale) email + WhatsApp — same shape, same masking rule.
         for f in ['b2b_email_host', 'b2b_email_host_user', 'b2b_email_from_name',
-                  'b2b_email_from_address', 'b2b_email_signature',
+                  'b2b_email_from_address', 'b2b_email_signature', 'b2b_email_signature_html',
                   'b2b_whatsapp_phone_number_id', 'b2b_whatsapp_business_account_id']:
             v = request.data.get(f)
             if v is not None:
@@ -874,6 +876,7 @@ class TenantSettingsView(APIView):
             "email_from_name": tenant.email_from_name,
             "email_from_address": tenant.email_from_address,
             "email_signature": tenant.email_signature,
+            "email_signature_html": tenant.email_signature_html,
             "custom_lead_statuses": tenant.custom_lead_statuses or [],
             "warranty_company_name": tenant.warranty_company_name,
             "warranty_cin": tenant.warranty_cin,

@@ -4,6 +4,7 @@ import { getApiBase } from "@/lib/mock-data";
 import { THEMES, applyTheme } from "@/lib/themes";
 import RolesSection from "./RolesSection";
 import InventoryDocumentsSection from "./InventoryDocumentsSection";
+import EmailSignatureEditor from "./EmailSignatureEditor";
 
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
@@ -54,7 +55,7 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
     email_host: "",
     b2b_email_host: "", b2b_email_port: 587, b2b_email_use_tls: true, b2b_email_use_ssl: false,
     b2b_email_host_user: "", b2b_email_host_password: "", b2b_email_from_name: "",
-    b2b_email_from_address: "", b2b_email_signature: "",
+    b2b_email_from_address: "", b2b_email_signature: "", b2b_email_signature_html: "",
     b2b_whatsapp_phone_number_id: "", b2b_whatsapp_business_account_id: "",
     b2b_whatsapp_access_token: "",
     email_port: 587,
@@ -65,6 +66,7 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
     email_from_name: "",
     email_from_address: "",
     email_signature: "",
+    email_signature_html: "",
     theme: "indigo",
     warranty_company_name: "",
     warranty_cin: "",
@@ -307,7 +309,7 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
     formData.append("email_host", tenantData.email_host || "");
     // The wholesale account travels with the same PATCH.
     ["b2b_email_host", "b2b_email_port", "b2b_email_host_user", "b2b_email_host_password",
-     "b2b_email_from_name", "b2b_email_from_address", "b2b_email_signature",
+     "b2b_email_from_name", "b2b_email_from_address", "b2b_email_signature", "b2b_email_signature_html",
      "b2b_whatsapp_phone_number_id", "b2b_whatsapp_business_account_id",
      "b2b_whatsapp_access_token"].forEach(k =>
       formData.append(k, String((tenantData as any)[k] ?? "")));
@@ -321,6 +323,7 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
     formData.append("email_from_name", tenantData.email_from_name || "");
     formData.append("email_from_address", tenantData.email_from_address || "");
     formData.append("email_signature", tenantData.email_signature || "");
+    formData.append("email_signature_html", tenantData.email_signature_html || "");
     if (invoiceFile) {
       formData.append("invoice_template", invoiceFile);
     }
@@ -831,12 +834,12 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
                   <p className="text-xs text-slate-400 mt-2">Defaults to the username if left blank.</p>
                 </div>
                 <div className="sm:col-span-2">
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">Email Signature</label>
-                  <textarea rows={3} value={fld("email_signature") || ""}
-                    onChange={(e) => setFld("email_signature", e.target.value)}
-                    placeholder={"Regards,\nEnergyFox Consultants Pvt Ltd\n9526 396 823 · energyfox.in"}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" />
-                  <p className="text-xs text-slate-400 mt-2">Appended to every email the CRM sends.</p>
+                  <EmailSignatureEditor
+                    plain={fld("email_signature") || ""}
+                    html={fld("email_signature_html") || ""}
+                    onPlain={(v) => setFld("email_signature", v)}
+                    onHtml={(v) => setFld("email_signature_html", v)}
+                  />
                 </div>
                 <div className="sm:col-span-2 flex flex-wrap items-center gap-3">
                   <button type="button" onClick={sendTestEmail} disabled={testingEmail}

@@ -127,6 +127,43 @@ def _with_signature(body: str, channel=None) -> str:
     return f"{(body or '').rstrip()}\n\n{sig}"
 
 
+def _as_html(text: str) -> str:
+    """Plain text as an HTML fragment — escaped, with the line breaks kept."""
+    from django.utils.html import escape
+    return escape(text or '').replace('\n', '<br>')
+
+
+def _signature_html(channel=None) -> str:
+    """The signature for the HTML part.
+
+    The HTML signature if one is set, otherwise the plain one turned into HTML so
+    the two parts of the message say the same thing.
+    """
+    org = get_org_settings()
+    html = (_org_field(org, channel, 'email_signature_html') or '').strip()
+    if html:
+        return html
+    plain = (_org_field(org, channel, 'email_signature') or '').strip()
+    return _as_html(plain) if plain else ''
+
+
+def _html_alternative(body: str, html_body: str | None, channel=None) -> str:
+    """The text/html part to send, or '' for none.
+
+    A caller that built its own HTML gets the signature appended to it. A caller
+    that only wrote plain text still gets an HTML part when an HTML signature is
+    configured — otherwise that signature would be set up and never seen.
+    """
+    sig = _signature_html(channel)
+    if html_body:
+        return f'{html_body}<br><br>{sig}' if sig else html_body
+    org = get_org_settings()
+    if not (_org_field(org, channel, 'email_signature_html') or '').strip():
+        # Nothing richer than the plain text to show, so stay a plain-text mail.
+        return ''
+    return f'<div>{_as_html((body or "").rstrip())}<br><br>{sig}</div>'
+
+
 def send_and_log(*, to, subject, body, lead=None, cc=None, kind='manual',
                  created_by=None, attachments=None, html_body=None, channel=None):
     """Send an email and record it in the outbox. Never raises — a failed send is
@@ -136,6 +173,7 @@ def send_and_log(*, to, subject, body, lead=None, cc=None, kind='manual',
     recipients = _split_recipients(to)
     cc_list = _split_recipients(cc)
     final_body = _with_signature(body, channel)
+    final_html = _html_alternative(body, html_body, channel)
 
     log = EmailLog(
         lead=lead, to_email=', '.join(recipients)[:254], cc=', '.join(cc_list)[:500],
@@ -150,8 +188,8 @@ def send_and_log(*, to, subject, body, lead=None, cc=None, kind='manual',
             from_email=_from_header(channel), to=recipients, cc=cc_list or None,
             connection=_connection(channel),
         )
-        if html_body:
-            msg.attach_alternative(html_body, 'text/html')
+        if final_html:
+            msg.attach_alternative(final_html, 'text/html')
         for att in (attachments or []):
             # (filename, content, mimetype)
             msg.attach(*att)

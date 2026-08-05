@@ -68,6 +68,12 @@ class OrgSettings(models.Model):
     email_signature = models.TextField(
         blank=True, default='',
         help_text="Appended to outgoing emails sent from the CRM")
+    # An optional richer signature — logo, links, formatting — used for the HTML
+    # part of the message. The plain-text one above is still sent alongside it, so
+    # a client that refuses HTML is never left with nothing.
+    email_signature_html = models.TextField(
+        blank=True, default='',
+        help_text="Optional HTML signature; the plain one above is still sent as the text part")
 
     # ── B2B (wholesale) email + WhatsApp ──
     # The wholesale side trades under its own identity: its proforma invoices and
@@ -85,6 +91,9 @@ class OrgSettings(models.Model):
     b2b_email_signature = models.TextField(
         blank=True, default='',
         help_text="Appended to outgoing B2B emails; blank uses the shared signature")
+    b2b_email_signature_html = models.TextField(
+        blank=True, default='',
+        help_text="Optional HTML signature for B2B mail; blank uses the shared one")
 
     b2b_whatsapp_phone_number_id = models.CharField(max_length=64, blank=True, default='')
     b2b_whatsapp_access_token = models.TextField(blank=True, default='')
