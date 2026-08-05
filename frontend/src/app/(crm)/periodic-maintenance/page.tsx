@@ -43,6 +43,9 @@ export default function PeriodicMaintenancePage() {
   const [upcoming, setUpcoming] = useState<UpcomingRow[]>([]);
   // The list runs five years ahead, so it opens on the near ones.
   const [showAllUpcoming, setShowAllUpcoming] = useState(false);
+  // Three separate views rather than one long scroll. It opens on Upcoming: that
+  // is the working list, and it is where the day-before reminder points.
+  const [tab, setTab] = useState<"upcoming" | "scheduled" | "schedule">("upcoming");
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [startDates, setStartDates] = useState<Record<number, string>>({});
@@ -119,39 +122,68 @@ export default function PeriodicMaintenancePage() {
         <p className="text-sm text-slate-500 mt-1">Subsidy-redeemed / completed customers are scheduled for 5 years of maintenance with a tenure gap of 6 months.</p>
       </div>
 
-      <div className="mb-5 flex items-center gap-3">
+      <div className="mb-5 flex flex-wrap items-center gap-3">
         <input
           value={search}
           onChange={e => setSearch(e.target.value)}
           placeholder="Search by name, phone or location…"
           className="w-full max-w-md bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all"
         />
+        {/* The search runs across all three, so the counts show where matches went. */}
+        <div className="inline-flex rounded-xl bg-slate-100 p-1">
+          {([["upcoming", "Upcoming Maintenance", fUpcoming.length],
+             ["scheduled", "Scheduled Customers", fScheduled.length],
+             ["schedule", "Schedule a Customer", fEligible.length]] as const).map(([key, label, count]) => {
+            // Upcoming reads red while something is actually due, matching the
+            // sidebar badge.
+            const alarm = key === "upcoming" && dueNow > 0;
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setTab(key)}
+                className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+                  tab === key
+                    ? `bg-white shadow-sm ${alarm ? "text-rose-600" : "text-indigo-600"}`
+                    : alarm ? "text-rose-500 hover:text-rose-600" : "text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                {label}
+                <span className={`ml-1.5 ${tab === key ? (alarm ? "text-rose-400" : "text-indigo-400") : "text-slate-400"}`}>{count}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {loading ? (
         <div className="py-16 text-center text-sm text-slate-400">Loading…</div>
       ) : (
         <>
-          {/* Upcoming maintenance — every visit still to be done, soonest first.
-              This is the working view: the officer reads down it in order. */}
-          <div className="flex flex-wrap items-baseline gap-2 mb-3">
-            <h2 className="text-sm font-bold text-slate-900">
-              Upcoming Maintenance <span className="text-slate-400 font-medium">({fUpcoming.length})</span>
-            </h2>
-            {dueNow > 0 && (
-              <span className="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-rose-50 text-rose-700">
-                {dueNow} needing attention
-              </span>
-            )}
-          </div>
-          {fUpcoming.length === 0 ? (
-            <div className="mb-8 bg-white border border-dashed border-slate-200 rounded-2xl p-10 text-center text-sm text-slate-400">
+          {/* ── Upcoming maintenance ──
+              Every visit still to be done, soonest first. This is the working
+              view: the officer reads down it in order. */}
+          {/* The note only earns its space when there is a list under it. */}
+          {tab === "upcoming" && fUpcoming.length > 0 && (dueNow > 0 ? (
+            <p className="mb-4 -mt-1 text-xs">
+              <span className="font-bold text-rose-600">{dueNow} needing attention</span>
+              <span className="text-slate-500"> — due now, or due tomorrow.</span>
+            </p>
+          ) : (
+            <p className="mb-4 -mt-1 text-xs text-slate-500">
+              Nothing due yet. A visit starts calling for attention the day before it falls due.
+            </p>
+          ))}
+          {tab === "upcoming" && (fUpcoming.length === 0 ? (
+            <div className="bg-white border border-dashed border-slate-200 rounded-2xl p-10 text-center text-sm text-slate-400">
               {scheduled.length === 0
-                ? "Nothing scheduled yet — schedule a customer below."
-                : "Every scheduled visit is done."}
+                ? "Nothing scheduled yet — schedule a customer under Schedule a Customer."
+                : upcoming.length === 0
+                  ? "Every scheduled visit is done."
+                  : "No visits match your search."}
             </div>
           ) : (
-            <div className="mb-8 bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+            <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-left text-[10px] font-bold text-slate-400 uppercase tracking-wide border-b border-slate-100 bg-slate-50/60">
@@ -203,16 +235,18 @@ export default function PeriodicMaintenancePage() {
                 </button>
               )}
             </div>
-          )}
+          ))}
 
-          {/* Scheduled customer list */}
-          <h2 className="text-sm font-bold text-slate-900 mb-3">Scheduled Customer List <span className="text-slate-400 font-medium">({fScheduled.length})</span></h2>
-          {fScheduled.length === 0 ? (
-            <div className="mb-8 bg-white border border-dashed border-slate-200 rounded-2xl p-10 text-center text-sm text-slate-400">
-              No customers scheduled yet — schedule one from the list below.
+          {/* ── Scheduled customers ──
+              One row per customer on the plan, with their progress through it. */}
+          {tab === "scheduled" && (fScheduled.length === 0 ? (
+            <div className="bg-white border border-dashed border-slate-200 rounded-2xl p-10 text-center text-sm text-slate-400">
+              {scheduled.length === 0
+                ? "No customers scheduled yet — schedule one under Schedule a Customer."
+                : "No customers match your search."}
             </div>
           ) : (
-            <div className="mb-8 bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+            <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm min-w-[760px]">
                   <thead>
@@ -255,13 +289,15 @@ export default function PeriodicMaintenancePage() {
                 </table>
               </div>
             </div>
-          )}
+          ))}
 
-          {/* Eligible (not yet scheduled) */}
-          <h2 className="text-sm font-bold text-slate-900 mb-3">Schedule a Customer <span className="text-slate-400 font-medium">({fEligible.length})</span></h2>
-          {fEligible.length === 0 ? (
+          {/* ── Not yet scheduled ──
+              Installed customers waiting to be put on a plan. */}
+          {tab === "schedule" && (fEligible.length === 0 ? (
             <div className="bg-white border border-dashed border-slate-200 rounded-2xl p-10 text-center text-sm text-slate-400">
-              Every installed customer is already scheduled.
+              {eligible.length === 0
+                ? "Every installed customer is already scheduled."
+                : "No customers match your search."}
             </div>
           ) : (
             <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
@@ -290,7 +326,7 @@ export default function PeriodicMaintenancePage() {
                 </tbody>
               </table>
             </div>
-          )}
+          ))}
         </>
       )}
     </div>
