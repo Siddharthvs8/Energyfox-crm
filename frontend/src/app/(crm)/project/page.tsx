@@ -7,7 +7,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCleanup";
-import { ReleaseDialog, asDate, deadlineNote, type DeadlineInfo } from "@/components/ProjectDeadline";
+import { asDate, deadlineNote, type DeadlineInfo } from "@/components/ProjectDeadline";
 
 // The row carries the whole deadline block, so the shared banner and dialog can
 // read it without a second fetch.
@@ -34,11 +34,10 @@ export default function ProjectPage() {
   const [leads, setLeads] = useState<ProjectLead[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  // The list opens on the work still to be done; finished jobs and the ones that
-  // blew their deadline are each one tap away.
-  const [tab, setTab] = useState<"pending" | "overdue" | "completed">("pending");
-  // The row a super admin is releasing back to the project team.
-  const [releasing, setReleasing] = useState<ProjectLead | null>(null);
+  // The list opens on the work still to be done; finished jobs are one tap away.
+  // The ones that blew their deadline are not here at all — they move to the
+  // Overdue Projects module, where a super admin can release them.
+  const [tab, setTab] = useState<"pending" | "completed">("pending");
 
   const token = () => localStorage.getItem(`${domain}_access`);
 
@@ -82,17 +81,16 @@ export default function ProjectPage() {
 
   // Counts are of the search results, so the tabs show where the matches went
   // rather than a total that disagrees with the list underneath.
-  // An overdue project leaves Pending entirely — that is the point of the queue.
+  // An overdue project leaves this module entirely for Overdue Projects — that is
+  // the point of the escalation.
   const found = leads.filter(matchesSearch);
   const inTab = (l: ProjectLead, key: typeof tab) =>
-    key === "completed" ? l.project_complete
-      : key === "overdue" ? (!l.project_complete && l.project_overdue)
-        : (!l.project_complete && !l.project_overdue);
+    key === "completed" ? l.project_complete : (!l.project_complete && !l.project_overdue);
   const counts = {
     pending: found.filter(l => inTab(l, "pending")).length,
-    overdue: found.filter(l => inTab(l, "overdue")).length,
     completed: found.filter(l => inTab(l, "completed")).length,
   };
+  const overdueCount = found.filter(l => !l.project_complete && l.project_overdue).length;
   const filtered = found.filter(l => inTab(l, tab));
 
   return (
@@ -110,34 +108,33 @@ export default function ProjectPage() {
           className="w-full max-w-md bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all"
         />
         <div className="inline-flex rounded-xl bg-slate-100 p-1">
-          {([["pending", "Pending"], ["overdue", "Overdue"], ["completed", "Completed"]] as const).map(([key, label]) => {
-            // Overdue is the exception queue: it reads red even unselected, and
-            // only while something is actually sitting in it.
-            const alarm = key === "overdue" && counts.overdue > 0;
-            return (
-              <button
-                key={key}
-                type="button"
-                onClick={() => setTab(key)}
-                className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-colors ${
-                  tab === key
-                    ? `bg-white shadow-sm ${alarm ? "text-rose-600" : "text-indigo-600"}`
-                    : alarm ? "text-rose-500 hover:text-rose-600" : "text-slate-500 hover:text-slate-700"
-                }`}
-              >
-                {label}
-                <span className={`ml-1.5 ${tab === key ? (alarm ? "text-rose-400" : "text-indigo-400") : "text-slate-400"}`}>{counts[key]}</span>
-              </button>
-            );
-          })}
+          {([["pending", "Pending"], ["completed", "Completed"]] as const).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setTab(key)}
+              className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+                tab === key ? "bg-white text-indigo-600 shadow-sm" : "text-slate-500 hover:text-slate-700"
+              }`}
+            >
+              {label}
+              <span className={`ml-1.5 ${tab === key ? "text-indigo-400" : "text-slate-400"}`}>{counts[key]}</span>
+            </button>
+          ))}
         </div>
       </div>
 
-      {tab === "overdue" && (
-        <p className="mb-4 -mt-1 text-xs text-slate-500">
-          Past the {leads[0]?.deadline_days ?? 20}-day deadline that started with the customer&apos;s first payment.
-          Locked to the project team — a super admin releases one back with a fresh deadline.
-        </p>
+      {/* Where the missing rows went, so the queue does not just look short. */}
+      {overdueCount > 0 && (
+        <Link href="/project-overdue"
+          className="mb-5 -mt-1 flex items-center justify-between gap-3 bg-rose-50 border border-rose-200 rounded-2xl px-5 py-3 hover:bg-rose-100/70 transition-colors">
+          <p className="text-xs text-rose-700">
+            <b>{overdueCount} {overdueCount === 1 ? "project has" : "projects have"}</b> passed the{" "}
+            {leads[0]?.deadline_days ?? 20}-day deadline and moved to Overdue Projects, where only a
+            super admin can act.
+          </p>
+          <span className="text-[11px] font-bold text-rose-700 whitespace-nowrap">Open →</span>
+        </Link>
       )}
 
       {loading ? (
@@ -150,9 +147,7 @@ export default function ProjectPage() {
               ? "No projects match your search."
               : tab === "completed"
                 ? "No completed projects yet."
-                : tab === "overdue"
-                  ? "Nothing overdue — every project is inside its deadline."
-                  : "No pending projects — everything here is done."}
+                : "No pending projects — everything here is done."}
         </div>
       ) : (
         <div className="space-y-4">
@@ -163,15 +158,15 @@ export default function ProjectPage() {
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-bold text-slate-900 truncate">{l.first_name} {l.last_name}</p>
                     {l.lead_deleted && <DeletedLeadBadge />}
+                    {/* Nothing overdue reaches this list — it has moved to the
+                        Overdue Projects module by then. */}
                     <span className={`text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${
-                      l.project_complete ? "bg-emerald-50 text-emerald-700"
-                        : l.project_overdue ? "bg-rose-50 text-rose-700"
-                          : "bg-amber-50 text-amber-700"}`}>
-                      {l.project_complete ? "Done" : l.project_overdue ? "Overdue" : "In Progress"}
+                      l.project_complete ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+                      {l.project_complete ? "Done" : "In Progress"}
                     </span>
                     {/* The deadline only matters while the work is still running. */}
                     {!l.project_complete && (
-                      <span className={`text-[10px] font-semibold ${l.project_overdue ? "text-rose-600" : (l.days_to_deadline ?? 99) <= 3 ? "text-amber-600" : "text-slate-400"}`}>
+                      <span className={`text-[10px] font-semibold ${(l.days_to_deadline ?? 99) <= 3 ? "text-amber-600" : "text-slate-400"}`}>
                         {deadlineNote(l)}
                       </span>
                     )}
@@ -193,16 +188,6 @@ export default function ProjectPage() {
                     <p className="text-[10px] text-slate-400 uppercase tracking-wide">Project Manager</p>
                     <p className="text-xs font-semibold text-slate-600">{l.project_manager_name || "Unassigned"}</p>
                   </div>
-                  {/* Only the super admin can lift the lock, and only from here. */}
-                  {l.project_overdue && !l.project_complete && l.can_release_project && (
-                    <button
-                      type="button"
-                      onClick={e => { e.preventDefault(); e.stopPropagation(); setReleasing(l); }}
-                      className="px-3 py-1.5 rounded-lg bg-rose-600 text-white text-[11px] font-bold hover:bg-rose-700 transition whitespace-nowrap"
-                    >
-                      Release
-                    </button>
-                  )}
                   {l.can_cleanup && (
                     <DeletedLeadCleanup leadId={l.id} module="project"
                       name={`${l.first_name} ${l.last_name || ""}`.trim()}
@@ -214,21 +199,6 @@ export default function ProjectPage() {
             </Link>
           ))}
         </div>
-      )}
-
-      {releasing && (
-        <ReleaseDialog
-          leadId={releasing.id}
-          name={`${releasing.first_name} ${releasing.last_name || ""}`.trim()}
-          info={releasing}
-          domain={domain}
-          onClose={() => setReleasing(null)}
-          onReleased={row => {
-            setLeads(prev => prev.map(x => (x.id === row.id ? row : x)));
-            setReleasing(null);
-            setTab("pending");
-          }}
-        />
       )}
     </div>
   );

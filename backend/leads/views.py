@@ -1724,7 +1724,7 @@ class LeadViewSet(viewsets.ModelViewSet):
         from django.db.models import Q
         from .access import (can_access_documentation, can_access_doc_stage2, can_access_warranty,
                              can_access_accounts, can_access_purchase, can_access_project,
-                             can_access_liasoning)
+                             can_access_overdue_projects, can_access_liasoning)
         user = request.user
         counts = {}
         # Of those, the ones assigned to this user by name — the client shows a
@@ -1797,6 +1797,14 @@ class LeadViewSet(viewsets.ModelViewSet):
         if can_access_project(user):
             qs = Lead.objects.filter(pushed_to_project=True).exclude(project__is_complete=True)
             record('project', mine(qs, 'project_manager', 'project_manager'), 'project_manager')
+
+        if can_access_overdue_projects(user):
+            # The count going up is what raises the pop-up for the project team:
+            # a project crossing its deadline is the thing they have to be told
+            # about, and this is the same signal every other module uses.
+            overdue = Lead.objects.filter(id__in=self._overdue_project_ids())
+            record('project-overdue', mine(overdue, 'project_manager', 'project_manager'),
+                   'project_manager')
 
         if can_access_liasoning(user):
             counts['liasoning'] = unseen(Lead.objects.filter(pushed_to_liasoning=True)
@@ -2496,6 +2504,48 @@ class LeadViewSet(viewsets.ModelViewSet):
             'release_reason': (pr.release_reason if pr else '') or '',
             'can_release_project': can_release_overdue_project(request.user),
         }
+
+    def _open_project_leads(self):
+        """Leads whose installation project is started and not yet finished, with
+        everything the deadline is computed from already loaded."""
+        return (Lead.objects.filter(pushed_to_project=True, project__isnull=False)
+                .exclude(project__is_complete=True)
+                .select_related('product', 'bde', 'project_manager', 'project',
+                                'payment_verification')
+                .prefetch_related('receipt_vouchers', 'balance_payments')
+                .order_by('-pushed_to_project_at'))
+
+    def _overdue_project_ids(self):
+        """Ids of the leads sitting past their installation deadline.
+
+        ``Project.is_overdue`` is worked out from the payment dates and any
+        granted extension, so this cannot be a plain queryset filter. The rows
+        are narrowed to open projects first — the installations in flight, a
+        small set — and then asked one by one, which keeps a single definition
+        of the rule instead of a second one written in SQL.
+        """
+        return [lead.id for lead in self._open_project_leads() if lead.project.is_overdue]
+
+    @action(detail=False, methods=['get'], url_path='project-overdue')
+    def project_overdue(self, request):
+        """Overdue Projects: past the deadline and still unfinished.
+
+        Locked to everyone but a super admin, who releases one back to the
+        project team with a fresh deadline.
+        """
+        from .access import can_access_overdue_projects
+        user = request.user
+        if not can_access_overdue_projects(user):
+            return Response({'error': 'You do not have access to overdue projects.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        qs = self._open_project_leads()
+        if (not user.is_staff and not getattr(user, 'is_general_manager', False)
+                and getattr(user, 'role', '') == 'project_manager'):
+            qs = qs.filter(project_manager=user)
+        overdue = [lead for lead in qs if lead.project.is_overdue]
+        # Longest overdue first — the worst one is the one to deal with.
+        overdue.sort(key=lambda lead: lead.project.deadline_date)
+        return Response([self._project_payload(lead, request) for lead in overdue])
 
     @action(detail=False, methods=['get'], url_path='project')
     def project(self, request):

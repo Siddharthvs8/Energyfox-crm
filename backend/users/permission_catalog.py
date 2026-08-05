@@ -31,6 +31,7 @@ MODULE_PERMISSIONS = [
 
     ('purchase', 'Purchase & Logistics', 'Operations'),
     ('project', 'Project', 'Operations'),
+    ('project-overdue', 'Overdue Projects', 'Operations'),
     ('service', 'Service', 'Operations'),
     ('liasoning', 'Liasoning', 'Operations'),
     ('periodic-maintenance', 'Periodic Maintenance', 'Operations'),

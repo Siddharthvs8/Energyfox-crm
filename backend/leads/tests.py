@@ -385,7 +385,9 @@ class ModuleCountsCoverageTests(TestCase):
         'documentation_manager': ['documentation', 'documentation-stage2', 'warranty'],
         'accounts_staff': ['accounts', 'accounts/partially-paid', 'accounts/fully-paid', 'accounts/completed'],
         'purchase_staff': ['purchase'],
-        'project_manager': ['project'],
+        # The escalation queue is theirs too — the count going up is how they are
+        # told a project has passed its deadline.
+        'project_manager': ['project', 'project-overdue'],
         # Chasing the approval is the officer's job, so the follow-up queue is theirs.
         'liasoning_officer': ['liasoning', 'periodic-maintenance', 'discom-followup'],
         'admin': ['leads', 'documentation', 'accounts', 'purchase', 'project', 'liasoning'],
@@ -409,12 +411,13 @@ class ModuleCountsCoverageTests(TestCase):
 
     def test_assignment_targets_report_an_assigned_bucket(self):
         """`assigned` is what makes the modal say "assigned to you"."""
-        for role, module in (('documentation_staff', 'documentation'),
-                             ('accounts_staff', 'accounts'),
-                             ('purchase_staff', 'purchase'),
-                             ('project_manager', 'project'),
-                             ('bde', 'leads')):
-            body = self.counts(mk(f'a_{role}', role))
+        for n, (role, module) in enumerate((('documentation_staff', 'documentation'),
+                                           ('accounts_staff', 'accounts'),
+                                           ('purchase_staff', 'purchase'),
+                                           ('project_manager', 'project'),
+                                           ('project_manager', 'project-overdue'),
+                                           ('bde', 'leads'))):
+            body = self.counts(mk(f'a{n}_{role}', role))
             self.assertIn(module, body['assigned'], f'{role} has no assigned bucket for {module}')
 
     def test_shared_queues_still_report_a_count(self):
@@ -3594,3 +3597,132 @@ class MaintenanceReminderTests(TestCase):
         r = self.client.get('/api/leads/periodic-maintenance/',
                             HTTP_AUTHORIZATION=token_for(mk('mr_bde', 'bde')))
         self.assertEqual(r.status_code, 403)
+
+
+class OverdueProjectsModuleTests(TestCase):
+    """Overdue Projects is its own module: its own queue, its own permission key,
+    and its own sidebar count â€” the count going up is what pops the notice at the
+    project team."""
+
+    def setUp(self):
+        from .models import Project
+        self.pm = mk('op_pm', 'project_manager')
+        self.other_pm = mk('op_pm2', 'project_manager')
+        self.superadmin = mk('op_super', 'superadmin')
+        self.superadmin.is_superuser = True
+        self.superadmin.is_staff = True
+        self.superadmin.save()
+
+        self.late = self.project_for('Asha', '9895271487', self.pm, paid_days_ago=30)
+        self.on_time = self.project_for('Bina', '9895271488', self.pm, paid_days_ago=5)
+        self.someone_elses = self.project_for('Chandra', '9895271489', self.other_pm,
+                                              paid_days_ago=40)
+
+    def project_for(self, name, phone, manager, paid_days_ago):
+        from .models import Project
+        lead = Lead.objects.create(
+            first_name=name, phone=phone, status='converted', value=Decimal('225000'),
+            pushed_to_project=True, pushed_to_project_at=timezone.now(),
+            project_manager=manager)
+        Project.objects.create(lead=lead)
+        pv = PaymentVerification.objects.create(
+            lead=lead, amount_received=Decimal('50000'), payment_mode='upi',
+            utr_details='X1', is_complete=True)
+        when = timezone.now() - timedelta(days=paid_days_ago)
+        PaymentVerification.objects.filter(pk=pv.pk).update(completed_at=when, created_at=when)
+        return lead
+
+    def queue(self, user=None):
+        r = self.client.get('/api/leads/project-overdue/',
+                            HTTP_AUTHORIZATION=token_for(user or self.pm))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return r.json()
+
+    def counts(self, user=None):
+        r = self.client.get('/api/leads/module-counts/',
+                            HTTP_AUTHORIZATION=token_for(user or self.pm))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return r.json()
+
+    # â”€â”€ The queue â”€â”€
+    def test_the_queue_holds_only_overdue_projects(self):
+        rows = self.queue(self.superadmin)
+        self.assertEqual({r['first_name'] for r in rows}, {'Asha', 'Chandra'})
+        self.assertTrue(all(r['project_overdue'] for r in rows))
+
+    def test_a_project_manager_sees_only_their_own(self):
+        self.assertEqual([r['first_name'] for r in self.queue()], ['Asha'])
+
+    def test_the_worst_overdue_comes_first(self):
+        rows = self.queue(self.superadmin)
+        self.assertEqual([r['first_name'] for r in rows], ['Chandra', 'Asha'])
+
+    def test_a_completed_project_drops_out_even_if_it_was_late(self):
+        from .models import Project
+        Project.objects.filter(lead=self.late).update(is_complete=True,
+                                                      completed_at=timezone.now())
+        self.assertEqual(self.queue(), [])
+
+    def test_a_released_project_leaves_the_queue(self):
+        r = self.client.post(f'/api/leads/{self.late.id}/release-project/',
+                             HTTP_AUTHORIZATION=token_for(self.superadmin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertEqual(self.queue(), [])
+
+    def test_someone_with_no_project_access_is_refused(self):
+        r = self.client.get('/api/leads/project-overdue/',
+                            HTTP_AUTHORIZATION=token_for(mk('op_bde', 'bde')))
+        self.assertEqual(r.status_code, 403)
+
+    # â”€â”€ The count, which is what raises the pop-up â”€â”€
+    def test_the_module_has_its_own_count(self):
+        body = self.counts()
+        self.assertEqual(body['counts']['project-overdue'], 1)
+        # Assigned to them by name, so the notice is theirs and not just ambient.
+        self.assertEqual(body['assigned']['project-overdue'], 1)
+
+    def test_the_count_is_scoped_like_the_queue(self):
+        self.assertEqual(self.counts(self.superadmin)['counts']['project-overdue'], 2)
+        self.assertEqual(self.counts(self.other_pm)['counts']['project-overdue'], 1)
+
+    def test_the_count_rises_when_a_project_crosses_its_deadline(self):
+        """0 -> 1 is the signal the client turns into the pop-up."""
+        before = self.counts(self.other_pm)['counts']['project-overdue']
+        self.assertEqual(before, 1)
+        fresh = self.project_for('Devi', '9895271490', self.other_pm, paid_days_ago=5)
+        self.assertEqual(self.counts(self.other_pm)['counts']['project-overdue'], 1)
+        # The clock runs out.
+        PaymentVerification.objects.filter(lead=fresh).update(
+            completed_at=timezone.now() - timedelta(days=30),
+            created_at=timezone.now() - timedelta(days=30))
+        self.assertEqual(self.counts(self.other_pm)['counts']['project-overdue'], 2)
+
+    def test_the_count_clears_once_the_row_has_been_opened(self):
+        """Opening the customer in this module stops it counting, like everywhere."""
+        r = self.client.post(f'/api/leads/{self.late.id}/seen/',
+                             data={'modules': ['project', 'project-overdue']},
+                             content_type='application/json',
+                             HTTP_AUTHORIZATION=token_for(self.pm))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertEqual(self.counts()['counts']['project-overdue'], 0)
+
+    def test_an_overdue_project_is_no_longer_in_the_project_queue_count(self):
+        """It has moved modules â€” the working queue should not double-count it."""
+        r = self.client.get('/api/leads/project/', HTTP_AUTHORIZATION=token_for(self.pm))
+        self.assertEqual(r.status_code, 200)
+        rows = {x['first_name']: x for x in r.json()}
+        # The payload still tells the truth about both, so the client can move
+        # the row to the other module and say where it went.
+        self.assertTrue(rows['Asha']['project_overdue'])
+        self.assertFalse(rows['Bina']['project_overdue'])
+
+    # â”€â”€ The permission key â”€â”€
+    def test_a_custom_role_can_be_given_the_module_on_its_own(self):
+        from users.permission_catalog import ALL_PERMISSION_KEYS
+        self.assertIn('project-overdue', ALL_PERMISSION_KEYS)
+
+    def test_the_release_still_belongs_to_the_super_admin_alone(self):
+        r = self.client.post(f'/api/leads/{self.late.id}/release-project/',
+                             HTTP_AUTHORIZATION=token_for(self.pm))
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual([x['first_name'] for x in self.queue()], ['Asha'])

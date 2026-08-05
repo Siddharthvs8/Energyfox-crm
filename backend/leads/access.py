@@ -388,6 +388,21 @@ def can_assign_project(user):
     return user.is_staff or getattr(user, 'is_general_manager', False)
 
 
+def can_access_overdue_projects(user):
+    """Who can open the Overdue Projects module.
+
+    Its own permission key so a custom role can be given the escalation view
+    without the working queue, or the other way round; otherwise it follows
+    project access, since it is the same records past their deadline.
+    """
+    if not user or not user.is_authenticated:
+        return False
+    granted = custom_grant(user, 'project-overdue')
+    if granted is not None:
+        return granted
+    return can_access_project(user)
+
+
 def can_release_overdue_project(user):
     """Who may release an overdue project back to the project team: the super
     admin, and no one else.

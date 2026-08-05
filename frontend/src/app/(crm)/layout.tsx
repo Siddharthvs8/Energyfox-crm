@@ -213,6 +213,7 @@ const MODULE_LABELS: Record<string, string> = {
   "accounts/completed": "Completed Projects",
   "purchase": "Purchase & Logistics",
   "project": "Project",
+  "project-overdue": "Overdue Projects",
   "liasoning": "Liasoning",
   "periodic-maintenance": "Periodic Maintenance",
 };
@@ -221,6 +222,7 @@ const MODULE_LABELS: Record<string, string> = {
 // A maintenance reminder is about a visit falling due, not a new customer.
 const MODULE_NOUNS: Record<string, [string, string]> = {
   "periodic-maintenance": ["visit due", "visits due"],
+  "project-overdue": ["overdue project", "overdue projects"],
 };
 
 export default function DashboardLayout({
@@ -566,10 +568,13 @@ export default function DashboardLayout({
     const leadId = m?.[2];
     const markSeen = async () => {
       if (moduleKey && leadId && MODULE_LABELS[moduleKey]) {
-        // The accounts detail page is shared by its three queues.
+        // Some detail pages serve more than one queue: accounts has three, and an
+        // overdue project opens on the ordinary project page.
         const modules = moduleKey === "accounts"
           ? ["accounts", "accounts/partially-paid", "accounts/fully-paid", "accounts/completed"]
-          : [moduleKey];
+          : moduleKey === "project"
+            ? ["project", "project-overdue"]
+            : [moduleKey];
         try {
           await fetch(`${getApiBase(domain)}/api/leads/${leadId}/seen/`, {
             method: "POST",
@@ -631,6 +636,7 @@ export default function DashboardLayout({
     { href: `/purchase`,      label: "Purchase & Logistics", Icon: Nav.Inventory, purchaseFeature: true },
     { href: `/accounts`,      label: "Accounts",        Icon: Nav.Billing, purchaseAccountsView: true },
     { href: `/project`,       label: "Project",         Icon: Nav.PurchaseOrder, pmFeature: true },
+    { href: `/project-overdue`, label: "Overdue Projects", Icon: Nav.Alert, pmFeature: true },
     { href: `/service`,       label: "Service",         Icon: Nav.Tasks, pmFeature: true },
     { href: `/team-stats`,    label: "Team Stats",      Icon: Nav.Leaderboard, pmFeature: true },
     { href: `/liasoning`,     label: "Liasoning",        Icon: Nav.Tasks, liasoningFeature: true },
@@ -1219,15 +1225,32 @@ export default function DashboardLayout({
               <div className="relative scale-[2.2]"><Nav.Quote /></div>
             </div>
             <div className="px-10 pb-10 pt-8 text-center flex flex-col items-center">
-              <h2 className="text-2xl font-black text-slate-800 mb-3 tracking-tight">
-                {assignAlert.mine ? "New work assigned to you" : "New work in your queue"}
-              </h2>
-              <p className="text-slate-500 text-base mb-8 leading-relaxed">
-                <b className="text-slate-700">{assignAlert.added}</b> new{" "}
-                {(MODULE_NOUNS[assignAlert.key] || ["customer", "customers"])[assignAlert.added === 1 ? 0 : 1]}
-                {assignAlert.mine ? " assigned to you in " : " waiting in "}
-                <b className="text-slate-700">{MODULE_LABELS[assignAlert.key] || assignAlert.key}</b>.
-              </p>
+              {/* A missed deadline is not new work arriving — it is work that has
+                  been taken away from the team, so it gets its own words. */}
+              {assignAlert.key === "project-overdue" ? (
+                <>
+                  <h2 className="text-2xl font-black text-slate-800 mb-3 tracking-tight">Deadline missed</h2>
+                  <p className="text-slate-500 text-base mb-8 leading-relaxed">
+                    <b className="text-slate-700">{assignAlert.added}</b>{" "}
+                    {assignAlert.added === 1 ? "project has" : "projects have"} passed the 20-day
+                    installation deadline and moved to{" "}
+                    <b className="text-slate-700">Overdue Projects</b>. A super admin has to release
+                    {assignAlert.added === 1 ? " it" : " them"} before the work can continue.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <h2 className="text-2xl font-black text-slate-800 mb-3 tracking-tight">
+                    {assignAlert.mine ? "New work assigned to you" : "New work in your queue"}
+                  </h2>
+                  <p className="text-slate-500 text-base mb-8 leading-relaxed">
+                    <b className="text-slate-700">{assignAlert.added}</b> new{" "}
+                    {(MODULE_NOUNS[assignAlert.key] || ["customer", "customers"])[assignAlert.added === 1 ? 0 : 1]}
+                    {assignAlert.mine ? " assigned to you in " : " waiting in "}
+                    <b className="text-slate-700">{MODULE_LABELS[assignAlert.key] || assignAlert.key}</b>.
+                  </p>
+                </>
+              )}
               <div className="flex gap-3 w-full max-w-sm">
                 <button onClick={() => setAssignAlert(null)}
                   className="flex-1 py-3.5 bg-slate-100 text-slate-600 text-base font-bold rounded-2xl hover:bg-slate-200 transition-all active:scale-[0.98]">
