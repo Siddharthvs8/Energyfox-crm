@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.utils import timezone
-from .models import Lead, IntegrationSettings, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, LiasoningDocument, Warranty, WarrantyDocument, EmergencyService, EmergencyServiceDocument, PeriodicMaintenance, MaintenanceVisit
+from .models import Lead, IntegrationSettings, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, LiasoningDocument, Warranty, WarrantyDocument, EmergencyService, EmergencyServiceDocument, PeriodicMaintenance, MaintenanceVisit, MaintenanceVisitDocument
 from .document_kinds import SLOT_TO_KIND, SITE_VISIT_SHARED_SLOTS, DOC_STAGE1_SHARED_SLOTS, shared_doc_entries
 
 from users.serializers import UserSerializer
@@ -322,9 +322,16 @@ class ServiceEntrySerializer(serializers.ModelSerializer):
             return f"{u.first_name} {u.last_name}".strip() or u.username
         return None
 
+class MaintenanceVisitDocumentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MaintenanceVisitDocument
+        fields = ['id', 'doc_type', 'file', 'uploaded_at']
+
+
 class MaintenanceVisitSerializer(serializers.ModelSerializer):
     completed_by_name = serializers.SerializerMethodField()
     is_rescheduled = serializers.BooleanField(read_only=True)
+    documents = MaintenanceVisitDocumentSerializer(many=True, read_only=True)
 
     class Meta:
         model = MaintenanceVisit
@@ -332,8 +339,7 @@ class MaintenanceVisitSerializer(serializers.ModelSerializer):
         # Photos go through the dedicated upload endpoint, the due date through
         # the reschedule action, and completion is stamped by the view.
         read_only_fields = ['plan', 'sequence', 'due_date', 'original_due_date',
-                            'reschedule_reason', 'panel_before', 'panel_after',
-                            'completed_at', 'completed_by', 'updated_at']
+                            'reschedule_reason', 'completed_at', 'completed_by', 'updated_at']
 
     def get_completed_by_name(self, obj):
         if obj.completed_by:

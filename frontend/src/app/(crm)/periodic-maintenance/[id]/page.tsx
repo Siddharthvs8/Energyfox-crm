@@ -6,6 +6,29 @@ import React, { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
+type VisitDoc = { id: number; doc_type: string; file: string; uploaded_at: string };
+
+/** Picture-only slots: the wash and what the plant made either side of it —
+ *  there is no number to type for these, only the photograph. */
+const PICTURE_SLOTS = [
+  ["panel_before", "Panel Before"],
+  ["panel_after", "Panel After"],
+  ["production_before", "Production Before Service"],
+  ["production_after", "Production After Service"],
+] as const;
+
+/** Readings: a typed value and its photos. Matches MaintenanceVisit.READING_SLOTS. */
+const READING_SLOTS = [
+  ["dc_voltage", "dc_voltage", "DC Voltage", "e.g. 240 V"],
+  ["dc_floating_voltage", "dc_floating_voltage", "DC Floating Voltages", "e.g. 12 V"],
+  ["error_codes", "error_codes", "Error Codes (if any)", "Error codes"],
+  ["structure_damage", "structure_damage", "Structure Damage, Deformity or Rust", "Observations"],
+  ["monthly_production", "monthly_production", "Monthly Production", "e.g. 550 kWh"],
+  ["ac_ne_voltage", "ac_ne", "N-E Voltage", "N-E"],
+  ["ac_pn_voltage", "ac_pn", "P-N", "P-N"],
+  ["ac_pe_voltage", "ac_pe", "P-E", "P-E"],
+] as const;
+
 type Visit = {
   id: number; sequence: number; due_date: string;
   // Set once a visit has been moved, so the slip stays visible.
@@ -13,7 +36,9 @@ type Visit = {
   dc_voltage: string; structure_damage: string; inverter_cleaned: boolean;
   ac_ne_voltage: string; ac_pn_voltage: string; ac_pe_voltage: string;
   monthly_production: string; error_codes: string;
-  panel_before: string | null; panel_after: string | null;
+  dc_floating_voltage: string;
+  // Photos hang off the visit, several per slot.
+  documents: VisitDoc[];
   is_complete: boolean; completed_at: string | null; completed_by_name: string | null;
 };
 type Detail = {
@@ -28,6 +53,50 @@ type Detail = {
 
 const inputCls = "w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all disabled:opacity-70";
 const labelCls = "block text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1.5";
+
+/**
+ * A slot's files: green links with a ✕, then "+ Add file(s)".
+ *
+ * Module scope, not inside the page — a component declared during render is a
+ * new type every time state changes, which tears the subtree down and rebuilds
+ * it on each keystroke.
+ */
+function PhotoSlot({ slot, docs, canEdit, busy, fileHref, onAdd, onDelete }: {
+  slot: string; docs: VisitDoc[]; canEdit: boolean; busy: boolean;
+  fileHref: (u: string | null) => string | null;
+  onAdd: (files: File[]) => void;
+  onDelete: (doc: VisitDoc) => void;
+}) {
+  const mine = docs.filter(d => d.doc_type === slot);
+  return (
+    <>
+      {mine.length > 0 && (
+        <ul className="mb-1.5 space-y-1">
+          {mine.map(d => {
+            const name = decodeURIComponent(d.file.split("/").pop() || "photo");
+            return (
+              <li key={d.id} className="flex items-center gap-2 text-[11px]">
+                <a href={fileHref(d.file)!} target="_blank" rel="noreferrer" title={name}
+                  className="font-semibold text-emerald-600 hover:underline truncate max-w-[150px]">{name}</a>
+                {canEdit && (
+                  <button type="button" onClick={() => onDelete(d)} title="Delete file"
+                    className="font-bold text-rose-500 hover:text-rose-700">✕</button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {canEdit && (
+        <label className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold transition ${busy ? "bg-slate-100 text-slate-400 cursor-not-allowed" : "bg-slate-100 text-slate-700 hover:bg-slate-200 cursor-pointer"}`}>
+          {busy ? "Uploading…" : "+ Add file(s)"}
+          <input type="file" accept="image/*" multiple capture="environment" disabled={busy} className="hidden"
+            onChange={e => { const fs = Array.from(e.target.files || []); e.currentTarget.value = ""; onAdd(fs); }} />
+        </label>
+      )}
+    </>
+  );
+}
 
 export default function MaintenanceDetailPage({ params: paramsPromise }: { params: Promise<{ id: string }> }) {
   const params = React.use(paramsPromise);
@@ -69,7 +138,8 @@ export default function MaintenanceDetailPage({ params: paramsPromise }: { param
 
   const openForm = (v: Visit) => {
     setDraft({
-      dc_voltage: v.dc_voltage || "", structure_damage: v.structure_damage || "",
+      dc_voltage: v.dc_voltage || "", dc_floating_voltage: v.dc_floating_voltage || "",
+      structure_damage: v.structure_damage || "",
       inverter_cleaned: !!v.inverter_cleaned,
       ac_ne_voltage: v.ac_ne_voltage || "", ac_pn_voltage: v.ac_pn_voltage || "", ac_pe_voltage: v.ac_pe_voltage || "",
       monthly_production: v.monthly_production || "", error_codes: v.error_codes || "",
@@ -126,24 +196,47 @@ export default function MaintenanceDetailPage({ params: paramsPromise }: { param
     finally { setSaving(false); }
   };
 
-  const uploadPhoto = async (slot: "before" | "after", file: File) => {
-    if (!openVisit) return;
+  /** The visit already exists, so photos go up as they are picked. */
+  const uploadPhotos = async (slot: string, files: File[]) => {
+    if (!openVisit || !files.length) return;
     setUploadingSlot(slot);
     try {
-      const fd = new FormData();
-      fd.append("slot", slot);
-      fd.append("file", file);
-      const r = await fetch(`${apiBase}/api/leads/${id}/maintenance-visits/${openVisit.id}/photos/`, {
-        method: "POST", headers: authHeader(), body: fd,
-      });
-      if (r.ok) {
-        const v = await r.json();
-        setOpenVisit(v);
+      const added: VisitDoc[] = [];
+      for (const file of files) {
+        const fd = new FormData();
+        fd.append("doc_type", slot);
+        fd.append("file", file);
+        const r = await fetch(
+          `${apiBase}/api/leads/${id}/maintenance-visits/${openVisit.id}/documents/`,
+          { method: "POST", headers: authHeader(), body: fd });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          alert(e.error || `Could not upload ${file.name}.`);
+          break;
+        }
+        added.push(await r.json());
+      }
+      if (added.length) {
+        setOpenVisit(v => (v ? { ...v, documents: [...(v.documents || []), ...added] } : v));
         await load();
-      } else { const e = await r.json().catch(() => ({})); alert(e.error || "Upload failed."); }
+      }
     } catch { alert("Network error while uploading."); }
     finally { setUploadingSlot(null); }
   };
+
+  const deletePhoto = async (doc: VisitDoc) => {
+    if (!openVisit || !window.confirm("Remove this photo?")) return;
+    try {
+      const r = await fetch(
+        `${apiBase}/api/leads/${id}/maintenance-visits/${openVisit.id}/documents/${doc.id}/`,
+        { method: "DELETE", headers: authHeader() });
+      if (r.ok || r.status === 204) {
+        setOpenVisit(v => (v ? { ...v, documents: (v.documents || []).filter(d => d.id !== doc.id) } : v));
+        await load();
+      } else alert("Could not remove the photo.");
+    } catch { alert("Network error."); }
+  };
+
 
   if (loading) return <div className="flex items-center justify-center min-h-[60vh]"><div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" /></div>;
   if (error || !data) return (
@@ -212,9 +305,23 @@ export default function MaintenanceDetailPage({ params: paramsPromise }: { param
                         {v.is_complete ? "Done" : overdue ? "Overdue" : "Scheduled"}
                       </span>
                     </td>
-                    <td className="px-5 py-3 text-[11px]">
-                      {v.panel_before ? <a className="text-emerald-600 font-semibold hover:underline mr-2" href={fileHref(v.panel_before)!} target="_blank" rel="noreferrer">before</a> : <span className="text-slate-300 mr-2">before</span>}
-                      {v.panel_after ? <a className="text-emerald-600 font-semibold hover:underline" href={fileHref(v.panel_after)!} target="_blank" rel="noreferrer">after</a> : <span className="text-slate-300">after</span>}
+                    <td className="px-5 py-3 text-[11px] whitespace-nowrap">
+                      {/* The wash and production pictures; a slot can hold several. */}
+                      {PICTURE_SLOTS.map(([slot, label], n) => {
+                        const shots = (v.documents || []).filter(d => d.doc_type === slot);
+                        const short = label.replace("Panel ", "").replace(" Service", "").toLowerCase();
+                        return (
+                          <span key={slot} className={n > 0 ? "ml-2" : ""}>
+                            {shots.length ? (
+                              <a className="text-emerald-600 font-semibold hover:underline"
+                                href={fileHref(shots[0].file)!} target="_blank" rel="noreferrer"
+                                title={`${shots.length} photo(s)`}>
+                                {short}{shots.length > 1 ? ` (${shots.length})` : ""}
+                              </a>
+                            ) : <span className="text-slate-300">{short}</span>}
+                          </span>
+                        );
+                      })}
                     </td>
                     <td className="px-5 py-3 text-slate-600">{v.monthly_production || "—"}</td>
                     <td className="px-5 py-3 text-right whitespace-nowrap">
@@ -301,35 +408,35 @@ export default function MaintenanceDetailPage({ params: paramsPromise }: { param
               <button onClick={() => setOpenVisit(null)} className="w-8 h-8 flex items-center justify-center rounded-xl bg-slate-100 text-slate-500 hover:bg-slate-200 transition text-sm">✕</button>
             </div>
             <div className="overflow-y-auto flex-1 px-6 py-5 space-y-4">
-              {/* Photos */}
+              {/* Pictures — the wash, and what the plant made either side of it.
+                  Nothing to type for these, only the photograph. */}
               <div className="bg-slate-50/70 border border-slate-100 rounded-xl p-4">
-                <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-wide mb-3">Photos — panel washed before and after</p>
-                <div className="grid sm:grid-cols-2 gap-3">
-                  {(["before", "after"] as const).map(slot => {
-                    const current = slot === "before" ? openVisit.panel_before : openVisit.panel_after;
-                    const busy = uploadingSlot === slot;
-                    return (
-                      <div key={slot}>
-                        <label className={labelCls}>Panel {slot}</label>
-                        {current && <a href={fileHref(current)!} target="_blank" rel="noreferrer" className="block text-[11px] font-semibold text-emerald-600 hover:underline truncate mb-1.5">{decodeURIComponent(current.split("/").pop() || "photo")}</a>}
-                        {data.can_edit && (
-                          <label className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold transition ${busy ? "bg-slate-100 text-slate-400 cursor-not-allowed" : "bg-slate-100 text-slate-700 hover:bg-slate-200 cursor-pointer"}`}>
-                            {busy ? "Uploading…" : current ? "Replace photo" : "+ Add photo"}
-                            <input type="file" accept="image/*" disabled={busy} className="hidden"
-                              onChange={e => { const f = e.target.files?.[0]; e.currentTarget.value = ""; if (f) uploadPhoto(slot, f); }} />
-                          </label>
-                        )}
-                      </div>
-                    );
-                  })}
+                <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-wide mb-3">Photos</p>
+                <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  {PICTURE_SLOTS.map(([slot, label]) => (
+                    <div key={slot}>
+                      <label className={labelCls}>{label}</label>
+                      <PhotoSlot slot={slot} docs={openVisit.documents || []} canEdit={!!data.can_edit}
+                        busy={uploadingSlot === slot} fileHref={fileHref}
+                        onAdd={(fs: File[]) => uploadPhotos(slot, fs)} onDelete={deletePhoto} />
+                    </div>
+                  ))}
                 </div>
               </div>
 
+              {/* Readings — a typed value and its photos. */}
               <div className="grid sm:grid-cols-2 gap-4">
-                <div><label className={labelCls}>DC Voltage</label><input value={draft.dc_voltage} disabled={!data.can_edit} onChange={e => setDraft({ ...draft, dc_voltage: e.target.value })} className={inputCls} placeholder="e.g. 240 V" /></div>
-                <div><label className={labelCls}>Error Codes (if any)</label><input value={draft.error_codes} disabled={!data.can_edit} onChange={e => setDraft({ ...draft, error_codes: e.target.value })} className={inputCls} placeholder="Error codes" /></div>
-                <div className="sm:col-span-2"><label className={labelCls}>Structure Damage, Deformity or Rust</label><input value={draft.structure_damage} disabled={!data.can_edit} onChange={e => setDraft({ ...draft, structure_damage: e.target.value })} className={inputCls} placeholder="Observations" /></div>
-                <div><label className={labelCls}>Monthly Production</label><input value={draft.monthly_production} disabled={!data.can_edit} onChange={e => setDraft({ ...draft, monthly_production: e.target.value })} className={inputCls} placeholder="e.g. 550 kWh" /></div>
+                {READING_SLOTS.map(([field, slot, label, ph]) => (
+                  <div key={slot} className={field === "structure_damage" ? "sm:col-span-2" : ""}>
+                    <label className={labelCls}>{label}</label>
+                    <input value={(draft as any)[field] || ""} disabled={!data.can_edit}
+                      onChange={e => setDraft({ ...draft, [field]: e.target.value })}
+                      className={inputCls} placeholder={ph} />
+                    <div className="mt-1.5"><PhotoSlot slot={slot} docs={openVisit.documents || []} canEdit={!!data.can_edit}
+                        busy={uploadingSlot === slot} fileHref={fileHref}
+                        onAdd={(fs: File[]) => uploadPhotos(slot, fs)} onDelete={deletePhoto} /></div>
+                  </div>
+                ))}
                 <div className="flex items-end pb-1">
                   <label className={`inline-flex items-center gap-2 text-sm font-medium ${!data.can_edit ? "text-slate-400" : "text-slate-700 cursor-pointer"}`}>
                     <input type="checkbox" checked={!!draft.inverter_cleaned} disabled={!data.can_edit}
@@ -337,15 +444,6 @@ export default function MaintenanceDetailPage({ params: paramsPromise }: { param
                       className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500/30" />
                     Inverter cleaned
                   </label>
-                </div>
-              </div>
-
-              <div className="bg-slate-50/70 border border-slate-100 rounded-xl p-4">
-                <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-wide mb-3">AC Voltage</p>
-                <div className="grid sm:grid-cols-3 gap-3">
-                  <div><label className={labelCls}>N-E Voltage</label><input value={draft.ac_ne_voltage} disabled={!data.can_edit} onChange={e => setDraft({ ...draft, ac_ne_voltage: e.target.value })} className={inputCls} placeholder="N-E" /></div>
-                  <div><label className={labelCls}>P-N</label><input value={draft.ac_pn_voltage} disabled={!data.can_edit} onChange={e => setDraft({ ...draft, ac_pn_voltage: e.target.value })} className={inputCls} placeholder="P-N" /></div>
-                  <div><label className={labelCls}>P-E</label><input value={draft.ac_pe_voltage} disabled={!data.can_edit} onChange={e => setDraft({ ...draft, ac_pe_voltage: e.target.value })} className={inputCls} placeholder="P-E" /></div>
                 </div>
               </div>
 

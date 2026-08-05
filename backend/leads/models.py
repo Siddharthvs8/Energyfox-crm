@@ -1046,7 +1046,10 @@ class MaintenanceVisit(models.Model):
     reschedule_reason = models.CharField(max_length=255, blank=True, default='')
 
     # ── Readings / checks ──
+    # Every reading is typed and photographed; the photos live in
+    # MaintenanceVisitDocument, several per slot.
     dc_voltage = models.CharField(max_length=60, blank=True, default='')
+    dc_floating_voltage = models.CharField(max_length=60, blank=True, default='')
     structure_damage = models.CharField(max_length=255, blank=True, default='',
                                         help_text="Structure damage, deformity or rust")
     inverter_cleaned = models.BooleanField(default=False)
@@ -1056,9 +1059,27 @@ class MaintenanceVisit(models.Model):
     monthly_production = models.CharField(max_length=60, blank=True, default='')
     error_codes = models.CharField(max_length=255, blank=True, default='')
 
-    # ── Photos: panel washed before and after ──
-    panel_before = models.FileField(upload_to='maintenance/photos/', null=True, blank=True)
-    panel_after = models.FileField(upload_to='maintenance/photos/', null=True, blank=True)
+    # Photo slots (MaintenanceVisitDocument.doc_type), in the order the form
+    # lays them out. The four picture-only slots are evidence of the wash and of
+    # what the plant was producing either side of it — there is no number to
+    # type for those, only the photograph.
+    PICTURE_ONLY_SLOTS = [
+        ('panel_before', 'Panel Before'),
+        ('panel_after', 'Panel After'),
+        ('production_before', 'Production Before Service'),
+        ('production_after', 'Production After Service'),
+    ]
+    READING_SLOTS = [
+        ('dc_voltage', 'DC Voltage'),
+        ('dc_floating_voltage', 'DC Floating Voltages'),
+        ('error_codes', 'Error Codes'),
+        ('structure_damage', 'Structure Damage'),
+        ('monthly_production', 'Monthly Production'),
+        ('ac_ne', 'N-E Voltage'),
+        ('ac_pn', 'P-N'),
+        ('ac_pe', 'P-E'),
+    ]
+    PHOTO_SLOTS = PICTURE_ONLY_SLOTS + READING_SLOTS
 
     is_complete = models.BooleanField(default=False)
     completed_at = models.DateTimeField(null=True, blank=True)
@@ -1227,6 +1248,25 @@ class ReceiptVoucher(models.Model):
 
     def __str__(self):
         return f"{self.number} — {self.received_from} ({self.amount})"
+
+
+class MaintenanceVisitDocument(models.Model):
+    """A photo attached to one slot on a maintenance visit.
+
+    Several per slot: a panel is photographed from more than one angle, and a
+    meter is often shot twice.
+    """
+    visit = models.ForeignKey(MaintenanceVisit, on_delete=models.CASCADE, related_name='documents')
+    doc_type = models.CharField(max_length=40, db_index=True)
+    file = models.FileField(upload_to='maintenance/photos/')
+    uploaded_by = models.ForeignKey('users.User', on_delete=models.SET_NULL, null=True, blank=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['uploaded_at', 'id']
+
+    def __str__(self):
+        return f"{self.doc_type} — {self.visit_id}"
 
 
 class ModuleSeen(models.Model):

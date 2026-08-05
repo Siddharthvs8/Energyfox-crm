@@ -3104,3 +3104,104 @@ class EmergencyServiceConditionTests(TestCase):
         entry = EmergencyService.objects.get(pk=r.json()['id'])
         self.assertEqual((entry.dc_side_condition, entry.ac_side_condition, entry.replacement),
                          ('inverter_damage', 'termination_point_damage', 'inverter'))
+
+
+class MaintenanceVisitPhotoSlotsTests(TestCase):
+    """A visit records the wash, what the plant made either side of it, and every
+    reading — each slot holding as many photos as the job needed."""
+
+    PICTURE_ONLY = ['panel_before', 'panel_after', 'production_before', 'production_after']
+    READINGS = ['dc_voltage', 'dc_floating_voltage', 'error_codes', 'structure_damage',
+                'monthly_production', 'ac_ne', 'ac_pn', 'ac_pe']
+
+    def setUp(self):
+        from datetime import date
+        from .models import PeriodicMaintenance, MaintenanceVisit
+        self.officer = mk('mv_officer', 'liasoning_officer')
+        self.lead = Lead.objects.create(first_name='Asha', last_name='Devi T',
+                                        phone='9895271487', status='converted',
+                                        pushed_to_liasoning=True,
+                                        pushed_to_liasoning_at=timezone.now())
+        plan = PeriodicMaintenance.objects.create(lead=self.lead, start_date=date(2026, 8, 5))
+        self.visit = MaintenanceVisit.objects.create(plan=plan, sequence=1,
+                                                     due_date=date(2027, 2, 5))
+
+    def photo(self, name):
+        from io import BytesIO
+        from PIL import Image
+        buf = BytesIO()
+        Image.new('RGB', (2, 2), (30, 30, 30)).save(buf, format='JPEG')
+        return SimpleUploadedFile(name, buf.getvalue(), content_type='image/jpeg')
+
+    def upload(self, slot, name='shot.jpg'):
+        return self.client.post(
+            f'/api/leads/{self.lead.id}/maintenance-visits/{self.visit.id}/documents/',
+            data={'doc_type': slot, 'file': self.photo(name)},
+            HTTP_AUTHORIZATION=token_for(self.officer))
+
+    def docs(self):
+        r = self.client.get(f'/api/leads/{self.lead.id}/maintenance-detail/',
+                            HTTP_AUTHORIZATION=token_for(self.officer))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        # Visits hang off the plan in this payload.
+        visits = r.json()['plan']['visits']
+        visit = next(v for v in visits if v['id'] == self.visit.id)
+        return visit['documents']
+
+    def test_every_slot_takes_a_photo(self):
+        for slot in self.PICTURE_ONLY + self.READINGS:
+            self.assertEqual(self.upload(slot, f'{slot}.jpg').status_code, 201, slot)
+        self.assertEqual({d['doc_type'] for d in self.docs()},
+                         set(self.PICTURE_ONLY + self.READINGS))
+
+    def test_a_slot_takes_several_photos(self):
+        for n in range(3):
+            self.assertEqual(self.upload('panel_before', f'p{n}.jpg').status_code, 201)
+        self.assertEqual(len([d for d in self.docs() if d['doc_type'] == 'panel_before']), 3)
+
+    def test_one_photo_can_be_removed_without_the_others(self):
+        first = self.upload('panel_after', 'a.jpg').json()['id']
+        self.upload('panel_after', 'b.jpg')
+        r = self.client.delete(
+            f'/api/leads/{self.lead.id}/maintenance-visits/{self.visit.id}/documents/{first}/',
+            HTTP_AUTHORIZATION=token_for(self.officer))
+        self.assertEqual(r.status_code, 204)
+        left = self.docs()
+        self.assertEqual(len(left), 1)
+        self.assertIn('b', left[0]['file'])
+
+    def test_the_new_dc_floating_reading_saves(self):
+        r = self.client.patch(
+            f'/api/leads/{self.lead.id}/maintenance-visits/{self.visit.id}/',
+            data={'dc_voltage': '240', 'dc_floating_voltage': '12'},
+            content_type='application/json', HTTP_AUTHORIZATION=token_for(self.officer))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.visit.refresh_from_db()
+        self.assertEqual((self.visit.dc_voltage, self.visit.dc_floating_voltage), ('240', '12'))
+
+    def test_an_unknown_slot_is_refused(self):
+        r = self.upload('somewhere_else')
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(self.docs(), [])
+
+    def test_a_file_is_required(self):
+        r = self.client.post(
+            f'/api/leads/{self.lead.id}/maintenance-visits/{self.visit.id}/documents/',
+            data={'doc_type': 'panel_before'}, HTTP_AUTHORIZATION=token_for(self.officer))
+        self.assertEqual(r.status_code, 400)
+
+    def test_photos_are_optional(self):
+        """A visit filled in without photos still saves."""
+        r = self.client.patch(
+            f'/api/leads/{self.lead.id}/maintenance-visits/{self.visit.id}/',
+            data={'is_complete': True}, content_type='application/json',
+            HTTP_AUTHORIZATION=token_for(self.officer))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(self.docs(), [])
+
+    def test_someone_outside_liasoning_cannot_upload(self):
+        r = self.client.post(
+            f'/api/leads/{self.lead.id}/maintenance-visits/{self.visit.id}/documents/',
+            data={'doc_type': 'panel_before', 'file': self.photo('x.jpg')},
+            HTTP_AUTHORIZATION=token_for(mk('mv_bde', 'bde')))
+        self.assertIn(r.status_code, (403, 404))

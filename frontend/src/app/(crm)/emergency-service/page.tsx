@@ -86,6 +86,66 @@ const TOP_READINGS = [
 const inputCls = "w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all";
 const labelCls = "block text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1.5";
 
+
+/**
+ * A reading: the typed value, then its photos as a filename list with a
+ * "+ Add file(s)" button — the same shape the site visit uses.
+ *
+ * Defined here rather than inside the page: a component declared during render
+ * is a new type on every keystroke, so React tears the subtree down and rebuilds
+ * it, and the input loses focus after a single character.
+ */
+function Reading({
+  text, slot, label, ph, value, apiBase, stored, queued,
+  onChange, onAdd, onDropStored, onDropQueued,
+}: {
+  text: string; slot: string; label: string; ph: string;
+  value: string; apiBase: string; stored: EntryDoc[]; queued: File[];
+  onChange: (v: string) => void;
+  onAdd: (files: File[]) => void;
+  onDropStored: (doc: EntryDoc) => void;
+  onDropQueued: (index: number) => void;
+}) {
+  return (
+    <div>
+      <label className={labelCls}>{label}</label>
+      <input value={value} onChange={e => onChange(e.target.value)}
+        className={inputCls} placeholder={ph} />
+
+      {(stored.length > 0 || queued.length > 0) && (
+        <ul className="mt-2 space-y-1">
+          {stored.map(d => {
+            const href = d.file.startsWith("http") ? d.file : `${apiBase}${d.file}`;
+            const name = decodeURIComponent(d.file.split("/").pop() || "file");
+            return (
+              <li key={d.id} className="flex items-center gap-2 text-[11px]">
+                <a href={href} target="_blank" rel="noreferrer" title={name}
+                  className="font-semibold text-emerald-600 hover:underline truncate max-w-[150px]">{name}</a>
+                <button type="button" onClick={() => onDropStored(d)} title="Delete file"
+                  className="font-bold text-rose-500 hover:text-rose-700">✕</button>
+              </li>
+            );
+          })}
+          {queued.map((f, n) => (
+            <li key={`q-${n}`} className="flex items-center gap-2 text-[11px]">
+              <span className="text-slate-500 truncate max-w-[150px]" title={f.name}>{f.name}</span>
+              <span className="text-[10px] text-amber-600 whitespace-nowrap">attaches on save</span>
+              <button type="button" onClick={() => onDropQueued(n)} title="Remove"
+                className="font-bold text-rose-500 hover:text-rose-700">✕</button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <label className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 cursor-pointer transition">
+        + Add file(s)
+        <input type="file" accept="image/*,application/pdf" multiple capture="environment" className="hidden"
+          onChange={e => { const fs = Array.from(e.target.files || []); e.currentTarget.value = ""; onAdd(fs); }} />
+      </label>
+    </div>
+  );
+}
+
 export default function EmergencyServicePage() {
   const domain = APP_SLUG;
   const router = useRouter();
@@ -149,51 +209,6 @@ export default function EmergencyServicePage() {
   const [stored, setStored] = useState<EntryDoc[]>([]);
 
 
-  /** A reading: the typed value, then its photos as a filename list with a
-   *  "+ Add file(s)" button — the same shape the site visit uses. */
-  const Reading = ({ text, slot, label, ph }: { text: string; slot: string; label: string; ph: string }) => {
-    const mine = stored.filter(d => d.doc_type === slot);
-    const queued = pending[slot] || [];
-    return (
-      <div>
-        <label className={labelCls}>{label}</label>
-        <input value={(form as any)[text]}
-          onChange={e => setForm({ ...form, [text]: e.target.value })}
-          className={inputCls} placeholder={ph} />
-
-        {(mine.length > 0 || queued.length > 0) && (
-          <ul className="mt-2 space-y-1">
-            {mine.map(d => {
-              const href = d.file.startsWith("http") ? d.file : `${apiBase}${d.file}`;
-              const name = decodeURIComponent(d.file.split("/").pop() || "file");
-              return (
-                <li key={d.id} className="flex items-center gap-2 text-[11px]">
-                  <a href={href} target="_blank" rel="noreferrer" title={name}
-                    className="font-semibold text-emerald-600 hover:underline truncate max-w-[150px]">{name}</a>
-                  <button type="button" onClick={() => dropStored(d)} title="Delete file"
-                    className="font-bold text-rose-500 hover:text-rose-700">✕</button>
-                </li>
-              );
-            })}
-            {queued.map((f, n) => (
-              <li key={`q-${n}`} className="flex items-center gap-2 text-[11px]">
-                <span className="text-slate-500 truncate max-w-[150px]" title={f.name}>{f.name}</span>
-                <span className="text-[10px] text-amber-600">pending</span>
-                <button type="button" onClick={() => dropPending(slot, n)} title="Remove"
-                  className="font-bold text-rose-500 hover:text-rose-700">✕</button>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        <label className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 cursor-pointer transition">
-          + Add file(s)
-          <input type="file" accept="image/*,application/pdf" multiple capture="environment" className="hidden"
-            onChange={e => { const fs = Array.from(e.target.files || []); e.currentTarget.value = ""; addFiles(slot, fs); }} />
-        </label>
-      </div>
-    );
-  };
 
   const resetForm = () => {
     setForm({ ...BLANK }); setEditingId(null);
@@ -329,13 +344,21 @@ export default function EmergencyServicePage() {
             )}
           </div>
           <div className="lg:col-span-2"><label className={labelCls}>Service</label><input value={form.service} onChange={e => setForm({ ...form, service: e.target.value })} className={inputCls} placeholder="Service done" /></div>
-          {TOP_READINGS.map(r => <Reading key={r.slot} {...r} />)}
+          {TOP_READINGS.map(r => <Reading key={r.slot} {...r} value={(form as any)[r.text] || ""} apiBase={apiBase}
+              stored={stored.filter(d => d.doc_type === r.slot)} queued={pending[r.slot] || []}
+              onChange={v => setForm({ ...form, [r.text]: v })}
+              onAdd={fs => addFiles(r.slot, fs)}
+              onDropStored={dropStored} onDropQueued={n => dropPending(r.slot, n)} />)}
         </div>
         <div className="mt-4 bg-slate-50/70 border border-slate-100 rounded-xl p-4">
           <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-wide mb-3">AC Voltage</p>
           <p className="text-[11px] text-slate-400 -mt-2 mb-3">Type the reading and attach the meter photo(s).</p>
           <div className="grid sm:grid-cols-3 gap-3">
-            {AC_READINGS.map(r => <Reading key={r.slot} {...r} />)}
+            {AC_READINGS.map(r => <Reading key={r.slot} {...r} value={(form as any)[r.text] || ""} apiBase={apiBase}
+              stored={stored.filter(d => d.doc_type === r.slot)} queued={pending[r.slot] || []}
+              onChange={v => setForm({ ...form, [r.text]: v })}
+              onAdd={fs => addFiles(r.slot, fs)}
+              onDropStored={dropStored} onDropQueued={n => dropPending(r.slot, n)} />)}
           </div>
         </div>
         <div className="mt-4 bg-slate-50/70 border border-slate-100 rounded-xl p-4">

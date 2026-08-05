@@ -6,8 +6,8 @@ from django.http import HttpResponse
 import csv
 import io
 import logging
-from .models import Lead, IntegrationSettings, ActivityLog, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, LeadDocument, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, LiasoningDocument, Warranty, WarrantyDocument, EmergencyService, EmergencyServiceDocument, PeriodicMaintenance, MaintenanceVisit, ModuleSeen, ReceiptVoucher
-from .serializers import LeadSerializer, IntegrationSettingsSerializer, LeadAttachmentSerializer, ProductSerializer, SiteVisitSerializer, DocumentationStage1Serializer, SiteVisitDocumentSerializer, DocumentationStage1DocumentSerializer, PaymentVerificationSerializer, PurchaseLogisticsSerializer, ProjectSerializer, ProjectDocumentSerializer, ServiceEntrySerializer, BalancePaymentSerializer, DocumentationStage2Serializer, DocumentationStage2DocumentSerializer, LiasoningServiceSerializer, LiasoningDocumentSerializer, WarrantySerializer, WarrantyDocumentSerializer, EmergencyServiceSerializer, EmergencyServiceDocumentSerializer, PeriodicMaintenanceSerializer, MaintenanceVisitSerializer, ReceiptVoucherSerializer
+from .models import Lead, IntegrationSettings, ActivityLog, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, LeadDocument, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, LiasoningDocument, Warranty, WarrantyDocument, EmergencyService, EmergencyServiceDocument, PeriodicMaintenance, MaintenanceVisit, MaintenanceVisitDocument, ModuleSeen, ReceiptVoucher
+from .serializers import LeadSerializer, IntegrationSettingsSerializer, LeadAttachmentSerializer, ProductSerializer, SiteVisitSerializer, DocumentationStage1Serializer, SiteVisitDocumentSerializer, DocumentationStage1DocumentSerializer, PaymentVerificationSerializer, PurchaseLogisticsSerializer, ProjectSerializer, ProjectDocumentSerializer, ServiceEntrySerializer, BalancePaymentSerializer, DocumentationStage2Serializer, DocumentationStage2DocumentSerializer, LiasoningServiceSerializer, LiasoningDocumentSerializer, WarrantySerializer, WarrantyDocumentSerializer, EmergencyServiceSerializer, EmergencyServiceDocumentSerializer, PeriodicMaintenanceSerializer, MaintenanceVisitSerializer, MaintenanceVisitDocumentSerializer, ReceiptVoucherSerializer
 from .document_kinds import SHARED_KIND_LABELS, kind_for
 # Module-level: the nine module payloads all report this one rule, and
 # access.py imports nothing, so there is no cycle to dodge.
@@ -3677,29 +3677,50 @@ class LeadViewSet(viewsets.ModelViewSet):
         )
         return Response(MaintenanceVisitSerializer(visit, context={'request': request}).data)
 
-    @action(detail=True, methods=['post'], url_path='maintenance-visits/(?P<visit_id>[0-9]+)/photos')
-    def maintenance_visit_photo(self, request, pk=None, visit_id=None):
-        """Upload the panel-wash photo for a visit; ``slot`` is 'before' or 'after'
-        (re-uploading replaces the previous photo)."""
+    @action(detail=True, methods=['post'],
+            url_path='maintenance-visits/(?P<visit_id>[0-9]+)/documents',
+            parser_classes=[parsers.MultiPartParser, parsers.FormParser])
+    def maintenance_visit_add_document(self, request, pk=None, visit_id=None):
+        """Attach one photo to a slot on a visit. Slots hold several files —
+        a panel is photographed from more than one angle."""
         from .access import can_access_liasoning
         lead = self.get_object()
         if not can_access_liasoning(request.user):
-            return Response({'error': 'You do not have access to periodic maintenance.'}, status=status.HTTP_403_FORBIDDEN)
+            return Response({'error': 'You do not have access to periodic maintenance.'},
+                            status=status.HTTP_403_FORBIDDEN)
         try:
             visit = MaintenanceVisit.objects.get(pk=visit_id, plan__lead=lead)
         except MaintenanceVisit.DoesNotExist:
             return Response({'error': 'Visit not found.'}, status=status.HTTP_404_NOT_FOUND)
-        slot = request.data.get('slot')
         file = request.FILES.get('file')
-        if slot not in ('before', 'after') or not file:
-            return Response({'error': "slot ('before'/'after') and file are required."}, status=status.HTTP_400_BAD_REQUEST)
-        field = 'panel_before' if slot == 'before' else 'panel_after'
-        old = getattr(visit, field)
-        if old:
-            old.delete(save=False)
-        setattr(visit, field, file)
-        visit.save(update_fields=[field, 'updated_at'])
-        return Response(MaintenanceVisitSerializer(visit, context={'request': request}).data)
+        if not file:
+            return Response({'error': 'file is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        doc_type = (request.data.get('doc_type') or '').strip()
+        if doc_type not in {k for k, _ in MaintenanceVisit.PHOTO_SLOTS}:
+            return Response({'error': 'Unknown photo slot.'}, status=status.HTTP_400_BAD_REQUEST)
+        doc = MaintenanceVisitDocument.objects.create(
+            visit=visit, doc_type=doc_type, file=file,
+            uploaded_by=request.user if request.user.is_authenticated else None)
+        return Response(MaintenanceVisitDocumentSerializer(doc, context={'request': request}).data,
+                        status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['delete'],
+            url_path='maintenance-visits/(?P<visit_id>[0-9]+)/documents/(?P<doc_id>[0-9]+)')
+    def maintenance_visit_delete_document(self, request, pk=None, visit_id=None, doc_id=None):
+        """Remove one photo from a visit."""
+        from .access import can_access_liasoning
+        lead = self.get_object()
+        if not can_access_liasoning(request.user):
+            return Response({'error': 'You do not have access to periodic maintenance.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        try:
+            doc = MaintenanceVisitDocument.objects.get(
+                pk=doc_id, visit_id=visit_id, visit__plan__lead=lead)
+        except MaintenanceVisitDocument.DoesNotExist:
+            return Response({'error': 'Photo not found.'}, status=status.HTTP_404_NOT_FOUND)
+        doc.file.delete(save=False)
+        doc.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=False, methods=['get', 'patch'], url_path='team-stats')
     def team_stats(self, request):
