@@ -1003,20 +1003,26 @@ This cannot be undone.`)) return;
 
       {/* ── Toolbar ──────────────────────────────────────────────────────────── */}
       <div className="max-w-[1440px] mx-auto px-4 sm:px-6 xl:px-8 py-4">
-        <div className="flex flex-col sm:flex-row gap-2.5 flex-wrap">
+        {/* Search sits on its own row.
+            Sharing a wrapping row with the filters, it was the only flexible item
+            among eight fixed-width ones, so it lost the fight and shrank to the
+            width of its own padding — a bare circle with the magnifier in it. How
+            many filters appear depends on the role (assignee needs assign rights,
+            Meta needs an integration), so a layout that survives any number of
+            them is the one to have. */}
+        <div className="relative w-full sm:max-w-md mb-2.5">
+          <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"><I.Search /></div>
+          <input
+            type="text"
+            placeholder="Search name, email or place…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && fetchLeads()}
+            className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-4 py-2.5 text-sm text-slate-700 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all shadow-sm shadow-slate-50"
+          />
+        </div>
 
-          {/* Search */}
-          <div className="relative flex-1 min-w-0">
-            <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"><I.Search /></div>
-            <input
-              type="text"
-              placeholder="Search name, email or place…"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && fetchLeads()}
-              className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-4 py-2.5 text-sm text-slate-700 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all shadow-sm shadow-slate-50"
-            />
-          </div>
+        <div className="flex flex-col sm:flex-row gap-2.5 flex-wrap">
 
           {/* Status filter */}
           <div className="relative flex-shrink-0 w-full sm:w-[180px]">
