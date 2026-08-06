@@ -13,6 +13,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from users.models import User
 from .models import (DocumentationStage2, Lead, LiasoningService, PaymentVerification,
                      SiteVisit, Warranty, WarrantyDocument)
+from .meta_integration import create_lead_from_meta_payload, is_ad_metadata_name
 
 
 def token_for(user):
@@ -3726,3 +3727,155 @@ class OverdueProjectsModuleTests(TestCase):
                              HTTP_AUTHORIZATION=token_for(self.pm))
         self.assertEqual(r.status_code, 403)
         self.assertEqual([x['first_name'] for x in self.queue()], ['Asha'])
+
+
+class MetaLeadNamingTests(TestCase):
+    """A lead must never be filed under its campaign's, ad's or form's name.
+
+    Meta returns the campaign, ad and form names on the same payload as the lead.
+    When one of those reached the name field, every lead in a batch arrived called
+    the same thing â€” and deleting the leads did not help, because the next import
+    read the same records from Meta and named them the same way again.
+    """
+
+    def payload(self, **extra):
+        base = {'id': '99001', 'created_time': '2026-07-07T10:00:00+0000',
+                'campaign_id': '120', 'campaign_name': 'Kerala ad 07/07/2026 campaign ad',
+                'ad_id': '77', 'ad_name': 'Kerala ad 07/07/2026 campaign ad'}
+        base.update(extra)
+        return base
+
+    def field(self, name, value):
+        return {'name': name, 'values': [value]}
+
+    # â”€â”€ The reported bug â”€â”€
+    def test_a_lead_is_not_named_after_its_campaign(self):
+        """The payload carries a `name` that belongs to the ad, not the person."""
+        lead, dup = create_lead_from_meta_payload(
+            self.payload(name='Kerala ad 07/07/2026 campaign ad',
+                         phone_number='+919961131767'))
+        self.assertFalse(dup)
+        self.assertNotEqual(lead.first_name, 'Kerala')
+        self.assertEqual((lead.first_name, lead.last_name), ('Meta Lead', ''))
+        # The campaign is still recorded â€” refusing the name loses nothing.
+        self.assertEqual(lead.meta_campaign_name, 'Kerala ad 07/07/2026 campaign ad')
+
+    def test_the_split_no_longer_turns_an_ad_name_into_a_first_and_last_name(self):
+        """'Kerala ad ...' used to become first='Kerala', last='ad ...' â€” the KA
+        initials the leads list was showing."""
+        lead, _ = create_lead_from_meta_payload(
+            self.payload(field_data=[self.field('full_name', 'Kerala ad 07/07/2026 campaign ad'),
+                                     self.field('phone_number', '+919961131767')]))
+        self.assertEqual((lead.first_name, lead.last_name), ('Meta Lead', ''))
+
+    def test_a_form_name_in_the_name_field_is_refused_too(self):
+        lead, _ = create_lead_from_meta_payload(
+            self.payload(campaign_name='', ad_name='', form_name='Solar enquiry form',
+                         field_data=[self.field('full_name', 'Solar enquiry form')]))
+        self.assertEqual(lead.first_name, 'Meta Lead')
+
+    def test_the_match_ignores_case_and_spacing(self):
+        lead, _ = create_lead_from_meta_payload(
+            self.payload(field_data=[self.field('full_name', 'kerala  AD 07/07/2026   Campaign Ad')]))
+        self.assertEqual(lead.first_name, 'Meta Lead')
+
+    def test_re_importing_after_a_delete_still_refuses_the_name(self):
+        """Deleting the leads and importing again was the user's workaround; the
+        same records come back from Meta, so the fix has to hold on re-import."""
+        lead, _ = create_lead_from_meta_payload(
+            self.payload(name='Kerala ad 07/07/2026 campaign ad'))
+        Lead.objects.filter(pk=lead.pk).delete()
+        again, dup = create_lead_from_meta_payload(
+            self.payload(name='Kerala ad 07/07/2026 campaign ad'))
+        self.assertFalse(dup)
+        self.assertEqual(again.first_name, 'Meta Lead')
+
+    # â”€â”€ Real names still come through â”€â”€
+    def test_a_real_full_name_is_still_split_into_first_and_last(self):
+        lead, _ = create_lead_from_meta_payload(
+            self.payload(field_data=[self.field('full_name', 'Asha Devi T'),
+                                     self.field('phone_number', '+919895271487'),
+                                     self.field('email', 'asha@example.com')]))
+        self.assertEqual((lead.first_name, lead.last_name), ('Asha', 'Devi T'))
+        self.assertEqual(lead.phone, '+919895271487')
+
+    def test_separate_first_and_last_name_fields_are_kept(self):
+        lead, _ = create_lead_from_meta_payload(
+            self.payload(field_data=[self.field('first_name', 'Asha'),
+                                     self.field('last_name', 'Devi T')]))
+        self.assertEqual((lead.first_name, lead.last_name), ('Asha', 'Devi T'))
+
+    def test_a_customer_who_happens_to_share_a_word_with_the_ad_is_untouched(self):
+        """Only an exact match is refused â€” 'Kerala' alone is a plausible name."""
+        lead, _ = create_lead_from_meta_payload(
+            self.payload(field_data=[self.field('full_name', 'Kerala Kumar')]))
+        self.assertEqual((lead.first_name, lead.last_name), ('Kerala', 'Kumar'))
+
+    def test_a_nameless_lead_is_still_filed_as_meta_lead(self):
+        lead, _ = create_lead_from_meta_payload(
+            self.payload(field_data=[self.field('phone_number', '+919961131767')]))
+        self.assertEqual(lead.first_name, 'Meta Lead')
+        self.assertEqual(lead.phone, '+919961131767')
+
+    # â”€â”€ The helper itself â”€â”€
+    def test_the_guard_only_fires_on_an_actual_match(self):
+        self.assertTrue(is_ad_metadata_name('Kerala Ad', 'kerala ad'))
+        self.assertFalse(is_ad_metadata_name('Asha Devi', 'Kerala ad'))
+        self.assertFalse(is_ad_metadata_name('', 'Kerala ad'))
+        self.assertFalse(is_ad_metadata_name('Kerala ad', ''))
+
+
+class LeadCsvImportNamingTests(TestCase):
+    """The CSV importer reads the name column that actually has something in it."""
+
+    def setUp(self):
+        self.admin = mk('csv_admin', 'superadmin')
+        self.admin.is_superuser = True
+        self.admin.is_staff = True
+        self.admin.save()
+
+    def upload(self, text, campaign_id=None):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        data = {'file': SimpleUploadedFile('leads.csv', text.encode('utf-8'), content_type='text/csv')}
+        if campaign_id:
+            data['campaign_id'] = campaign_id
+        return self.client.post('/api/leads/bulk_upload/', data=data,
+                                HTTP_AUTHORIZATION=token_for(self.admin))
+
+    def test_a_blank_first_name_column_no_longer_hides_a_filled_name_column(self):
+        """Both columns present, only one filled â€” the row used to be skipped."""
+        r = self.upload('First Name,Name,Phone\n,Asha Devi,9895271487\n')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertTrue(Lead.objects.filter(first_name='Asha Devi').exists())
+
+    def test_a_meta_style_export_imports_instead_of_being_rejected(self):
+        """`full_name` is what Meta calls it; the file used to import nothing."""
+        r = self.upload('created_time,campaign_name,full_name,phone_number\n'
+                        '2026-07-07,Kerala ad,Asha Devi,9895271487\n')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        lead = Lead.objects.get(phone='9895271487')
+        self.assertEqual(lead.first_name, 'Asha Devi')
+
+    def test_an_explicit_first_name_still_wins_over_full_name(self):
+        r = self.upload('first_name,last_name,full_name,phone\nAsha,Devi,Ignore Me,9895271487\n')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        lead = Lead.objects.get(phone='9895271487')
+        self.assertEqual((lead.first_name, lead.last_name), ('Asha', 'Devi'))
+
+    def test_a_row_with_no_name_anywhere_is_still_skipped(self):
+        r = self.upload('First Name,Phone\n,9895271487\n')
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(Lead.objects.filter(phone='9895271487').exists())
+
+    def test_importing_into_a_campaign_does_not_rename_the_leads(self):
+        """The reported flow, on the CSV side: the campaign link must not touch
+        the name."""
+        from campaigns.models import Campaign
+        campaign = Campaign.objects.create(name='Kerala ad 07/07/2026 campaign ad',
+                                           campaign_type='advertisement', status='active')
+        r = self.upload('Name,Phone\nAsha Devi,9895271487\n', campaign_id=campaign.id)
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        lead = Lead.objects.get(phone='9895271487')
+        self.assertEqual(lead.first_name, 'Asha Devi')
+        self.assertIn(lead, campaign.leads.all())
+

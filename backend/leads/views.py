@@ -4403,17 +4403,24 @@ class LeadViewSet(viewsets.ModelViewSet):
             norm = normalize_header(h)
             header_map[norm] = h
 
-        # Helper to get value from row using normalized variants
+        # Helper to get value from row using normalized variants.
+        # The first header that carries a *value* wins, not simply the first that
+        # exists: a sheet with an empty "First Name" column beside a filled "Name"
+        # one used to read as nameless, and every row was skipped.
         def get_row_value(row, keys_to_try):
             for k in keys_to_try:
                 norm_k = normalize_header(k)
                 if norm_k in header_map:
-                    val = row.get(header_map[norm_k])
-                    if val is not None:
-                        return val.strip()
+                    val = (row.get(header_map[norm_k]) or '').strip()
+                    if val:
+                        return val
             return ''
 
-        first_name_keys = ['first_name', 'first name', 'firstname', 'first', 'name']
+        # `full_name` is what a Meta lead export calls it; without the alias every
+        # row in such a file looked nameless and the whole import was rejected.
+        first_name_keys = ['first_name', 'first name', 'firstname', 'first',
+                           'name', 'full_name', 'full name', 'fullname',
+                           'lead name', 'customer name']
         last_name_keys = ['last_name', 'last name', 'lastname', 'last']
         email_keys = ['email', 'email id', 'email_id', 'email address', 'emailaddress']
         phone_keys = ['phone', 'phone number', 'phonenumber', 'phone_number', 'mobile', 'mobile number', 'mobilenumber', 'contact', 'contact number']

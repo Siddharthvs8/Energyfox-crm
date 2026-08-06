@@ -118,6 +118,29 @@ def normalize_meta_field_data(field_data: list[dict[str, Any]]) -> dict[str, str
     }
 
 
+def _same_name(candidate: str, other: str) -> bool:
+    """Whether two names are the same once whitespace and case are ignored.
+
+    Compared at the length the Lead columns hold, so a name that was truncated on
+    the way in still matches the label it came from.
+    """
+    def norm(value: str) -> str:
+        return " ".join((value or "").split()).casefold()[:100]
+
+    return bool(norm(candidate)) and norm(candidate) == norm(other)
+
+
+def is_ad_metadata_name(person_name: str, *labels: str) -> bool:
+    """True when a lead's "name" is really the ad's, the form's or the campaign's.
+
+    Meta hands the campaign, ad and form names back on the same payload as the
+    lead. When one of those ends up in the name field, every lead in the batch
+    arrives called the same thing — which is a label, not a customer, and no use
+    to whoever has to ring them.
+    """
+    return any(_same_name(person_name, label) for label in labels)
+
+
 def get_or_create_meta_campaign(meta_campaign_id: str, meta_campaign_name: str) -> Campaign | None:
     if not meta_campaign_id and not meta_campaign_name:
         return None
@@ -194,7 +217,10 @@ def create_lead_from_meta_payload(
 
     names = normalize_meta_field_data(graph_data.get("field_data", []))
     if not graph_data.get("field_data"):
-        full_name = graph_data.get("full_name") or graph_data.get("name") or ""
+        # Only `full_name`: a Meta *lead* has no `name` of its own, so a `name` on
+        # this payload belongs to the form, the ad or the campaign that came back
+        # with it. Reading it named every lead in the batch after the ad.
+        full_name = graph_data.get("full_name") or ""
         fallback_first = graph_data.get("first_name") or full_name
         fallback_last = graph_data.get("last_name") or ""
         if full_name and not graph_data.get("first_name") and " " in full_name:
@@ -213,6 +239,20 @@ def create_lead_from_meta_payload(
 
     if client and meta_campaign_id and not meta_campaign_name:
         meta_campaign_name = fetch_campaign_name(client, meta_campaign_id)
+
+    # A name that is really the ad's, the form's or the campaign's is worse than
+    # no name: it is the same for every lead in the batch, and it looks like a
+    # customer. The campaign is still recorded on the lead either way, so nothing
+    # is lost by refusing it here.
+    ad_name = str(graph_data.get("ad_name") or lead_payload.get("ad_name") or "").strip()
+    form_name = str(graph_data.get("form_name") or lead_payload.get("form_name") or "").strip()
+    person_name = f"{names['first_name']} {names['last_name']}".strip()
+    if is_ad_metadata_name(person_name, meta_campaign_name, ad_name, form_name):
+        logger.warning(
+            "Meta lead %s arrived named after its own campaign/ad (%r) — filed without a name.",
+            meta_lead_id, person_name,
+        )
+        names["first_name"], names["last_name"] = "Meta Lead", ""
 
     with transaction.atomic():
         lead = Lead.objects.create(
