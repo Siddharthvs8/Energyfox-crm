@@ -1141,3 +1141,119 @@ class B2BRoleAccessTests(TestCase):
             user = mk(f'un_{role}', role)
             for module, (url, _) in self.ENDPOINTS.items():
                 self.assertTrue(self.can_read(user, url), f'{role} {module}')
+
+
+class ItemDeleteWithMovementsTests(TestCase):
+    """Deleting an item that still has stock movements behind it.
+
+    Goods receipts have no screen of their own, so a refusal that says only
+    "receipts or dispatches" sends people to empty the dispatch list and leave
+    them still blocked by a GRN they cannot see. The refusal names the counts,
+    and an admin can push the delete through and take the movements with it.
+    """
+
+    def setUp(self):
+        self.superadmin = mk('id_super', 'superadmin')
+        self.superadmin.is_superuser = True
+        self.superadmin.is_staff = True
+        self.superadmin.save()
+        self.keeper = mk('id_keeper', 'store_manager')
+
+        self.item = StockItem.objects.create(code='A-555-bi', category='Solar Panel',
+                                             unit='Nos', opening_stock=Decimal('72'),
+                                             unit_cost=Decimal('14485.50'))
+        self.supplier = Vendor.objects.create(name='Adani')
+
+    def receipt(self, qty='5.5'):
+        return GoodsReceipt.objects.create(item=self.item, supplier=self.supplier,
+                                           date=timezone.localdate(),
+                                           quantity=Decimal(qty), rate=Decimal('14485.50'))
+
+    def dispatch(self, qty='2'):
+        return StockDispatch.objects.create(item=self.item, date=timezone.localdate(),
+                                            quantity=Decimal(qty), rate=Decimal('15000'))
+
+    def delete(self, user=None, force=False):
+        url = f'/api/stock-items/{self.item.id}/' + ('?force=1' if force else '')
+        return self.client.delete(url, HTTP_AUTHORIZATION=token_for(user or self.superadmin))
+
+    # â”€â”€ The refusal says what is actually blocking â”€â”€
+    def test_a_receipt_only_item_names_the_receipt(self):
+        """The reported case: dispatches all deleted, a GRN still holding it."""
+        self.receipt()
+        r = self.delete()
+        self.assertEqual(r.status_code, 400)
+        body = r.json()
+        self.assertIn('1 goods receipt', body['error'])
+        self.assertNotIn('dispatch', body['error'].split('logged')[0])
+        self.assertEqual((body['receipts'], body['dispatches']), (1, 0))
+
+    def test_both_kinds_are_counted_separately(self):
+        self.receipt()
+        self.receipt()
+        self.dispatch()
+        body = self.delete().json()
+        self.assertIn('2 goods receipts', body['error'])
+        self.assertIn('1 dispatch', body['error'])
+        self.assertEqual((body['receipts'], body['dispatches']), (2, 1))
+
+    def test_the_plural_reads_properly_for_several_dispatches(self):
+        self.dispatch()
+        self.dispatch()
+        self.assertIn('2 dispatches', self.delete().json()['error'])
+
+    # â”€â”€ An item with nothing against it still deletes plainly â”€â”€
+    def test_an_unused_item_deletes_without_a_force(self):
+        r = self.delete()
+        self.assertEqual(r.status_code, 204, r.content[:200])
+        self.assertFalse(StockItem.objects.filter(pk=self.item.pk).exists())
+
+    # â”€â”€ The way through â”€â”€
+    def test_an_admin_is_told_they_can_confirm_again(self):
+        self.receipt()
+        body = self.delete().json()
+        self.assertTrue(body['can_force'])
+        self.assertIn('confirm again', body['error'])
+
+    def test_forcing_takes_the_movements_with_it(self):
+        self.receipt()
+        self.dispatch()
+        r = self.delete(force=True)
+        self.assertEqual(r.status_code, 204, r.content[:200])
+        self.assertFalse(StockItem.objects.filter(pk=self.item.pk).exists())
+        self.assertFalse(GoodsReceipt.objects.filter(item_id=self.item.id).exists())
+        self.assertFalse(StockDispatch.objects.filter(item_id=self.item.id).exists())
+
+    def test_another_items_movements_are_left_alone(self):
+        other = StockItem.objects.create(code='A-620-top', category='Solar Panel')
+        GoodsReceipt.objects.create(item=other, date=timezone.localdate(),
+                                    quantity=Decimal('108'), rate=Decimal('17000'))
+        self.receipt()
+        self.assertEqual(self.delete(force=True).status_code, 204)
+        self.assertEqual(GoodsReceipt.objects.filter(item=other).count(), 1)
+
+    # â”€â”€ Who may erase stock history â”€â”€
+    def test_a_store_manager_cannot_force_it_through(self):
+        """Write access to the item master is not licence to erase the ledger."""
+        self.receipt()
+        r = self.delete(user=self.keeper, force=True)
+        self.assertEqual(r.status_code, 400, r.content[:200])
+        self.assertFalse(r.json()['can_force'])
+        self.assertTrue(StockItem.objects.filter(pk=self.item.pk).exists())
+        self.assertTrue(GoodsReceipt.objects.filter(item=self.item).exists())
+
+    def test_the_refusal_tells_a_storekeeper_who_can_do_it(self):
+        self.receipt()
+        self.assertIn('an admin', self.delete(user=self.keeper).json()['error'])
+
+    # â”€â”€ The non-destructive alternative â”€â”€
+    def test_an_item_with_history_can_be_retired_instead(self):
+        self.receipt()
+        r = self.client.patch(f'/api/stock-items/{self.item.id}/',
+                              data={'is_active': False}, content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.superadmin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.item.refresh_from_db()
+        self.assertFalse(self.item.is_active)
+        # The history it was keeping is still there.
+        self.assertTrue(GoodsReceipt.objects.filter(item=self.item).exists())

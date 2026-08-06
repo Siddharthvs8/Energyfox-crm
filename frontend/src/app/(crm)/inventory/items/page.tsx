@@ -15,7 +15,7 @@ import {
 
 const blankItem = {
   code: "", category: CATS[0], brand: "", model_name: "", unit: "Nos", hsn: "",
-  opening_stock: "", unit_cost: "", reorder_level: "", location: "",
+  opening_stock: "", unit_cost: "", reorder_level: "", location: "", is_active: true,
 };
 
 export default function StockItemMasterPage() {
@@ -34,7 +34,7 @@ export default function StockItemMasterPage() {
     setForm({
       code: r.code, category: r.category, brand: r.brand || "", model_name: r.model_name || "",
       unit: r.unit || "Nos", hsn: r.hsn || "", opening_stock: r.opening_stock ?? "", unit_cost: r.unit_cost ?? "",
-      reorder_level: r.reorder_level ?? "", location: r.location || "",
+      reorder_level: r.reorder_level ?? "", location: r.location || "", is_active: r.is_active !== false,
     });
     setShow(true);
   };
@@ -79,7 +79,12 @@ export default function StockItemMasterPage() {
         ]}
         empty={{ title: "No items found", hint: "Add your first stock item to get started." }}
         rows={filtered.map(r => [
-          <span className="font-mono text-xs font-semibold text-slate-900 whitespace-nowrap">{r.code}</span>,
+          <span className="whitespace-nowrap">
+            <span className={`font-mono text-xs font-semibold ${r.is_active === false ? "text-slate-400 line-through" : "text-slate-900"}`}>{r.code}</span>
+            {r.is_active === false && (
+              <span className="ml-1.5 text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">Retired</span>
+            )}
+          </span>,
           r.category,
           <span>{`${r.brand} ${r.model_name}`.trim() || "—"}</span>,
           <span className="font-mono text-xs text-slate-500">{r.hsn || "—"}</span>,
@@ -150,9 +155,20 @@ export default function StockItemMasterPage() {
           </Fld>
         </Row>
         {editing && (
-          <p className="text-xs text-slate-400">
-            Closing stock stays derived from receipts and dispatches — edit those to correct it.
-          </p>
+          <>
+            {/* The way to retire an SKU that has stock history behind it and so
+                cannot simply be deleted. */}
+            <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer">
+              <input type="checkbox" checked={form.is_active !== false}
+                onChange={e => setForm({ ...form, is_active: e.target.checked })}
+                className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500/30" />
+              Active
+            </label>
+            <p className="text-xs text-slate-400">
+              Untick to retire an item you no longer stock but whose movement history has to stay.
+              Closing stock is derived from receipts and dispatches — edit those to correct it.
+            </p>
+          </>
         )}
       </Modal>
     </StockPage>

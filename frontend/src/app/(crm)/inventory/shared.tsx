@@ -135,11 +135,25 @@ export function useStock(want: (keyof typeof SOURCES)[], module?: B2BModule) {
     return saved;
   };
 
-  /** `ask` overrides the confirmation when the consequences need spelling out. */
+  /** `ask` overrides the confirmation when the consequences need spelling out.
+   *
+   *  A refusal that comes back with `can_force` is one the user is allowed to
+   *  push through — an item still carrying stock movements, say. Its message
+   *  already spells out what would be destroyed, so it becomes the second
+   *  confirmation rather than a dead end. */
   const remove = async (source: keyof typeof SOURCES, id: number, label: string, ask?: string) => {
     if (!confirm(ask || `Delete this ${label}?`)) return;
-    const r = await fetch(`${api}/api/${SOURCES[source]}/${id}/`, { method: "DELETE", headers: authJson() });
-    if (!r.ok) { alert(await explain(r, "Could not delete.")); return; }
+    const url = `${api}/api/${SOURCES[source]}/${id}/`;
+    let r = await fetch(url, { method: "DELETE", headers: authJson() });
+    if (!r.ok) {
+      const body = await r.clone().json().catch(() => ({} as any));
+      if (!body?.can_force || !confirm(`${body.error}\n\nDelete anyway?`)) {
+        alert(await explain(r, "Could not delete."));
+        return;
+      }
+      r = await fetch(`${url}?force=1`, { method: "DELETE", headers: authJson() });
+      if (!r.ok) { alert(await explain(r, "Could not delete.")); return; }
+    }
     load();
   };
 

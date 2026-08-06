@@ -578,14 +578,45 @@ class StockItemViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         """Items with movement history stay put — deleting one would erase the
-        receipts and dispatches that explain the stock on hand."""
+        receipts and dispatches that explain the stock on hand.
+
+        The refusal names what is actually holding the item, because goods
+        receipts have no screen of their own: told only "receipts or dispatches",
+        someone can empty the dispatch list and still be blocked by a GRN they
+        cannot see anywhere.
+
+        `?force=1` deletes the movements along with the item. That erases ledger
+        history, so it is limited to admins and super admins however wide a
+        storekeeper's write access to the item master is.
+        """
         item = self.get_object()
-        if item.receipts.exists() or item.dispatches.exists():
-            return Response(
-                {'error': f'{item.code} has receipts or dispatches logged against it. '
-                          'Delete those movements first, or mark the item inactive.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        receipts = item.receipts.count()
+        dispatches = item.dispatches.count()
+        if receipts or dispatches:
+            forcing = str(request.query_params.get('force', '')).lower() in ('1', 'true', 'yes')
+            user = request.user
+            may_force = bool(user.is_superuser or user.is_staff)
+            if not forcing or not may_force:
+                parts = []
+                if receipts:
+                    parts.append(f'{receipts} goods receipt' + ('s' if receipts != 1 else ''))
+                if dispatches:
+                    parts.append(f'{dispatches} dispatch' + ('es' if dispatches != 1 else ''))
+                detail = f'{item.code} has {" and ".join(parts)} logged against it.'
+                if may_force:
+                    detail += (' Deleting the item would erase that stock history —'
+                               ' confirm again to delete the movements with it.')
+                else:
+                    detail += (' Those movements have to go first, or an admin can'
+                               ' delete the item along with them.')
+                return Response(
+                    {'error': detail, 'receipts': receipts, 'dispatches': dispatches,
+                     'can_force': may_force},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            # The FKs are PROTECT, so the movements go before the item does.
+            item.receipts.all().delete()
+            item.dispatches.all().delete()
         return super().destroy(request, *args, **kwargs)
 
 
