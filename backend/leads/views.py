@@ -4359,8 +4359,8 @@ class LeadViewSet(viewsets.ModelViewSet):
         response = HttpResponse(content_type='text/csv')
         response['Content-Disposition'] = 'attachment; filename="leads_template.csv"'
         writer = csv.writer(response)
-        writer.writerow(['first_name', 'last_name', 'email', 'phone', 'source', 'status'])
-        writer.writerow(['John', 'Doe', 'john@example.com', '1234567890', 'manual', 'new'])
+        writer.writerow(['first_name', 'last_name', 'email', 'phone', 'district', 'source', 'status'])
+        writer.writerow(['John', 'Doe', 'john@example.com', '1234567890', 'Ernakulam', 'manual', 'new'])
         return response
 
     @action(detail=False, methods=['post'])
@@ -4426,6 +4426,9 @@ class LeadViewSet(viewsets.ModelViewSet):
         phone_keys = ['phone', 'phone number', 'phonenumber', 'phone_number', 'mobile', 'mobile number', 'mobilenumber', 'contact', 'contact number']
         source_keys = ['source', 'lead source', 'lead_source']
         status_keys = ['status', 'lead status', 'lead_status']
+        # Only a column that actually says district. City, town, taluk and
+        # location are different things and must not be filed as one.
+        district_keys = ['district', 'dist']
 
         # Column widths come from the model, so they cannot drift out of step
         # with it. A single over-long cell used to abort the whole upload with a
@@ -4458,10 +4461,11 @@ class LeadViewSet(viewsets.ModelViewSet):
             source = get_row_value(row, source_keys) or 'manual'
             source = SOURCE_ALIASES.get(source.strip().lower(), source)
             status_val = get_row_value(row, status_keys) or 'new'
+            district = get_row_value(row, district_keys)
 
             if any(len(v) > (Lead._meta.get_field(f).max_length or len(v))
                    for v, f in ((first_name, 'first_name'), (last_name, 'last_name'),
-                                (phone, 'phone'), (source, 'source'))):
+                                (phone, 'phone'), (source, 'source'), (district, 'district'))):
                 truncated += 1
 
             leads_to_create.append(Lead(
@@ -4469,6 +4473,7 @@ class LeadViewSet(viewsets.ModelViewSet):
                 last_name=clip(last_name, 'last_name'),
                 email=clip(email, 'email'),
                 phone=clip(phone, 'phone'),
+                district=clip(district, 'district'),
                 source=clip(source, 'source'),
                 status=clip(status_val, 'status'),
             ))
@@ -4516,8 +4521,11 @@ class LeadViewSet(viewsets.ModelViewSet):
         response['Content-Disposition'] = 'attachment; filename="leads_export.csv"'
         
         writer = csv.writer(response)
-        writer.writerow(['First Name', 'Last Name', 'Email', 'Phone', 'Company', 'Source', 'Status', 'Value', 'Assigned To', 'Created At'])
-        
+        # Header names match what the importer accepts, so an export can be
+        # edited and fed straight back in.
+        writer.writerow(['First Name', 'Last Name', 'Email', 'Phone', 'Company', 'District',
+                         'Source', 'Status', 'Value', 'Assigned To', 'Created At'])
+
         for lead in queryset:
             writer.writerow([
                 lead.first_name,
@@ -4525,6 +4533,7 @@ class LeadViewSet(viewsets.ModelViewSet):
                 lead.email,
                 lead.phone,
                 lead.company,
+                lead.district,
                 lead.source,
                 lead.status,
                 lead.value,

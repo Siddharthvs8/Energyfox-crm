@@ -254,7 +254,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   const [pendingTasks,   setPendingTasks]   = useState<PendingTask[]>([]);
   const blankPendingTask: Omit<PendingTask, "_key"> = { title: "", priority: "medium", due_date: "", due_time: "", assignee_id: "" };
 
-  const blank = { first_name: "", last_name: "", email: "", phone: "", company: "", installation_location: "", source: "manual", status: "new", value: "0", notes: "", assigned_to: "", product: "" };
+  const blank = { first_name: "", last_name: "", email: "", phone: "", company: "", district: "", installation_location: "", source: "manual", status: "new", value: "0", notes: "", assigned_to: "", product: "" };
   const [form, setForm] = useState(blank);
   const [currentUser, setCurrentUser] = useState<any>(null);
   // ─── Dynamic lead statuses (standard + tenant custom) ──────────────────────
@@ -759,7 +759,7 @@ This cannot be undone.`)) return;
   const openAdd  = () => { setEditingLead(null); setForm(blank); setPendingTasks([]); setNewEditNote(""); setShowModal(true); };
   const openEdit = (lead: any) => {
     setEditingLead(lead);
-    setForm({ first_name: lead.first_name || "", last_name: lead.last_name || "", email: lead.email || "", phone: lead.phone || "", company: lead.company || "", installation_location: lead.installation_location || "", source: lead.source || "manual", status: lead.status || "new", value: (lead.value || 0).toString(), notes: lead.notes || "", assigned_to: lead.assigned_to?.toString() || "", product: lead.product?.toString() || "" });
+    setForm({ first_name: lead.first_name || "", last_name: lead.last_name || "", email: lead.email || "", phone: lead.phone || "", company: lead.company || "", district: lead.district || "", installation_location: lead.installation_location || "", source: lead.source || "manual", status: lead.status || "new", value: (lead.value || 0).toString(), notes: lead.notes || "", assigned_to: lead.assigned_to?.toString() || "", product: lead.product?.toString() || "" });
     setPendingTasks([]);
     setNewEditNote("");
     setShowModal(true);
@@ -1739,6 +1739,10 @@ This cannot be undone.`)) return;
                   <input value={form.company} onChange={e => setForm({ ...form, company: e.target.value })} className={FIELD} placeholder="e.g. Kochi" />
                 </div>
                 <div>
+                  <label className={LABEL}>District</label>
+                  <input value={form.district} onChange={e => setForm({ ...form, district: e.target.value })} className={FIELD} placeholder="e.g. Ernakulam" />
+                </div>
+                <div>
                   <label className={LABEL}>Installation Location</label>
                   <input value={form.installation_location} onChange={e => setForm({ ...form, installation_location: e.target.value })} className={FIELD} placeholder="Where the system is installed" />
                 </div>
@@ -1977,6 +1981,7 @@ This cannot be undone.`)) return;
                   {[{ label: "Email",    val: viewLead.email    || "—" },
                     { label: "Phone",    val: viewLead.phone    || "—" },
                     { label: "Place",    val: viewLead.company  || "—" },
+                    { label: "District", val: viewLead.district || "—" },
                     { label: "Source",   val: (() => { const s = SOURCE_META[viewLead.source] || { bg: "bg-slate-100", text: "text-slate-600" }; return <span className={`px-2 py-0.5 rounded-md text-[11px] font-semibold ${s.bg} ${s.text}`}>{getSourceLabel(viewLead.source)}</span>; })() },
                     ...(viewLead.meta_integration_name ? [{ label: "Meta Account", val: viewLead.meta_integration_name }] : []),
                     { label: "Value",    val: formatCurrency(viewLead.value) },

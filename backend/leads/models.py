@@ -33,6 +33,9 @@ class Lead(models.Model):
     email = models.EmailField(blank=True, null=True)
     phone = models.CharField(max_length=20, blank=True, null=True)
     company = models.CharField(max_length=200, blank=True, null=True)  # customer location
+    # Coarser than `company`, which holds the place/locality. Kept separate so
+    # leads can be grouped and routed by district however the locality is written.
+    district = models.CharField(max_length=100, blank=True, default='', db_index=True)
     installation_location = models.CharField(max_length=255, blank=True, default='', help_text="Where the solar system will be installed")
 
     # Meta Integration

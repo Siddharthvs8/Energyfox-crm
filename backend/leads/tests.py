@@ -4104,3 +4104,116 @@ class FixAdNamedLeadsFromCampaignTests(TestCase):
         self.run_command()
         lead.refresh_from_db()
         self.assertEqual(lead.first_name, 'Kerala')
+
+
+class LeadDistrictImportTests(TestCase):
+    """District comes in from the CSV template and from Meta.
+
+    Only a column or question that actually says district — city, town and taluk
+    are different things and are not filed as one.
+    """
+
+    def setUp(self):
+        self.admin = mk('dist_admin', 'superadmin')
+        self.admin.is_superuser = True
+        self.admin.is_staff = True
+        self.admin.save()
+
+    def upload(self, text):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        return self.client.post(
+            '/api/leads/bulk_upload/',
+            data={'file': SimpleUploadedFile('leads.csv', text.encode('utf-8'),
+                                             content_type='text/csv')},
+            HTTP_AUTHORIZATION=token_for(self.admin))
+
+    # ── The template ──
+    def test_the_template_offers_a_district_column(self):
+        r = self.client.get('/api/leads/csv_template/', HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200)
+        header = r.content.decode().splitlines()[0]
+        self.assertIn('district', header.lower())
+
+    def test_the_export_carries_the_district_back_out(self):
+        Lead.objects.create(first_name='Asha', phone='9895271487', district='Ernakulam')
+        r = self.client.get('/api/leads/export_csv/', HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200)
+        body = r.content.decode()
+        self.assertIn('District', body.splitlines()[0])
+        self.assertIn('Ernakulam', body)
+
+    # ── CSV import ──
+    def test_a_district_column_is_imported(self):
+        r = self.upload('first_name,phone,district\nAsha,9895271487,Ernakulam\n')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(Lead.objects.get(phone='9895271487').district, 'Ernakulam')
+
+    def test_the_header_may_be_spelled_loosely(self):
+        r = self.upload('First Name,Phone,District\nAsha,9895271487,Thrissur\n')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(Lead.objects.get(phone='9895271487').district, 'Thrissur')
+
+    def test_a_city_column_is_not_taken_as_the_district(self):
+        """The user's instruction: city is not a district."""
+        r = self.upload('first_name,phone,city\nAsha,9895271487,Kochi\n')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(Lead.objects.get(phone='9895271487').district, '')
+
+    def test_neither_are_town_taluk_or_location(self):
+        r = self.upload('first_name,phone,town,taluk,location\n'
+                        'Asha,9895271487,Aluva,Kunnathunad,Kakkanad\n')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(Lead.objects.get(phone='9895271487').district, '')
+
+    def test_a_missing_district_is_simply_blank(self):
+        r = self.upload('first_name,phone\nAsha,9895271487\n')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(Lead.objects.get(phone='9895271487').district, '')
+
+    def test_an_over_long_district_is_clipped_not_rejected(self):
+        r = self.upload(f'first_name,phone,district\nAsha,9895271487,{"x" * 200}\n')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(len(Lead.objects.get(phone='9895271487').district), 100)
+
+    # ── Meta import ──
+    def test_a_meta_district_question_is_imported(self):
+        lead, _ = create_lead_from_meta_payload({
+            'id': '88001',
+            'field_data': [{'name': 'full_name', 'values': ['Asha Devi']},
+                           {'name': 'phone_number', 'values': ['+919895271487']},
+                           {'name': 'district', 'values': ['Ernakulam']}],
+        })
+        self.assertEqual(lead.district, 'Ernakulam')
+
+    def test_a_meta_city_question_is_not_taken_as_the_district(self):
+        lead, _ = create_lead_from_meta_payload({
+            'id': '88002',
+            'field_data': [{'name': 'full_name', 'values': ['Asha Devi']},
+                           {'name': 'city', 'values': ['Kochi']}],
+        })
+        self.assertEqual(lead.district, '')
+
+    def test_a_meta_lead_without_a_district_question_is_blank(self):
+        lead, _ = create_lead_from_meta_payload({
+            'id': '88003',
+            'field_data': [{'name': 'full_name', 'values': ['Asha Devi']}],
+        })
+        self.assertEqual(lead.district, '')
+
+    def test_a_meta_payload_with_no_field_data_still_reads_a_district(self):
+        """The webhook shape: the fields sit on the payload itself."""
+        lead, _ = create_lead_from_meta_payload({
+            'id': '88004', 'full_name': 'Asha Devi', 'district': 'Kollam',
+        })
+        self.assertEqual(lead.district, 'Kollam')
+
+    # ── The API ──
+    def test_the_district_is_readable_and_writable_through_the_api(self):
+        lead = Lead.objects.create(first_name='Asha', phone='9895271487')
+        r = self.client.patch(f'/api/leads/{lead.id}/', data={'district': 'Alappuzha'},
+                              content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(r.json()['district'], 'Alappuzha')
+        lead.refresh_from_db()
+        self.assertEqual(lead.district, 'Alappuzha')

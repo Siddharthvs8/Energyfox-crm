@@ -109,12 +109,17 @@ def normalize_meta_field_data(field_data: list[dict[str, Any]]) -> dict[str, str
     if full_name and not values.get("first_name") and " " in full_name:
         first_name, last_name = full_name.split(" ", 1)
 
+    # Only a question that actually asks for the district. Meta's built-in `city`
+    # is a different thing and is not filed as one.
+    district = values.get("district") or values.get("dist") or ""
+
     return {
         "first_name": first_name[:100],
         "last_name": last_name[:100],
         "email": values.get("email", "")[:254],
         "phone": (values.get("phone_number") or values.get("phone") or values.get("mobile_number") or "")[:20],
         "company": (values.get("company_name") or values.get("company") or "")[:200],
+        "district": district[:100],
     }
 
 
@@ -232,6 +237,7 @@ def create_lead_from_meta_payload(
                 "email": (graph_data.get("email") or names["email"])[:254],
                 "phone": (graph_data.get("phone_number") or graph_data.get("phone") or names["phone"])[:20],
                 "company": (graph_data.get("company_name") or graph_data.get("company") or names["company"])[:200],
+                "district": (graph_data.get("district") or names["district"])[:100],
             }
         )
     meta_campaign_id = str(graph_data.get("campaign_id") or lead_payload.get("campaign_id") or "").strip()
@@ -261,6 +267,7 @@ def create_lead_from_meta_payload(
             email=names["email"],
             phone=names["phone"],
             company=names["company"],
+            district=names["district"],
             source="meta_ads",
             status="new",
             meta_lead_id=meta_lead_id,
