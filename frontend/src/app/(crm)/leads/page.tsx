@@ -281,6 +281,12 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   // A BDE reports through the site visit; the lead status belongs to the tele
   // caller / managers. Mirrors can_edit_lead_status() on the backend.
   const canEditStatus = !currentUser || currentUser.role !== "bde";
+
+  // Who can open a campaign page. Mirrors IsAdminOrManager on the campaigns
+  // endpoint — for anyone else the request 403s and the page reports "Campaign
+  // not found", so the chip is plain text rather than a link into a dead end.
+  const canOpenCampaign = !!(currentUser?.is_staff || currentUser?.is_general_manager
+    || currentUser?.is_manager);
   // Leads are sourced by the tele-calling side — a BDE only receives them.
   // Mirrors can_add_leads() on the backend.
   const canAddLeads = !currentUser || currentUser.role !== "bde";
@@ -320,11 +326,15 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
     } catch {}
   };
 
+  // Names only, from an endpoint every role can read — listing the campaigns
+  // themselves is admin/manager work, but a tele caller still has to be able to
+  // filter their own list by campaign.
   const fetchCampaigns = async () => {
     const token = localStorage.getItem(`${domain}_access`);
     if (!token) return;
     try {
-      const r = await fetch(`${getApiBase(domain)}/api/campaigns/`, { headers: { Authorization: `Bearer ${token}` } });
+      const r = await fetch(`${getApiBase(domain)}/api/campaigns/options/`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) return;
       const d = await r.json();
       setCampaignsList((Array.isArray(d) ? d : d.results || []).map((c: any) => ({ id: c.id, name: c.name })));
     } catch {}
@@ -1982,9 +1992,15 @@ This cannot be undone.`)) return;
                       <p className="text-[10px] font-semibold text-indigo-400 uppercase tracking-wide mb-2">Campaigns</p>
                       <div className="flex flex-wrap gap-2">
                         {viewLead.campaigns.map((c: any) => (
-                           <Link key={c.id} href={`/campaigns/${c.id}`} className="px-2 py-1 bg-white text-indigo-600 text-[11px] font-bold rounded-lg border border-indigo-200 hover:bg-indigo-50 transition-colors shadow-sm">
-                             {c.name}
-                           </Link>
+                          canOpenCampaign ? (
+                            <Link key={c.id} href={`/campaigns/${c.id}`} className="px-2 py-1 bg-white text-indigo-600 text-[11px] font-bold rounded-lg border border-indigo-200 hover:bg-indigo-50 transition-colors shadow-sm">
+                              {c.name}
+                            </Link>
+                          ) : (
+                            <span key={c.id} className="px-2 py-1 bg-white text-slate-600 text-[11px] font-bold rounded-lg border border-slate-200 shadow-sm">
+                              {c.name}
+                            </span>
+                          )
                         ))}
                       </div>
                     </div>

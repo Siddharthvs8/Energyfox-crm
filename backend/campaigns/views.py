@@ -11,6 +11,24 @@ class CampaignViewSet(viewsets.ModelViewSet):
     serializer_class = CampaignSerializer
     permission_classes = [IsAdminOrManager]
 
+    def get_permissions(self):
+        """`options` is open to anyone who can work leads.
+
+        A tele caller filters their list by campaign, which needs the names — but
+        the campaign record itself carries budget, spend and expected revenue, so
+        the full endpoint stays with admins and managers and `options` returns
+        nothing but the id and the name.
+        """
+        if self.action == 'options':
+            return [permissions.IsAuthenticated()]
+        return super().get_permissions()
+
+    @action(detail=False, methods=['get'])
+    def options(self, request):
+        """Campaign id + name, for the campaign filter on the leads list."""
+        rows = Campaign.objects.order_by('name').values('id', 'name')
+        return Response(list(rows))
+
     @action(detail=True, methods=['post'])
     def add_leads(self, request, pk=None):
         campaign = self.get_object()
