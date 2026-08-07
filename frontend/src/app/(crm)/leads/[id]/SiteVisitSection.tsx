@@ -529,7 +529,7 @@ ${field}: ${Array.isArray(msg) ? msg[0] : msg}`;
         {/* PO signed → go and take the feasibility. */}
         {poPrompt && (
           <div className="popup-overlay">
-            <div className="popup-backdrop" onClick={() => setPoPrompt(false)} />
+            <div className="popup-backdrop" />
             <div className="popup-card max-w-md w-full p-6 text-center">
               <div className="w-14 h-14 mx-auto rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mb-4">
                 <svg width="26" height="26" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M12 2v4" /><path d="M12 18v4" /><circle cx="12" cy="12" r="4" /><path d="M2 12h4" /><path d="M18 12h4" /></svg>

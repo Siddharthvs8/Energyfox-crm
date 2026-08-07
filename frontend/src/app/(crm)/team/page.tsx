@@ -76,7 +76,7 @@ const roleBadge = (u: any) => {
 
 // ─── Modal wrapper ─────────────────────────────────────────────────────────
 const Modal = ({ show, onClose, title, subtitle, children, footer }: any) => show ? (
-  <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
+  <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm">
     <div className="bg-white w-full sm:max-w-lg sm:mx-4 rounded-t-2xl sm:rounded-2xl shadow-2xl max-h-[90vh] overflow-hidden flex flex-col" onClick={(e: any) => e.stopPropagation()}>
       <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 flex-shrink-0">
         <div><h2 className="text-base font-bold text-slate-900">{title}</h2><p className="text-xs text-slate-400 mt-0.5">{subtitle}</p></div>

@@ -1277,7 +1277,7 @@ This cannot be undone.`)) return;
       {/* ── Bulk action bar ───────────────────────────────────────────────────── */}
       {showBulkWa && (
         <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
-          <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={() => setShowBulkWa(false)} />
+          <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" />
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg relative z-10 overflow-hidden">
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
               <div>
@@ -1620,7 +1620,7 @@ This cannot be undone.`)) return;
 
       {/* ── Trash Modal ───────────────────────────────────────────────────────── */}
       {showTrash && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={() => setShowTrash(false)}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
           <div className="bg-white w-full max-w-3xl rounded-2xl shadow-2xl max-h-[85vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 flex-shrink-0">
               <div>
@@ -2524,7 +2524,7 @@ This cannot be undone.`)) return;
 
       {/* File Preview Modal */}
       {previewFile && (
-        <div className="fixed inset-0 z-[100] flex flex-col bg-black/90 backdrop-blur-md transition-all" onClick={() => setPreviewFile(null)}>
+        <div className="fixed inset-0 z-[100] flex flex-col bg-black/90 backdrop-blur-md transition-all">
           <div className="flex items-center justify-between px-6 py-4 bg-gradient-to-b from-black/50 to-transparent">
             <h3 className="text-white font-semibold text-sm truncate max-w-[80%]">{previewFile.name}</h3>
             <div className="flex items-center gap-3">

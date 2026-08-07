@@ -615,7 +615,7 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
       {/* Push blocked: say why, and where to fix it. */}
       {feasibilityWarning && (
         <div className="popup-overlay">
-          <div className="popup-backdrop" onClick={() => setFeasibilityWarning(false)} />
+          <div className="popup-backdrop" />
           <div className="popup-card max-w-md w-full p-6 text-center">
             <div className="w-14 h-14 mx-auto rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mb-4">
               <svg width="26" height="26" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">

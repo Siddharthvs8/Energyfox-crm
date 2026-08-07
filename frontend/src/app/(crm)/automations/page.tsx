@@ -472,7 +472,7 @@ export default function AutomationsPage({ params: paramsPromise }: { params: Pro
 
         {/* Builder Modal / Canvas Fullscreen Wrapper */}
         {showTemplates && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm" onClick={() => setShowTemplates(false)}>
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
             <div className="bg-[#0d0d11] border border-white/10 rounded-3xl w-full max-w-3xl max-h-[85vh] overflow-hidden flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
               <div className="px-6 py-5 border-b border-white/10 flex items-center justify-between flex-shrink-0">
                 <div>

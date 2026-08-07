@@ -116,7 +116,7 @@ function ProgressRing({ pct, size = 60, stroke = 5, color = "#6366f1" }: { pct: 
 function Modal({ open, onClose, title, children, width = "max-w-lg" }: any) {
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60">
       <div className={`bg-white w-full ${width} sm:mx-4 rounded-t-2xl sm:rounded-2xl shadow-2xl max-h-[90vh] flex flex-col overflow-hidden`} onClick={(e: React.MouseEvent) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 flex-shrink-0">
           <h2 className="text-base font-bold text-slate-900">{title}</h2>
@@ -827,7 +827,7 @@ export default function AIManagerPage({ params: paramsPromise }: { params: Promi
 
       {/* ── MOM Viewer Modal ── */}
       {viewingMOM && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={() => setViewingMOM(null)}>
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
             <div className="bg-gradient-to-r from-violet-600 to-indigo-600 px-6 py-5 flex items-start justify-between">
               <div>

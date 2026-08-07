@@ -514,10 +514,7 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
 
       {/* ─── Drawer Overlay ────────────────────────────────────────────────── */}
       {drawerOpen && (
-        <div
-          className="fixed inset-0 z-40 bg-black/30 backdrop-blur-[2px]"
-          onClick={closeDrawer}
-        />
+        <div className="fixed inset-0 z-40 bg-black/30 backdrop-blur-[2px]" />
       )}
 
       {/* ─── Slide-in Drawer ──────────────────────────────────────────────── */}
@@ -886,7 +883,7 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
 
       {/* File Preview Modal */}
       {previewFile && (
-        <div className="fixed inset-0 z-[100] flex flex-col bg-black/90 backdrop-blur-md transition-all" onClick={() => setPreviewFile(null)}>
+        <div className="fixed inset-0 z-[100] flex flex-col bg-black/90 backdrop-blur-md transition-all">
           <div className="flex items-center justify-between px-6 py-4 bg-gradient-to-b from-black/50 to-transparent">
             <h3 className="text-white font-semibold text-sm truncate max-w-[80%]">{previewFile.name}</h3>
             <div className="flex items-center gap-3">

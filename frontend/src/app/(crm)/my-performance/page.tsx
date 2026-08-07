@@ -628,7 +628,7 @@ export default function MyPerformancePage({ params: paramsPromise }: { params: P
       {/* ── Submit Performance Modal ── */}
       {submitModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setSubmitModal(null)} />
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
           <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden">
             <div className="bg-gradient-to-br from-violet-500 to-indigo-600 px-6 py-5">
               <div className="flex items-center justify-between">

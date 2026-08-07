@@ -388,7 +388,7 @@ export default function DashboardPage({ params: paramsPromise }: { params: Promi
 
       {/* ── Performance Detail Modal ── */}
       {(selectedUser || selectedTeam || modalLoading) && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => !modalLoading && (setSelectedUser(null), setSelectedTeam(null))}>
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm">
           <div className="bg-white w-full sm:max-w-2xl sm:mx-4 rounded-t-2xl sm:rounded-2xl shadow-2xl max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
             {modalLoading ? (
               <div className="flex items-center justify-center py-20">

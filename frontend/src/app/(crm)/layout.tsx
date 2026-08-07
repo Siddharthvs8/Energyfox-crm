@@ -1133,7 +1133,7 @@ export default function DashboardLayout({
       {/* Sign out — confirmed, so a stray click doesn't end the session. */}
       {confirmLogout && (
         <div className="popup-overlay">
-          <div className="popup-backdrop" onClick={() => setConfirmLogout(false)} />
+          <div className="popup-backdrop" />
           <div className="popup-card max-w-sm w-full p-6 text-center">
             <div className="w-14 h-14 mx-auto rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mb-4">
               <svg width="24" height="24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
@@ -1268,8 +1268,8 @@ export default function DashboardLayout({
 
       {activePopup && (
         <div className="popup-overlay">
-          {/* Backdrop with animation */}
-          <div className="popup-backdrop" onClick={dismissPopup} />
+          {/* Backdrop with animation — no dismiss on it, the button acknowledges */}
+          <div className="popup-backdrop" />
           
           {/* Modal Box */}
           <div className="popup-card max-w-2xl">

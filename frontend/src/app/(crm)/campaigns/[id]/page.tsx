@@ -323,7 +323,7 @@ export default function CampaignDetailsPage({ params: paramsPromise }: { params:
 
       {isLeadModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsLeadModalOpen(false)}></div>
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm"></div>
           <div className="relative bg-[#0e0e11] border border-white/10 rounded-3xl shadow-[0_0_50px_rgba(0,0,0,0.5)] w-full max-w-md overflow-hidden animate-[slideUp_0.3s_cubic-bezier(0.16,1,0.3,1)]">
             <div className="px-8 py-6 border-b border-white/5 flex items-center justify-between">
               <h2 className="text-xl font-bold text-white">Assign Target</h2>

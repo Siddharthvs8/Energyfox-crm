@@ -766,7 +766,7 @@ export default function DocumentationStage2Section({ leadId, canEdit, onChanged 
         const gridFields = form.fields.filter(([k]) => k !== "panel_serial_numbers");
         const hasSerials = form.key === "inverter_panel_details";
         return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={() => setOpenForm(null)}>
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
             <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
               <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 flex-shrink-0">
                 <h2 className="text-base font-bold text-slate-900">{form.label}</h2>

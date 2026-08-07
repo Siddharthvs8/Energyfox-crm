@@ -245,7 +245,9 @@ export function Modal({ show, title, onClose, onSubmit, saving, submitLabel, wid
   const width = xl ? "max-w-6xl" : wide ? "max-w-3xl" : "max-w-lg";
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
-      <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={onClose} />
+      {/* No dismiss on the backdrop — a stray click outside a half-filled form
+          should not throw the work away. The X and Cancel are the way out. */}
+      <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" />
       <div className={`bg-white rounded-2xl shadow-xl w-full ${width} relative z-10 overflow-hidden max-h-[92vh] flex flex-col`}>
         <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between flex-shrink-0">
           <h3 className="font-bold text-lg text-slate-900">{title}</h3>
@@ -545,7 +547,7 @@ export function DocumentPreview({ open, title, fileName, render, onClose, action
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
-      <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm" />
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-5xl relative z-10 overflow-hidden max-h-[94vh] flex flex-col">
         <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between gap-4 flex-shrink-0">
           <div className="min-w-0">

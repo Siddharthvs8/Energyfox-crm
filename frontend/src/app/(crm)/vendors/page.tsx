@@ -140,7 +140,7 @@ export default function VendorsPage({ params: paramsPromise }: { params: Promise
 
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
-          <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={() => setShowModal(false)} />
+          <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" />
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg relative z-10 overflow-hidden">
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
               <h3 className="font-bold text-lg text-slate-900">{editVendor ? "Edit Supplier" : "Add Supplier"}</h3>

@@ -1149,7 +1149,7 @@ export default function LeadDetailPage({
 
       {/* Assign to BDE Modal */}
       {showBdeModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4" onClick={() => setShowBdeModal(false)}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
           <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
             <div className="px-6 py-4 border-b border-slate-100">
               <h2 className="text-[15px] font-bold text-slate-900">Assign to BDE</h2>
@@ -1173,7 +1173,7 @@ export default function LeadDetailPage({
 
       {/* Assign Documentation Staff Modal */}
       {showDocModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4" onClick={() => setShowDocModal(false)}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
           <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
             <div className="px-6 py-4 border-b border-slate-100">
               <h2 className="text-[15px] font-bold text-slate-900">Assign Documentation Staff</h2>

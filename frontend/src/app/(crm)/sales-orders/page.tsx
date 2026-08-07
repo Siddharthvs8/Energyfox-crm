@@ -159,7 +159,7 @@ export default function SalesOrdersPage({ params: paramsPromise }: { params: Pro
 
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center px-4 py-8">
-          <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={() => setShowModal(false)} />
+          <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" />
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl relative z-10 max-h-[90vh] overflow-hidden flex flex-col">
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between flex-shrink-0">
               <h3 className="font-bold text-lg text-slate-900">{editOrder ? `Edit ${editOrder.number}` : "New Dispatch"}</h3>
