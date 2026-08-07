@@ -3879,3 +3879,228 @@ class LeadCsvImportNamingTests(TestCase):
         self.assertEqual(lead.first_name, 'Asha Devi')
         self.assertIn(lead, campaign.leads.all())
 
+
+
+class FixAdNamedLeadsCommandTests(TestCase):
+    """Repairing the leads already stored under their campaign's name.
+
+    The importer fix stops it happening again; it cannot rewrite rows that are
+    already there, so those need a pass of their own.
+    """
+
+    AD = 'Kerala ad 07/07/2026 campaign ad'
+
+    def run_command(self, **kwargs):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        call_command('fix_ad_named_leads', stdout=out, **kwargs)
+        return out.getvalue()
+
+    def meta_lead(self, first, last='', campaign=None, phone='9895271487', source='meta_ads'):
+        return Lead.objects.create(
+            first_name=first, last_name=last, phone=phone, source=source,
+            meta_campaign_name=campaign if campaign is not None else self.AD)
+
+    def test_a_lead_named_after_its_campaign_is_cleared(self):
+        lead = self.meta_lead('Kerala', 'ad 07/07/2026 campaign ad')
+        self.run_command()
+        lead.refresh_from_db()
+        self.assertEqual((lead.first_name, lead.last_name), ('Meta Lead', ''))
+        # What the caller actually needs is untouched.
+        self.assertEqual(lead.phone, '9895271487')
+        self.assertEqual(lead.meta_campaign_name, self.AD)
+
+    def test_a_real_customer_is_left_alone(self):
+        lead = self.meta_lead('Asha', 'Devi T')
+        self.run_command()
+        lead.refresh_from_db()
+        self.assertEqual((lead.first_name, lead.last_name), ('Asha', 'Devi T'))
+
+    def test_a_name_sharing_a_word_with_the_ad_is_left_alone(self):
+        lead = self.meta_lead('Kerala', 'Kumar')
+        self.run_command()
+        lead.refresh_from_db()
+        self.assertEqual((lead.first_name, lead.last_name), ('Kerala', 'Kumar'))
+
+    def test_a_dry_run_reports_without_writing(self):
+        lead = self.meta_lead('Kerala', 'ad 07/07/2026 campaign ad')
+        output = self.run_command(dry_run=True)
+        self.assertIn('1 lead(s) named after their own campaign', output)
+        self.assertIn('Dry run', output)
+        lead.refresh_from_db()
+        self.assertEqual(lead.first_name, 'Kerala')
+
+    def test_the_source_does_not_matter_only_the_name(self):
+        """Restricting this to Meta-sourced leads would miss the ones that came
+        in by CSV — which is how a batch can arrive named after its campaign
+        without the Meta importer being involved at all."""
+        lead = self.meta_lead('Kerala', 'ad 07/07/2026 campaign ad', source='manual')
+        self.run_command()
+        lead.refresh_from_db()
+        self.assertEqual((lead.first_name, lead.last_name), ('Meta Lead', ''))
+
+    def test_a_lead_with_no_campaign_recorded_is_skipped(self):
+        """Without the campaign name there is nothing to compare against."""
+        lead = self.meta_lead('Kerala', 'ad 07/07/2026 campaign ad', campaign='')
+        self.run_command()
+        lead.refresh_from_db()
+        self.assertEqual(lead.first_name, 'Kerala')
+
+    def test_a_whole_batch_is_repaired_at_once(self):
+        for n in range(5):
+            self.meta_lead('Kerala', 'ad 07/07/2026 campaign ad', phone=f'98952714{n:02d}')
+        self.meta_lead('Asha', 'Devi T', phone='9000000000')
+        self.run_command()
+        self.assertEqual(Lead.objects.filter(first_name='Meta Lead').count(), 5)
+        self.assertTrue(Lead.objects.filter(first_name='Asha').exists())
+
+    def test_running_it_twice_changes_nothing_the_second_time(self):
+        self.meta_lead('Kerala', 'ad 07/07/2026 campaign ad')
+        self.run_command()
+        output = self.run_command()
+        self.assertIn('No leads are named after their campaign', output)
+
+    def test_it_says_so_when_there_is_nothing_to_do(self):
+        self.meta_lead('Asha', 'Devi T')
+        self.assertIn('No leads are named after their campaign', self.run_command())
+
+
+class LeadCsvImportRobustnessTests(TestCase):
+    """A CSV that is slightly wrong must not lose the rows that are fine.
+
+    A single over-long cell used to abort the whole upload with a database error
+    the client could only report as "Upload failed" â€” one 191-character surname
+    in a 93-row file lost all 93 of them.
+    """
+
+    def setUp(self):
+        self.admin = mk('imp_admin', 'superadmin')
+        self.admin.is_superuser = True
+        self.admin.is_staff = True
+        self.admin.save()
+
+    def upload(self, text):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        return self.client.post(
+            '/api/leads/bulk_upload/',
+            data={'file': SimpleUploadedFile('leads.csv', text.encode('utf-8'),
+                                             content_type='text/csv')},
+            HTTP_AUTHORIZATION=token_for(self.admin))
+
+    # â”€â”€ The reported failure â”€â”€
+    def test_an_over_long_surname_no_longer_fails_the_whole_file(self):
+        long_last = 'Paikkaden ' + ('very good treatment ' * 12)   # ~250 chars
+        r = self.upload('first_name,last_name,phone\n'
+                        'Asha,Devi T,9895271487\n'
+                        f'Khader,{long_last},9995418857\n'
+                        'Reji,V N,9645096015\n')
+        self.assertEqual(r.status_code, 200, r.content[:400])
+        self.assertEqual(Lead.objects.count(), 3)
+        # The good rows are intact and the long one is stored clipped, not lost.
+        self.assertTrue(Lead.objects.filter(first_name='Asha').exists())
+        self.assertTrue(Lead.objects.filter(first_name='Reji').exists())
+        khader = Lead.objects.get(first_name='Khader')
+        self.assertEqual(len(khader.last_name), 100)
+        self.assertTrue(khader.last_name.startswith('Paikkaden'))
+
+    def test_the_response_says_how_many_rows_were_shortened(self):
+        r = self.upload('first_name,last_name,phone\n'
+                        f'Khader,{"x" * 250},9995418857\n')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(r.json()['truncated'], 1)
+        self.assertIn('shortened', r.json()['message'])
+
+    def test_a_clean_file_reports_nothing_shortened(self):
+        r = self.upload('first_name,last_name,phone\nAsha,Devi T,9895271487\n')
+        self.assertEqual(r.json()['truncated'], 0)
+        self.assertNotIn('shortened', r.json()['message'])
+
+    def test_an_over_long_first_name_is_clipped_too(self):
+        r = self.upload(f'first_name,phone\n{"y" * 250},9895271487\n')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(len(Lead.objects.get(phone='9895271487').first_name), 100)
+
+    def test_an_over_long_phone_is_clipped_rather_than_rejected(self):
+        r = self.upload(f'first_name,phone\nAsha,{"9" * 40}\n')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(len(Lead.objects.get(first_name='Asha').phone), 20)
+
+    # â”€â”€ Source labels â”€â”€
+    def test_a_friendly_source_label_is_stored_as_its_slug(self):
+        """"Meta Lead Ads" as typed is a source no filter would ever match."""
+        r = self.upload('first_name,phone,source\nAsha,9895271487,Meta Lead Ads\n')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(Lead.objects.get(first_name='Asha').source, 'meta_ads')
+
+    def test_source_matching_ignores_case(self):
+        self.upload('first_name,phone,source\nAsha,9895271487,META ADS\n')
+        self.assertEqual(Lead.objects.get(first_name='Asha').source, 'meta_ads')
+
+    def test_a_slug_that_is_already_right_is_left_alone(self):
+        self.upload('first_name,phone,source\nAsha,9895271487,website\n')
+        self.assertEqual(Lead.objects.get(first_name='Asha').source, 'website')
+
+    def test_an_unknown_source_is_kept_as_written(self):
+        """Not every source is one of ours â€” an unrecognised one is not an error."""
+        self.upload('first_name,phone,source\nAsha,9895271487,Trade Show\n')
+        self.assertEqual(Lead.objects.get(first_name='Asha').source, 'Trade Show')
+
+    def test_a_missing_source_still_defaults_to_manual(self):
+        self.upload('first_name,phone\nAsha,9895271487\n')
+        self.assertEqual(Lead.objects.get(first_name='Asha').source, 'manual')
+
+    # â”€â”€ The whole reported file â”€â”€
+    def test_the_reported_93_row_file_imports(self):
+        """The shape that failed: 93 rows, one surname far over the column width."""
+        rows = ['first_name,last_name,email,phone,source,status']
+        for n in range(92):
+            rows.append(f'Lead{n},Surname{n},,+9199000000{n:02d},Meta Lead Ads,new')
+        rows.append('Khader,' + 'Paikkaden eye treatment ' * 8 + ',,+919995418857,Meta Lead Ads,new')
+        r = self.upload('\n'.join(rows) + '\n')
+        self.assertEqual(r.status_code, 200, r.content[:400])
+        self.assertEqual(Lead.objects.count(), 93)
+        self.assertEqual(Lead.objects.filter(source='meta_ads').count(), 93)
+
+
+class FixAdNamedLeadsFromCampaignTests(TestCase):
+    """The repair also covers leads that were filed under a campaign by CSV.
+
+    Those carry no `meta_campaign_name`, so the campaign they belong to is what
+    their name has to be compared against.
+    """
+
+    AD = 'Kerala ad 07/07/2026 campaign ad'
+
+    def run_command(self, **kwargs):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        call_command('fix_ad_named_leads', stdout=out, **kwargs)
+        return out.getvalue()
+
+    def campaign(self, name=None):
+        from campaigns.models import Campaign
+        return Campaign.objects.create(name=name or self.AD,
+                                       campaign_type='advertisement', status='active')
+
+    def test_a_csv_lead_named_after_the_campaign_it_joined_is_cleared(self):
+        lead = Lead.objects.create(first_name='Kerala', last_name='ad 07/07/2026 campaign ad',
+                                   phone='9895271487', source='meta_ads')
+        self.campaign().leads.add(lead)
+        self.run_command()
+        lead.refresh_from_db()
+        self.assertEqual((lead.first_name, lead.last_name), ('Meta Lead', ''))
+
+    def test_a_real_customer_in_that_campaign_is_untouched(self):
+        lead = Lead.objects.create(first_name='Asha', last_name='Devi T', phone='9895271487')
+        self.campaign().leads.add(lead)
+        self.run_command()
+        lead.refresh_from_db()
+        self.assertEqual(lead.first_name, 'Asha')
+
+    def test_a_lead_with_neither_campaign_nor_meta_name_is_skipped(self):
+        lead = Lead.objects.create(first_name='Kerala', last_name='ad 07/07/2026 campaign ad')
+        self.run_command()
+        lead.refresh_from_db()
+        self.assertEqual(lead.first_name, 'Kerala')

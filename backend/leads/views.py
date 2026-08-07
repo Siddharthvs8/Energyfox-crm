@@ -4427,7 +4427,26 @@ class LeadViewSet(viewsets.ModelViewSet):
         source_keys = ['source', 'lead source', 'lead_source']
         status_keys = ['status', 'lead status', 'lead_status']
 
+        # Column widths come from the model, so they cannot drift out of step
+        # with it. A single over-long cell used to abort the whole upload with a
+        # database error and a bare "Upload failed" — one 191-character surname
+        # in a 93-row file lost all 93.
+        def clip(value, field_name):
+            limit = Lead._meta.get_field(field_name).max_length
+            value = value or ''
+            return value[:limit] if limit else value
+
+        # Friendly labels map back to the slugs the rest of the CRM filters on.
+        # Left as typed, "Meta Lead Ads" is a source no filter matches.
+        SOURCE_ALIASES = {
+            'meta lead ads': 'meta_ads', 'meta ads': 'meta_ads', 'meta': 'meta_ads',
+            'facebook': 'meta_ads', 'facebook ads': 'meta_ads', 'instagram': 'meta_ads',
+            'manual': 'manual', 'website': 'website', 'referral': 'referral',
+            'linkedin': 'linkedin',
+        }
+
         leads_to_create = []
+        truncated = 0
         for row in reader:
             first_name = get_row_value(row, first_name_keys)
             if not first_name:
@@ -4437,22 +4456,37 @@ class LeadViewSet(viewsets.ModelViewSet):
             email = get_row_value(row, email_keys)
             phone = get_row_value(row, phone_keys)
             source = get_row_value(row, source_keys) or 'manual'
+            source = SOURCE_ALIASES.get(source.strip().lower(), source)
             status_val = get_row_value(row, status_keys) or 'new'
 
+            if any(len(v) > (Lead._meta.get_field(f).max_length or len(v))
+                   for v, f in ((first_name, 'first_name'), (last_name, 'last_name'),
+                                (phone, 'phone'), (source, 'source'))):
+                truncated += 1
+
             leads_to_create.append(Lead(
-                first_name=first_name,
-                last_name=last_name,
-                email=email,
-                phone=phone,
-                source=source,
-                status=status_val
+                first_name=clip(first_name, 'first_name'),
+                last_name=clip(last_name, 'last_name'),
+                email=clip(email, 'email'),
+                phone=clip(phone, 'phone'),
+                source=clip(source, 'source'),
+                status=clip(status_val, 'status'),
             ))
             if len(leads_to_create) > 5000:
                 return Response({'error': 'Maximum 5000 leads can be imported at a time.'}, status=status.HTTP_400_BAD_REQUEST)
 
         if leads_to_create:
-            created_leads = Lead.objects.bulk_create(leads_to_create)
-            
+            try:
+                created_leads = Lead.objects.bulk_create(leads_to_create)
+            except Exception as exc:
+                # Say what went wrong rather than letting it surface as a 500 and
+                # a bare "Upload failed" with no clue which row was at fault.
+                logger.exception("Bulk lead import failed")
+                return Response(
+                    {'error': f'The import could not be saved: {exc}'.strip()[:500]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             if campaign_id:
                 try:
                     from campaigns.models import Campaign
@@ -4460,9 +4494,14 @@ class LeadViewSet(viewsets.ModelViewSet):
                     campaign.leads.add(*created_leads)
                 except Exception as e:
                     logger.error(f"Failed to link bulk imported leads to campaign {campaign_id}: {e}")
-                    
-            return Response({'message': f'Successfully created {len(leads_to_create)} leads.'})
-        
+
+            message = f'Successfully created {len(leads_to_create)} leads.'
+            if truncated:
+                message += (f' {truncated} row(s) had a field longer than the CRM stores '
+                            'and were shortened.')
+            return Response({'message': message, 'created': len(leads_to_create),
+                             'truncated': truncated})
+
         return Response({'error': 'No valid leads found in the CSV file. Please make sure the CSV has a column for First Name.'}, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=False, methods=['get'])
