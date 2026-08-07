@@ -1,5 +1,5 @@
 from rest_framework import viewsets, status, permissions
-from core.permissions import IsAdminOrManager
+from core.permissions import CampaignAccess
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from .models import Campaign
@@ -9,7 +9,7 @@ from leads.models import Lead
 class CampaignViewSet(viewsets.ModelViewSet):
     queryset = Campaign.objects.all()
     serializer_class = CampaignSerializer
-    permission_classes = [IsAdminOrManager]
+    permission_classes = [CampaignAccess]
 
     def get_permissions(self):
         """`options` is open to anyone who can work leads.

@@ -610,9 +610,9 @@ export default function DashboardLayout({
 
   const allNavItems: any[] = [
     { href: `/`,               label: "Dashboard",       Icon: Nav.Dashboard, exact: true },
-    { href: `/leads`,         label: "Leads",           Icon: Nav.Leads },
+    { href: `/leads`,         label: "Leads",           Icon: Nav.Leads, leadsDeskFeature: true },
     { href: `/converted`,     label: "Converted Leads", Icon: Nav.Trophy },
-    { href: `/campaigns`,     label: "Campaigns",       Icon: Nav.Campaigns, managerFeature: true },
+    { href: `/campaigns`,     label: "Campaigns",       Icon: Nav.Campaigns, managerFeature: true, leadsDeskFeature: true },
     { href: `/calls`,         label: "Calls",           Icon: Nav.Phone },
     { href: `/tasks`,         label: "Tasks",           Icon: Nav.Tasks },
     { inventoryGroup: true },
@@ -621,7 +621,7 @@ export default function DashboardLayout({
     { href: `/team-performance`,label: "Team Performance",Icon: Nav.Team, managerOnly: true },
     { href: `/manager`,       label: "Manager",         Icon: Nav.Admin, managerFeature: true },
     { href: `/automations`,   label: "Automations",    Icon: Nav.Automation, adminOnly: true },
-    { href: `/meta`,          label: "Meta Integration",Icon: Nav.Meta, strictAdminOnly: true },
+    { href: `/meta`,          label: "Meta Integration",Icon: Nav.Meta, strictAdminOnly: true, leadsDeskFeature: true },
     { href: `/team`,          label: "Team",            Icon: Nav.Team, inB2B: true },
     { href: `/branches`,      label: "Branches",        Icon: Nav.Admin, adminOnly: true },
     { href: `/documentation`, label: "Documentation Stage 1", Icon: Nav.Quote, docFeature: true },
@@ -656,6 +656,8 @@ export default function DashboardLayout({
   const isPmOnly = currentUser?.role === "project_manager";
   // Liasoning officer gets a focused view — only the Liasoning & Service module.
   const isLiasoningOnly = currentUser?.role === "liasoning_officer";
+  // Leads manager runs the lead book: Leads, Campaigns and where leads come from.
+  const isLeadsDeskOnly = currentUser?.role === "leads_manager";
 
   // A custom user type reaches exactly the modules ticked on its role in
   // Settings → Roles & Permissions. `permissions` holds those keys, which are
@@ -691,6 +693,9 @@ export default function DashboardLayout({
     }
     if (isLiasoningOnly) {
       return !!item.liasoningFeature;
+    }
+    if (isLeadsDeskOnly) {
+      return !!item.leadsDeskFeature;
     }
     if (isAccountsOnly) {
       return !!item.accountsFeature || !!item.completedProjectsFeature || !!item.paymentBucketFeature;

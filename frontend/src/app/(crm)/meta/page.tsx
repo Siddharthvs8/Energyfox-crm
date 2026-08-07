@@ -37,7 +37,11 @@ type Integration = {
   connected: boolean;
 };
 
-type CurrentUser = { is_staff?: boolean; is_general_manager?: boolean };
+type CurrentUser = { is_staff?: boolean; is_general_manager?: boolean; role?: string };
+
+/** Mirrors MetaIntegrationAccess on the API: admins, plus the leads manager
+ *  who owns where leads come from. */
+const canOpenMeta = (u?: CurrentUser | null) => !!(u?.is_staff || u?.role === "leads_manager");
 
 const inputCls =
   "w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all font-mono";
@@ -88,7 +92,7 @@ export default function MetaPage() {
     } catch { /* ignore */ }
   }, [domain]);
 
-  // Auth guard: only admins (is_staff) can access this page.
+  // Auth guard: admins and the leads manager.
   useEffect(() => {
     const token = localStorage.getItem(`${domain}_access`);
     if (!token) return;
@@ -97,13 +101,13 @@ export default function MetaPage() {
       .then(d => {
         setCurrentUser(d);
         setAuthChecked(true);
-        if (!d.is_staff) router.replace(`/`);
+        if (!canOpenMeta(d)) router.replace(`/`);
       })
       .catch(() => setAuthChecked(true));
   }, [domain, router]);
 
   useEffect(() => {
-    if (!authChecked || !currentUser?.is_staff) return;
+    if (!authChecked || !canOpenMeta(currentUser)) return;
     setWebhookUrl(`${getApiBase(domain)}/api/webhooks/meta-leads/`);
     fetchIntegrations();
     fetchSummary();
@@ -190,7 +194,7 @@ export default function MetaPage() {
       <div className="text-center"><div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" /><p className="text-sm text-slate-400">Loading...</p></div>
     </div>
   );
-  if (!currentUser?.is_staff) return null;
+  if (!canOpenMeta(currentUser)) return null;
 
   const connectedCount = integrations.filter(i => i.connected).length;
 

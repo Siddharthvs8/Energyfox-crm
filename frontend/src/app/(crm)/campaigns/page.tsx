@@ -26,7 +26,7 @@ export default function CampaignsPage({ params: paramsPromise }: { params: Promi
     }).then(r => r.json()).then(d => {
       setCurrentUser(d);
       setAuthChecked(true);
-      if (!d.is_staff && !d.is_general_manager && !d.is_manager) {
+      if (!d.is_staff && !d.is_general_manager && !d.is_manager && d.role !== "leads_manager") {
         router.replace(`/`);
       }
     }).catch(() => setAuthChecked(true));
@@ -34,7 +34,7 @@ export default function CampaignsPage({ params: paramsPromise }: { params: Promi
 
   useEffect(() => {
     if (!authChecked) return;
-    if (currentUser && !currentUser.is_staff && !currentUser.is_general_manager && !currentUser.is_manager) return;
+    if (currentUser && !currentUser.is_staff && !currentUser.is_general_manager && !currentUser.is_manager && currentUser.role !== "leads_manager") return;
     fetchCampaigns();
   }, [domain, authChecked, currentUser]);
 
@@ -70,7 +70,7 @@ export default function CampaignsPage({ params: paramsPromise }: { params: Promi
       <div className="text-center"><div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" /><p className="text-sm text-slate-400">Loading...</p></div>
     </div>
   );
-  if (currentUser && !currentUser.is_staff && !currentUser.is_general_manager && !currentUser.is_manager) return null;
+  if (currentUser && !currentUser.is_staff && !currentUser.is_general_manager && !currentUser.is_manager && currentUser.role !== "leads_manager") return null;
 
   return (
     <div className="min-h-screen bg-[#060608] text-slate-200 font-sans selection:bg-indigo-500/30 relative">

@@ -405,3 +405,116 @@ class AvatarTests(TestCase):
         self.post_avatar(self.bde, self.bde)
         r = self.client.get('/api/users/me/', HTTP_AUTHORIZATION=token_for(self.bde))
         self.assertTrue(r.json()['avatar_url'])
+
+
+class LeadsManagerRoleTests(TestCase):
+    """The leads manager runs the lead book: Leads, Campaigns, Meta Integration.
+
+    Three doors and no more — the point of the role is that it is *not* an admin,
+    so most of these tests are about what it cannot reach.
+    """
+
+    def setUp(self):
+        from campaigns.models import Campaign
+        self.lm = mk('lm_user', 'leads_manager')
+        self.admin = mk('lm_admin', 'superadmin')
+        self.admin.is_superuser = True
+        self.admin.is_staff = True
+        self.admin.save()
+        self.campaign = Campaign.objects.create(name='TVM ad', campaign_type='advertisement',
+                                                status='active')
+
+    def get(self, path, user=None):
+        return self.client.get(path, HTTP_AUTHORIZATION=token_for(user or self.lm))
+
+    # ── The role itself ──
+    def test_it_is_not_an_admin_or_a_general_manager(self):
+        """Either flag would open every module in the company."""
+        self.lm.refresh_from_db()
+        self.assertFalse(self.lm.is_staff)
+        self.assertFalse(self.lm.is_superuser)
+        self.assertFalse(self.lm.is_general_manager)
+        self.assertFalse(self.lm.is_manager)
+
+    def test_it_is_offered_when_an_admin_creates_an_account(self):
+        r = self.get('/api/users/assignable-roles/', user=self.admin)
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertIn('leads_manager', [row['value'] for row in r.json()])
+
+    # ── Leads ──
+    def test_it_sees_the_whole_lead_book(self):
+        from leads.models import Lead
+        Lead.objects.create(first_name='Someone', last_name='Else', phone='9895271487')
+        self.lm.refresh_from_db()
+        self.assertTrue(self.lm.sees_all_leads)
+        r = self.get('/api/leads/')
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        body = r.json()
+        rows = body if isinstance(body, list) else body.get('results', [])
+        self.assertTrue(any(x['first_name'] == 'Someone' for x in rows))
+
+    def test_it_can_add_edit_assign_and_use_the_lead_tools(self):
+        from leads.access import (can_add_leads, can_edit_leads, can_assign_leads,
+                                  can_use_lead_tools, can_edit_lead_status)
+        for fn in (can_add_leads, can_edit_leads, can_assign_leads,
+                   can_use_lead_tools, can_edit_lead_status):
+            self.assertTrue(fn(self.lm), fn.__name__)
+
+    # ── Campaigns ──
+    def test_it_can_list_and_open_campaigns(self):
+        self.assertEqual(self.get('/api/campaigns/').status_code, 200)
+        self.assertEqual(self.get(f'/api/campaigns/{self.campaign.id}/').status_code, 200)
+
+    def test_it_can_create_a_campaign(self):
+        r = self.client.post('/api/campaigns/',
+                             data={'name': 'Onam push', 'campaign_type': 'advertisement',
+                                   'status': 'active'},
+                             content_type='application/json',
+                             HTTP_AUTHORIZATION=token_for(self.lm))
+        self.assertEqual(r.status_code, 201, r.content[:300])
+
+    # ── Meta integration ──
+    def test_it_can_reach_the_meta_integration(self):
+        self.assertEqual(self.get('/api/integration-settings/').status_code, 200)
+
+    # ── Everything else is shut ──
+    def test_it_cannot_reach_the_other_modules(self):
+        from leads.access import (can_access_accounts, can_access_purchase,
+                                  can_access_project, can_access_liasoning,
+                                  can_access_documentation, can_access_doc_stage2,
+                                  can_access_warranty, can_cleanup_deleted_lead)
+        for fn in (can_access_accounts, can_access_purchase, can_access_project,
+                   can_access_liasoning, can_access_documentation,
+                   can_access_doc_stage2, can_access_warranty,
+                   can_cleanup_deleted_lead):
+            self.assertFalse(fn(self.lm), fn.__name__)
+
+    def test_it_cannot_administer_users(self):
+        r = self.client.post('/api/users/',
+                             data={'username': 'sneaky', 'password': 'Pw@123456',
+                                   'role': 'admin'},
+                             content_type='application/json',
+                             HTTP_AUTHORIZATION=token_for(self.lm))
+        self.assertIn(r.status_code, (400, 403))
+        self.assertFalse(User.objects.filter(username='sneaky').exists())
+
+    def test_it_cannot_reach_the_ai_manager(self):
+        """IsAdminOrManager guards it, and the leads desk was added elsewhere."""
+        r = self.get('/api/ai-manager/config/')
+        self.assertIn(r.status_code, (403, 404))
+
+    def test_it_cannot_change_organization_settings(self):
+        r = self.client.patch('/api/org-settings/', data={'email_signature': 'nope'},
+                              content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.lm))
+        self.assertEqual(r.status_code, 403)
+
+    def test_it_cannot_reach_the_stock_register(self):
+        r = self.get('/api/stock-items/')
+        self.assertEqual(r.status_code, 403)
+
+    # ── Rank ──
+    def test_an_admin_can_manage_it_but_it_cannot_manage_anyone(self):
+        from users.models import role_rank
+        self.assertGreater(role_rank('admin'), role_rank('leads_manager'))
+        self.assertGreater(role_rank('leads_manager'), role_rank('tele_caller'))

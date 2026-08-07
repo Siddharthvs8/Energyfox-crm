@@ -276,7 +276,8 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   // Tele callers add and assign their own leads too; the backend scopes an
   // agent's choices to their own team, and the people picker only lists those.
   const canAssign = currentUser?.is_staff || currentUser?.is_general_manager
-    || currentUser?.is_manager || currentUser?.role === "tele_caller";
+    || currentUser?.is_manager || currentUser?.role === "tele_caller"
+    || currentUser?.role === "leads_manager";
 
   // A BDE reports through the site visit; the lead status belongs to the tele
   // caller / managers. Mirrors can_edit_lead_status() on the backend.
@@ -286,7 +287,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   // endpoint — for anyone else the request 403s and the page reports "Campaign
   // not found", so the chip is plain text rather than a link into a dead end.
   const canOpenCampaign = !!(currentUser?.is_staff || currentUser?.is_general_manager
-    || currentUser?.is_manager);
+    || currentUser?.is_manager || currentUser?.role === "leads_manager");
   // Leads are sourced by the tele-calling side — a BDE only receives them.
   // Mirrors can_add_leads() on the backend.
   const canAddLeads = !currentUser || currentUser.role !== "bde";

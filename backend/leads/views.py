@@ -1,5 +1,5 @@
 from rest_framework import viewsets, status, permissions, parsers
-from core.permissions import IsAdminOnly
+from core.permissions import MetaIntegrationAccess
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.http import HttpResponse
@@ -5203,7 +5203,7 @@ class IntegrationSettingsViewSet(viewsets.ModelViewSet):
     Full CRUD: list/create/update/delete integrations, plus a per-integration sync.
     """
     serializer_class = IntegrationSettingsSerializer
-    permission_classes = [IsAdminOnly]
+    permission_classes = [MetaIntegrationAccess]
     queryset = IntegrationSettings.objects.all()
 
     @action(detail=False, methods=['get'])
