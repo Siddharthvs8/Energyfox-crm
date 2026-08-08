@@ -33,6 +33,7 @@ const NOTIFY_ROLES = [
   { value: "purchase_staff", label: "Purchase Staff" },
   { value: "project_manager", label: "Project Manager" },
   { value: "liasoning_officer", label: "Liasoning Officer" },
+  { value: "leads_manager", label: "Leads Manager" },
 ];
 const ACTION_ICONS: Record<string, string> = {
   ai_auto_assign: "🤖",

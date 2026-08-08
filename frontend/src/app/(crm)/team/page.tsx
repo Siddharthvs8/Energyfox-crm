@@ -30,6 +30,7 @@ const ROLES = [
   { value: "bde", label: "BDE" },
   { value: "branch_manager", label: "Branch Manager" },
   { value: "sales_manager", label: "Sales Manager" },
+  { value: "leads_manager", label: "Leads Manager" },
   { value: "documentation_staff", label: "Documentation Staff" },
   { value: "documentation_manager", label: "Documentation Manager" },
   { value: "accounts_staff", label: "Accounts Staff" },

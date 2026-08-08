@@ -518,3 +518,39 @@ class LeadsManagerRoleTests(TestCase):
         from users.models import role_rank
         self.assertGreater(role_rank('admin'), role_rank('leads_manager'))
         self.assertGreater(role_rank('leads_manager'), role_rank('tele_caller'))
+
+
+class TeamRolePickerCoverageTests(TestCase):
+    """The Team form's role list is hardcoded in the frontend.
+
+    `assignable-roles` only *filters* that list, so a role missing from it can
+    never be picked however correct the backend is — which is exactly how the
+    leads manager shipped invisible. This keeps the two in step.
+    """
+
+    PICKER = '../frontend/src/app/(crm)/team/page.tsx'
+
+    def picker_values(self):
+        import io
+        import os
+        import re
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        path = os.path.normpath(os.path.join(here, self.PICKER))
+        if not os.path.exists(path):
+            self.skipTest('frontend not present next to the backend')
+        source = io.open(path, encoding='utf-8').read()
+        block = re.search(r'const ROLES = \[(.*?)\];', source, re.S)
+        self.assertIsNotNone(block, 'could not find the ROLES list in the Team page')
+        return set(re.findall(r'value:\s*"([a-z0-9_]+)"', block.group(1)))
+
+    def test_every_role_can_be_picked_in_the_team_form(self):
+        from .models import ROLE_CHOICES
+        missing = {r for r, _label in ROLE_CHOICES} - self.picker_values()
+        self.assertEqual(missing, set(),
+                         f'roles the Team form cannot offer: {sorted(missing)}')
+
+    def test_the_picker_offers_nothing_the_backend_would_reject(self):
+        from .models import ROLE_CHOICES
+        unknown = self.picker_values() - {r for r, _label in ROLE_CHOICES}
+        self.assertEqual(unknown, set(),
+                         f'roles the Team form offers that do not exist: {sorted(unknown)}')
