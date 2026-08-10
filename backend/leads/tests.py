@@ -4217,3 +4217,85 @@ class LeadDistrictImportTests(TestCase):
         self.assertEqual(r.json()['district'], 'Alappuzha')
         lead.refresh_from_db()
         self.assertEqual(lead.district, 'Alappuzha')
+
+
+class LeadDistrictFilterTests(TestCase):
+    """The Leads page filters by district, and offers the districts that are
+    actually on the leads as its options."""
+
+    def setUp(self):
+        self.admin = mk('dist_filter_admin', 'superadmin')
+        self.admin.is_superuser = True
+        self.admin.is_staff = True
+        self.admin.save()
+        self.ernakulam = Lead.objects.create(first_name='Asha', phone='9895271481', district='Ernakulam')
+        self.thrissur = Lead.objects.create(first_name='Biju', phone='9895271482', district='Thrissur')
+        self.nowhere = Lead.objects.create(first_name='Chitra', phone='9895271483')
+
+    def names(self, query=''):
+        r = self.client.get(f'/api/leads/{query}', HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        body = r.json()
+        return sorted(l['first_name'] for l in (body.get('results') if isinstance(body, dict) else body))
+
+    def options(self):
+        r = self.client.get('/api/leads/districts/', HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        return r.json()
+
+    # ── Filtering ──
+    def test_no_district_param_leaves_every_lead_in(self):
+        self.assertEqual(self.names(), ['Asha', 'Biju', 'Chitra'])
+
+    def test_a_district_narrows_the_list_to_it(self):
+        self.assertEqual(self.names('?district=Ernakulam'), ['Asha'])
+
+    def test_the_match_ignores_case(self):
+        """The same district arrives capitalised differently from CSV and Meta."""
+        self.assertEqual(self.names('?district=ernakulam'), ['Asha'])
+
+    def test_the_match_ignores_padding_around_a_stored_value(self):
+        Lead.objects.filter(pk=self.thrissur.pk).update(district='  Thrissur ')
+        self.assertEqual(self.names('?district=Thrissur'), ['Biju'])
+
+    def test_none_picks_out_the_leads_without_one(self):
+        self.assertEqual(self.names('?district=none'), ['Chitra'])
+
+    def test_a_district_nobody_is_in_returns_nothing(self):
+        self.assertEqual(self.names('?district=Wayanad'), [])
+
+    def test_the_district_filter_stacks_with_the_others(self):
+        Lead.objects.filter(pk=self.ernakulam.pk).update(status='contacted')
+        self.assertEqual(self.names('?district=Ernakulam&status=contacted'), ['Asha'])
+        self.assertEqual(self.names('?district=Ernakulam&status=new'), [])
+
+    # ── The options list ──
+    def test_the_options_are_the_districts_in_use_sorted(self):
+        self.assertEqual(self.options(), ['Ernakulam', 'Thrissur'])
+
+    def test_a_blank_district_is_not_an_option(self):
+        self.assertNotIn('', self.options())
+
+    def test_one_spelling_per_district(self):
+        Lead.objects.create(first_name='Deepa', phone='9895271484', district='ERNAKULAM')
+        self.assertEqual(len(self.options()), 2)
+
+    def test_options_are_trimmed(self):
+        Lead.objects.filter(pk=self.thrissur.pk).update(district=' Thrissur ')
+        self.assertEqual(self.options(), ['Ernakulam', 'Thrissur'])
+
+    def test_an_archived_lead_still_offers_its_district(self):
+        """It is reachable through the Archived toggle, so it must stay filterable."""
+        Lead.objects.filter(pk=self.ernakulam.pk).update(is_archived=True)
+        self.assertIn('Ernakulam', self.options())
+
+    def test_a_trashed_lead_does_not_offer_its_district(self):
+        Lead.objects.filter(pk=self.ernakulam.pk).update(is_trashed=True)
+        self.assertNotIn('Ernakulam', self.options())
+
+    def test_a_tele_caller_only_sees_the_districts_of_their_own_leads(self):
+        agent = mk('dist_filter_agent', 'tele_caller')
+        Lead.objects.filter(pk=self.thrissur.pk).update(assigned_to=agent)
+        r = self.client.get('/api/leads/districts/', HTTP_AUTHORIZATION=token_for(agent))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(r.json(), ['Thrissur'])

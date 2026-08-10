@@ -3923,7 +3923,8 @@ class LeadViewSet(viewsets.ModelViewSet):
             'can_edit': can_access_project(request.user),
         })
 
-    def get_queryset(self):
+    def scoped_leads(self):
+        """Every lead this user is allowed to see, before any list filter."""
         user = self.request.user
         # site_visit is read for every row (the list's Site Visit button/indicator),
         # so pull it in the same query instead of one per lead.
@@ -3947,7 +3948,10 @@ class LeadViewSet(viewsets.ModelViewSet):
             queryset = base.filter(own_leads_q(user)).distinct().order_by('-created_at')
 
         # Trashed leads live only in the Trash view (and are purged after 7 days).
-        queryset = queryset.filter(is_trashed=False)
+        return queryset.filter(is_trashed=False)
+
+    def get_queryset(self):
+        queryset = self.scoped_leads()
 
         # Archived (old, terminal) leads are out of the hot working set by
         # default — pass ?archived=true to view them, ?archived=all for both.
@@ -3972,6 +3976,21 @@ class LeadViewSet(viewsets.ModelViewSet):
         source = self.request.query_params.get('source')
         if source:
             queryset = queryset.filter(source=source)
+
+        # Filter by district. Values are matched case-insensitively because the
+        # same district reaches us spelled differently from a CSV import and from
+        # a Meta form; 'none' picks up the leads that never carried one.
+        district = (self.request.query_params.get('district') or '').strip()
+        if district:
+            # Trimmed on both sides: a stray space around an imported value must
+            # not make its district unfilterable.
+            from django.db.models import Q
+            from django.db.models.functions import Trim
+            queryset = queryset.annotate(district_trimmed=Trim('district'))
+            if district.lower() == 'none':
+                queryset = queryset.filter(Q(district_trimmed='') | Q(district__isnull=True))
+            else:
+                queryset = queryset.filter(district_trimmed__iexact=district)
 
         # Filter by product
         product_id = self.request.query_params.get('product')
@@ -4697,6 +4716,30 @@ class LeadViewSet(viewsets.ModelViewSet):
         lead.archived_at = None
         lead.save(update_fields=['is_archived', 'archived_at'])
         return Response({'message': 'Lead restored from archive.'})
+
+    @action(detail=False, methods=['get'], url_path='districts')
+    def districts(self, request):
+        """The districts actually on this user's leads — the options for the
+        Leads page district filter.
+
+        Archived leads are counted too: they stay reachable through the Archived
+        toggle, and a district that quietly dropped out of the filter would make
+        them unfilterable. The same district arrives spelled differently from a
+        CSV import and from a Meta form, so entries are folded case-insensitively
+        and the first spelling seen wins.
+        """
+        seen = {}
+        for name in (self.scoped_leads()
+                     .exclude(district='')
+                     .exclude(district__isnull=True)
+                     .order_by()
+                     .values_list('district', flat=True)
+                     .distinct()):
+            cleaned = (name or '').strip()
+            key = cleaned.lower()
+            if cleaned and key not in seen:
+                seen[key] = cleaned
+        return Response([seen[k] for k in sorted(seen)])
 
     @action(detail=False, methods=['get'], url_path='archive-stats')
     def archive_stats(self, request):

@@ -69,6 +69,7 @@ export default function LeadDetailPage({
     email: "",
     phone: "",
     company: "",
+    district: "",
     installation_location: "",
     source: "manual",
     status: "new",
@@ -217,6 +218,7 @@ export default function LeadDetailPage({
       email: lead.email || "",
       phone: lead.phone || "",
       company: lead.company || "",
+      district: lead.district || "",
       installation_location: lead.installation_location || "",
       source: lead.source || "manual",
       status: lead.status || "new",
@@ -307,6 +309,7 @@ export default function LeadDetailPage({
       email: form.email,
       phone: form.phone,
       company: form.company,
+      district: form.district,
       installation_location: form.installation_location,
       source: form.source,
       status: form.status,
@@ -711,6 +714,10 @@ export default function LeadDetailPage({
               <div>
                 <p className="text-xs text-slate-400 mb-1">Place</p>
                 <p className="text-sm text-slate-700">{lead.company || "N/A"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-400 mb-1">District</p>
+                <p className="text-sm text-slate-700">{lead.district || "N/A"}</p>
               </div>
               <div>
                 <p className="text-xs text-slate-400 mb-1">Deal Value</p>
@@ -1237,6 +1244,10 @@ export default function LeadDetailPage({
                 <div>
                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Location</label>
                   <input value={form.company} onChange={e => setForm({ ...form, company: e.target.value })} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all" placeholder="e.g. Kochi" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">District</label>
+                  <input value={form.district} onChange={e => setForm({ ...form, district: e.target.value })} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all" placeholder="e.g. Ernakulam" />
                 </div>
                 <div>
                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Installation Location</label>

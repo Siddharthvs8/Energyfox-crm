@@ -186,6 +186,10 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   const [metaIntegrationFilter, setMetaIntegrationFilter] = useState("all");
   const [integrationsList, setIntegrationsList] = useState<{id: number, name: string}[]>([]);
   const [stageFilter,   setStageFilter]     = useState("all");
+  // District the lead sits in. Options are the districts actually on the leads,
+  // not a fixed list — the field is free text and arrives from CSV and Meta.
+  const [districtFilter, setDistrictFilter]  = useState("all");
+  const [districtsList,  setDistrictsList]   = useState<string[]>([]);
   const [createdType,    setCreatedType]    = useState("all");
   const [createdParam,   setCreatedParam]   = useState("2");
   const [createdFrom,    setCreatedFrom]    = useState("");
@@ -302,8 +306,8 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   // the shortcut and its completed badge are hidden from them.
   const showSiteVisit = !currentUser || currentUser.role !== "tele_caller";
 
-  useEffect(() => { fetchLeads(); fetchTeam(); fetchCampaigns(); fetchProducts(); fetchIntegrations(); }, [
-    domain, statusFilter, sourceFilter, assigneeFilter, campaignFilter, productFilter, metaIntegrationFilter, stageFilter, search,
+  useEffect(() => { fetchLeads(); fetchTeam(); fetchCampaigns(); fetchProducts(); fetchIntegrations(); fetchDistricts(); }, [
+    domain, statusFilter, sourceFilter, assigneeFilter, campaignFilter, productFilter, metaIntegrationFilter, stageFilter, districtFilter, search,
     createdType, createdParam, createdFrom, createdTo,
     modType, modParam, modFrom, modTo,
     valueMin, valueMax, companyFilter,
@@ -352,6 +356,19 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
       setIntegrationsList((Array.isArray(d) ? d : d.results || [])
         .filter((i: any) => i.name)
         .map((i: any) => ({ id: i.id, name: i.name })));
+    } catch {}
+  };
+
+  // The districts present on this user's leads. Refetched with the list so a
+  // district typed onto a lead a moment ago is already in the filter.
+  const fetchDistricts = async () => {
+    const token = localStorage.getItem(`${domain}_access`);
+    if (!token) return;
+    try {
+      const r = await fetch(`${getApiBase(domain)}/api/leads/districts/`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) return;
+      const d = await r.json();
+      setDistrictsList(Array.isArray(d) ? d : []);
     } catch {}
   };
 
@@ -437,6 +454,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
     if (productFilter  !== "all") q.append("product",     productFilter);
     if (metaIntegrationFilter !== "all") q.append("meta_integration", metaIntegrationFilter);
     if (stageFilter    !== "all") q.append("stage",       stageFilter);
+    if (districtFilter !== "all") q.append("district",    districtFilter);
     if (search)                   q.append("search", search);
     if (valueMin)                 q.append("value_min", valueMin);
     if (valueMax)                 q.append("value_max", valueMax);
@@ -923,6 +941,7 @@ This cannot be undone.`)) return;
 
   const activeFilters = [
     statusFilter !== "all", sourceFilter !== "all", assigneeFilter !== "all", campaignFilter !== "all",
+    districtFilter !== "all",
     createdType !== "all", modType !== "all", !!valueMin, !!valueMax, !!companyFilter,
     statusChangeFrom !== "all", statusChangeTo !== "all", statusChangeType !== "all",
     activityType !== "all", !!hasActivityDays, !!noActivityDays
@@ -930,6 +949,7 @@ This cannot be undone.`)) return;
 
   const clearFilters = () => {
     setStatusFilter("all"); setSourceFilter("all"); setAssigneeFilter("all"); setCampaignFilter("all"); setProductFilter("all");
+    setDistrictFilter("all");
     setCreatedType("all"); setCreatedParam("2"); setCreatedFrom(""); setCreatedTo("");
     setModType("all"); setModParam("2"); setModFrom(""); setModTo("");
     setValueMin(""); setValueMax(""); setCompanyFilter(""); setSearch("");
@@ -1055,6 +1075,18 @@ This cannot be undone.`)) return;
               <option value="website">Website</option>
               <option value="linkedin">LinkedIn</option>
               <option value="referral">Referral</option>
+            </select>
+          </div>
+
+          {/* District filter — the options are the districts actually on the
+              leads, since the field is free text off a CSV column or a Meta
+              form rather than a fixed list */}
+          <div className="flex-shrink-0 w-full sm:w-[160px]">
+            <select value={districtFilter} onChange={e => { setDistrictFilter(e.target.value); setPage(1); }}
+              className="dropdown-premium w-full">
+              <option value="all">All Districts</option>
+              <option value="none">No District</option>
+              {districtsList.map(d => <option key={d} value={d}>{d}</option>)}
             </select>
           </div>
 
