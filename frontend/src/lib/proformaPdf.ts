@@ -76,7 +76,11 @@ export async function buildProformaPdf(d: ProformaData): Promise<any> {
 
   const L = 10, R = 200;                 // page margins (A4 is 210 wide)
   const W = R - L;
-  let y = 10;
+  // A4 is 297 tall. TOP is where a fresh page starts drawing, BOTTOM the last
+  // line anything may reach — a long serial list grows the table past one page,
+  // and the parts that follow it must not slide off the bottom.
+  const TOP = 10, BOTTOM = 287;
+  let y = TOP;
 
   const line = (x1: number, y1: number, x2: number, y2: number) => doc.line(x1, y1, x2, y2);
   const box = (x: number, yy: number, w: number, h: number) => doc.rect(x, yy, w, h);
@@ -289,35 +293,59 @@ export async function buildProformaPdf(d: ProformaData): Promise<any> {
   const heads = ["Sl No", "Particulars", "HSN", "Qty", "Unit", "Taxable", "GST Rate", "Tax", "Total"];
   const headH = 7;
 
-  size(7.5); bold();
-  heads.forEach((h, i) => {
-    box(X[i], y, X[i + 1] - X[i], headH);
-    if (i === 1) text(h, X[i] + 1.5, y + 4.5);          // Particulars: flush left
-    else text(h, (X[i] + X[i + 1]) / 2, y + 4.5, { align: "center" });
-  });
-  y += headH;
+  /* The table grows to fit its contents rather than the other way round: a line
+     shipping fourteen panels lists fourteen serial numbers, and a row that
+     silently kept only the first few would be an invoice that disagrees with the
+     goods. Each row is measured, takes the height it needs, and the table
+     carries on to another page when this one runs out. */
+  const drawTableHead = () => {
+    size(7.5); bold();
+    heads.forEach((h, i) => {
+      box(X[i], y, X[i + 1] - X[i], headH);
+      if (i === 1) text(h, X[i] + 1.5, y + 4.5);        // Particulars: flush left
+      else text(h, (X[i] + X[i + 1]) / 2, y + 4.5, { align: "center" });
+    });
+    y += headH;
+    bold(false); size(8);
+  };
+  drawTableHead();
 
   // One row per line — no filler. The sample document happened to carry a blank
   // second row; that was its data, not part of the form.
-  const rowH = d.lines.some(l => l.serials) ? 14 : 12;
+  //
+  // The floor keeps a plain invoice looking exactly as it did; a row only grows
+  // past it when its own contents need the room.
+  const baseRowH = d.lines.some(l => l.serials) ? 14 : 12;
+  let rowH = baseRowH;
   bold(false); size(8);
   for (const li of d.lines) {
-    for (let i = 0; i < heads.length; i++) box(X[i], y, X[i + 1] - X[i], rowH);
-    const mid = y + rowH / 2 + 1;
-    text(String(li.sl_no), (X[0] + X[1]) / 2, mid, { align: "center" });
-    // A long description wraps inside its column rather than running over
-    // the HSN cell; three lines is all the row height allows.
-    bold();
-    const desc = doc.splitTextToSize(li.particulars || "", X[2] - X[1] - 4).slice(0, 2);
+    // Measured in the font each part is drawn in — splitTextToSize answers for
+    // whatever face and size are set, so measuring at one and printing at
+    // another would wrap in the wrong place.
+    const colW = X[2] - X[1] - 4;
+    size(8); bold();
+    const desc = doc.splitTextToSize(li.particulars || "", colW);
     // Serials sit under the description in smaller, lighter type — they identify
     // the units that shipped, not what was sold.
     size(6.5); bold(false);
+    // Every serial entered, however many that is — the row is sized around them
+    // below rather than them being cut to fit it.
     const sn = li.serials
       ? doc.splitTextToSize(`S/N: ${li.serials.split(/[\r\n,]+/).map(t => t.trim()).filter(Boolean).join(", ")}`,
-                            X[2] - X[1] - 4).slice(0, 2)
+                            X[2] - X[1] - 4)
       : [];
-    size(8); bold();
+    size(8); bold(false);
+
     const block = desc.length * 3.2 + sn.length * 2.8;
+    rowH = Math.max(baseRowH, block + 4);
+    // A row is never split down the middle: it moves to the next page whole,
+    // under a repeated header so the columns are still labelled.
+    if (y + rowH > BOTTOM) { doc.addPage(); y = TOP; drawTableHead(); }
+
+    for (let i = 0; i < heads.length; i++) box(X[i], y, X[i + 1] - X[i], rowH);
+    const mid = y + rowH / 2 + 1;
+    text(String(li.sl_no), (X[0] + X[1]) / 2, mid, { align: "center" });
+    bold();
     let ty = mid - block / 2 + 1.6;
     desc.forEach((ln: string) => { text(ln, (X[1] + X[2]) / 2, ty, { align: "center" }); ty += 3.2; });
     bold(false);
@@ -341,6 +369,17 @@ export async function buildProformaPdf(d: ProformaData): Promise<any> {
     for (let i = 0; i < heads.length; i++) box(X[i], y, X[i + 1] - X[i], rowH);
     y += rowH;
   }
+
+  /* ── Everything below here is one block ──
+     The totals, the HSN summary and the signed footer only make sense together,
+     so they move to a new page as a unit rather than being cut wherever the page
+     happens to end. Heights are the fixed ones each section draws below. */
+  const tailH = (7 + 3)                              // total invoice value
+              + 6 + 6 + 6 * Math.max(d.hsn_summary.length, 1)   // HSN caption, head, rows
+              + 6 + 7                                // round off, grand total
+              + 7                                    // amount in words
+              + (30 + 12);                           // bank + terms / signature
+  if (y + tailH > BOTTOM) { doc.addPage(); y = TOP; }
 
   /* ── Total invoice value ── */
   const totH = 7;
