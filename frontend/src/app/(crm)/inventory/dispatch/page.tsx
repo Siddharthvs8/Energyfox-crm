@@ -137,6 +137,10 @@ export default function StockDispatchPage() {
 
   const docName = (r: any) => proformaFileName(r.invoice_no || `DSP-${r.id}`);
 
+  /** The serials on a row, as entered — comma or newline separated. */
+  const serialsOf = (r: any): string[] =>
+    String(r.serial_numbers || "").split(/[\r\n,]+/).map(t => t.trim()).filter(Boolean);
+
   /** Pull the printed figures from the server and render the invoice. */
   const render = async (r: any) => {
     const res = await fetch(`${api}/api/stock-dispatches/${r.id}/invoice/`, { headers: authHeader() });
@@ -195,7 +199,7 @@ export default function StockDispatchPage() {
       <SearchBar value={search} onChange={setSearch} placeholder="Search dispatches..." />
 
       <DataTable
-        minWidth={960} compact
+        minWidth={880} compact
         columns={[
           "Invoice No.", "Customer", "Date", "Item", "Serial No.",
           { label: "Qty", align: "right" }, { label: "Total", align: "right" },
@@ -209,9 +213,31 @@ export default function StockDispatchPage() {
           <span className="font-mono text-xs font-semibold text-slate-900 whitespace-nowrap">{r.invoice_no || "—"}</span>,
           r.customer_name || "—",
           <span className="font-mono text-xs text-slate-500 whitespace-nowrap">{r.date || "—"}</span>,
-          <span><span className="font-mono text-xs">{r.item_code}</span>{" "}
-            <span className="text-slate-400">— {r.item_label}</span></span>,
-          <span className="font-mono text-[10px] text-slate-500">{r.serial_numbers || "—"}</span>,
+          <div className="min-w-[120px]">
+            <span className="font-mono text-xs whitespace-nowrap">{r.item_code}</span>
+            <span className="block text-[11px] text-slate-400">{r.item_label}</span>
+          </div>,
+          (() => {
+            const serials = serialsOf(r);
+            if (!serials.length) return <span className="text-slate-300">—</span>;
+            // Wrapped rather than run out sideways, so the row grows downward
+            // instead of the table growing past the page. Joined with ", " —
+            // the stored form has no spaces, which leaves the browser nothing to
+            // wrap on, and that is what was stretching the column. break-words
+            // rather than break-all so a serial is never split down the middle.
+            return (
+              <div className="max-w-[180px]">
+                <span className="font-mono text-[10px] leading-relaxed text-slate-500 break-words">
+                  {serials.join(", ")}
+                </span>
+                {serials.length > 1 && (
+                  <span className="block text-[9px] font-semibold uppercase tracking-wider text-slate-300 mt-0.5">
+                    {serials.length} serials
+                  </span>
+                )}
+              </div>
+            );
+          })(),
           <span className="tabular-nums">{num(r.quantity)}</span>,
           <span className="tabular-nums font-semibold">{rupee(r.total)}</span>,
           r.payment_verified ? (
