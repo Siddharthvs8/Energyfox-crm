@@ -475,13 +475,15 @@ class SalesOrderViewSet(viewsets.ModelViewSet):
 
 # ─── Stock register ─────────────────────────────────────────────────────────
 from decimal import Decimal  # noqa: E402
-from django.db.models import Sum, OuterRef, Subquery, DecimalField, Value, F  # noqa: E402
+from django.db import transaction  # noqa: E402
+from django.db.models import Sum, OuterRef, Subquery, DecimalField, Value, F, Exists  # noqa: E402
 from django.db.models.functions import Coalesce  # noqa: E402
 from django.utils import timezone  # noqa: E402
 from rest_framework.views import APIView  # noqa: E402
 
 from .models import (StockItem, StockCustomer, GoodsReceipt, StockDispatch,  # noqa: E402
-                     StockQuote, StockPurchaseOrder,
+                     StockQuote, StockQuoteItem, StockPurchaseOrder, DispatchPayment,
+                     LIVE_QUOTE_STATUSES,
                      next_stock_po_number, next_document_number, financial_year)
 from .serializers import (  # noqa: E402
     StockItemSerializer, StockCustomerSerializer,
@@ -509,6 +511,7 @@ class IsStockKeeper(permissions.BasePermission):
         if not u or not u.is_authenticated:
             return False
         return bool(getattr(u, 'is_superuser', False)
+                    or getattr(u, 'is_spectator', False)
                     or getattr(u, 'role', '') in b2b_access.UNRESTRICTED_ROLES
                     or getattr(u, 'is_b2b_only', False))
 
@@ -551,11 +554,29 @@ def _movement_total(model, field='quantity'):
     )
 
 
+def _reserved_total():
+    """Units held by live proforma invoices, per item — see StockItem.reserved.
+
+    Same subquery shape as the movement totals for the same reason: a plain
+    annotation across a third reverse FK would multiply the other two.
+    """
+    return Coalesce(
+        Subquery(
+            StockQuoteItem.objects
+            .filter(item=OuterRef('pk'), quote__status__in=LIVE_QUOTE_STATUSES)
+            .values('item').annotate(t=Sum('quantity')).values('t')[:1],
+            output_field=_MONEY,
+        ),
+        Value(Decimal('0')), output_field=_MONEY,
+    )
+
+
 def stock_items_with_ledger():
-    """Item master annotated with its received/dispatched totals."""
+    """Item master annotated with its received/dispatched/reserved totals."""
     return StockItem.objects.annotate(
         received_qty=_movement_total(GoodsReceipt),
         dispatched_qty=_movement_total(StockDispatch),
+        reserved_qty=_reserved_total(),
     )
 
 
@@ -633,6 +654,81 @@ class StockCustomerViewSet(viewsets.ModelViewSet):
         return qs
 
 
+PAISE = Decimal('0.01')
+
+
+def to_money(value, default=Decimal('0')):
+    """A figure off the wire as rupees and paise, or `default` if it isn't one."""
+    from decimal import ROUND_HALF_UP, InvalidOperation
+    if value in (None, ''):
+        return default
+    try:
+        return Decimal(str(value)).quantize(PAISE, rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
+def to_date(value):
+    """An ISO date off the wire as a real date, or None."""
+    from datetime import date, datetime
+    if isinstance(value, date):
+        return value
+    try:
+        return datetime.strptime(str(value)[:10], '%Y-%m-%d').date()
+    except (ValueError, TypeError):
+        return None
+
+
+def check_payment(raw, invoice_total, paid_on_default=None):
+    """Validate the payment-verification step against what the delivery costs.
+
+    The rule is full payment: the goods do not leave until the invoice has been
+    settled to the paisa. Returns ``(kwargs, error)`` — kwargs ready for a
+    DispatchPayment, or a response body explaining what is missing. The error
+    carries the figures as well as the sentence, so the popup can show the
+    shortfall rather than only complain about it.
+    """
+    raw = raw if isinstance(raw, dict) else {}
+    invoice_total = to_money(invoice_total) or Decimal('0')
+
+    if invoice_total <= 0:
+        return None, {'error': 'This delivery has no value to collect against. '
+                               'Check the quantities and rates before dispatching.'}
+
+    received = to_money(raw.get('amount_received'), default=None)
+    if received is None:
+        return None, {'error': 'Enter the amount received before dispatching.',
+                      'invoice_total': str(invoice_total)}
+
+    mode = str(raw.get('mode') or '').strip().lower()
+    if mode not in {m for m, _label in DispatchPayment.MODE_CHOICES}:
+        return None, {'error': 'Choose how the payment was received.',
+                      'invoice_total': str(invoice_total)}
+
+    if received != invoice_total:
+        short = invoice_total - received
+        if short > 0:
+            message = (f'Payment is short by ₹{short}. The full invoice of '
+                       f'₹{invoice_total} must be received before the goods can '
+                       f'be dispatched.')
+        else:
+            message = (f'The amount received (₹{received}) is more than the '
+                       f'invoice of ₹{invoice_total}. Correct one of the two '
+                       f'before dispatching.')
+        return None, {'error': message, 'invoice_total': str(invoice_total),
+                      'amount_received': str(received), 'balance': str(short)}
+
+    paid_on = to_date(raw.get('paid_on')) or paid_on_default or timezone.localdate()
+    return {
+        'invoice_total': invoice_total,
+        'amount_received': received,
+        'mode': mode,
+        'reference': str(raw.get('reference') or '')[:100],
+        'paid_on': paid_on,
+        'notes': str(raw.get('notes') or ''),
+    }, None
+
+
 class _MovementViewSet(viewsets.ModelViewSet):
     # Subclasses set their own module: receipts belong to purchases, dispatches
     # to the sales module.
@@ -657,7 +753,97 @@ class StockDispatchViewSet(_MovementViewSet):
     queryset = StockDispatch.objects.all()
 
     def get_queryset(self):
-        return StockDispatch.objects.select_related('item', 'customer', 'created_by')
+        # The payment is held once per invoice number, so it is joined on rather
+        # than looked up per row — a list of dispatches would otherwise be a
+        # query each.
+        paid = DispatchPayment.objects.filter(invoice_no=OuterRef('invoice_no'))
+        return (StockDispatch.objects
+                .select_related('item', 'customer', 'created_by')
+                .annotate(
+                    payment_verified=Exists(paid),
+                    payment_amount=Subquery(paid.values('amount_received')[:1]),
+                    payment_mode=Subquery(paid.values('mode')[:1]),
+                    payment_reference=Subquery(paid.values('reference')[:1]),
+                    payment_paid_on=Subquery(paid.values('paid_on')[:1]),
+                ))
+
+    @action(detail=False, methods=['post'], url_path='dispatch')
+    def dispatch_document(self, request):
+        """Release a whole delivery: every line, plus the payment that freed it.
+
+        This is what Save Dispatch calls. A delivery is several rows sharing one
+        invoice number and one payment, so it is written here in a single
+        transaction rather than a row at a time — a half-written delivery, or
+        one whose goods left against an unverified payment, must not be a state
+        the database can reach.
+
+        The plain ``POST /api/stock-dispatches/`` is still the row primitive
+        (editing a line, the quote conversion's own rows); the payment gate
+        belongs to this document-level action, which is the one the warehouse
+        actually uses.
+        """
+        data = request.data
+        raw_lines = data.get('lines') or []
+        if not isinstance(raw_lines, list) or not raw_lines:
+            return Response({'error': 'Add at least one product before dispatching.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        tax_percent = to_money(data.get('tax_percent')) or Decimal('0')
+        lines, goods = [], Decimal('0')
+        for raw in raw_lines:
+            item_id = (raw or {}).get('item')
+            quantity = to_money((raw or {}).get('quantity'))
+            rate = to_money((raw or {}).get('rate')) or Decimal('0')
+            if not item_id or not quantity or quantity <= 0:
+                continue
+            lines.append((item_id, quantity, rate, str((raw or {}).get('serial_numbers') or '')))
+            goods += quantity * rate
+        if not lines:
+            return Response({'error': 'Add at least one product with a quantity.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        # The same arithmetic the modal shows: goods value, then tax on top,
+        # rounded once at the end. Rounding per row instead would leave the
+        # popup demanding a total a paisa away from the one on screen.
+        invoice_total = to_money(goods + (goods * tax_percent / Decimal('100')))
+
+        dispatch_date = to_date(data.get('date')) or timezone.localdate()
+        payment, error = check_payment(data.get('payment'), invoice_total,
+                                       paid_on_default=dispatch_date)
+        if error:
+            return Response(error, status=status.HTTP_400_BAD_REQUEST)
+
+        customer_id = data.get('customer') or None
+        invoice_no = (str(data.get('invoice_no') or '').strip()
+                      or next_document_number('IN', on=dispatch_date))
+        if DispatchPayment.objects.filter(invoice_no=invoice_no).exists():
+            return Response({'error': f'{invoice_no} has already been dispatched.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            rows = [
+                StockDispatch.objects.create(
+                    invoice_no=invoice_no, date=dispatch_date, customer_id=customer_id,
+                    item_id=item_id, quantity=quantity, rate=rate,
+                    tax_percent=tax_percent, serial_numbers=serials,
+                    site=str(data.get('site') or ''), notes=str(data.get('notes') or ''),
+                    created_by=request.user if request.user.is_authenticated else None,
+                )
+                for item_id, quantity, rate, serials in lines
+            ]
+            DispatchPayment.objects.create(
+                invoice_no=invoice_no,
+                verified_by=request.user if request.user.is_authenticated else None,
+                **payment)
+
+        return Response({
+            'invoice_no': invoice_no,
+            'dispatched_lines': len(rows),
+            'invoice_total': str(invoice_total),
+            'rows': StockDispatchSerializer(
+                self.get_queryset().filter(id__in=[r.id for r in rows]),
+                many=True, context={'request': request}).data,
+        }, status=status.HTTP_201_CREATED)
 
     # ── The invoice for a dispatch ──
     def _document_rows(self, dispatch):
@@ -841,7 +1027,7 @@ class IsInventoryViewer(permissions.BasePermission):
         granted = u.can('inventory') if hasattr(u, 'can') else None
         if granted is not None:
             return granted
-        return bool(u.is_staff or getattr(u, 'is_general_manager', False))
+        return bool(getattr(u, 'sees_everything', False))
 
 
 class InventoryDashboardView(APIView):
@@ -978,11 +1164,13 @@ class StockQuoteViewSet(ProformaDocumentMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def convert(self, request, pk=None):
-        """Turn an accepted quote into stock dispatches — one row per line, all
-        sharing the quote's number as the invoice reference.
+        """Turn an accepted proforma into stock dispatches — one row per line,
+        all sharing one invoice number.
 
-        Guarded so it can only happen once: a second call would take the same
-        goods out of stock twice.
+        The payment is verified first, on the proforma's own total: this action
+        is what puts the goods out of the door, so it is behind the same gate as
+        Save Dispatch. Guarded so it can only happen once, too — a second call
+        would take the same goods out of stock twice.
         """
         quote = self.get_object()
         if quote.status == 'converted':
@@ -994,27 +1182,38 @@ class StockQuoteViewSet(ProformaDocumentMixin, viewsets.ModelViewSet):
                             status=status.HTTP_400_BAD_REQUEST)
 
         dispatch_date = quote.quote_date or timezone.localdate()
+        payment, error = check_payment(request.data.get('payment'), quote.total,
+                                       paid_on_default=dispatch_date)
+        if error:
+            return Response(error, status=status.HTTP_400_BAD_REQUEST)
+
         # The dispatch is a sale, so it takes its own number from the invoice
         # series rather than carrying the proforma's. One number for the whole
         # set — the rows of a delivery share it — with the proforma recorded in
         # the note so the two stay traceable.
         invoice_no = next_document_number('IN', on=dispatch_date)
-        created = [
-            StockDispatch.objects.create(
-                invoice_no=invoice_no, date=dispatch_date, customer=quote.customer,
-                item=line.item, quantity=line.quantity, rate=line.unit_price,
-                tax_percent=quote.tax_percent or Decimal('0'),
-                site=quote.site, notes=f"From quote {quote.number}",
-                created_by=request.user if request.user.is_authenticated else None,
-            )
-            for line in lines
-        ]
-        quote.status = 'converted'
-        quote.converted_at = timezone.now()
-        quote.save(update_fields=['status', 'converted_at', 'updated_at'])
+        with transaction.atomic():
+            created = [
+                StockDispatch.objects.create(
+                    invoice_no=invoice_no, date=dispatch_date, customer=quote.customer,
+                    item=line.item, quantity=line.quantity, rate=line.unit_price,
+                    tax_percent=quote.tax_percent or Decimal('0'),
+                    site=quote.site, notes=f"From quote {quote.number}",
+                    created_by=request.user if request.user.is_authenticated else None,
+                )
+                for line in lines
+            ]
+            DispatchPayment.objects.create(
+                invoice_no=invoice_no,
+                verified_by=request.user if request.user.is_authenticated else None,
+                **payment)
+            quote.status = 'converted'
+            quote.converted_at = timezone.now()
+            quote.save(update_fields=['status', 'converted_at', 'updated_at'])
 
         data = self.get_serializer(quote).data
         data['dispatched_lines'] = len(created)
+        data['invoice_no'] = invoice_no
         return Response(data)
 
 

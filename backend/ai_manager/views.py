@@ -15,24 +15,29 @@ from . import ai_meeting as ai_meeting_engine
 
 
 from rest_framework.exceptions import PermissionDenied
+from core.permissions import watches_everything
 
 
 # ─── Custom Permission ────────────────────────────────────────────────────────
 
 class IsAdminOrGeneralManager(permissions.BasePermission):
-    """Only allow admin (is_staff) or general managers."""
+    """Only allow admin (is_staff) or general managers — plus the spectator,
+    which reads this module like any other and is refused every write by
+    core.middleware.SpectatorReadOnlyMiddleware."""
     def has_permission(self, request, view):
         return bool(
             request.user and request.user.is_authenticated and
-            (request.user.is_staff or request.user.is_general_manager)
+            (request.user.is_staff or request.user.is_general_manager
+             or watches_everything(request.user))
         )
 
 class IsAdminOrManager(permissions.BasePermission):
-    """Allow admin, general managers, and regular managers."""
+    """Allow admin, general managers, and regular managers (plus the spectator)."""
     def has_permission(self, request, view):
         return bool(
             request.user and request.user.is_authenticated and
-            (request.user.is_staff or request.user.is_general_manager or request.user.is_manager)
+            (request.user.is_staff or request.user.is_general_manager or request.user.is_manager
+             or watches_everything(request.user))
         )
 
 

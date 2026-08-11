@@ -151,7 +151,7 @@ class WorkspaceTeamViewSet(viewsets.ModelViewSet):
         qs = WorkspaceTeam.objects.all().prefetch_related('members').order_by('name')
         user = self.request.user
         # Admin and GM see all teams; others see only their own team
-        if not (user.is_staff or user.is_general_manager):
+        if not user.sees_everything:
             if user.branch_scoped and user.branch_id:
                 # Branch manager: teams they head, their own, and any team with
                 # staff from their branch.
@@ -295,7 +295,7 @@ class UserViewSet(viewsets.ModelViewSet):
                 qs = qs.exclude(role__in=B2B_ONLY_ROLES)
 
         # Admin and GM see all users; branch managers see their branch; others see their team/self
-        if not (user.is_staff or user.is_general_manager):
+        if not user.sees_everything:
             if user.branch_scoped and user.branch_id:
                 qs = qs.filter(branch_id=user.branch_id)
             elif user.team_id:

@@ -309,9 +309,20 @@ class SalesOrderItem(models.Model):
 
 
 # ─── Stock register ─────────────────────────────────────────────────────────
-# A warehouse-side stock ledger, separate from the sales documents above:
-# closing stock is always derived (opening + goods received − dispatched) rather
-# than stored, so the books can never drift from the movements that made them.
+# A warehouse-side stock ledger, separate from the sales documents above. Every
+# figure is derived rather than stored, so the books can never drift from the
+# facts that made them:
+#
+#   physical_stock = opening + goods received − dispatched   (what is on the shelf)
+#   reserved       = live proforma lines                     (what is promised)
+#   closing_stock  = physical_stock − reserved               (what is left to sell)
+
+# Proforma statuses that hold stock back. A converted one is left out because
+# its dispatch rows have already taken the goods off the shelf — counting both
+# would remove the same units twice. A declined one is left out because the
+# offer is off and the goods are free again.
+LIVE_QUOTE_STATUSES = ('draft', 'sent', 'accepted')
+
 
 class StockItem(models.Model):
     """One SKU in the warehouse — a panel, inverter, battery, structure, cable."""
@@ -364,15 +375,51 @@ class StockItem(models.Model):
         return self.dispatches.aggregate(t=models.Sum('quantity'))['t'] or Decimal('0')
 
     @property
-    def closing_stock(self):
+    def reserved(self):
+        """Units promised on proforma invoices that have not gone out yet.
+
+        Held rather than moved: the goods are still on the shelf, but they are
+        spoken for, so they must not be offered to a second customer. The figure
+        is summed from the live proforma lines rather than stored, which is what
+        makes it release itself — delete the proforma, or decline it, and the
+        stock is available again with nothing to unwind.
+        """
+        cached = getattr(self, 'reserved_qty', None)
+        if cached is not None:
+            return cached
+        return (self.quote_lines.filter(quote__status__in=LIVE_QUOTE_STATUSES)
+                .aggregate(t=models.Sum('quantity'))['t'] or Decimal('0'))
+
+    @property
+    def physical_stock(self):
+        """What is actually in the warehouse: opening, plus what came in, less
+        what went out. Reserved units are still here — promised, not gone — so
+        this is the figure the stock is *valued* at."""
         return (self.opening_stock or Decimal('0')) + self.received - self.dispatched
 
     @property
+    def closing_stock(self):
+        """What is left to sell: the shelf, less what proforma invoices have
+        already promised.
+
+        Deliberately net of reservations rather than the raw ledger figure,
+        because this is the number every screen quotes — and a stock count that
+        includes goods already promised to someone else is how the same panel
+        gets sold twice. `physical_stock` is the raw figure for anyone who needs
+        it.
+        """
+        return self.physical_stock - self.reserved
+
+    @property
     def stock_value(self):
-        return self.closing_stock * (self.unit_cost or Decimal('0'))
+        # Valued on what is owned, not on what is free to sell: a reserved panel
+        # is still the company's until it is dispatched and paid for.
+        return self.physical_stock * (self.unit_cost or Decimal('0'))
 
     @property
     def needs_reorder(self):
+        # Against what can still be sold. An item whose whole shelf is promised
+        # away needs restocking just as much as an empty one.
         return self.closing_stock <= (self.reorder_level or Decimal('0'))
 
 
@@ -461,6 +508,46 @@ class StockDispatch(_StockMovement):
 
     def __str__(self):
         return self.invoice_no or f"Dispatch #{self.pk}"
+
+
+class DispatchPayment(models.Model):
+    """The payment that was checked before a delivery's goods were released.
+
+    One per invoice number rather than one per row: a delivery of several
+    products is several StockDispatch rows sharing an invoice_no, and the
+    customer pays for the delivery, not for a row of it.
+
+    Written in the same transaction as the rows it releases — see
+    StockDispatchViewSet.dispatch_document and StockQuoteViewSet.convert — so
+    neither of those two actions can put goods out without one.
+    """
+    MODE_CHOICES = [
+        ('cash', 'Cash'),
+        ('upi', 'UPI'),
+        ('bank', 'Bank Transfer'),
+        ('cheque', 'Cheque'),
+        ('card', 'Card'),
+    ]
+    invoice_no = models.CharField(max_length=30, unique=True, db_index=True)
+    # What was owed at the moment the goods went out, stored beside what was
+    # taken. Editing a line afterwards changes the invoice; it must not be able
+    # to rewrite the history of what was actually verified.
+    invoice_total = models.DecimalField(max_digits=14, decimal_places=2)
+    amount_received = models.DecimalField(max_digits=14, decimal_places=2)
+    mode = models.CharField(max_length=20, choices=MODE_CHOICES)
+    # UTR / cheque number / transaction id — whatever proves the money arrived.
+    reference = models.CharField(max_length=100, blank=True, default='')
+    paid_on = models.DateField()
+    notes = models.TextField(blank=True, default='')
+    verified_by = models.ForeignKey('users.User', on_delete=models.SET_NULL,
+                                    null=True, blank=True, related_name='+')
+    verified_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-verified_at', '-id']
+
+    def __str__(self):
+        return f"{self.invoice_no} — {self.amount_received}"
 
 
 class StockQuote(_ProformaDoc):

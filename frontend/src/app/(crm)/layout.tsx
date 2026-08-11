@@ -255,9 +255,17 @@ export default function DashboardLayout({
 
   // Store manager / store keeper / accounts B2B work the wholesale side only.
   const isB2BOnly = B2B_ONLY_ROLES.includes(currentUser?.role);
+  // A spectator watches the whole company and changes none of it: every module
+  // an admin can open, and no working button inside them. `read_only` comes
+  // from /users/me/ so the client and the server agree on who this is.
+  const isSpectator = !!currentUser?.read_only;
+  // Company-wide module visibility. The nav asked "is_staff or is_general
+  // manager?" in a dozen places; the spectator has neither flag on purpose (they
+  // are what the write gates read), so the question is asked through this instead.
+  const seesAllModules = currentUser?.is_staff || currentUser?.is_general_manager || isSpectator;
   // The wholesale side is a separate business, not another admin screen — only
-  // the super admin and the COO cross between the two.
-  const canSwitchBiz = ["superadmin", "coo"].includes(currentUser?.role);
+  // the super admin and the COO cross between the two. A spectator watches both.
+  const canSwitchBiz = ["superadmin", "coo"].includes(currentUser?.role) || isSpectator;
 
   // Restore the saved mode once we know who is logged in. B2B-only staff are
   // pinned there; anyone else without the switch is put back into B2C, which
@@ -567,7 +575,9 @@ export default function DashboardLayout({
     const moduleKey = m?.[1];
     const leadId = m?.[2];
     const markSeen = async () => {
-      if (moduleKey && leadId && MODULE_LABELS[moduleKey]) {
+      // A spectator leaves no trace: marking a customer seen is a write, and the
+      // server would refuse it. Skip straight to refreshing the badges.
+      if (moduleKey && leadId && MODULE_LABELS[moduleKey] && !isSpectator) {
         // Some detail pages serve more than one queue: accounts has three, and an
         // overdue project opens on the ordinary project page.
         const modules = moduleKey === "accounts"
@@ -586,7 +596,7 @@ export default function DashboardLayout({
       fetchModuleCounts();
     };
     markSeen();
-  }, [pathname]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pathname, isSpectator]); // eslint-disable-line react-hooks/exhaustive-deps
 
 
 
@@ -673,7 +683,7 @@ export default function DashboardLayout({
     ? true
     : onCustomRole
       ? grantedPerms.includes("inventory")
-      : currentUser?.is_staff || currentUser?.is_general_manager;
+      : seesAllModules;
 
   // Manager features visible to manager, general manager, and admin
   const navItems = allNavItems.filter(item => {
@@ -715,52 +725,51 @@ export default function DashboardLayout({
     }
     if (item.docStage2Feature) {
       // Documentation Stage 2 — the documentation team (above) plus admins / general managers.
-      return currentUser?.is_staff || currentUser?.is_general_manager;
+      return seesAllModules;
     }
     if (item.warrantyFeature) {
       // Warranty — the documentation team (above) plus admins / general managers.
-      return currentUser?.is_staff || currentUser?.is_general_manager;
+      return seesAllModules;
     }
     if (item.liasoningFeature) {
       // Liasoning & Service — the liasoning officer (above) plus admins / general managers.
-      return currentUser?.is_staff || currentUser?.is_general_manager;
+      return seesAllModules;
     }
     if (item.accountsFeature) {
       // Accounts queue — accounts staff (above) plus admins / general managers who oversee them.
-      return currentUser?.is_staff || currentUser?.is_general_manager;
+      return seesAllModules;
     }
     if (item.completedProjectsFeature) {
       // Completed-projects (RF) queue — accounts staff (above) plus admins / general managers.
-      return currentUser?.is_staff || currentUser?.is_general_manager;
+      return seesAllModules;
     }
     if (item.paymentBucketFeature) {
       // Partially / Fully paid buckets — accounts staff (above) plus admins / general managers.
-      return currentUser?.is_staff || currentUser?.is_general_manager;
+      return seesAllModules;
     }
     if (item.purchaseFeature) {
       // Purchase & logistics queue — purchase staff (above) plus admins / general managers.
-      return currentUser?.is_staff || currentUser?.is_general_manager;
+      return seesAllModules;
     }
     if (item.pmFeature) {
       // Project / Service / Team Stats — project manager (above) plus admins / general managers.
-      return currentUser?.is_staff || currentUser?.is_general_manager;
+      return seesAllModules;
     }
     if (item.docTracker) {
       return true;   // read-only documentation tracker — everyone except the doc team
     }
     if (item.feasibilityFeature) {
       // BDE's KSEB feasibility task list — BDEs plus their managers / admins.
-      return currentUser?.role === "bde" || currentUser?.is_staff
-        || currentUser?.is_general_manager || currentUser?.is_manager;
+      return currentUser?.role === "bde" || seesAllModules || currentUser?.is_manager;
     }
     if (item.strictAdminOnly) {
-      return currentUser?.is_staff;
+      return currentUser?.is_staff || isSpectator;
     }
     if (item.adminOnly) {
-      return currentUser?.is_staff || currentUser?.is_general_manager;
+      return seesAllModules;
     }
     if (item.managerFeature) {
-      return currentUser?.is_staff || currentUser?.is_general_manager || currentUser?.is_manager;
+      return seesAllModules || currentUser?.is_manager;
     }
     if (item.managerOnly) {
       return currentUser?.is_manager && !currentUser?.is_staff && !currentUser?.is_general_manager;
@@ -770,8 +779,10 @@ export default function DashboardLayout({
       return !((currentUser?.is_manager && !currentUser?.is_general_manager) || currentUser?.is_staff);
     }
     if (item.agentOnly) {
-      // Show AI Meeting only for non-staff, non-manager, non-GM agents
-      return !currentUser?.is_staff && !currentUser?.is_general_manager && !currentUser?.is_manager;
+      // Show AI Meeting only for non-staff, non-manager, non-GM agents. A
+      // spectator has none of those flags but is not an agent either — the
+      // meeting is something you hold, not something you watch.
+      return !seesAllModules && !currentUser?.is_manager;
     }
     return true;
   });
@@ -992,7 +1003,9 @@ export default function DashboardLayout({
               <Avatar name={userName} url={currentUser?.avatar_url} size={32} ring="ring-2 ring-white/10" />
               <div className="min-w-0">
                 <div className="text-sm font-medium text-slate-200 truncate capitalize leading-tight">{userName}</div>
-                <div className="text-[10px] text-slate-500 leading-tight">Edit Profile</div>
+                <div className="text-[10px] text-slate-500 leading-tight">
+                  {isSpectator ? "View only — nothing here can be changed" : "Edit Profile"}
+                </div>
               </div>
             </Link>
             <button

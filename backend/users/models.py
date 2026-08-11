@@ -95,6 +95,12 @@ ROLE_STORE_MANAGER = 'store_manager'
 ROLE_STORE_KEEPER = 'store_keeper'
 ROLE_ACCOUNTS_B2B = 'accounts_b2b'
 
+# Sees the whole company and changes none of it. Every module an admin can
+# open, every lead, every queue — but no button inside them works. Writes are
+# refused at the door by core.middleware.SpectatorReadOnlyMiddleware, so the
+# role is safe by construction rather than by remembering to guard each view.
+ROLE_SPECTATOR = 'spectator'
+
 # A user type defined in Settings → Roles & Permissions rather than in code. The
 # account's access comes from its CustomRole's permission list; see User.granted.
 ROLE_CUSTOM = 'custom'
@@ -118,6 +124,7 @@ ROLE_CHOICES = [
     (ROLE_STORE_MANAGER, 'Store Manager'),
     (ROLE_STORE_KEEPER, 'Store Keeper'),
     (ROLE_ACCOUNTS_B2B, 'Accounts B2B'),
+    (ROLE_SPECTATOR, 'Spectator (view only)'),
     (ROLE_CUSTOM, 'Custom Role'),
 ]
 
@@ -153,6 +160,13 @@ ROLE_BOOL_MAP = {
     ROLE_STORE_MANAGER:  (False, False, False, False),
     ROLE_STORE_KEEPER:   (False, False, False, False),
     ROLE_ACCOUNTS_B2B:   (False, False, False, False),
+    # All-False on purpose, and this one matters. is_staff / is_general_manager
+    # would open every module — but they are also what most of the *write* gates
+    # in leads.access read, so a spectator carrying either would be able to edit
+    # the very records it is only meant to watch. Its visibility is granted by
+    # name instead (User.sees_everything, sees_all_leads, the can_access_* gates),
+    # which leaves the write gates failing closed the way they already do.
+    ROLE_SPECTATOR:      (False, False, False, False),
     # A custom user type gets nothing implicitly — every door it can open is
     # listed on its CustomRole.
     ROLE_CUSTOM:         (False, False, False, False),
@@ -182,6 +196,10 @@ ROLE_RANK = {
     ROLE_STORE_MANAGER: 60,
     ROLE_STORE_KEEPER: 30,
     ROLE_ACCOUNTS_B2B: 30,
+    # Admin tier, despite holding no powers: a spectator sees the whole company,
+    # so handing one out is an admin's decision. At a lower rank a branch manager
+    # could mint an account with company-wide visibility from their own branch.
+    ROLE_SPECTATOR: 85,
     # Staff tier: an admin can manage them, they can't manage anyone.
     ROLE_CUSTOM: 30,
 }
@@ -238,11 +256,27 @@ class User(AbstractUser):
 
     # ── Capability helpers (read-only; used by data-visibility + serializer output) ──
     @property
+    def is_spectator(self):
+        """A view-only account: reads everything, writes nothing."""
+        return self.role == ROLE_SPECTATOR
+
+    @property
+    def sees_everything(self):
+        """Company-wide visibility — the admin tier, plus the spectator.
+
+        Use at read-scoping sites (which queue, whose users, which leads). Do NOT
+        use it to gate a write: the spectator is in here precisely because it may
+        look at everything, and the write gates must keep asking is_staff /
+        is_general_manager.
+        """
+        return self.is_staff or self.is_general_manager or self.is_spectator
+
+    @property
     def sees_all_leads(self):
         granted = self.can('leads.view_all')
         if granted is not None:
             return granted
-        return self.is_staff or self.is_general_manager or self.role in (ROLE_DOC_STAFF, ROLE_ACCOUNTS_MANAGER, ROLE_ACCOUNTS_STAFF, ROLE_PURCHASE_STAFF, ROLE_PROJECT_MANAGER, ROLE_LIASONING_OFFICER, ROLE_LEADS_MANAGER)
+        return self.sees_everything or self.role in (ROLE_DOC_STAFF, ROLE_ACCOUNTS_MANAGER, ROLE_ACCOUNTS_STAFF, ROLE_PURCHASE_STAFF, ROLE_PROJECT_MANAGER, ROLE_LIASONING_OFFICER, ROLE_LEADS_MANAGER)
 
     @property
     def branch_scoped(self):
@@ -291,6 +325,12 @@ class User(AbstractUser):
         """
         if other is None or not self.is_authenticated:
             return False
+        # A spectator holds admin-tier rank so that only an admin may create one,
+        # but rank is not permission here: it changes nothing, including its own
+        # profile. Returning False keeps the Team page from offering Edit/Delete
+        # buttons the API would refuse.
+        if self.is_spectator:
+            return False
         if self.pk == other.pk:
             return True
         return self.rank > role_rank(other.role)
@@ -300,6 +340,8 @@ class User(AbstractUser):
         appointing an admin is a super admin's job."""
         if not role:
             return True          # no role change requested
+        if self.is_spectator:
+            return False
         return self.rank > role_rank(role)
 
     def assignable_roles(self):
@@ -314,7 +356,7 @@ class User(AbstractUser):
         Use it wherever a view scopes data to "this manager's people" so branch
         managers get their whole branch, not only formal WorkspaceTeams.
         """
-        if self.is_staff or self.is_general_manager:
+        if self.sees_everything:
             return None
         ids = {self.id}
         for team in self.managed_teams.all():

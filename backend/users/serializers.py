@@ -67,6 +67,10 @@ class UserSerializer(serializers.ModelSerializer):
     # Resolved permission keys — empty for built-in roles, whose access comes from
     # the role rules rather than a list. Drives the sidebar for custom users.
     permissions = serializers.SerializerMethodField()
+    # This account can look but not touch. Sent as its own flag rather than
+    # leaving the client to match on the role string, so the "View only" banner
+    # and the hidden write controls key off the same thing the server enforces.
+    read_only = serializers.BooleanField(source='is_spectator', read_only=True)
 
     def get_permissions(self, obj):
         # Same order as the role itself reports (catalogue order), so the two
@@ -118,8 +122,8 @@ class UserSerializer(serializers.ModelSerializer):
         fields = ['id', 'username', 'first_name', 'last_name', 'email', 'password',
                   'role', 'role_label', 'branch', 'branch_name', 'can_manage',
                   'avatar', 'avatar_url', 'custom_role', 'custom_role_name', 'permissions',
-                  'is_staff', 'is_manager', 'is_general_manager', 'team', 'phone',
-                  'voxbay_extension', 'b2b_access']
+                  'is_staff', 'is_manager', 'is_general_manager', 'read_only',
+                  'team', 'phone', 'voxbay_extension', 'b2b_access']
         extra_kwargs = {
             'password': {'write_only': True},
         }

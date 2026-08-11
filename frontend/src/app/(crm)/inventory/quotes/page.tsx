@@ -14,6 +14,7 @@ import { STATES, HOME_STATE } from "@/lib/states";
 import {
   FIELD, rupee, num, todayISO, useStock, StockPage, AddButton, SearchBar,
   DataTable, Modal, Fld, Row, DocActions, DocumentPreview, I,
+  PaymentVerificationModal, VerifiedPayment,
 } from "../shared";
 
 type Line = { item: string; description: string; quantity: string; unit_price: string };
@@ -51,6 +52,11 @@ export default function StockQuotesPage() {
   const [open, setOpen] = useState<number | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
   const [preview, setPreview] = useState<any>(null);
+  // The proforma waiting on its payment gate. Converting is what puts the goods
+  // out of the door, so it goes through the same verification a new dispatch
+  // does — nothing is written while this is set.
+  const [toDispatch, setToDispatch] = useState<any>(null);
+  const [dispatching, setDispatching] = useState(false);
 
   const lines = form.items;
   const setLine = (i: number, patch: Partial<Line>) =>
@@ -162,10 +168,18 @@ export default function StockQuotesPage() {
     finally { setBusy(null); }
   };
 
-  const convert = async (q: any) => {
-    if (!confirm(`Dispatch ${q.number}? This takes ${q.items.length} line(s) out of stock.`)) return;
-    const d = await act(`stock-quotes/${q.id}/convert`);
-    if (d) alert(`${q.number} dispatched — ${d.dispatched_lines} line(s) recorded.`);
+  const convert = (q: any) => setToDispatch(q);
+
+  /** The gate's answer: verify the payment and release the stock in one call. */
+  const convertVerified = async (payment: VerifiedPayment) => {
+    const q = toDispatch;
+    if (!q) return;
+    setDispatching(true);
+    const d = await act(`stock-quotes/${q.id}/convert`, { payment });
+    setDispatching(false);
+    if (!d) return;                            // the gate refused; stay put
+    setToDispatch(null);
+    alert(`${q.number} dispatched on invoice ${d.invoice_no} — ${d.dispatched_lines} line(s) recorded, payment verified.`);
   };
 
   const term = search.trim().toLowerCase();
@@ -364,6 +378,17 @@ export default function StockQuotesPage() {
           <span className="font-bold text-slate-900 tabular-nums">Total {rupee(total)}</span>
         </div>
       </Modal>
+
+      {/* Converting is the dispatch, so it is behind the same gate. The total
+          is the proforma's own, which is what the server checks against. */}
+      <PaymentVerificationModal
+        show={!!toDispatch}
+        invoiceTotal={Number(toDispatch?.total || 0)}
+        title={toDispatch ? `Payment Verification · ${toDispatch.number}` : "Payment Verification"}
+        defaultDate={toDispatch?.quote_date || todayISO()}
+        saving={dispatching}
+        onCancel={() => setToDispatch(null)}
+        onConfirm={convertVerified} />
     </StockPage>
   );
 }

@@ -14,7 +14,8 @@ from messaging import whatsapp
 from organization.models import OrgSettings
 from users.models import User
 from .models import (Vendor, StockItem, StockCustomer, GoodsReceipt, StockDispatch,
-                     StockPurchaseOrder, StockQuote, StockQuoteItem, Quote)
+                     StockPurchaseOrder, StockQuote, StockQuoteItem, Quote,
+                     DispatchPayment)
 
 
 def token_for(user):
@@ -26,6 +27,19 @@ def mk(username, role):
     u.role = role
     u.save()
     return u
+
+
+def paid_in_full(quote_or_id):
+    """The payment body a convert needs now that dispatching is gated on it.
+
+    Goods leave against a settled invoice, so every convert in these tests
+    presents the proforma's own total. See DispatchPaymentGateTests for what
+    happens when one doesn't.
+    """
+    q = (quote_or_id if hasattr(quote_or_id, 'total')
+         else StockQuote.objects.get(pk=quote_or_id))
+    return {'payment': {'amount_received': str(q.total), 'mode': 'cash',
+                        'paid_on': str(timezone.localdate())}}
 
 
 class StockLedgerTests(TestCase):
@@ -302,13 +316,19 @@ class StockQuoteTests(TestCase):
         self.assertEqual(len(d['items']), 2)
 
     def test_a_quote_alone_does_not_move_stock(self):
+        """It reserves rather than moves: the panels are still on the shelf,
+        but they are promised, so they come off what is left to sell.
+        See StockReservationTests."""
         self.make_quote()
         self.panel.refresh_from_db()
-        self.assertEqual(self.panel.closing_stock, 100)
+        self.assertEqual(self.panel.physical_stock, 100)
+        self.assertEqual(self.panel.reserved, 10)
+        self.assertEqual(self.panel.closing_stock, 90)
 
     def test_converting_writes_one_dispatch_per_line(self):
         qid = self.make_quote().json()['id']
-        r = self.client.post(f'/api/stock-quotes/{qid}/convert/', **self.auth())
+        r = self.client.post(f'/api/stock-quotes/{qid}/convert/', data=paid_in_full(qid),
+                             content_type='application/json', **self.auth())
         self.assertEqual(r.status_code, 200, r.content[:300])
         self.assertEqual(r.json()['dispatched_lines'], 2)
         self.assertEqual(r.json()['status'], 'converted')
@@ -326,8 +346,11 @@ class StockQuoteTests(TestCase):
     def test_converting_twice_is_refused(self):
         """A second convert would take the same goods out of stock again."""
         qid = self.make_quote().json()['id']
-        self.client.post(f'/api/stock-quotes/{qid}/convert/', **self.auth())
-        r = self.client.post(f'/api/stock-quotes/{qid}/convert/', **self.auth())
+        body = paid_in_full(qid)
+        self.client.post(f'/api/stock-quotes/{qid}/convert/', data=body,
+                         content_type='application/json', **self.auth())
+        r = self.client.post(f'/api/stock-quotes/{qid}/convert/', data=body,
+                             content_type='application/json', **self.auth())
         self.assertEqual(r.status_code, 400)
         self.assertIn('already been dispatched', str(r.json()))
         self.assertEqual(StockDispatch.objects.count(), 2)
@@ -354,7 +377,8 @@ class StockQuoteTests(TestCase):
         its own; see StockQuoteDeletionTests.
         """
         qid = self.make_quote().json()['id']
-        self.client.post(f'/api/stock-quotes/{qid}/convert/', **self.auth())
+        self.client.post(f'/api/stock-quotes/{qid}/convert/', data=paid_in_full(qid),
+                         content_type='application/json', **self.auth())
         r = self.client.patch(f'/api/stock-quotes/{qid}/', data={'tax_percent': '0'},
                               content_type='application/json', **self.auth())
         self.assertEqual(r.status_code, 400)
@@ -488,7 +512,8 @@ class FractionalQuantityTests(TestCase):
         self.assertEqual(Decimal(r.json()['subtotal']), Decimal('2252.25'))
 
         qid = r.json()['id']
-        self.client.post(f'/api/stock-quotes/{qid}/convert/', **self.auth())
+        self.client.post(f'/api/stock-quotes/{qid}/convert/', data=paid_in_full(qid),
+                         content_type='application/json', **self.auth())
         d = StockDispatch.objects.get(item=item)
         self.assertEqual(d.quantity, Decimal('4.50'))
         self.assertEqual(d.rate, Decimal('500.50'))
@@ -601,7 +626,8 @@ class DispatchTaxTests(TestCase):
             'items': [{'item': self.item.id, 'quantity': '10', 'unit_price': '11200'}],
         }, content_type='application/json', **self.auth())
         qid = r.json()['id']
-        self.client.post(f'/api/stock-quotes/{qid}/convert/', **self.auth())
+        self.client.post(f'/api/stock-quotes/{qid}/convert/', data=paid_in_full(qid),
+                         content_type='application/json', **self.auth())
         d = StockDispatch.objects.get(item=self.item)
         self.assertEqual(d.tax_percent, Decimal('18.00'))
         self.assertEqual(d.total, Decimal('132160'))
@@ -916,7 +942,8 @@ class WholesaleDocumentSeriesTests(TestCase):
     def test_converting_a_proforma_issues_an_invoice_number(self):
         q = self.quote()
         StockQuoteItem.objects.create(quote=q, item=self.item, quantity=2, unit_price=Decimal('100'))
-        r = self.client.post(f'/api/stock-quotes/{q.id}/convert/',
+        r = self.client.post(f'/api/stock-quotes/{q.id}/convert/', data=paid_in_full(q),
+                             content_type='application/json',
                              HTTP_AUTHORIZATION=token_for(self.admin))
         self.assertEqual(r.status_code, 200, r.content[:300])
         made = StockDispatch.objects.filter(notes__contains=q.number)
@@ -1016,7 +1043,8 @@ class StockQuoteDeletionTests(TestCase):
 
     def test_a_dispatched_one_can_be_deleted_too(self):
         q = self.make_quote()
-        self.client.post(f'/api/stock-quotes/{q.id}/convert/',
+        self.client.post(f'/api/stock-quotes/{q.id}/convert/', data=paid_in_full(q),
+                         content_type='application/json',
                          HTTP_AUTHORIZATION=token_for(self.admin))
         q.refresh_from_db()
         self.assertEqual(q.status, 'converted')
@@ -1025,7 +1053,8 @@ class StockQuoteDeletionTests(TestCase):
     def test_deleting_it_leaves_the_sale_alone(self):
         """The dispatch keeps its invoice number and its stock movement."""
         q = self.make_quote()
-        self.client.post(f'/api/stock-quotes/{q.id}/convert/',
+        self.client.post(f'/api/stock-quotes/{q.id}/convert/', data=paid_in_full(q),
+                         content_type='application/json',
                          HTTP_AUTHORIZATION=token_for(self.admin))
         dispatched = list(StockDispatch.objects.values_list('invoice_no', flat=True))
         self.item.refresh_from_db()
@@ -1257,3 +1286,471 @@ class ItemDeleteWithMovementsTests(TestCase):
         self.assertFalse(self.item.is_active)
         # The history it was keeping is still there.
         self.assertTrue(GoodsReceipt.objects.filter(item=self.item).exists())
+
+
+
+class DispatchPaymentGateTests(TestCase):
+    """Goods do not leave until the invoice has been paid in full.
+
+    Both doors are covered: Save Dispatch on a new delivery, and Convert to
+    Dispatch on a proforma invoice. A refusal must leave nothing behind — no
+    rows, no stock movement, and no invoice number spent.
+    """
+
+    def setUp(self):
+        self.admin = mk('gate_admin', 'superadmin')
+        self.customer = StockCustomer.objects.create(name='Sunrise Solar')
+        self.panel = StockItem.objects.create(code='GT-PNL', category='Solar Panel',
+                                              opening_stock=Decimal('100'),
+                                              unit_cost=Decimal('10000'))
+        self.cable = StockItem.objects.create(code='GT-CBL', category='Cable',
+                                              opening_stock=Decimal('500'),
+                                              unit_cost=Decimal('50'))
+
+    def auth(self, user=None):
+        return {'HTTP_AUTHORIZATION': token_for(user or self.admin)}
+
+    # ── Save Dispatch ──
+    LINES = [
+        {'item': None, 'quantity': '10', 'rate': '11200', 'serial_numbers': 'SN1-SN10'},
+        {'item': None, 'quantity': '100', 'rate': '60'},
+    ]
+
+    def body(self, payment=None, lines=None, tax='18'):
+        rows = lines if lines is not None else [
+            {'item': self.panel.id, 'quantity': '10', 'rate': '11200', 'serial_numbers': 'SN1-SN10'},
+            {'item': self.cable.id, 'quantity': '100', 'rate': '60'},
+        ]
+        out = {'date': str(timezone.localdate()), 'customer': self.customer.id,
+               'tax_percent': tax, 'site': 'Kochi site', 'lines': rows}
+        if payment is not None:
+            out['payment'] = payment
+        return out
+
+    # goods 112000 + 6000 = 118000; +18% tax = 139240
+    FULL = Decimal('139240.00')
+
+    def pay(self, amount, **extra):
+        body = {'amount_received': str(amount), 'mode': 'bank',
+                'reference': 'UTR7781', 'paid_on': str(timezone.localdate())}
+        body.update(extra)
+        return body
+
+    def dispatch(self, payment=None, **kwargs):
+        return self.client.post('/api/stock-dispatches/dispatch/',
+                                data=self.body(payment=payment, **kwargs),
+                                content_type='application/json', **self.auth())
+
+    def test_a_settled_invoice_releases_every_line(self):
+        r = self.dispatch(self.pay(self.FULL))
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        self.assertEqual(r.json()['dispatched_lines'], 2)
+        self.assertEqual(StockDispatch.objects.count(), 2)
+
+    def test_the_whole_delivery_shares_one_invoice_number(self):
+        r = self.dispatch(self.pay(self.FULL))
+        numbers = set(StockDispatch.objects.values_list('invoice_no', flat=True))
+        self.assertEqual(len(numbers), 1)
+        self.assertEqual(numbers.pop(), r.json()['invoice_no'])
+
+    def test_the_payment_is_recorded_against_the_invoice(self):
+        r = self.dispatch(self.pay(self.FULL))
+        p = DispatchPayment.objects.get(invoice_no=r.json()['invoice_no'])
+        self.assertEqual(p.amount_received, self.FULL)
+        self.assertEqual(p.invoice_total, self.FULL)
+        self.assertEqual(p.mode, 'bank')
+        self.assertEqual(p.reference, 'UTR7781')
+        self.assertEqual(p.verified_by, self.admin)
+
+    def test_the_stock_moves_only_once_the_payment_is_in(self):
+        self.dispatch(self.pay(self.FULL))
+        self.panel.refresh_from_db()
+        self.assertEqual(self.panel.closing_stock, Decimal('90'))
+
+    # ── Refusals ──
+    def assert_nothing_happened(self, response):
+        self.assertEqual(response.status_code, 400, response.content[:300])
+        self.assertEqual(StockDispatch.objects.count(), 0)
+        self.assertEqual(DispatchPayment.objects.count(), 0)
+        self.panel.refresh_from_db()
+        self.assertEqual(self.panel.closing_stock, Decimal('100'))
+
+    def test_a_short_payment_is_refused(self):
+        r = self.dispatch(self.pay('100000'))
+        self.assert_nothing_happened(r)
+        self.assertIn('short by', r.json()['error'].lower())
+
+    def test_the_refusal_says_what_is_still_owed(self):
+        r = self.dispatch(self.pay('100000'))
+        self.assertEqual(Decimal(r.json()['balance']), Decimal('39240.00'))
+        self.assertEqual(Decimal(r.json()['invoice_total']), self.FULL)
+
+    def test_a_payment_one_paisa_short_is_still_short(self):
+        """Full means full — this is the case a rounding slip would let through."""
+        self.assert_nothing_happened(self.dispatch(self.pay('139239.99')))
+
+    def test_paying_more_than_the_invoice_is_refused(self):
+        r = self.dispatch(self.pay('150000'))
+        self.assert_nothing_happened(r)
+        self.assertIn('more than the invoice', r.json()['error'])
+
+    def test_no_payment_at_all_is_refused(self):
+        self.assert_nothing_happened(self.dispatch())
+
+    def test_an_empty_payment_is_refused(self):
+        self.assert_nothing_happened(self.dispatch({}))
+
+    def test_a_payment_without_a_mode_is_refused(self):
+        self.assert_nothing_happened(
+            self.dispatch({'amount_received': str(self.FULL)}))
+
+    def test_a_made_up_mode_is_refused(self):
+        self.assert_nothing_happened(
+            self.dispatch({'amount_received': str(self.FULL), 'mode': 'iou'}))
+
+    def test_a_non_numeric_amount_is_refused(self):
+        self.assert_nothing_happened(self.dispatch(self.pay('later')))
+
+    def test_a_delivery_with_no_lines_is_refused(self):
+        r = self.client.post('/api/stock-dispatches/dispatch/',
+                             data={'date': str(timezone.localdate()), 'lines': [],
+                                   'payment': self.pay('0')},
+                             content_type='application/json', **self.auth())
+        self.assert_nothing_happened(r)
+
+    def test_a_refusal_does_not_spend_an_invoice_number(self):
+        """The number is issued after the payment clears, so a refused attempt
+        must not leave a gap in the series."""
+        self.dispatch(self.pay('1'))
+        r = self.dispatch(self.pay(self.FULL))
+        self.assertTrue(r.json()['invoice_no'].endswith('IN001'), r.json()['invoice_no'])
+
+    # ── What the invoice costs ──
+    def test_tax_is_part_of_what_must_be_paid(self):
+        """The goods value alone does not settle the invoice."""
+        self.assert_nothing_happened(self.dispatch(self.pay('118000')))
+
+    def test_an_untaxed_delivery_is_settled_by_its_goods_value(self):
+        r = self.dispatch(self.pay('118000'), tax='0')
+        self.assertEqual(r.status_code, 201, r.content[:300])
+
+    def test_a_line_without_an_item_is_not_charged_for(self):
+        """The modal drops such a row before asking for payment; the server must
+        agree, or the two would disagree about the total."""
+        rows = [{'item': self.panel.id, 'quantity': '1', 'rate': '100'},
+                {'item': '', 'quantity': '5', 'rate': '1000'}]
+        r = self.dispatch(self.pay('118'), lines=rows)      # 100 + 18% only
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        self.assertEqual(StockDispatch.objects.count(), 1)
+
+    # ── What the list shows ──
+    def test_a_gated_dispatch_reads_as_paid(self):
+        self.dispatch(self.pay(self.FULL))
+        rows = self.client.get('/api/stock-dispatches/', **self.auth()).json()
+        rows = rows if isinstance(rows, list) else rows['results']
+        self.assertTrue(all(r['payment_verified'] for r in rows))
+        self.assertEqual(Decimal(rows[0]['payment_amount']), self.FULL)
+        self.assertEqual(rows[0]['payment_mode'], 'bank')
+
+    def test_a_row_written_straight_to_the_row_endpoint_reads_as_unpaid(self):
+        """The row primitive is still there for edits and corrections; it is not
+        a verified dispatch, and the list says so rather than implying it was."""
+        StockDispatch.objects.create(item=self.panel, date=timezone.localdate(),
+                                     quantity=Decimal('1'), rate=Decimal('100'))
+        rows = self.client.get('/api/stock-dispatches/', **self.auth()).json()
+        rows = rows if isinstance(rows, list) else rows['results']
+        self.assertFalse(rows[0]['payment_verified'])
+        self.assertIsNone(rows[0]['payment_amount'])
+
+    # ── Who may pass the gate ──
+    def test_a_read_only_role_cannot_dispatch(self):
+        """Verification is not a second person's sign-off, but it is still only
+        open to the people who may dispatch at all."""
+        watcher = mk('gate_watcher', 'store_manager')       # read on dispatch
+        r = self.client.post('/api/stock-dispatches/dispatch/',
+                             data=self.body(payment=self.pay(self.FULL)),
+                             content_type='application/json', **self.auth(watcher))
+        self.assertEqual(r.status_code, 403, r.content[:200])
+        self.assertEqual(StockDispatch.objects.count(), 0)
+
+    def test_accounts_b2b_may_dispatch(self):
+        clerk = mk('gate_clerk', 'accounts_b2b')
+        r = self.client.post('/api/stock-dispatches/dispatch/',
+                             data=self.body(payment=self.pay(self.FULL)),
+                             content_type='application/json', **self.auth(clerk))
+        self.assertEqual(r.status_code, 201, r.content[:300])
+
+
+class ProformaDispatchPaymentGateTests(TestCase):
+    """Convert to Dispatch is the same door: it is what puts the goods out."""
+
+    def setUp(self):
+        self.admin = mk('pgate_admin', 'superadmin')
+        self.item = StockItem.objects.create(code='PG-PNL', category='Solar Panel',
+                                             opening_stock=Decimal('100'),
+                                             unit_cost=Decimal('10000'))
+        self.quote = StockQuote.objects.create(quote_date=timezone.localdate(),
+                                               tax_percent=Decimal('18'))
+        StockQuoteItem.objects.create(quote=self.quote, item=self.item,
+                                      quantity=Decimal('10'), unit_price=Decimal('11200'))
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': token_for(self.admin)}
+
+    def convert(self, payment=None):
+        body = {} if payment is None else {'payment': payment}
+        return self.client.post(f'/api/stock-quotes/{self.quote.id}/convert/', data=body,
+                                content_type='application/json', **self.auth())
+
+    def pay(self, amount):
+        return {'amount_received': str(amount), 'mode': 'upi',
+                'reference': 'TXN44', 'paid_on': str(timezone.localdate())}
+
+    def assert_not_dispatched(self, response):
+        self.assertEqual(response.status_code, 400, response.content[:300])
+        self.quote.refresh_from_db()
+        self.assertEqual(self.quote.status, 'draft')
+        self.assertIsNone(self.quote.converted_at)
+        self.assertEqual(StockDispatch.objects.count(), 0)
+        self.assertEqual(DispatchPayment.objects.count(), 0)
+        self.item.refresh_from_db()
+        # Physical, not closing: the proforma is still live, so its 10 panels
+        # stay reserved. Nothing left the shelf.
+        self.assertEqual(self.item.physical_stock, Decimal('100'))
+
+    def test_converting_without_a_payment_is_refused(self):
+        self.assert_not_dispatched(self.convert())
+
+    def test_converting_on_a_short_payment_is_refused(self):
+        self.assert_not_dispatched(self.convert(self.pay('100000')))
+
+    def test_a_settled_proforma_is_dispatched(self):
+        r = self.convert(self.pay(self.quote.total))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.quote.refresh_from_db()
+        self.assertEqual(self.quote.status, 'converted')
+        self.assertEqual(StockDispatch.objects.count(), 1)
+        self.item.refresh_from_db()
+        # The reservation becomes a real movement: the goods leave the shelf
+        # and the hold is released, so what is left to sell never moves.
+        self.assertEqual(self.item.physical_stock, Decimal('90'))
+        self.assertEqual(self.item.reserved, Decimal('0'))
+        self.assertEqual(self.item.closing_stock, Decimal('90'))
+
+    def test_the_payment_is_recorded_against_the_new_invoice(self):
+        r = self.convert(self.pay(self.quote.total))
+        p = DispatchPayment.objects.get(invoice_no=r.json()['invoice_no'])
+        self.assertEqual(p.invoice_total, Decimal('132160.00'))     # 112000 + 18%
+        self.assertEqual(p.amount_received, Decimal('132160.00'))
+        self.assertEqual(p.mode, 'upi')
+        self.assertEqual(p.verified_by, self.admin)
+
+    def test_the_dispatch_it_writes_reads_as_paid(self):
+        self.convert(self.pay(self.quote.total))
+        rows = self.client.get('/api/stock-dispatches/', **self.auth()).json()
+        rows = rows if isinstance(rows, list) else rows['results']
+        self.assertTrue(rows[0]['payment_verified'])
+
+    def test_a_discount_lowers_what_has_to_be_paid(self):
+        """The gate charges the proforma's own total, discount and all."""
+        self.quote.discount_percent = Decimal('10')
+        self.quote.save()
+        self.assert_not_dispatched(self.convert(self.pay('132160')))
+        r = self.convert(self.pay(self.quote.total))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+
+
+
+class StockReservationTests(TestCase):
+    """Stock on a proforma invoice is reserved, not moved.
+
+    The units stay in the warehouse — so the stock is still valued at them — but
+    they come off what is left to sell, because a count that includes goods
+    already promised to someone else is how the same panel gets sold twice.
+
+    Nothing is stored: `reserved` is summed from the live proforma lines. That is
+    what makes a release free — delete the proforma, decline it, or convert it,
+    and the figure follows with nothing to unwind.
+    """
+
+    def setUp(self):
+        self.admin = mk('res_admin', 'superadmin')
+        self.customer = StockCustomer.objects.create(name='Bluebird Energy')
+        self.item = StockItem.objects.create(code='RS-PNL', category='Solar Panel',
+                                             opening_stock=Decimal('100'),
+                                             unit_cost=Decimal('1000'), reorder_level=Decimal('5'))
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': token_for(self.admin)}
+
+    def quote(self, qty='10', status='draft'):
+        q = StockQuote.objects.create(customer=self.customer, status=status,
+                                      quote_date=timezone.localdate())
+        StockQuoteItem.objects.create(quote=q, item=self.item, quantity=Decimal(qty),
+                                      unit_price=Decimal('1200'))
+        return q
+
+    def fresh(self):
+        self.item.refresh_from_db()
+        return self.item
+
+    def row(self):
+        """The item as the Item Master screen receives it."""
+        body = self.client.get('/api/stock-items/', **self.auth()).json()
+        rows = body if isinstance(body, list) else body['results']
+        return next(r for r in rows if r['code'] == 'RS-PNL')
+
+    # ── The figure ──
+    def test_nothing_is_reserved_to_begin_with(self):
+        self.assertEqual(self.fresh().reserved, Decimal('0'))
+        self.assertEqual(self.fresh().closing_stock, Decimal('100'))
+
+    def test_a_proforma_reserves_its_lines(self):
+        self.quote('10')
+        self.assertEqual(self.fresh().reserved, Decimal('10'))
+
+    def test_the_reservation_comes_off_what_is_left_to_sell(self):
+        self.quote('10')
+        self.assertEqual(self.fresh().closing_stock, Decimal('90'))
+
+    def test_the_goods_are_still_in_the_warehouse(self):
+        self.quote('10')
+        self.assertEqual(self.fresh().physical_stock, Decimal('100'))
+
+    def test_several_proformas_add_up(self):
+        self.quote('10')
+        self.quote('25')
+        self.assertEqual(self.fresh().reserved, Decimal('35'))
+        self.assertEqual(self.fresh().closing_stock, Decimal('65'))
+
+    def test_two_lines_for_the_same_item_on_one_proforma_both_count(self):
+        q = self.quote('10')
+        StockQuoteItem.objects.create(quote=q, item=self.item, quantity=Decimal('5'),
+                                      unit_price=Decimal('1200'))
+        self.assertEqual(self.fresh().reserved, Decimal('15'))
+
+    def test_a_sent_proforma_reserves_too(self):
+        self.quote('10', status='sent')
+        self.assertEqual(self.fresh().reserved, Decimal('10'))
+
+    def test_an_accepted_proforma_reserves_too(self):
+        self.quote('10', status='accepted')
+        self.assertEqual(self.fresh().reserved, Decimal('10'))
+
+    def test_a_declined_proforma_reserves_nothing(self):
+        """The offer is off, so the goods are free again."""
+        self.quote('10', status='declined')
+        self.assertEqual(self.fresh().reserved, Decimal('0'))
+        self.assertEqual(self.fresh().closing_stock, Decimal('100'))
+
+    def test_declining_a_live_proforma_releases_its_hold(self):
+        q = self.quote('10')
+        self.assertEqual(self.fresh().reserved, Decimal('10'))
+        q.status = 'declined'
+        q.save(update_fields=['status'])
+        self.assertEqual(self.fresh().reserved, Decimal('0'))
+        self.assertEqual(self.fresh().closing_stock, Decimal('100'))
+
+    # ── Releasing it ──
+    def test_deleting_a_proforma_puts_the_stock_back(self):
+        q = self.quote('10')
+        self.assertEqual(self.fresh().closing_stock, Decimal('90'))
+        r = self.client.delete(f'/api/stock-quotes/{q.id}/', **self.auth())
+        self.assertEqual(r.status_code, 204, r.content[:200])
+        self.assertEqual(self.fresh().reserved, Decimal('0'))
+        self.assertEqual(self.fresh().closing_stock, Decimal('100'))
+
+    def test_deleting_one_of_two_releases_only_its_own(self):
+        keep = self.quote('10')
+        drop = self.quote('25')
+        self.client.delete(f'/api/stock-quotes/{drop.id}/', **self.auth())
+        self.assertEqual(self.fresh().reserved, Decimal('10'))
+        self.assertEqual(self.fresh().closing_stock, Decimal('90'))
+        self.assertTrue(StockQuote.objects.filter(pk=keep.pk).exists())
+
+    def test_removing_a_line_releases_that_line(self):
+        q = self.quote('10')
+        self.client.patch(f'/api/stock-quotes/{q.id}/',
+                          data={'items': [{'item': self.item.id, 'quantity': '4',
+                                           'unit_price': '1200'}]},
+                          content_type='application/json', **self.auth())
+        self.assertEqual(self.fresh().reserved, Decimal('4'))
+
+    # ── The hand-off to a real movement ──
+    def test_dispatching_it_turns_the_hold_into_a_movement(self):
+        """Converting must not take the goods off twice — the hold is released in
+        the same breath as the dispatch is written."""
+        q = self.quote('10')
+        self.client.post(f'/api/stock-quotes/{q.id}/convert/', data=paid_in_full(q),
+                         content_type='application/json', **self.auth())
+        item = self.fresh()
+        self.assertEqual(item.reserved, Decimal('0'))
+        self.assertEqual(item.dispatched, Decimal('10'))
+        self.assertEqual(item.physical_stock, Decimal('90'))
+        self.assertEqual(item.closing_stock, Decimal('90'))
+
+    def test_what_is_left_to_sell_does_not_move_when_it_is_dispatched(self):
+        """It was already deducted when the proforma was raised."""
+        q = self.quote('10')
+        before = self.fresh().closing_stock
+        self.client.post(f'/api/stock-quotes/{q.id}/convert/', data=paid_in_full(q),
+                         content_type='application/json', **self.auth())
+        self.assertEqual(self.fresh().closing_stock, before)
+
+    def test_a_dispatch_of_its_own_is_not_a_reservation(self):
+        StockDispatch.objects.create(item=self.item, date=timezone.localdate(),
+                                     quantity=Decimal('10'), rate=Decimal('1000'))
+        self.assertEqual(self.fresh().reserved, Decimal('0'))
+        self.assertEqual(self.fresh().closing_stock, Decimal('90'))
+
+    # ── What it does and does not touch ──
+    def test_the_stock_is_still_valued_at_the_reserved_goods(self):
+        """A reserved panel is the company's until it is dispatched."""
+        self.quote('10')
+        self.assertEqual(self.fresh().stock_value, Decimal('100000'))    # 100 × 1000
+
+    def test_reorder_watches_what_can_still_be_sold(self):
+        """A shelf that is entirely promised away needs restocking just as much
+        as an empty one."""
+        self.assertFalse(self.fresh().needs_reorder)
+        self.quote('96')                                 # 100 − 96 = 4, below 5
+        self.assertTrue(self.fresh().needs_reorder)
+
+    # ── What the screen receives ──
+    def test_the_item_master_row_carries_the_reserved_figure(self):
+        self.quote('10')
+        row = self.row()
+        self.assertEqual(Decimal(row['reserved']), Decimal('10'))
+        self.assertEqual(Decimal(row['physical_stock']), Decimal('100'))
+        self.assertEqual(Decimal(row['closing_stock']), Decimal('90'))
+
+    def test_the_annotated_and_the_per_row_figures_agree(self):
+        """The list annotates; a single item falls back to its own query. The two
+        must not disagree, or the Item Master and a detail view would differ."""
+        self.quote('10')
+        self.assertEqual(Decimal(self.row()['reserved']), self.fresh().reserved)
+
+    def test_the_reserved_figure_is_not_writable(self):
+        self.quote('10')
+        r = self.client.patch(f'/api/stock-items/{self.item.id}/',
+                              data={'reserved': '0', 'closing_stock': '100'},
+                              content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertEqual(self.fresh().reserved, Decimal('10'))
+
+    def test_reserving_more_than_the_shelf_holds_reads_as_negative(self):
+        """Deliberately not clamped at zero: promising 120 of 100 panels is a
+        real problem, and a figure of 0 would hide it."""
+        self.quote('120')
+        self.assertEqual(self.fresh().closing_stock, Decimal('-20'))
+        self.assertTrue(self.fresh().needs_reorder)
+
+    def test_a_proforma_for_another_item_does_not_reserve_this_one(self):
+        other = StockItem.objects.create(code='RS-CBL', category='Cable',
+                                         opening_stock=Decimal('500'))
+        q = StockQuote.objects.create(customer=self.customer, quote_date=timezone.localdate())
+        StockQuoteItem.objects.create(quote=q, item=other, quantity=Decimal('50'),
+                                      unit_price=Decimal('45'))
+        self.assertEqual(self.fresh().reserved, Decimal('0'))
+        other.refresh_from_db()
+        self.assertEqual(other.reserved, Decimal('50'))

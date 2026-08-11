@@ -196,6 +196,10 @@ class StockItemSerializer(serializers.ModelSerializer):
     from the movements — see StockItem.closing_stock)."""
     received = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     dispatched = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    # Promised on live proforma invoices, and the shelf figure before that
+    # promise is taken off it. `closing_stock` is what is left to sell.
+    reserved = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    physical_stock = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     closing_stock = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     stock_value = serializers.DecimalField(max_digits=16, decimal_places=2, read_only=True)
     status = serializers.SerializerMethodField()
@@ -204,7 +208,8 @@ class StockItemSerializer(serializers.ModelSerializer):
         model = StockItem
         fields = ['id', 'code', 'category', 'brand', 'model_name', 'unit', 'hsn',
                   'opening_stock', 'unit_cost', 'reorder_level', 'location', 'is_active',
-                  'received', 'dispatched', 'closing_stock', 'stock_value', 'status',
+                  'received', 'dispatched', 'reserved', 'physical_stock',
+                  'closing_stock', 'stock_value', 'status',
                   'created_at']
         read_only_fields = ['created_at']
 
@@ -252,12 +257,24 @@ class StockDispatchSerializer(_MovementSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True, default=None)
     tax_amount = serializers.DecimalField(max_digits=16, decimal_places=2, read_only=True)
     total = serializers.DecimalField(max_digits=16, decimal_places=2, read_only=True)
+    # The payment that released this delivery, joined on by invoice number in
+    # StockDispatchViewSet.get_queryset. Absent on a row written through the
+    # plain row endpoint rather than the gated dispatch action, which is what
+    # `payment_verified` is for.
+    payment_verified = serializers.BooleanField(read_only=True, default=False)
+    payment_amount = serializers.DecimalField(max_digits=16, decimal_places=2,
+                                              read_only=True, default=None)
+    payment_mode = serializers.CharField(read_only=True, default=None)
+    payment_reference = serializers.CharField(read_only=True, default=None)
+    payment_paid_on = serializers.DateField(read_only=True, default=None)
 
     class Meta:
         model = StockDispatch
         fields = ['id', 'invoice_no', 'date', 'customer', 'customer_name', 'item', 'item_code',
                   'item_label', 'item_hsn', 'quantity', 'rate', 'amount', 'tax_percent', 'tax_amount', 'total',
                   'serial_numbers', 'site', 'notes', 'pdf',
+                  'payment_verified', 'payment_amount', 'payment_mode',
+                  'payment_reference', 'payment_paid_on',
                   'created_by', 'created_by_name', 'created_at']
         read_only_fields = ['created_by', 'created_at', 'pdf']
 

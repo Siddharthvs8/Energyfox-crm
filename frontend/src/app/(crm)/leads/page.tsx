@@ -277,15 +277,20 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   const router = useRouter();
   const searchParams = useSearchParams();
 
+  // A view-only (spectator) account: reads the whole lead book, changes none of
+  // it. Every write control below is withheld from it, matching the can_* gates
+  // in leads.access that the server enforces.
+  const isSpectator = !!currentUser?.read_only;
+
   // Tele callers add and assign their own leads too; the backend scopes an
   // agent's choices to their own team, and the people picker only lists those.
-  const canAssign = currentUser?.is_staff || currentUser?.is_general_manager
+  const canAssign = !isSpectator && (currentUser?.is_staff || currentUser?.is_general_manager
     || currentUser?.is_manager || currentUser?.role === "tele_caller"
-    || currentUser?.role === "leads_manager";
+    || currentUser?.role === "leads_manager");
 
   // A BDE reports through the site visit; the lead status belongs to the tele
   // caller / managers. Mirrors can_edit_lead_status() on the backend.
-  const canEditStatus = !currentUser || currentUser.role !== "bde";
+  const canEditStatus = !isSpectator && (!currentUser || currentUser.role !== "bde");
 
   // Who can open a campaign page. Mirrors IsAdminOrManager on the campaigns
   // endpoint — for anyone else the request 403s and the page reports "Campaign
@@ -294,13 +299,15 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
     || currentUser?.is_manager || currentUser?.role === "leads_manager");
   // Leads are sourced by the tele-calling side — a BDE only receives them.
   // Mirrors can_add_leads() on the backend.
-  const canAddLeads = !currentUser || currentUser.role !== "bde";
+  const canAddLeads = !isSpectator && (!currentUser || currentUser.role !== "bde");
   // The lead record belongs to the tele-calling side too: a BDE reports through
   // the site visit. Mirrors can_edit_leads() / can_delete_leads().
-  const canEditLeads = !currentUser || currentUser.role !== "bde";
-  const canDeleteLeads = !currentUser || currentUser.role !== "bde";
+  const canEditLeads = !isSpectator && (!currentUser || currentUser.role !== "bde");
+  const canDeleteLeads = !isSpectator && (!currentUser || currentUser.role !== "bde");
   // CSV template / export and the Archived + Trash views manage the lead book
   // rather than work a lead. Mirrors can_use_lead_tools() on the backend.
+  // A spectator keeps these: they only read the book (the Import button inside
+  // the group is gated by canAddLeads, and archiving by canEditLeads).
   const canUseLeadTools = !currentUser || currentUser.role !== "bde";
   // The site visit is the BDE's job; a tele caller has nothing to do in it, so
   // the shortcut and its completed badge are hidden from them.
@@ -1370,14 +1377,18 @@ This cannot be undone.`)) return;
                   <I.Users /> Assign
                 </button>
               )}
+              {canEditLeads && (
               <button onClick={() => setShowBulkUpdate(true)}
                 className="flex items-center gap-1.5 bg-white/15 hover:bg-white/25 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all">
                 <I.Edit /> Update
               </button>
+              )}
+              {!isSpectator && (
               <button onClick={() => setShowBulkWa(true)}
                 className="flex items-center gap-1.5 bg-emerald-500 hover:bg-emerald-600 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all">
                 💬 WhatsApp
               </button>
+              )}
               {canDeleteLeads && (
               <button onClick={bulkDelete}
                 className="flex items-center gap-1.5 bg-red-500 hover:bg-red-600 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all">
@@ -1573,7 +1584,7 @@ This cannot be undone.`)) return;
                               <I.Edit />
                             </button>
                             )}
-                            {canUseLeadTools && (
+                            {canEditLeads && (
                             <button onClick={(e) => { e.stopPropagation(); archiveLead(lead.id, !showArchived); }}
                               className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-all"
                               title={showArchived ? "Restore from archive" : "Archive (keep, but hide from active list)"}>
@@ -1714,7 +1725,9 @@ This cannot be undone.`)) return;
                         </td>
                         <td className="px-5 py-3">
                           <div className="flex items-center justify-end gap-3">
+                            {!isSpectator && (
                             <button onClick={() => restoreFromTrash(t.id)} className="text-[12px] font-semibold text-indigo-600 hover:text-indigo-800">Restore</button>
+                            )}
                             <button onClick={() => purgeFromTrash(t.id)} className="text-[12px] font-semibold text-rose-500 hover:text-rose-700">Delete forever</button>
                           </div>
                         </td>

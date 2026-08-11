@@ -1,12 +1,22 @@
 from rest_framework import permissions
 
 
+def watches_everything(user):
+    """The spectator: a view-only account that may open any admin screen.
+
+    Every class below admits it, because it is meant to see what an admin sees.
+    That is not a hole: SpectatorReadOnlyMiddleware refuses the request before it
+    reaches any of these views unless the method only reads.
+    """
+    return bool(user and user.is_authenticated and getattr(user, 'is_spectator', False))
+
+
 class IsAdminOnly(permissions.BasePermission):
-    """Only allow admin (is_staff) users."""
+    """Only allow admin (is_staff) users — plus the read-only spectator."""
     def has_permission(self, request, view):
         return bool(
             request.user and request.user.is_authenticated and
-            request.user.is_staff
+            (request.user.is_staff or watches_everything(request.user))
         )
 
 
@@ -15,7 +25,8 @@ class IsAdminOrGeneralManager(permissions.BasePermission):
     def has_permission(self, request, view):
         return bool(
             request.user and request.user.is_authenticated and
-            (request.user.is_staff or request.user.is_general_manager)
+            (request.user.is_staff or request.user.is_general_manager
+             or watches_everything(request.user))
         )
 
 
@@ -24,7 +35,8 @@ class IsAdminOrManager(permissions.BasePermission):
     def has_permission(self, request, view):
         return bool(
             request.user and request.user.is_authenticated and
-            (request.user.is_staff or request.user.is_general_manager or request.user.is_manager)
+            (request.user.is_staff or request.user.is_general_manager or request.user.is_manager
+             or watches_everything(request.user))
         )
 
 
@@ -50,7 +62,8 @@ class CampaignAccess(permissions.BasePermission):
         u = request.user
         return bool(
             u and u.is_authenticated and
-            (u.is_staff or u.is_general_manager or u.is_manager or runs_the_leads_desk(u))
+            (u.is_staff or u.is_general_manager or u.is_manager or runs_the_leads_desk(u)
+             or watches_everything(u))
         )
 
 
@@ -63,5 +76,6 @@ class MetaIntegrationAccess(permissions.BasePermission):
     def has_permission(self, request, view):
         u = request.user
         return bool(
-            u and u.is_authenticated and (u.is_staff or runs_the_leads_desk(u))
+            u and u.is_authenticated and (u.is_staff or runs_the_leads_desk(u)
+                                          or watches_everything(u))
         )

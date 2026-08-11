@@ -442,7 +442,7 @@ class LeadViewSet(viewsets.ModelViewSet):
               .prefetch_related('site_visit__documents')
               .distinct()
               .order_by('-pushed_to_documentation_at'))
-        if not (user.is_staff or getattr(user, 'is_general_manager', False)):
+        if not user.sees_everything:
             if getattr(user, 'branch_scoped', False) and user.branch_id:
                 qs = qs.filter(bde__branch_id=user.branch_id)
             else:
@@ -4932,11 +4932,11 @@ class DashboardStatsView(APIView):
         # Team/Member Performance (Only for Admin/Manager)
         performance_stats = []
         team_stats = []
-        if user.is_staff or user.is_general_manager or user.is_manager:
+        if user.sees_everything or user.is_manager:
             from users.models import User as WorkspaceUser, WorkspaceTeam
             
             # Member Stats
-            if user.is_staff or user.is_general_manager:
+            if user.sees_everything:
                 users_to_check = WorkspaceUser.objects.filter(is_active=True)
                 teams_to_check = WorkspaceTeam.objects.all()
             else:

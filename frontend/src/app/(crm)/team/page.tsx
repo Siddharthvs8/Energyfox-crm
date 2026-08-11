@@ -42,6 +42,7 @@ const ROLES = [
   { value: "store_keeper", label: "Store Keeper" },
   { value: "accounts_b2b", label: "Accounts B2B" },
   { value: "custom", label: "Custom Role" },
+  { value: "spectator", label: "Spectator (view only)" },
   { value: "coo", label: "COO" },
   { value: "admin", label: "Admin" },
   { value: "superadmin", label: "Super Admin" },
@@ -52,6 +53,8 @@ const B2B_ONLY_ROLES = ["store_manager", "store_keeper", "accounts_b2b"];
 
 const ROLE_COLORS: Record<string, { bg: string; text: string }> = {
   superadmin: { bg: "bg-violet-50", text: "text-violet-700" },
+  // Sees everything, does nothing — read as neutral, not as a rank.
+  spectator: { bg: "bg-slate-100", text: "text-slate-600" },
   admin: { bg: "bg-violet-50", text: "text-violet-700" },
   coo: { bg: "bg-purple-50", text: "text-purple-700" },
   sales_manager: { bg: "bg-blue-50", text: "text-blue-700" },
@@ -126,7 +129,10 @@ function TeamPageInner() {
   useEffect(() => { fetchTeam(); }, [domain]);
 
   useEffect(() => {
-    if (searchParams.get("edit") === "me" && team.length > 0 && currentUser) {
+    // A view-only account has no editable profile; the deep link from the
+    // sidebar must not open a form whose Save the server will refuse.
+    if (searchParams.get("edit") === "me" && team.length > 0 && currentUser
+        && !currentUser.read_only) {
       const me = team.find(u => u.id === currentUser.id);
       if (me) { openEditModal(me); router.replace(`/team`); }
     }

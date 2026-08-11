@@ -81,7 +81,7 @@ export default function DashboardPage({ params: paramsPromise }: { params: Promi
         const meData = await me.json();
         const teamsData = await teams.json();
         const teamsArr = Array.isArray(teamsData) ? teamsData : teamsData.results || [];
-        const isAdminOrGM = meData.is_staff || meData.is_general_manager;
+        const isAdminOrGM = meData.is_staff || meData.is_general_manager || meData.read_only;
         const myTeam = teamsArr.find((t: any) => t.id === meData.team);
         const mgr = myTeam?.manager_detail;
         if (!isAdminOrGM && mgr && mgr.id !== meData.id) setManager(mgr);

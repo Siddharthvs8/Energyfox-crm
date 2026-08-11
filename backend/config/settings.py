@@ -57,6 +57,9 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    # After authentication so a session user is already resolved; it falls back
+    # to the bearer token for API calls. Refuses every write from a spectator.
+    'core.middleware.SpectatorReadOnlyMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]

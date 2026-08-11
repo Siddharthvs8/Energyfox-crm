@@ -15,6 +15,7 @@ import { buildProformaPdf, proformaFileName } from "@/lib/proformaPdf";
 import {
   FIELD, rupee, num, todayISO, useStock, StockPage, AddButton, SearchBar,
   DataTable, Modal, Fld, Row, DocActions, DocumentPreview, I,
+  PaymentVerificationModal, VerifiedPayment,
 } from "../shared";
 
 type Line = { item: string; serial_numbers: string; quantity: string; rate: string };
@@ -26,7 +27,7 @@ const blankForm = () => ({
 });
 
 export default function StockDispatchPage() {
-  const { dispatches, items, customers, loading, denied, readOnly, save, remove, reload } =
+  const { dispatches, items, customers, loading, denied, readOnly, save, act, remove, reload } =
     useStock(["dispatches", "items", "customers"], "dispatch");
   const itemList: any[] = items || [];
   const customerList: any[] = customers || [];
@@ -39,12 +40,20 @@ export default function StockDispatchPage() {
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState<number | null>(null);
   const [preview, setPreview] = useState<any>(null);
+  // Save Dispatch does not write anything: it hands the delivery to the payment
+  // gate, and the gate is what posts it. Nothing exists until the invoice has
+  // been settled.
+  const [pendingLines, setPendingLines] = useState<Line[] | null>(null);
 
   const lines: Line[] = form.lines;
   const setLine = (i: number, patch: Partial<Line>) =>
     setForm((f: any) => ({ ...f, lines: f.lines.map((l: Line, n: number) => (n === i ? { ...l, ...patch } : l)) }));
 
   // Live totals, mirroring the server: goods value, then tax on top.
+  const totalOf = (rows: Line[]) => {
+    const goodsValue = rows.reduce((s, l) => s + (Number(l.quantity) || 0) * (Number(l.rate) || 0), 0);
+    return goodsValue + goodsValue * (Number(form.tax_percent) || 0) / 100;
+  };
   const goods = lines.reduce((s, l) => s + (Number(l.quantity) || 0) * (Number(l.rate) || 0), 0);
   const taxValue = goods * (Number(form.tax_percent) || 0) / 100;
   const grand = goods + taxValue;
@@ -71,33 +80,56 @@ export default function StockDispatchPage() {
     setLine(i, { item: itemId, rate: lines[i].rate || String(it?.unit_cost ?? "") });
   };
 
+  const header = () => ({
+    date: form.date, customer: form.customer || null,
+    tax_percent: form.tax_percent || 0, site: form.site, notes: form.notes,
+  });
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     const valid = lines.filter(l => l.item && Number(l.quantity) > 0);
     if (!valid.length) { alert("Add at least one product with a quantity."); return; }
-    setSaving(true);
-    // One row per product, all carrying the same header so they print as one
-    // invoice. Editing stays a single-row update.
-    const header = {
-      date: form.date, customer: form.customer || null,
-      tax_percent: form.tax_percent || 0, site: form.site, notes: form.notes,
-    };
-    // The invoice number is issued by the server on the first row; the rest of
-    // the set carry it so the delivery prints as one invoice.
-    let invoiceNo = form.invoice_no;
-    let ok = true;
-    for (const l of valid) {
-      const body = {
-        ...header, invoice_no: invoiceNo, item: l.item, serial_numbers: l.serial_numbers,
-        quantity: l.quantity, rate: l.rate || 0,
-      };
-      const saved = await save("dispatches", body, editing?.id);
-      if (!saved) { ok = false; break; }
-      if (!invoiceNo && saved.invoice_no) invoiceNo = saved.invoice_no;
-      if (editing) break;                      // an edit is one row, not a set
+
+    // Editing touches a row that has already gone out; it is a correction to
+    // paperwork, not a fresh release of goods, so it does not re-verify.
+    if (editing) {
+      setSaving(true);
+      const l = valid[0];
+      const saved = await save("dispatches", {
+        ...header(), invoice_no: form.invoice_no, item: l.item,
+        serial_numbers: l.serial_numbers, quantity: l.quantity, rate: l.rate || 0,
+      }, editing.id);
+      setSaving(false);
+      if (saved) { setShow(false); setEditing(null); setForm(blankForm()); }
+      return;
     }
+
+    // A new delivery: hold the lines and let the payment gate release them.
+    setPendingLines(valid);
+  };
+
+  /** The gate's answer. Only here does the delivery reach the database — every
+   *  line and the payment in one request, so a half-released delivery is not a
+   *  state that can exist. */
+  const dispatchVerified = async (payment: VerifiedPayment) => {
+    if (!pendingLines) return;
+    setSaving(true);
+    const d = await act("stock-dispatches/dispatch", {
+      ...header(),
+      invoice_no: form.invoice_no || undefined,
+      lines: pendingLines.map(l => ({
+        item: l.item, serial_numbers: l.serial_numbers,
+        quantity: l.quantity, rate: l.rate || 0,
+      })),
+      payment,
+    });
     setSaving(false);
-    if (ok) { setShow(false); setEditing(null); setForm(blankForm()); }
+    if (!d) return;                            // the gate refused; stay put
+    setPendingLines(null);
+    setShow(false);
+    setEditing(null);
+    setForm(blankForm());
+    alert(`Dispatched on invoice ${d.invoice_no} — ${d.dispatched_lines} line(s), payment verified.`);
   };
 
   const api = getApiBase(APP_SLUG);
@@ -163,10 +195,11 @@ export default function StockDispatchPage() {
       <SearchBar value={search} onChange={setSearch} placeholder="Search dispatches..." />
 
       <DataTable
-        minWidth={880} compact
+        minWidth={960} compact
         columns={[
           "Invoice No.", "Customer", "Date", "Item", "Serial No.",
           { label: "Qty", align: "right" }, { label: "Total", align: "right" },
+          { label: "Payment", align: "center" },
           { label: "Actions", align: "right" },
         ]}
         empty={{ title: "No dispatches yet", hint: "Record your first dispatch to a customer." }}
@@ -181,6 +214,17 @@ export default function StockDispatchPage() {
           <span className="font-mono text-[10px] text-slate-500">{r.serial_numbers || "—"}</span>,
           <span className="tabular-nums">{num(r.quantity)}</span>,
           <span className="tabular-nums font-semibold">{rupee(r.total)}</span>,
+          r.payment_verified ? (
+            <span title={`${rupee(r.payment_amount)} · ${r.payment_mode || ""}${r.payment_reference ? ` · ${r.payment_reference}` : ""}`}
+              className="inline-flex text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full bg-emerald-50 text-emerald-700">
+              Paid
+            </span>
+          ) : (
+            <span title="No payment was verified against this invoice."
+              className="inline-flex text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full bg-slate-100 text-slate-500">
+              —
+            </span>
+          ),
           <DocActions busy={busy === r.id}
             onDownload={() => download(r)}
             onEmail={() => sendTo(r, "email")}
@@ -288,6 +332,15 @@ export default function StockDispatchPage() {
           <span className="font-bold text-slate-900 tabular-nums">Total {rupee(grand)}</span>
         </div>
       </Modal>
+
+      {/* Nothing has been written yet — this is what releases the delivery. */}
+      <PaymentVerificationModal
+        show={pendingLines !== null}
+        invoiceTotal={totalOf(pendingLines || [])}
+        defaultDate={form.date}
+        saving={saving}
+        onCancel={() => setPendingLines(null)}
+        onConfirm={dispatchVerified} />
     </StockPage>
   );
 }

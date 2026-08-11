@@ -235,11 +235,14 @@ export function SearchBar({ value, onChange, placeholder }: {
 }
 
 /** Centred dialog, the same shell the retail pages use for create/edit. */
-export function Modal({ show, title, onClose, onSubmit, saving, submitLabel, wide, xl, children }: {
+export function Modal({ show, title, onClose, onSubmit, saving, submitLabel, submitDisabled, wide, xl, children }: {
   show: boolean; title: string; onClose: () => void; onSubmit: (e: React.FormEvent) => void;
   // `xl` is for forms with a wide line table — a purchase order's row carries
   // seven fields, and they are unreadable squeezed into the standard width.
-  saving?: boolean; submitLabel: string; wide?: boolean; xl?: boolean; children: React.ReactNode;
+  // `submitDisabled` is for a form that guards something: the payment
+  // verification keeps its confirm shut until the invoice is settled.
+  saving?: boolean; submitLabel: string; submitDisabled?: boolean;
+  wide?: boolean; xl?: boolean; children: React.ReactNode;
 }) {
   if (!show) return null;
   const width = xl ? "max-w-6xl" : wide ? "max-w-3xl" : "max-w-lg";
@@ -260,8 +263,8 @@ export function Modal({ show, title, onClose, onSubmit, saving, submitLabel, wid
               className="flex-1 px-4 py-2.5 text-slate-600 font-medium hover:bg-slate-50 rounded-xl transition-colors">
               Cancel
             </button>
-            <button type="submit" disabled={saving}
-              className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 rounded-xl transition shadow-sm disabled:opacity-50">
+            <button type="submit" disabled={saving || submitDisabled}
+              className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 rounded-xl transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
               {saving ? "Saving..." : submitLabel}
             </button>
           </div>
@@ -584,5 +587,141 @@ export function DocumentPreview({ open, title, fileName, render, onClose, action
         </div>
       </div>
     </div>
+  );
+}
+
+
+/* ── Payment verification ─────────────────────────────────────────────────── */
+
+export type VerifiedPayment = {
+  amount_received: string;
+  mode: string;
+  reference: string;
+  paid_on: string;
+  notes: string;
+};
+
+const PAYMENT_MODES: { value: string; label: string }[] = [
+  { value: "cash", label: "Cash" },
+  { value: "upi", label: "UPI" },
+  { value: "bank", label: "Bank Transfer" },
+  { value: "cheque", label: "Cheque" },
+  { value: "card", label: "Card" },
+];
+
+/**
+ * The gate in front of every dispatch — Save Dispatch on a new delivery, and
+ * Convert to Dispatch on a proforma invoice both come through here.
+ *
+ * Goods leave against a settled invoice, so the confirm button stays disabled
+ * until the amount received matches the total to the paisa. The same rule is
+ * enforced server-side in `check_payment`; this is here so the shortfall is
+ * visible while it is still being typed, rather than arriving as an error after
+ * the fact.
+ */
+export function PaymentVerificationModal({
+  show, invoiceTotal, title, submitLabel, saving, defaultDate, onCancel, onConfirm,
+}: {
+  show: boolean;
+  invoiceTotal: number;
+  title?: string;
+  submitLabel?: string;
+  saving?: boolean;
+  defaultDate?: string;
+  onCancel: () => void;
+  onConfirm: (payment: VerifiedPayment) => void;
+}) {
+  const [form, setForm] = useState<VerifiedPayment>({
+    amount_received: "", mode: "cash", reference: "", paid_on: defaultDate || todayISO(), notes: "",
+  });
+
+  // Reopening is a fresh verification — never inherit the last one's figures.
+  useEffect(() => {
+    if (show) {
+      setForm({
+        amount_received: "", mode: "cash", reference: "",
+        paid_on: defaultDate || todayISO(), notes: "",
+      });
+    }
+  }, [show, defaultDate]);
+
+  if (!show) return null;
+
+  // Compared in paise so a floating-point tail can't withhold a settled invoice.
+  const due = Math.round((Number(invoiceTotal) || 0) * 100);
+  const paid = Math.round((Number(form.amount_received) || 0) * 100);
+  const balance = due - paid;
+  const entered = form.amount_received.trim() !== "";
+  const settled = entered && balance === 0 && due > 0;
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!settled) return;
+    onConfirm(form);
+  };
+
+  return (
+    <Modal show={show} title={title || "Payment Verification"} onClose={onCancel}
+      onSubmit={submit} saving={saving} submitLabel={submitLabel || "Verify & Dispatch"}
+      submitDisabled={!settled}>
+
+      <div className="flex items-center justify-between rounded-xl bg-slate-50 border border-slate-200 px-4 py-3">
+        <span className="text-sm font-semibold text-slate-600">Invoice total</span>
+        <span className="text-lg font-bold text-slate-900 tabular-nums">{rupee(invoiceTotal)}</span>
+      </div>
+
+      <Row>
+        <Fld label="Amount received *">
+          <input type="number" step="0.01" min="0" required autoFocus
+            value={form.amount_received}
+            onChange={e => setForm({ ...form, amount_received: e.target.value })}
+            className={FIELD} placeholder="0.00" />
+        </Fld>
+        <Fld label="Mode *">
+          <select value={form.mode} onChange={e => setForm({ ...form, mode: e.target.value })}
+            className={FIELD}>
+            {PAYMENT_MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+          </select>
+        </Fld>
+      </Row>
+
+      <Row>
+        <Fld label="Reference">
+          <input value={form.reference} onChange={e => setForm({ ...form, reference: e.target.value })}
+            className={FIELD} placeholder="UTR / cheque no. / txn id" />
+        </Fld>
+        <Fld label="Paid on *">
+          <input type="date" required value={form.paid_on}
+            onChange={e => setForm({ ...form, paid_on: e.target.value })} className={FIELD} />
+        </Fld>
+      </Row>
+
+      <Fld label="Notes">
+        <textarea rows={2} value={form.notes}
+          onChange={e => setForm({ ...form, notes: e.target.value })} className={FIELD} />
+      </Fld>
+
+      {/* Three states, and the button follows the third: nothing typed yet,
+          short (or over), or settled and ready to release the goods. */}
+      {!entered ? (
+        <p className="text-xs text-slate-500">
+          Goods are released against a settled invoice. Enter the full amount received to continue.
+        </p>
+      ) : balance > 0 ? (
+        <p className="rounded-xl bg-rose-50 border border-rose-200 px-4 py-3 text-xs font-semibold text-rose-700">
+          Short by {rupee(balance / 100)}. The full invoice must be received before the goods
+          can be dispatched.
+        </p>
+      ) : balance < 0 ? (
+        <p className="rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-xs font-semibold text-amber-700">
+          {rupee(-balance / 100)} more than the invoice. Correct the amount or the invoice
+          before dispatching.
+        </p>
+      ) : (
+        <p className="rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-3 text-xs font-semibold text-emerald-700">
+          Invoice settled in full — the goods can be released.
+        </p>
+      )}
+    </Modal>
   );
 }

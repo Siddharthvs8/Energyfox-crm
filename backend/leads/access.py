@@ -7,7 +7,27 @@ Every `can_*` gate below first asks the user's custom role (if they are on one):
 a user type defined in Settings grants exactly the keys it lists, so it must be
 able to both open and close a door that a built-in role would decide differently.
 `custom_grant` returns None for built-in roles, which means "fall through".
+
+The spectator runs the other way: `is_view_only` opens every `can_access_*` gate
+and closes every `can_edit_* / can_add_* / can_assign_* / can_delete_*` one, so
+the account reads the whole company and writes none of it. The refusal that
+actually protects the data is
+`core.middleware.SpectatorReadOnlyMiddleware`; the gates here exist so the client
+never draws a button that refusal would have to catch.
 """
+
+
+def is_view_only(user):
+    """True for a spectator: an account that reads the whole company and writes
+    nothing.
+
+    Every write gate below starts with this. Middleware already refuses the
+    request, so this is not what keeps the data safe — it is what keeps the UI
+    honest, because these same gates are what the serializers report to the
+    client to decide which buttons to draw.
+    """
+    return bool(user and getattr(user, 'is_authenticated', False)
+                and getattr(user, 'is_spectator', False))
 
 
 def custom_grant(user, key):
@@ -33,6 +53,8 @@ def can_edit_site_visit(user, lead):
       documentation staff who handle the uploaded documents)
     """
     if not user or not user.is_authenticated:
+        return False
+    if is_view_only(user):
         return False
     if getattr(user, 'sees_all_leads', False):
         return True
@@ -62,6 +84,8 @@ def can_edit_kseb_feasibility(user, lead):
     """
     if not user or not user.is_authenticated:
         return False
+    if is_view_only(user):
+        return False
     sv = getattr(lead, 'site_visit', None)
     po_signed = bool(sv and sv.po_signed_date)
     if not po_signed and not getattr(lead, 'pushed_to_documentation', False):
@@ -86,6 +110,8 @@ def can_assign_bde(user, lead):
     is not a BDE's job, even on a lead that happens to be owned by one."""
     if not user or not user.is_authenticated:
         return False
+    if is_view_only(user):
+        return False
     if not can_assign_leads(user):
         return False
     if user.is_staff or user.is_general_manager or user.is_manager:
@@ -108,6 +134,8 @@ def can_assign_documentation(user):
     documentation staff member. Not lead-specific."""
     if not user or not user.is_authenticated:
         return False
+    if is_view_only(user):
+        return False
     granted = custom_grant(user, 'queue.assign')
     if granted is not None:
         return granted
@@ -121,6 +149,8 @@ def can_mark_lead_lost(user):
     """Who may mark a converted lead as lost (customer skipped / backed out) or
     restore it: admins, general managers, branch managers, and BDEs."""
     if not user or not user.is_authenticated:
+        return False
+    if is_view_only(user):
         return False
     granted = custom_grant(user, 'leads.mark_lost')
     if granted is not None:
@@ -137,6 +167,8 @@ def can_add_leads(user):
     """
     if not user or not user.is_authenticated:
         return False
+    if is_view_only(user):
+        return False
     granted = custom_grant(user, 'leads.add')
     if granted is not None:
         return granted
@@ -149,6 +181,8 @@ def can_assign_leads(user):
     Same audience as can_add_leads: a BDE receives work, they don't distribute it.
     """
     if not user or not user.is_authenticated:
+        return False
+    if is_view_only(user):
         return False
     granted = custom_grant(user, 'leads.assign')
     if granted is not None:
@@ -165,6 +199,8 @@ def can_edit_leads(user):
     """
     if not user or not user.is_authenticated:
         return False
+    if is_view_only(user):
+        return False
     granted = custom_grant(user, 'leads.edit')
     if granted is not None:
         return granted
@@ -174,6 +210,8 @@ def can_edit_leads(user):
 def can_delete_leads(user):
     """Who may send a lead to Trash. A BDE receives work, they don't discard it."""
     if not user or not user.is_authenticated:
+        return False
+    if is_view_only(user):
         return False
     granted = custom_grant(user, 'leads.delete')
     if granted is not None:
@@ -187,6 +225,10 @@ def can_use_lead_tools(user):
 
     These manage the lead book rather than work a lead, so they belong to the
     tele-calling side. A BDE gets the leads handed to them and the site visit.
+
+    No `is_view_only` check here, unlike every other gate: all four are reads.
+    The write controls that sit among them in the UI — Import, and the per-row
+    Archive button — are gated by can_add_leads / can_edit_leads instead.
     """
     if not user or not user.is_authenticated:
         return False
@@ -205,6 +247,8 @@ def can_edit_lead_status(user):
     """
     if not user or not user.is_authenticated:
         return False
+    if is_view_only(user):
+        return False
     granted = custom_grant(user, 'leads.status')
     if granted is not None:
         return granted
@@ -220,7 +264,8 @@ def can_access_doc_stage2(user):
     if granted is not None:
         return granted
     return (user.is_staff or getattr(user, 'is_general_manager', False)
-            or getattr(user, 'role', '') in DOCUMENTATION_ROLES)
+            or getattr(user, 'role', '') in DOCUMENTATION_ROLES
+            or is_view_only(user))
 
 
 def can_reopen_documentation(user):
@@ -228,6 +273,8 @@ def can_reopen_documentation(user):
     documentation managers and admins / general managers. Ordinary documentation
     staff can complete a stage but not reopen it."""
     if not user or not user.is_authenticated:
+        return False
+    if is_view_only(user):
         return False
     granted = custom_grant(user, 'queue.assign')
     if granted is not None:
@@ -245,7 +292,8 @@ def can_access_liasoning(user):
     if granted is not None:
         return granted
     return (user.is_staff or getattr(user, 'is_general_manager', False)
-            or getattr(user, 'role', '') == 'liasoning_officer')
+            or getattr(user, 'role', '') == 'liasoning_officer'
+            or is_view_only(user))
 
 
 def can_access_warranty(user):
@@ -257,7 +305,8 @@ def can_access_warranty(user):
     if granted is not None:
         return granted
     return (user.is_staff or getattr(user, 'is_general_manager', False)
-            or getattr(user, 'role', '') in DOCUMENTATION_ROLES)
+            or getattr(user, 'role', '') in DOCUMENTATION_ROLES
+            or is_view_only(user))
 
 
 # The accounts team. The manager runs the queue and hands leads to their staff;
@@ -277,7 +326,8 @@ def can_access_accounts(user):
     if granted is not None:
         return granted
     return (user.is_staff or getattr(user, 'is_general_manager', False)
-            or getattr(user, 'role', '') in (ACCOUNTS_ROLES | {'purchase_staff'}))
+            or getattr(user, 'role', '') in (ACCOUNTS_ROLES | {'purchase_staff'})
+            or is_view_only(user))
 
 
 def can_assign_accounts(user):
@@ -285,6 +335,8 @@ def can_assign_accounts(user):
     an accounts staff member and reopen a completed payment verification. Not
     lead-specific."""
     if not user or not user.is_authenticated:
+        return False
+    if is_view_only(user):
         return False
     granted = custom_grant(user, 'queue.assign')
     if granted is not None:
@@ -302,7 +354,7 @@ def can_edit_payment_verification(user, lead):
 
     The lead must already have been moved to accounts.
     """
-    if not can_access_accounts(user):
+    if not can_access_accounts(user) or is_view_only(user):
         return False
     if not getattr(lead, 'pushed_to_accounts', False):
         return False
@@ -329,13 +381,16 @@ def can_access_purchase(user):
     if granted is not None:
         return granted
     return (user.is_staff or getattr(user, 'is_general_manager', False)
-            or getattr(user, 'role', '') == 'purchase_staff')
+            or getattr(user, 'role', '') == 'purchase_staff'
+            or is_view_only(user))
 
 
 def can_assign_purchase(user):
     """Admins / general managers may assign a lead to a purchase staff member
     and reopen a completed purchase & logistics record. Not lead-specific."""
     if not user or not user.is_authenticated:
+        return False
+    if is_view_only(user):
         return False
     granted = custom_grant(user, 'queue.assign')
     if granted is not None:
@@ -351,7 +406,7 @@ def can_edit_purchase_logistics(user, lead):
 
     The lead must already have been moved to purchase & logistics.
     """
-    if not can_access_purchase(user):
+    if not can_access_purchase(user) or is_view_only(user):
         return False
     if not getattr(lead, 'pushed_to_purchase', False):
         return False
@@ -374,13 +429,16 @@ def can_access_project(user):
     if granted is not None:
         return granted
     return (user.is_staff or getattr(user, 'is_general_manager', False)
-            or getattr(user, 'role', '') == 'project_manager')
+            or getattr(user, 'role', '') == 'project_manager'
+            or is_view_only(user))
 
 
 def can_assign_project(user):
     """Admins / general managers may assign a lead to a project manager and reopen
     a completed project. Not lead-specific."""
     if not user or not user.is_authenticated:
+        return False
+    if is_view_only(user):
         return False
     granted = custom_grant(user, 'queue.assign')
     if granted is not None:
@@ -429,7 +487,7 @@ def can_edit_project(user, lead):
     what the queue is for. Editing resumes when a super admin releases it with a
     fresh deadline.
     """
-    if not can_access_project(user):
+    if not can_access_project(user) or is_view_only(user):
         return False
     if not getattr(lead, 'pushed_to_project', False):
         return False
@@ -454,7 +512,8 @@ def can_access_documentation(user):
     if granted is not None:
         return granted
     return (user.is_staff or getattr(user, 'is_general_manager', False)
-            or getattr(user, 'role', '') in DOCUMENTATION_ROLES)
+            or getattr(user, 'role', '') in DOCUMENTATION_ROLES
+            or is_view_only(user))
 
 
 def can_edit_documentation_stage1(user, lead):
@@ -469,7 +528,7 @@ def can_edit_documentation_stage1(user, lead):
     permission), so it must NOT be used here — this mirrors the assigned-only
     rule already enforced in the ``documentation_detail`` action.
     """
-    if not can_access_documentation(user):
+    if not can_access_documentation(user) or is_view_only(user):
         return False
     if not getattr(lead, 'pushed_to_documentation', False):
         return False

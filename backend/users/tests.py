@@ -554,3 +554,209 @@ class TeamRolePickerCoverageTests(TestCase):
         unknown = self.picker_values() - {r for r, _label in ROLE_CHOICES}
         self.assertEqual(unknown, set(),
                          f'roles the Team form offers that do not exist: {sorted(unknown)}')
+
+
+class SpectatorTests(TestCase):
+    """The spectator user type: sees everything a super admin sees, changes nothing.
+
+    The read half and the write half are tested separately on purpose. Reads are
+    granted by name at each gate, so each module is checked individually. Writes
+    are refused once, in middleware, in front of every endpoint — so the tests
+    below sample the range of them (leads, another user, a module record, its own
+    profile, a bulk action) rather than trying to enumerate the API.
+    """
+
+    def setUp(self):
+        from leads.models import Lead
+        self.spectator = mk('t_spectator', 'spectator')
+        self.admin = mk('t_sp_admin', 'admin')
+        self.agent = mk('t_sp_agent', 'tele_caller')
+        self.lead = Lead.objects.create(first_name='Asha', phone='9895271487',
+                                        assigned_to=self.agent)
+
+    def get(self, path, user=None):
+        return self.client.get(path, HTTP_AUTHORIZATION=token_for(user or self.spectator))
+
+    # -- The role itself --
+    def test_the_role_carries_no_privilege_flag(self):
+        """is_staff / is_general_manager are what the write gates read; a
+        spectator holding either would be able to edit what it may only watch."""
+        self.assertFalse(self.spectator.is_staff)
+        self.assertFalse(self.spectator.is_superuser)
+        self.assertFalse(self.spectator.is_general_manager)
+        self.assertFalse(self.spectator.is_manager)
+
+    def test_it_is_marked_read_only_and_sees_everything(self):
+        self.assertTrue(self.spectator.is_spectator)
+        self.assertTrue(self.spectator.sees_everything)
+        self.assertTrue(self.spectator.sees_all_leads)
+
+    def test_me_reports_the_account_as_read_only(self):
+        r = self.get('/api/users/me/')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertIs(r.json()['read_only'], True)
+
+    def test_an_ordinary_account_is_not_read_only(self):
+        r = self.get('/api/users/me/', user=self.agent)
+        self.assertIs(r.json()['read_only'], False)
+
+    def test_only_an_admin_may_appoint_one(self):
+        """A spectator sees the whole company, so minting one is an admin's call:
+        a branch manager must not be able to create company-wide visibility."""
+        self.assertIn('spectator', self.admin.assignable_roles())
+        self.assertNotIn('spectator', mk('t_sp_bm', 'branch_manager').assignable_roles())
+
+    def test_it_manages_nobody_not_even_itself(self):
+        self.assertFalse(self.spectator.can_manage(self.agent))
+        self.assertFalse(self.spectator.can_manage(self.spectator))
+
+    # -- Reads: everything an admin can open --
+    def test_it_sees_every_lead_including_other_peoples(self):
+        r = self.get('/api/leads/')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        body = r.json()
+        rows = body.get('results') if isinstance(body, dict) else body
+        self.assertEqual([l['first_name'] for l in rows], ['Asha'])
+
+    def test_it_can_open_one_lead(self):
+        self.assertEqual(self.get('/api/leads/%d/' % self.lead.id).status_code, 200)
+
+    def test_it_sees_the_whole_user_directory(self):
+        r = self.get('/api/users/')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        body = r.json()
+        rows = body.get('results') if isinstance(body, dict) else body
+        self.assertIn('t_sp_agent', [u['username'] for u in rows])
+
+    def test_it_can_open_every_module_queue(self):
+        for path in ['/api/leads/documentation/', '/api/leads/accounts/',
+                     '/api/leads/purchase/', '/api/leads/project/',
+                     '/api/leads/documentation-stage2/', '/api/leads/liasoning/',
+                     '/api/leads/warranty/', '/api/leads/periodic-maintenance/',
+                     '/api/leads/module-counts/', '/api/tasks/']:
+            with self.subTest(path=path):
+                self.assertEqual(self.get(path).status_code, 200)
+
+    def test_the_module_access_gates_admit_it(self):
+        from leads import access
+        for gate in [access.can_access_documentation, access.can_access_doc_stage2,
+                     access.can_access_accounts, access.can_access_purchase,
+                     access.can_access_project, access.can_access_overdue_projects,
+                     access.can_access_liasoning, access.can_access_warranty]:
+            with self.subTest(gate=gate.__name__):
+                self.assertTrue(gate(self.spectator))
+
+    def test_it_watches_the_wholesale_side_read_only(self):
+        from inventory import b2b_access
+        for module in b2b_access.MODULES:
+            with self.subTest(module=module):
+                self.assertEqual(b2b_access.level_for(self.spectator, module), b2b_access.READ)
+
+    # -- Writes: refused, whatever the endpoint --
+    def assert_refused(self, response):
+        self.assertEqual(response.status_code, 403, response.content[:300])
+        self.assertIs(response.json().get('read_only'), True)
+
+    def test_it_cannot_edit_a_lead(self):
+        self.assert_refused(self.client.patch(
+            '/api/leads/%d/' % self.lead.id, data={'first_name': 'Changed'},
+            content_type='application/json', HTTP_AUTHORIZATION=token_for(self.spectator)))
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.first_name, 'Asha')
+
+    def test_it_cannot_create_a_lead(self):
+        from leads.models import Lead
+        self.assert_refused(self.client.post(
+            '/api/leads/', data={'first_name': 'New', 'phone': '9000000000'},
+            content_type='application/json', HTTP_AUTHORIZATION=token_for(self.spectator)))
+        self.assertEqual(Lead.objects.count(), 1)
+
+    def test_it_cannot_delete_a_lead(self):
+        self.assert_refused(self.client.delete(
+            '/api/leads/%d/' % self.lead.id, HTTP_AUTHORIZATION=token_for(self.spectator)))
+
+    def test_it_cannot_run_a_bulk_action(self):
+        self.assert_refused(self.client.post(
+            '/api/leads/bulk_assign/', data={'ids': [self.lead.id], 'user_id': self.agent.id},
+            content_type='application/json', HTTP_AUTHORIZATION=token_for(self.spectator)))
+
+    def test_it_cannot_touch_another_account(self):
+        self.assert_refused(self.client.patch(
+            '/api/users/%d/' % self.agent.id, data={'first_name': 'Changed'},
+            content_type='application/json', HTTP_AUTHORIZATION=token_for(self.spectator)))
+
+    def test_it_cannot_change_its_own_profile(self):
+        """Strictly view-only: an admin maintains the account, password included."""
+        self.assert_refused(self.client.patch(
+            '/api/users/%d/' % self.spectator.id, data={'first_name': 'Changed'},
+            content_type='application/json', HTTP_AUTHORIZATION=token_for(self.spectator)))
+
+    def test_the_refusal_covers_put_and_delete_too(self):
+        for method in (self.client.put, self.client.delete):
+            with self.subTest(method=method.__name__):
+                self.assert_refused(method('/api/leads/%d/' % self.lead.id,
+                                           data={}, content_type='application/json',
+                                           HTTP_AUTHORIZATION=token_for(self.spectator)))
+
+    def test_the_write_gates_all_say_no(self):
+        from leads import access
+        lead_gates = [access.can_edit_site_visit, access.can_assign_bde,
+                      access.can_edit_payment_verification, access.can_edit_purchase_logistics,
+                      access.can_edit_project, access.can_edit_documentation_stage1,
+                      access.can_edit_kseb_feasibility]
+        for gate in lead_gates:
+            with self.subTest(gate=gate.__name__):
+                self.assertFalse(gate(self.spectator, self.lead))
+        user_gates = [access.can_add_leads, access.can_edit_leads, access.can_delete_leads,
+                      access.can_assign_leads, access.can_edit_lead_status,
+                      access.can_mark_lead_lost, access.can_assign_documentation,
+                      access.can_assign_accounts, access.can_assign_purchase,
+                      access.can_assign_project, access.can_reopen_documentation,
+                      access.can_release_overdue_project, access.can_cleanup_deleted_lead]
+        for gate in user_gates:
+            with self.subTest(gate=gate.__name__):
+                self.assertFalse(gate(self.spectator))
+
+    def test_a_pushed_module_record_stays_uneditable(self):
+        """The dangerous shape: these gates open with a *read* check that now
+        admits the spectator, and several then fell through to `return True`."""
+        from leads import access
+        self.lead.pushed_to_documentation = True
+        self.lead.pushed_to_accounts = True
+        self.lead.pushed_to_purchase = True
+        self.lead.pushed_to_project = True
+        self.lead.save()
+        self.assertFalse(access.can_edit_documentation_stage1(self.spectator, self.lead))
+        self.assertFalse(access.can_edit_payment_verification(self.spectator, self.lead))
+        self.assertFalse(access.can_edit_purchase_logistics(self.spectator, self.lead))
+        self.assertFalse(access.can_edit_project(self.spectator, self.lead))
+
+    def test_the_lead_payload_tells_the_ui_not_to_draw_the_buttons(self):
+        r = self.get('/api/leads/%d/' % self.lead.id)
+        body = r.json()
+        for flag in ('can_edit_site_visit', 'can_assign_bde', 'can_assign_documentation',
+                     'can_mark_lost', 'can_edit_status'):
+            with self.subTest(flag=flag):
+                self.assertIs(body[flag], False)
+
+    # -- Everyone else is unaffected --
+    def test_an_admin_still_writes(self):
+        r = self.client.patch('/api/leads/%d/' % self.lead.id, data={'first_name': 'Renamed'},
+                              content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+
+    def test_an_unauthenticated_write_is_not_swallowed_by_the_guard(self):
+        """No token means the middleware has no user, so the view must still be
+        the one that answers - with a 401, not the spectator's 403."""
+        r = self.client.post('/api/leads/', data={'first_name': 'X'},
+                             content_type='application/json')
+        self.assertEqual(r.status_code, 401)
+
+    def test_it_can_still_log_in(self):
+        """Logging in is a POST. The guard must not lock the account out of it."""
+        r = self.client.post('/api/token/',
+                             data={'username': 't_spectator', 'password': 'Pw@123456'},
+                             content_type='application/json')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertIn('access', r.json())

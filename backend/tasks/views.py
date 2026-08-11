@@ -22,7 +22,7 @@ class TaskViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        if user.is_staff or user.is_general_manager:
+        if user.sees_everything:
             queryset = Task.objects.all().order_by('-created_at')
         elif user.is_manager:
             from django.db.models import Q

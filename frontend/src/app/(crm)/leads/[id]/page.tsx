@@ -387,13 +387,17 @@ export default function LeadDetailPage({
     }
   };
 
-  const canAssign = currentUser?.is_staff || currentUser?.is_general_manager || currentUser?.is_manager;
+  // A view-only (spectator) account reads this page and touches nothing on it.
+  // The per-lead can_* flags already arrive false from the server; these are the
+  // controls decided client-side, which have to agree.
+  const isSpectator = !!currentUser?.read_only;
+  const canAssign = !isSpectator && (currentUser?.is_staff || currentUser?.is_general_manager || currentUser?.is_manager);
   // A BDE reports through the site visit; the lead status belongs to the tele
   // caller / managers. Mirrors can_edit_lead_status() on the backend.
-  const canEditStatus = !currentUser || currentUser.role !== "bde";
+  const canEditStatus = !isSpectator && (!currentUser || currentUser.role !== "bde");
   // The lead record belongs to the tele-calling side; a BDE reports through the
   // site visit. Mirrors can_edit_leads() on the backend.
-  const canEditLead = !currentUser || currentUser.role !== "bde";
+  const canEditLead = !isSpectator && (!currentUser || currentUser.role !== "bde");
 
   const initiateCall = async () => {
     if (!lead?.phone) return alert("Lead does not have a phone number.");
@@ -677,12 +681,14 @@ export default function LeadDetailPage({
                 💰 View Invoice
               </a>
             )}
+            {!isSpectator && (
             <button
               onClick={initiateCall}
               className="btn btn-sm bg-emerald-600 hover:bg-emerald-700 text-white font-semibold flex items-center gap-1.5 border border-emerald-600 shadow-sm shadow-emerald-100"
             >
               📞 Call Lead
             </button>
+            )}
             {lead.can_assign_bde && (
               <button onClick={openBdeModal} className="btn btn-sm bg-blue-600 hover:bg-blue-700 text-white font-semibold border border-blue-600">{lead.bde ? "Reassign BDE" : "Assign to BDE"}</button>
             )}
@@ -730,6 +736,7 @@ export default function LeadDetailPage({
           <div className="bg-white rounded-2xl border border-slate-100 p-6 animate-fade-in-up delay-200">
             <h2 className="font-semibold text-slate-900 mb-4">Notes</h2>
             <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">{getLatestNote(lead.notes)}</p>
+            {!isSpectator && (
             <div className="mt-4">
               <textarea
                 className="form-input"
@@ -746,6 +753,7 @@ export default function LeadDetailPage({
                 {addingNote ? "Adding..." : "Add Note"}
               </button>
             </div>
+            )}
           </div>
 
           {/* WhatsApp Conversation */}
@@ -772,8 +780,8 @@ export default function LeadDetailPage({
               )}
             </div>
             <div className="flex gap-2">
-              <input value={waInput} onChange={e => setWaInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter") sendWa(); }} placeholder="Type a WhatsApp message…" className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition" />
-              <button onClick={sendWa} disabled={waSending || !waInput.trim()} className="bg-emerald-500 hover:bg-emerald-600 text-white font-semibold px-5 rounded-xl text-sm transition disabled:opacity-50">{waSending ? "…" : "Send"}</button>
+              <input value={waInput} onChange={e => setWaInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter") sendWa(); }} disabled={isSpectator} placeholder={isSpectator ? "View only" : "Type a WhatsApp message…"} className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition disabled:opacity-60 disabled:cursor-not-allowed" />
+              <button onClick={sendWa} disabled={isSpectator || waSending || !waInput.trim()} className="bg-emerald-500 hover:bg-emerald-600 text-white font-semibold px-5 rounded-xl text-sm transition disabled:opacity-50">{waSending ? "…" : "Send"}</button>
             </div>
             <p className="text-[11px] text-slate-400 mt-2">Free text reaches contacts who messaged in the last 24h. For first contact, use a template (Automations / Bulk).</p>
           </div>

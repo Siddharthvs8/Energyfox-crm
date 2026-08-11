@@ -10,7 +10,7 @@ import autoTable from "jspdf-autotable";
 import * as htmlToImage from "html-to-image";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
-interface User { id: number; username: string; first_name: string; last_name: string; email: string; is_staff: boolean; is_manager: boolean; is_general_manager: boolean; team: number | null; }
+interface User { id: number; username: string; first_name: string; last_name: string; email: string; is_staff: boolean; is_manager: boolean; is_general_manager: boolean; read_only?: boolean; team: number | null; }
 interface Agent { id: number; name: string; role: string; active_leads: number; total_leads: number; daily_progress: any; monthly_progress: any; }
 interface MonthlyTarget { id: number; agent: number; month: number; year: number; target_leads: number; target_amount: string; target_dialed_calls: number; target_call_time: number; }
 interface DailyTarget { id: number; agent: number; date: string; target_leads: number; target_amount: string; target_dialed_calls: number; target_call_time: number; achieved_dialed_calls: number; achieved_call_time: number; status: string; is_manual: boolean; }
@@ -194,7 +194,7 @@ export default function ManagerPage({ params: paramsPromise }: { params: Promise
     fetch(api("/api/users/me/"), { headers: { Authorization: `Bearer ${tk}` } })
       .then(r => { if (!r.ok) throw new Error("unauth"); return r.json(); })
       .then(d => {
-        if (!d.is_staff && !d.is_general_manager && !d.is_manager) { router.push(`/`); return; }
+        if (!d.is_staff && !d.is_general_manager && !d.is_manager && !d.read_only) { router.push(`/`); return; }
         setCurrentUser(d);
         setLoading(false);
       })
@@ -208,7 +208,7 @@ export default function ManagerPage({ params: paramsPromise }: { params: Promise
     try {
       const ts = Date.now();
       // Choose right endpoint based on role
-      const endpoint = (currentUser.is_staff || currentUser.is_general_manager)
+      const endpoint = (currentUser.is_staff || currentUser.is_general_manager || currentUser.read_only)
         ? api(`/api/ai-manager/dashboard/?month=${selMonth}&year=${selYear}&_t=${ts}`)
         : api(`/api/ai-manager/team-performance/?month=${selMonth}&year=${selYear}&_t=${ts}`);
       const [dashR, usersR, mtR] = await Promise.all([
@@ -598,8 +598,8 @@ export default function ManagerPage({ params: paramsPromise }: { params: Promise
 
   if (loading) return <div className="flex items-center justify-center min-h-screen"><div className="w-8 h-8 border-4 border-indigo-600/30 border-t-indigo-600 rounded-full animate-spin" /></div>;
 
-  const role = currentUser?.is_staff ? "Admin" : currentUser?.is_general_manager ? "General Manager" : "Manager";
-  const roleGradient = currentUser?.is_staff ? "from-rose-500 to-pink-600" : currentUser?.is_general_manager ? "from-violet-500 to-purple-600" : "from-indigo-500 to-blue-600";
+  const role = currentUser?.read_only ? "Spectator" : currentUser?.is_staff ? "Admin" : currentUser?.is_general_manager ? "General Manager" : "Manager";
+  const roleGradient = currentUser?.read_only ? "from-slate-500 to-slate-600" : currentUser?.is_staff ? "from-rose-500 to-pink-600" : currentUser?.is_general_manager ? "from-violet-500 to-purple-600" : "from-indigo-500 to-blue-600";
 
   // Stats
   const totalAgents = agents.length;

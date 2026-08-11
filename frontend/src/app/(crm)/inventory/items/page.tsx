@@ -62,7 +62,8 @@ export default function StockItemMasterPage() {
     <StockPage
       title="Item Master" loading={loading} denied={denied}
       subtitle={<>
-        Your wholesale SKUs — closing stock is derived from movements.
+        Your wholesale SKUs — closing stock is derived from movements, less
+        anything a proforma invoice has already reserved.
         {lowCount > 0 && <span className="ml-2 text-rose-600 font-medium">{lowCount} low on stock</span>}
       </>}
       action={readOnly ? undefined : <AddButton label="Add Item" onClick={openCreate} />}>
@@ -70,10 +71,11 @@ export default function StockItemMasterPage() {
       <SearchBar value={search} onChange={setSearch} placeholder="Search items..." />
 
       <DataTable
-        minWidth={980} compact
+        minWidth={1060} compact
         columns={[
           "Code", "Category", "Brand / Model", "HSN / SAC",
           { label: "Opening", align: "right" }, { label: "In", align: "right" }, { label: "Out", align: "right" },
+          { label: "Reserved", align: "right" },
           { label: "Closing", align: "center" }, { label: "Unit Cost", align: "right" },
           { label: "Stock Value", align: "right" }, "Location", { label: "Actions", align: "right" },
         ]}
@@ -91,8 +93,19 @@ export default function StockItemMasterPage() {
           <span className="tabular-nums text-slate-500">{num(r.opening_stock)}</span>,
           <span className="tabular-nums text-emerald-600">+{num(r.received)}</span>,
           <span className="tabular-nums text-rose-600">−{num(r.dispatched)}</span>,
+          // Held by proforma invoices that have not been dispatched. Still on
+          // the shelf, so Closing is what is left to sell, not what is there.
+          Number(r.reserved) > 0 ? (
+            <span title={`${num(r.reserved)} ${r.unit} promised on proforma invoices — ${num(r.physical_stock)} physically in stock`}
+              className="tabular-nums font-semibold text-amber-600">{num(r.reserved)}</span>
+          ) : (
+            <span className="tabular-nums text-slate-300">—</span>
+          ),
           <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${
-            r.status === "REORDER" ? "bg-rose-50 text-rose-600" : "bg-emerald-50 text-emerald-600"}`}>
+            r.status === "REORDER" ? "bg-rose-50 text-rose-600" : "bg-emerald-50 text-emerald-600"}`}
+            title={Number(r.reserved) > 0
+              ? `${num(r.physical_stock)} in stock − ${num(r.reserved)} reserved`
+              : undefined}>
             {r.status === "REORDER" && <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />}
             {num(r.closing_stock)} {r.unit}
           </span>,

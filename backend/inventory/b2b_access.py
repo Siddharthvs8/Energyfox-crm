@@ -39,6 +39,10 @@ def level_for(user, module):
     """`'rw'`, `'r'`, or None when this user cannot reach the module at all."""
     if not user or not getattr(user, 'is_authenticated', False):
         return None
+    # A spectator watches the wholesale side like everything else: every module,
+    # read only. Checked before the matrix so it can never be handed WRITE.
+    if getattr(user, 'is_spectator', False):
+        return READ
     if getattr(user, 'is_superuser', False) or getattr(user, 'role', '') in UNRESTRICTED_ROLES:
         return WRITE
     return MODULE_ACCESS.get(module, {}).get(getattr(user, 'role', ''))
