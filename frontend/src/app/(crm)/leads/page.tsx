@@ -2,6 +2,7 @@
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
 import { useLeadStatuses } from "@/hooks/useLeadStatuses";
+import { useDistricts, districtOptions } from "@/hooks/useDistricts";
 import { FALLBACK_STATUS_META, getLatestNote } from "@/lib/lead-statuses";
 import { STAGE_META, STAGE_OPTIONS, StageTag } from "@/lib/pipeline-stages";
 
@@ -263,6 +264,10 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   const [currentUser, setCurrentUser] = useState<any>(null);
   // ─── Dynamic lead statuses (standard + tenant custom) ──────────────────────
   const { statusMeta, statusOptions } = useLeadStatuses(domain);
+  // The districts Settings configured. Typing one by hand would put a value on
+  // the lead that an import of the same district would not produce, so the form
+  // picks from the same list the import is matched against.
+  const { districts: configuredDistricts } = useDistricts();
 
   useEffect(() => {
     const token = localStorage.getItem(`${domain}_access`);
@@ -1786,7 +1791,12 @@ This cannot be undone.`)) return;
                 </div>
                 <div>
                   <label className={LABEL}>District</label>
-                  <input value={form.district} onChange={e => setForm({ ...form, district: e.target.value })} className={FIELD} placeholder="e.g. Ernakulam" />
+                  <select value={form.district} onChange={e => setForm({ ...form, district: e.target.value })} className={SELECT_FIELD}>
+                    <option value="">— No district —</option>
+                    {districtOptions(configuredDistricts, form.district).map(d => (
+                      <option key={d} value={d}>{d}</option>
+                    ))}
+                  </select>
                 </div>
                 <div>
                   <label className={LABEL}>Installation Location</label>

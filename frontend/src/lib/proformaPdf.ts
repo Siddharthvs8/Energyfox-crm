@@ -466,6 +466,26 @@ export async function buildProformaPdf(d: ProformaData): Promise<any> {
   return doc;
 }
 
-/** Filename the document is downloaded / attached under. */
-export const proformaFileName = (number: string) =>
-  `${(number || "proforma").replace(/\//g, "-")}.pdf`;
+/**
+ * Filename the document is downloaded / attached under.
+ *
+ * "<Customer> - <NUMBER>.pdf", because a folder of files named only by their
+ * serial tells you nothing about whose they are, and the customer is what people
+ * search for. The number stays on the end so the files still sort by series and
+ * stay unique — two proformas for the same customer must not collide.
+ *
+ * Falls back to the number alone when there is no party yet (a draft raised
+ * before the customer was chosen).
+ */
+export const proformaFileName = (number: string, party?: string | null) => {
+  // Anything a filesystem would refuse, plus the runs of space that collapsing
+  // them leaves behind. Windows is the strict one: \ / : * ? " < > |
+  const clean = (value: string) =>
+    value.replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, " ").trim();
+
+  const serial = clean(number || "proforma");
+  // Long trade names would otherwise push the whole path past what some systems
+  // accept; the number is the part that has to survive intact.
+  const customer = clean(party || "").slice(0, 60).trim();
+  return customer ? `${customer} - ${serial}.pdf` : `${serial}.pdf`;
+};

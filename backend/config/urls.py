@@ -14,7 +14,7 @@ from tasks.views import TaskViewSet
 from users.views import (UserViewSet, SubscriptionStatusView, WorkspaceTeamViewSet,
                          TenantSettingsView, BranchViewSet, CustomRoleViewSet,
                          InventoryDocumentProfileView)
-from leads.views import LeadViewSet, IntegrationSettingsViewSet, DashboardStatsView, LeaderboardView, ConvertedAnalyticsView, ProductViewSet, ServiceEntryViewSet, EmergencyServiceViewSet
+from leads.views import LeadViewSet, IntegrationSettingsViewSet, DashboardStatsView, LeaderboardView, ConvertedAnalyticsView, ProductViewSet, DistrictViewSet, ServiceEntryViewSet, EmergencyServiceViewSet
 from inventory.views import (VendorViewSet, PurchaseOrderViewSet, QuoteViewSet, SalesOrderViewSet,
                             StockItemViewSet, StockCustomerViewSet, GoodsReceiptViewSet,
                             StockDispatchViewSet, StockSummaryView,
@@ -30,6 +30,7 @@ router.register(r'branches', BranchViewSet, basename='branches')
 router.register(r'custom-roles', CustomRoleViewSet, basename='custom-roles')
 router.register(r'integration-settings', IntegrationSettingsViewSet, basename='integration-settings')
 router.register(r'products', ProductViewSet, basename='products')
+router.register(r'districts', DistrictViewSet, basename='districts')
 router.register(r'service-entries', ServiceEntryViewSet, basename='service-entries')
 router.register(r'emergency-services', EmergencyServiceViewSet, basename='emergency-services')
 router.register(r'vendors', VendorViewSet, basename='vendors')

@@ -1,5 +1,6 @@
 from django.core.validators import RegexValidator
 from django.db import models
+from django.db.models.functions import Lower
 from django.utils import timezone
 
 class Product(models.Model):
@@ -25,6 +26,66 @@ class Product(models.Model):
 
     def __str__(self):
         return self.name
+
+class District(models.Model):
+    """A district a lead can belong to, maintained from Settings.
+
+    The lead stores the district's *name*, not a foreign key. District arrives as
+    free text — a CSV column, a Meta form answer — and has to be matched against
+    this list before it means anything; everything downstream (the filter, the
+    export, the CSV template) already reads a name.
+
+    Matching is case-insensitive and settles on the spelling configured here, so
+    "KOLLAM", "kollam" and "kollaM" all file under "Kollam". A value that matches
+    nothing on this list is not filed at all: the lead is still created, with its
+    district left empty, rather than inventing a district nobody configured.
+    """
+    name = models.CharField(max_length=100)
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Inactive districts stop being offered for new leads; "
+                  "leads already filed under them keep their district.")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name']
+        constraints = [
+            # Case-insensitive: the whole point is that one district has one
+            # spelling, so "Kollam" and "kollam" must not both be addable.
+            models.UniqueConstraint(Lower('name'), name='uniq_district_name_ci'),
+        ]
+
+    def __str__(self):
+        return self.name
+
+    def save(self, *args, **kwargs):
+        self.name = (self.name or '').strip()
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def lookup(cls):
+        """``{lowercased name: configured spelling}`` for matching imports.
+
+        Built once per import rather than queried per row — a 5000-row upload
+        would otherwise be 5000 queries to answer the same question.
+        """
+        return {d.name.strip().lower(): d.name
+                for d in cls.objects.filter(is_active=True)}
+
+    @classmethod
+    def canonical(cls, value):
+        """The configured spelling of `value`, or `''` when it is not one of ours.
+
+        Empty is a deliberate answer, not a failure: an unrecognised district is
+        dropped and the lead is filed without one.
+        """
+        name = (value or '').strip()
+        if not name:
+            return ''
+        match = cls.objects.filter(is_active=True, name__iexact=name).first()
+        return match.name if match else ''
+
 
 class Lead(models.Model):
     # standard python syntax

@@ -1,13 +1,13 @@
 from rest_framework import viewsets, status, permissions, parsers
-from core.permissions import MetaIntegrationAccess
+from core.permissions import MetaIntegrationAccess, IsAdminOnly
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.http import HttpResponse
 import csv
 import io
 import logging
-from .models import Lead, IntegrationSettings, ActivityLog, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, LeadDocument, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, LiasoningDocument, Warranty, WarrantyDocument, EmergencyService, EmergencyServiceDocument, PeriodicMaintenance, MaintenanceVisit, MaintenanceVisitDocument, ModuleSeen, ReceiptVoucher
-from .serializers import LeadSerializer, IntegrationSettingsSerializer, LeadAttachmentSerializer, ProductSerializer, SiteVisitSerializer, DocumentationStage1Serializer, SiteVisitDocumentSerializer, DocumentationStage1DocumentSerializer, PaymentVerificationSerializer, PurchaseLogisticsSerializer, ProjectSerializer, ProjectDocumentSerializer, ServiceEntrySerializer, BalancePaymentSerializer, DocumentationStage2Serializer, DocumentationStage2DocumentSerializer, LiasoningServiceSerializer, LiasoningDocumentSerializer, WarrantySerializer, WarrantyDocumentSerializer, EmergencyServiceSerializer, EmergencyServiceDocumentSerializer, PeriodicMaintenanceSerializer, MaintenanceVisitSerializer, MaintenanceVisitDocumentSerializer, ReceiptVoucherSerializer
+from .models import Lead, District, IntegrationSettings, ActivityLog, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, LeadDocument, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, LiasoningDocument, Warranty, WarrantyDocument, EmergencyService, EmergencyServiceDocument, PeriodicMaintenance, MaintenanceVisit, MaintenanceVisitDocument, ModuleSeen, ReceiptVoucher
+from .serializers import LeadSerializer, DistrictSerializer, IntegrationSettingsSerializer, LeadAttachmentSerializer, ProductSerializer, SiteVisitSerializer, DocumentationStage1Serializer, SiteVisitDocumentSerializer, DocumentationStage1DocumentSerializer, PaymentVerificationSerializer, PurchaseLogisticsSerializer, ProjectSerializer, ProjectDocumentSerializer, ServiceEntrySerializer, BalancePaymentSerializer, DocumentationStage2Serializer, DocumentationStage2DocumentSerializer, LiasoningServiceSerializer, LiasoningDocumentSerializer, WarrantySerializer, WarrantyDocumentSerializer, EmergencyServiceSerializer, EmergencyServiceDocumentSerializer, PeriodicMaintenanceSerializer, MaintenanceVisitSerializer, MaintenanceVisitDocumentSerializer, ReceiptVoucherSerializer
 from .document_kinds import SHARED_KIND_LABELS, kind_for
 # Module-level: the nine module payloads all report this one rule, and
 # access.py imports nothing, so there is no cycle to dodge.
@@ -4448,6 +4448,12 @@ class LeadViewSet(viewsets.ModelViewSet):
         # Only a column that actually says district. City, town, taluk and
         # location are different things and must not be filed as one.
         district_keys = ['district', 'dist']
+        # The districts Settings has configured, keyed by lowercase name. A cell
+        # is filed only if it names one of them, whatever its capitalisation:
+        # "KOLLAM", "kollam" and "kollaM" all become the configured "Kollam".
+        # Anything else leaves the lead's district empty rather than inventing a
+        # district nobody set up — the lead itself is still imported.
+        districts = District.lookup()
 
         # Column widths come from the model, so they cannot drift out of step
         # with it. A single over-long cell used to abort the whole upload with a
@@ -4480,11 +4486,11 @@ class LeadViewSet(viewsets.ModelViewSet):
             source = get_row_value(row, source_keys) or 'manual'
             source = SOURCE_ALIASES.get(source.strip().lower(), source)
             status_val = get_row_value(row, status_keys) or 'new'
-            district = get_row_value(row, district_keys)
+            district = districts.get(get_row_value(row, district_keys).strip().lower(), '')
 
             if any(len(v) > (Lead._meta.get_field(f).max_length or len(v))
                    for v, f in ((first_name, 'first_name'), (last_name, 'last_name'),
-                                (phone, 'phone'), (source, 'source'), (district, 'district'))):
+                                (phone, 'phone'), (source, 'source'))):
                 truncated += 1
 
             leads_to_create.append(Lead(
@@ -4492,7 +4498,8 @@ class LeadViewSet(viewsets.ModelViewSet):
                 last_name=clip(last_name, 'last_name'),
                 email=clip(email, 'email'),
                 phone=clip(phone, 'phone'),
-                district=clip(district, 'district'),
+                # Already a configured name, so nothing to clip.
+                district=district,
                 source=clip(source, 'source'),
                 status=clip(status_val, 'status'),
             ))
@@ -5052,8 +5059,15 @@ class DashboardStatsView(APIView):
         # Total Pipeline Value (Rupees)
         total_value = base_qs.aggregate(total=Sum('value'))['total'] or 0
         
-        # Revenue Generated (Enrolled & Partially Paid Leads)
-        won_qs = base_qs.filter(status__in=['converted'])
+        # Revenue: the deals actually closed, not everything marked converted.
+        # Same definition the Closed Deals board runs on — in accounts with a
+        # payment, part or full, received. A lead flagged converted but with no
+        # money against it is a promise, and counting promises as revenue
+        # overstates the business. Feeds the six-month Revenue series below too,
+        # so the tile and the chart cannot disagree.
+        won_qs = base_qs.filter(status='converted', is_lost=False,
+                                pushed_to_accounts=True,
+                                payment_verification__amount_received__gt=0)
         total_revenue = won_qs.aggregate(total=Sum('value'))['total'] or 0
         
         # Team/Member Performance (Only for Admin/Manager)
@@ -5396,6 +5410,54 @@ class IntegrationSettingsViewSet(viewsets.ModelViewSet):
         )
         response_status = status.HTTP_200_OK if result.imported or result.skipped or not result.errors else status.HTTP_400_BAD_REQUEST
         return Response(result.as_dict(), status=response_status)
+
+class DistrictViewSet(viewsets.ModelViewSet):
+    """The districts a lead can belong to — the list Settings maintains.
+
+    Everyone authenticated may read it: the lead form and the district filter are
+    built from it. Only admins may change it, because it is the vocabulary an
+    import is matched against — adding a district here is what makes leads start
+    filing under it.
+
+    Distinct from ``/api/leads/districts/``, which reports the districts actually
+    *in use* on leads (the filter's options). This one is what is *allowed*.
+    """
+    queryset = District.objects.all()
+    serializer_class = DistrictSerializer
+
+    def get_permissions(self):
+        if self.action in ('list', 'retrieve'):
+            return [permissions.IsAuthenticated()]
+        return [IsAdminOnly()]
+
+    def get_queryset(self):
+        qs = District.objects.all()
+        active = (self.request.query_params.get('active') or '').lower()
+        if active in ('true', '1', 'yes'):
+            qs = qs.filter(is_active=True)
+        return qs.order_by('name')
+
+    def destroy(self, request, *args, **kwargs):
+        """Deleting a district leaves the leads filed under it alone.
+
+        Their `district` is a name, not a link, so the value stays on the lead and
+        stays filterable — the district simply stops being offered for new ones.
+        Deactivating is usually what is wanted, so the refusal path says so.
+        """
+        district = self.get_object()
+        count = Lead.objects.filter(district__iexact=district.name, is_trashed=False).count()
+        forcing = str(request.query_params.get('force', '')).lower() in ('1', 'true', 'yes')
+        if count and not forcing:
+            return Response({
+                'error': f'{count} lead(s) are filed under {district.name}. Deleting the '
+                         f'district leaves their district text as it is, but new imports '
+                         f'will stop matching it. Deactivate it instead to keep the record '
+                         f'tidy, or delete anyway to remove it from the list.',
+                'can_force': True,
+                'lead_count': count,
+            }, status=status.HTTP_400_BAD_REQUEST)
+        return super().destroy(request, *args, **kwargs)
+
 
 class ProductViewSet(viewsets.ModelViewSet):
     """

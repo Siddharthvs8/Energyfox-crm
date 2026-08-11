@@ -3,18 +3,20 @@ import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
 import { THEMES, applyTheme } from "@/lib/themes";
 import RolesSection from "./RolesSection";
+import DistrictsSection from "./DistrictsSection";
 import InventoryDocumentsSection from "./InventoryDocumentsSection";
 import EmailSignatureEditor from "./EmailSignatureEditor";
 
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 
-type SettingsTab = "general" | "integrations" | "automation" | "documents" | "roles";
+type SettingsTab = "general" | "integrations" | "automation" | "districts" | "documents" | "roles";
 
 const TABS: { key: SettingsTab; label: string; blurb: string }[] = [
   { key: "general", label: "General", blurb: "Company profile, branding and plan." },
   { key: "integrations", label: "Integrations", blurb: "Payments, telephony, WhatsApp and email." },
   { key: "automation", label: "Automation", blurb: "Target reminders and your own lead statuses." },
+  { key: "districts", label: "Districts", blurb: "The districts a lead can belong to, and what an import is matched against." },
   { key: "documents", label: "Documents", blurb: "Inventory document letterheads, invoices and the warranty certificate." },
   { key: "roles", label: "Roles & Permissions", blurb: "Build your own user types and choose what each one can reach." },
 ];
@@ -442,7 +444,8 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
 
       {/* Roles is its own module with its own saves, so it sits outside the
           workspace-settings form. */}
-      {tab === "roles" ? <RolesSection domain={domain} isAdmin={isAdmin} /> : (
+      {tab === "roles" ? <RolesSection domain={domain} isAdmin={isAdmin} />
+       : tab === "districts" ? <DistrictsSection domain={domain} isAdmin={isAdmin} /> : (
       <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
         <form onSubmit={handleSave} className="p-6 sm:p-8">
           <div className="space-y-6">

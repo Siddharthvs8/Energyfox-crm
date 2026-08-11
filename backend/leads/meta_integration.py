@@ -123,6 +123,18 @@ def normalize_meta_field_data(field_data: list[dict[str, Any]]) -> dict[str, str
     }
 
 
+def match_district(value):
+    """A form answer against the districts Settings has configured.
+
+    Case-insensitive and settles on the configured spelling, so "KOLLAM",
+    "kollam" and "kollaM" all file under "Kollam". An answer that names no
+    configured district is dropped — the lead is still created, with its district
+    left empty, rather than inventing one nobody set up.
+    """
+    from .models import District
+    return District.canonical(value)
+
+
 def _same_name(candidate: str, other: str) -> bool:
     """Whether two names are the same once whitespace and case are ignored.
 
@@ -267,7 +279,7 @@ def create_lead_from_meta_payload(
             email=names["email"],
             phone=names["phone"],
             company=names["company"],
-            district=names["district"],
+            district=match_district(names["district"]),
             source="meta_ads",
             status="new",
             meta_lead_id=meta_lead_id,

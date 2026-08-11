@@ -2,6 +2,7 @@
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
 import { useLeadStatuses } from "@/hooks/useLeadStatuses";
+import { useDistricts, districtOptions } from "@/hooks/useDistricts";
 import { FALLBACK_STATUS_META, getLatestNote } from "@/lib/lead-statuses";
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
@@ -391,6 +392,9 @@ export default function LeadDetailPage({
   // The per-lead can_* flags already arrive false from the server; these are the
   // controls decided client-side, which have to agree.
   const isSpectator = !!currentUser?.read_only;
+  // Picked from Settings → Districts, the same list an import is matched
+  // against, so a hand-typed district cannot differ from an imported one.
+  const { districts: configuredDistricts } = useDistricts();
   const canAssign = !isSpectator && (currentUser?.is_staff || currentUser?.is_general_manager || currentUser?.is_manager);
   // A BDE reports through the site visit; the lead status belongs to the tele
   // caller / managers. Mirrors can_edit_lead_status() on the backend.
@@ -1255,7 +1259,17 @@ export default function LeadDetailPage({
                 </div>
                 <div>
                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">District</label>
-                  <input value={form.district} onChange={e => setForm({ ...form, district: e.target.value })} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all" placeholder="e.g. Ernakulam" />
+                  <div className="relative">
+                    <select value={form.district} onChange={e => setForm({ ...form, district: e.target.value })} className="w-full appearance-none bg-slate-50 border border-slate-200 rounded-xl pl-4 pr-8 py-2.5 text-sm font-medium text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all cursor-pointer">
+                      <option value="">— No district —</option>
+                      {districtOptions(configuredDistricts, form.district).map(d => (
+                        <option key={d} value={d}>{d}</option>
+                      ))}
+                    </select>
+                    <div className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+                      <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+                    </div>
+                  </div>
                 </div>
                 <div>
                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Installation Location</label>

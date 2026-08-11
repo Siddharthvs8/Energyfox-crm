@@ -1,5 +1,6 @@
 import base64
 import mimetypes
+import re
 
 from django.conf import settings
 from django.core.mail import EmailMessage
@@ -111,9 +112,26 @@ BLANK_PARTY = {'name': '', 'gstin': '', 'contact_person': '', 'contact_number': 
                'address': '', 'state': '', 'email': ''}
 
 
-def safe_doc_name(number):
-    """Document numbers contain slashes (EF/26-27/PI009); filenames can't."""
-    return (number or 'proforma').replace('/', '-')
+def safe_doc_name(number, party=None):
+    """The name a generated document is saved and attached under.
+
+    "<Customer> - <NUMBER>", because a folder — or an inbox — of files named only
+    by their serial tells you nothing about whose they are. The number stays on
+    the end so two documents for one customer cannot collide, and so the files
+    still sort by series.
+
+    Kept in step with `proformaFileName` in the frontend, which names the copy the
+    browser downloads; the customer should not receive a differently-named file
+    from the one the office keeps.
+    """
+    illegal = re.compile(r'[\\/:*?"<>|]+')
+    tidy = lambda value: re.sub(r'\s+', ' ', illegal.sub('-', str(value or ''))).strip()
+
+    serial = tidy(number) or 'proforma'
+    # Long trade names would push the stored path past what some filesystems
+    # accept; the number is the part that has to survive intact.
+    customer = tidy(party)[:60].strip()
+    return f'{customer} - {serial}' if customer else serial
 
 
 def inline_image(f):
@@ -244,9 +262,12 @@ def deliver_document(request, *, holder, number, amount, party, noun, channel=No
 
     Returns (payload, http_status).
     """
+    # Named for the customer as well as the number, matching the copy the
+    # browser downloads — see safe_doc_name.
+    doc_name = safe_doc_name(number, (party or {}).get('name'))
     pdf = request.FILES.get('pdf')
     if pdf:
-        holder.pdf.save(f"{safe_doc_name(number)}.pdf", pdf, save=True)
+        holder.pdf.save(f"{doc_name}.pdf", pdf, save=True)
     if not holder.pdf:
         return {'error': 'No document to send. Generate the PDF first.'}, status.HTTP_400_BAD_REQUEST
 
@@ -269,7 +290,7 @@ def deliver_document(request, *, holder, number, amount, party, noun, channel=No
                 body=(f"Dear {party.get('name') or 'Customer'},\n\nPlease find attached "
                       f"{noun} {number} for Rs. {amount}.\n\nRegards,\nEnergyFox"),
                 kind=noun.lower().replace(' ', '_'),
-                attachments=[(f"{safe_doc_name(number)}.pdf", data, 'application/pdf')],
+                attachments=[(f"{doc_name}.pdf", data, 'application/pdf')],
                 created_by=request.user if request.user.is_authenticated else None,
                 channel=channel,
             )
@@ -289,7 +310,7 @@ def deliver_document(request, *, holder, number, amount, party, noun, channel=No
                 whatsapp.send_document(
                     to=to,
                     link=request.build_absolute_uri(holder.pdf.url),
-                    filename=f"{safe_doc_name(number)}.pdf",
+                    filename=f"{doc_name}.pdf",
                     caption=f"{noun} {number}",
                     channel=channel,
                 )

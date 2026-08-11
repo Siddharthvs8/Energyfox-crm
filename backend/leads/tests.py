@@ -11,7 +11,7 @@ from django.utils import timezone
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from users.models import User
-from .models import (DocumentationStage2, Lead, LiasoningService, PaymentVerification,
+from .models import (District, DocumentationStage2, Lead, LiasoningService, PaymentVerification,
                      SiteVisit, Warranty, WarrantyDocument)
 from .meta_integration import create_lead_from_meta_payload, is_ad_metadata_name
 
@@ -1844,13 +1844,19 @@ class DeletedLeadsAreOutOfTheFiguresTests(TestCase):
         self.admin.save()
         self.caller = mk('df_caller', 'tele_caller')
 
+        # Both are closed deals — in accounts with money against them — so the
+        # deleted one is left out of the figures for being deleted, which is what
+        # these tests are about, rather than for never having been paid.
         self.live = Lead.objects.create(first_name='D', last_name='Live', phone='9993300001',
                                         status='converted', assigned_to=self.caller,
-                                        value=Decimal('100000'))
+                                        value=Decimal('100000'), pushed_to_accounts=True)
+        PaymentVerification.objects.create(lead=self.live, amount_received=Decimal('100000'))
         self.deleted = Lead.objects.create(first_name='D', last_name='Deleted',
                                            phone='9993300002', status='converted',
                                            assigned_to=self.caller, value=Decimal('900000'),
+                                           pushed_to_accounts=True,
                                            is_trashed=True, trashed_at=timezone.now())
+        PaymentVerification.objects.create(lead=self.deleted, amount_received=Decimal('900000'))
 
     def converted(self, actor):
         r = self.client.get('/api/converted-analytics/', HTTP_AUTHORIZATION=token_for(actor))
@@ -4170,10 +4176,14 @@ class LeadDistrictImportTests(TestCase):
         self.assertEqual(r.status_code, 200, r.content[:300])
         self.assertEqual(Lead.objects.get(phone='9895271487').district, '')
 
-    def test_an_over_long_district_is_clipped_not_rejected(self):
+    def test_an_over_long_district_is_simply_not_one_of_ours(self):
+        """It used to be clipped to fit the column. A district now has to name
+        one Settings configured, and 200 characters of x names none of them, so
+        the lead arrives without a district instead. See
+        DistrictMatchingOnImportTests."""
         r = self.upload(f'first_name,phone,district\nAsha,9895271487,{"x" * 200}\n')
         self.assertEqual(r.status_code, 200, r.content[:300])
-        self.assertEqual(len(Lead.objects.get(phone='9895271487').district), 100)
+        self.assertEqual(Lead.objects.get(phone='9895271487').district, '')
 
     # ── Meta import ──
     def test_a_meta_district_question_is_imported(self):
@@ -4508,3 +4518,330 @@ class ClosedDealsBoardTests(TestCase):
     def test_rubbish_in_a_filter_is_ignored_rather_than_fatal(self):
         self.assertEqual(self.names(self.admin, '?tele_caller=abc&bde=&payment=maybe'),
                          ['Asha', 'Biju'])
+
+
+class DashboardRevenueIsClosedDealsTests(TestCase):
+    """The dashboard's Revenue tile counts deals that were actually closed.
+
+    A lead flagged converted with no money against it is a promise, and counting
+    promises as revenue overstates the business. Same definition the Closed Deals
+    board uses — in accounts with a payment, part or full, received.
+
+    The Converted Leads board's own "Won Revenue" is deliberately left alone: that
+    page is about converted leads, and its tile has to agree with its own table.
+    """
+
+    def setUp(self):
+        self.admin = mk('rev_admin', 'admin')
+        self.caller = mk('rev_caller', 'tele_caller')
+
+    def lead(self, name, value, **extra):
+        return Lead.objects.create(first_name=name, phone=f'99934{name:0>5}'[:14],
+                                   status='converted', assigned_to=self.caller,
+                                   value=Decimal(value), **extra)
+
+    def close(self, lead, received):
+        PaymentVerification.objects.create(lead=lead, amount_received=Decimal(received))
+        lead.pushed_to_accounts = True
+        lead.save(update_fields=['pushed_to_accounts'])
+        return lead
+
+    def revenue(self, actor=None):
+        r = self.client.get('/api/dashboard-stats/',
+                            HTTP_AUTHORIZATION=token_for(actor or self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return Decimal(str(r.json()['total_revenue']))
+
+    def won_revenue(self):
+        """The Converted Leads board's figure, for contrast."""
+        r = self.client.get('/api/converted-analytics/', HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return Decimal(str(r.json()['total_revenue']))
+
+    def test_a_converted_lead_with_no_payment_is_not_revenue(self):
+        self.lead('a', '100000')
+        self.assertEqual(self.revenue(), Decimal('0'))
+
+    def test_reaching_documentation_is_not_revenue(self):
+        self.lead('b', '100000', pushed_to_documentation=True)
+        self.assertEqual(self.revenue(), Decimal('0'))
+
+    def test_accounts_without_money_taken_is_not_revenue(self):
+        lead = self.lead('c', '100000', pushed_to_accounts=True)
+        PaymentVerification.objects.create(lead=lead, amount_received=Decimal('0'))
+        self.assertEqual(self.revenue(), Decimal('0'))
+
+    def test_a_part_payment_makes_the_whole_deal_revenue(self):
+        """The deal is closed; its value is the deal's, not the instalment's."""
+        self.close(self.lead('d', '100000'), '25000')
+        self.assertEqual(self.revenue(), Decimal('100000'))
+
+    def test_a_fully_paid_deal_is_revenue(self):
+        self.close(self.lead('e', '250000'), '250000')
+        self.assertEqual(self.revenue(), Decimal('250000'))
+
+    def test_closed_deals_add_up(self):
+        self.close(self.lead('f', '100000'), '50000')
+        self.close(self.lead('g', '250000'), '250000')
+        self.lead('h', '900000')                       # converted, unpaid
+        self.assertEqual(self.revenue(), Decimal('350000'))
+
+    def test_a_lost_deal_is_not_revenue(self):
+        lead = self.close(self.lead('i', '100000'), '100000')
+        lead.is_lost = True
+        lead.save(update_fields=['is_lost'])
+        self.assertEqual(self.revenue(), Decimal('0'))
+
+    def test_a_trashed_deal_is_not_revenue(self):
+        lead = self.close(self.lead('j', '100000'), '100000')
+        lead.is_trashed = True
+        lead.save(update_fields=['is_trashed'])
+        self.assertEqual(self.revenue(), Decimal('0'))
+
+    def test_the_converted_board_still_counts_every_converted_lead(self):
+        """The two figures answer different questions and are allowed to differ."""
+        self.close(self.lead('k', '100000'), '100000')
+        self.lead('l', '900000')                       # converted, unpaid
+        self.assertEqual(self.revenue(), Decimal('100000'))
+        self.assertEqual(self.won_revenue(), Decimal('1000000'))
+
+    def test_a_plain_user_sees_only_their_own_closed_deals(self):
+        other = mk('rev_other', 'tele_caller')
+        mine = self.close(self.lead('m', '100000'), '100000')
+        mine.assigned_to = other
+        mine.tele_caller = other
+        mine.save()
+        self.close(self.lead('n', '40000'), '40000')   # stays with self.caller
+        self.assertEqual(self.revenue(self.caller), Decimal('40000'))
+        self.assertEqual(self.revenue(), Decimal('140000'))
+
+    def test_the_six_month_chart_follows_the_tile(self):
+        """A Revenue chart that disagrees with the Revenue tile above it is worse
+        than either being wrong on its own."""
+        self.close(self.lead('o', '100000'), '100000')
+        self.lead('p', '900000')                       # converted, unpaid
+        r = self.client.get('/api/dashboard-stats/', HTTP_AUTHORIZATION=token_for(self.admin))
+        series = r.json()['revenue_over_time']
+        self.assertEqual(Decimal(str(sum(m['Revenue'] for m in series))), Decimal('100000'))
+
+
+class DistrictListTests(TestCase):
+    """The district list itself — seeded with Kerala's fourteen, kept from
+    Settings, and one spelling per district."""
+
+    def setUp(self):
+        self.admin = mk('dl_admin', 'admin')
+        self.agent = mk('dl_agent', 'tele_caller')
+
+    def auth(self, user=None):
+        return {'HTTP_AUTHORIZATION': token_for(user or self.admin)}
+
+    def names(self, query=''):
+        r = self.client.get(f'/api/districts/{query}', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        body = r.json()
+        rows = body if isinstance(body, list) else body['results']
+        return [d['name'] for d in rows]
+
+    def add(self, name, user=None):
+        return self.client.post('/api/districts/', data={'name': name},
+                                content_type='application/json', **self.auth(user))
+
+    # ── What ships ──
+    def test_kerala_is_there_to_begin_with(self):
+        names = self.names()
+        self.assertEqual(len(names), 14)
+        for expected in ('Thiruvananthapuram', 'Kollam', 'Ernakulam', 'Wayanad', 'Kasaragod'):
+            self.assertIn(expected, names)
+
+    def test_they_are_listed_alphabetically(self):
+        self.assertEqual(self.names(), sorted(self.names()))
+
+    # ── Keeping the list ──
+    def test_an_admin_can_add_one(self):
+        self.assertEqual(self.add('Mahe').status_code, 201)
+        self.assertIn('Mahe', self.names())
+
+    def test_a_plain_user_may_read_but_not_change_it(self):
+        self.assertEqual(len(self.names()), 14)          # readable
+        r = self.client.post('/api/districts/', data={'name': 'Mahe'},
+                             content_type='application/json', **self.auth(self.agent))
+        self.assertEqual(r.status_code, 403, r.content[:200])
+
+    def test_the_same_district_cannot_be_added_twice(self):
+        r = self.add('Kollam')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('already on the list', str(r.json()))
+
+    def test_nor_in_a_different_case(self):
+        """One district, one spelling — that is the whole point of the list."""
+        r = self.add('KOLLAM')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('Kollam', str(r.json()))
+        self.assertEqual(len(self.names()), 14)
+
+    def test_a_blank_name_is_refused(self):
+        self.assertEqual(self.add('   ').status_code, 400)
+
+    def test_surrounding_space_is_trimmed_away(self):
+        self.assertEqual(self.add('  Mahe  ').status_code, 201)
+        self.assertIn('Mahe', self.names())
+
+    def test_it_reports_how_many_leads_it_holds(self):
+        Lead.objects.create(first_name='A', phone='9891100001', district='Kollam')
+        Lead.objects.create(first_name='B', phone='9891100002', district='kollam')
+        r = self.client.get('/api/districts/', **self.auth())
+        body = r.json()
+        rows = body if isinstance(body, list) else body['results']
+        kollam = next(d for d in rows if d['name'] == 'Kollam')
+        self.assertEqual(kollam['lead_count'], 2)
+
+    def test_only_the_active_ones_when_asked(self):
+        d = District.objects.get(name='Wayanad')
+        d.is_active = False
+        d.save()
+        self.assertNotIn('Wayanad', self.names('?active=true'))
+        self.assertIn('Wayanad', self.names())
+
+    def test_deleting_one_that_holds_leads_asks_first(self):
+        Lead.objects.create(first_name='A', phone='9891100003', district='Kollam')
+        d = District.objects.get(name='Kollam')
+        r = self.client.delete(f'/api/districts/{d.id}/', **self.auth())
+        self.assertEqual(r.status_code, 400)
+        self.assertTrue(r.json()['can_force'])
+        r = self.client.delete(f'/api/districts/{d.id}/?force=1', **self.auth())
+        self.assertEqual(r.status_code, 204)
+        # The lead keeps its district text; it is a name, not a link.
+        self.assertEqual(Lead.objects.get(phone='9891100003').district, 'Kollam')
+
+    def test_an_unused_one_deletes_without_fuss(self):
+        d = District.objects.get(name='Wayanad')
+        self.assertEqual(self.client.delete(f'/api/districts/{d.id}/', **self.auth()).status_code, 204)
+
+
+class DistrictMatchingOnImportTests(TestCase):
+    """A lead's district has to name one we configured.
+
+    Matching ignores case and settles on the configured spelling. An answer that
+    names no district of ours is dropped — the lead is still created, with its
+    district left empty, rather than inventing a district nobody set up.
+    """
+
+    def setUp(self):
+        self.admin = mk('dm_admin', 'superadmin')
+        self.admin.is_superuser = True
+        self.admin.is_staff = True
+        self.admin.save()
+
+    def upload(self, text):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        return self.client.post(
+            '/api/leads/bulk_upload/',
+            data={'file': SimpleUploadedFile('leads.csv', text.encode('utf-8'),
+                                             content_type='text/csv')},
+            HTTP_AUTHORIZATION=token_for(self.admin))
+
+    def imported(self, district_cell, phone='9895271487'):
+        r = self.upload(f'first_name,phone,district\nAsha,{phone},{district_cell}\n')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        return Lead.objects.get(phone=phone)
+
+    # ── Case-insensitive, canonical spelling ──
+    def test_the_configured_spelling_matches_itself(self):
+        self.assertEqual(self.imported('Kollam').district, 'Kollam')
+
+    def test_shouting_matches(self):
+        self.assertEqual(self.imported('KOLLAM').district, 'Kollam')
+
+    def test_whispering_matches(self):
+        self.assertEqual(self.imported('kollam').district, 'Kollam')
+
+    def test_a_mangled_case_matches(self):
+        self.assertEqual(self.imported('kollaM').district, 'Kollam')
+
+    def test_surrounding_space_does_not_stop_it_matching(self):
+        self.assertEqual(self.imported('  Kollam  ').district, 'Kollam')
+
+    def test_every_spelling_lands_in_one_district(self):
+        """The point of it: four spellings, one district on the board."""
+        for i, spelling in enumerate(('Kollam', 'KOLLAM', 'kollam', 'kollaM')):
+            self.imported(spelling, phone=f'989527200{i}')
+        self.assertEqual(
+            set(Lead.objects.exclude(district='').values_list('district', flat=True)),
+            {'Kollam'})
+
+    # ── Anything else is dropped, but the lead is kept ──
+    def test_a_district_we_do_not_have_is_left_empty(self):
+        lead = self.imported('Chennai')
+        self.assertEqual(lead.district, '')
+
+    def test_but_the_lead_is_still_imported(self):
+        lead = self.imported('Chennai')
+        self.assertEqual(lead.first_name, 'Asha')
+        self.assertEqual(lead.phone, '9895271487')
+
+    def test_a_near_miss_is_not_a_match(self):
+        """No fuzzy matching: "Kollum" is not Kollam, and guessing would file
+        leads under a district nobody chose."""
+        self.assertEqual(self.imported('Kollum').district, '')
+
+    def test_a_blank_cell_is_left_empty(self):
+        self.assertEqual(self.imported('').district, '')
+
+    def test_a_deactivated_district_stops_matching(self):
+        d = District.objects.get(name='Wayanad')
+        d.is_active = False
+        d.save()
+        self.assertEqual(self.imported('Wayanad').district, '')
+
+    def test_a_district_added_in_settings_starts_matching(self):
+        District.objects.create(name='Mahe')
+        self.assertEqual(self.imported('MAHE').district, 'Mahe')
+
+    def test_a_whole_file_is_matched_row_by_row(self):
+        r = self.upload('first_name,phone,district\n'
+                        'Asha,9895272101,ERNAKULAM\n'
+                        'Biju,9895272102,Chennai\n'
+                        'Chitra,9895272103,thrissur\n')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(Lead.objects.get(phone='9895272101').district, 'Ernakulam')
+        self.assertEqual(Lead.objects.get(phone='9895272102').district, '')
+        self.assertEqual(Lead.objects.get(phone='9895272103').district, 'Thrissur')
+        self.assertEqual(Lead.objects.count(), 3)
+
+    # ── Meta forms go through the same door ──
+    def test_a_meta_answer_matches_case_insensitively(self):
+        lead, _ = create_lead_from_meta_payload({
+            'id': '99001',
+            'field_data': [{'name': 'full_name', 'values': ['Asha Devi']},
+                           {'name': 'district', 'values': ['kOLLaM']}],
+        })
+        self.assertEqual(lead.district, 'Kollam')
+
+    def test_a_meta_answer_we_do_not_recognise_is_dropped(self):
+        lead, _ = create_lead_from_meta_payload({
+            'id': '99002',
+            'field_data': [{'name': 'full_name', 'values': ['Asha Devi']},
+                           {'name': 'district', 'values': ['Chennai']}],
+        })
+        self.assertEqual(lead.district, '')
+        self.assertEqual(lead.first_name, 'Asha')
+
+    def test_a_meta_lead_without_a_district_is_still_created(self):
+        lead, _ = create_lead_from_meta_payload({
+            'id': '99003',
+            'field_data': [{'name': 'full_name', 'values': ['Asha Devi']}],
+        })
+        self.assertEqual(lead.district, '')
+
+    # ── Typing one by hand is not the import path ──
+    def test_the_api_still_takes_a_district_as_typed(self):
+        """The gate is on *import*. Someone editing a lead in the CRM picks from
+        the list in the form; the field itself stays free text so historical
+        values survive a district being renamed or removed."""
+        lead = Lead.objects.create(first_name='Asha', phone='9895273001')
+        r = self.client.patch(f'/api/leads/{lead.id}/', data={'district': 'Kollam'},
+                              content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(r.json()['district'], 'Kollam')

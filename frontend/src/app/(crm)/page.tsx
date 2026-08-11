@@ -218,7 +218,7 @@ export default function DashboardPage({ params: paramsPromise }: { params: Promi
           icon={<svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 00-3-3.87" /><path d="M16 3.13a4 4 0 010 7.75" /></svg>}
         />
         <StatCard
-          label="Revenue" value={stats?.total_revenue || 0} prefix="₹" isCurrency sub="Converted deals"
+          label="Revenue" value={stats?.total_revenue || 0} prefix="₹" isCurrency sub="Closed deals"
           accent="#10b981"
           icon={<svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" viewBox="0 0 24 24"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" /></svg>}
         />

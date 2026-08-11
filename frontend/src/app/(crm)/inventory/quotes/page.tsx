@@ -134,7 +134,7 @@ export default function StockQuotesPage() {
     setBusy(q.id);
     try {
       const pdf = await render(q);
-      if (pdf) pdf.save(proformaFileName(q.number));
+      if (pdf) pdf.save(docName(q));
     } finally { setBusy(null); }
   };
 
@@ -151,7 +151,7 @@ export default function StockQuotesPage() {
       const pdf = await render(q);
       if (!pdf) return;
       const body = new FormData();
-      body.append("pdf", new File([pdf.output("blob")], proformaFileName(q.number),
+      body.append("pdf", new File([pdf.output("blob")], docName(q),
                                   { type: "application/pdf" }));
       body.append("channels", channel);
       body.append(channel === "email" ? "email" : "phone", to);
@@ -167,6 +167,10 @@ export default function StockQuotesPage() {
     } catch { alert("Network error while sending."); }
     finally { setBusy(null); }
   };
+
+  /** "<Customer> - <NUMBER>.pdf" — the number alone says nothing about whose
+   *  document it is, and the customer is what people search their downloads for. */
+  const docName = (q: any) => proformaFileName(q.number, q.customer_name);
 
   const convert = (q: any) => setToDispatch(q);
 
@@ -265,7 +269,7 @@ export default function StockQuotesPage() {
       <DocumentPreview
         open={!!preview}
         title={preview ? `Proforma Invoice ${preview.number}` : ""}
-        fileName={preview ? proformaFileName(preview.number) : ""}
+        fileName={preview ? docName(preview) : ""}
         render={() => render(preview)}
         onClose={() => setPreview(null)}
         actions={preview && (

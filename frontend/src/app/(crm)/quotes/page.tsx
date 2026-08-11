@@ -108,11 +108,15 @@ export default function QuotesPage({ params: paramsPromise }: { params: Promise<
     return buildProformaPdf(await r.json());
   };
 
+  /** "<Customer> - <NUMBER>.pdf" — the number alone says nothing about whose
+   *  document it is, and the customer is what people search their downloads for. */
+  const docName = (q: any) => proformaFileName(q.number, q.lead_name);
+
   const download = async (q: any) => {
     setBusy(q.id);
     try {
       const pdf = await render(q);
-      if (pdf) pdf.save(proformaFileName(q.number));
+      if (pdf) pdf.save(docName(q));
     } finally { setBusy(null); }
   };
 
@@ -129,7 +133,7 @@ export default function QuotesPage({ params: paramsPromise }: { params: Promise<
       const pdf = await render(q);
       if (!pdf) return;
       const body = new FormData();
-      body.append("pdf", new File([pdf.output("blob")], proformaFileName(q.number), { type: "application/pdf" }));
+      body.append("pdf", new File([pdf.output("blob")], docName(q), { type: "application/pdf" }));
       body.append("channels", channel);
       body.append(channel === "email" ? "email" : "phone", to);
       const res = await fetch(`${getApiBase(domain)}/api/quotes/${q.id}/send/`, {

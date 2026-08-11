@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.utils import timezone
-from .models import Lead, IntegrationSettings, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, LiasoningDocument, Warranty, WarrantyDocument, EmergencyService, EmergencyServiceDocument, PeriodicMaintenance, MaintenanceVisit, MaintenanceVisitDocument
+from .models import Lead, District, IntegrationSettings, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, LiasoningDocument, Warranty, WarrantyDocument, EmergencyService, EmergencyServiceDocument, PeriodicMaintenance, MaintenanceVisit, MaintenanceVisitDocument
 from .document_kinds import SLOT_TO_KIND, SITE_VISIT_SHARED_SLOTS, DOC_STAGE1_SHARED_SLOTS, shared_doc_entries
 
 from users.serializers import UserSerializer
@@ -49,6 +49,37 @@ class ProductSerializer(serializers.ModelSerializer):
     class Meta:
         model = Product
         fields = '__all__'
+
+
+class DistrictSerializer(serializers.ModelSerializer):
+    lead_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = District
+        fields = ['id', 'name', 'is_active', 'lead_count', 'created_at', 'updated_at']
+        read_only_fields = ['created_at', 'updated_at']
+
+    def get_lead_count(self, obj):
+        """Leads filed under this district, so Settings can show what a rename or
+        a deactivation would affect."""
+        from .models import Lead
+        return Lead.objects.filter(district__iexact=obj.name, is_trashed=False).count()
+
+    def validate_name(self, value):
+        name = (value or '').strip()
+        if not name:
+            raise serializers.ValidationError('Enter a district name.')
+        # The database constraint is case-insensitive; catching it here turns a
+        # 500 into the sentence that explains the clash.
+        clash = District.objects.filter(name__iexact=name)
+        if self.instance:
+            clash = clash.exclude(pk=self.instance.pk)
+        existing = clash.first()
+        if existing:
+            raise serializers.ValidationError(
+                f'"{existing.name}" is already on the list.'
+                if existing.name != name else 'That district is already on the list.')
+        return name
 
 class SiteVisitDocumentSerializer(serializers.ModelSerializer):
     class Meta:
