@@ -387,7 +387,7 @@ function TeamPageInner() {
                         )}
                       </div>
                     </div>
-                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className="flex items-center gap-1">
                       {/* can_manage comes from the API: your own profile, or an
                           account below you in the hierarchy. */}
                       {member.can_manage && (
@@ -431,7 +431,7 @@ function TeamPageInner() {
                       <p className="text-[10px] text-slate-400 mt-0.5">{members.length} members</p>
                     </div>
                     {(currentUser?.is_staff || currentUser?.is_general_manager) && (
-                      <button onClick={e => { e.stopPropagation(); deleteTeam(wt.id); }} className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-300 hover:text-red-500 hover:bg-red-50 transition-all opacity-0 group-hover:opacity-100">
+                      <button onClick={e => { e.stopPropagation(); deleteTeam(wt.id); }} className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all">
                         <I.Trash />
                       </button>
                     )}
