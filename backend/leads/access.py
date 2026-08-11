@@ -255,6 +255,33 @@ def can_edit_lead_status(user):
     return getattr(user, 'role', '') != 'bde'
 
 
+# Who may open the Closed Deals board. The sales side of the house — the people
+# who win the business and the people who manage them — plus the read-only
+# spectator. Deliberately not the fulfilment desks (documentation, accounts,
+# purchase, project, liasoning): they work a customer through their own stage
+# and have their own queues for it.
+CLOSED_DEALS_ROLES = {
+    'superadmin', 'admin', 'coo', 'sales_manager', 'leads_manager',
+    'branch_manager', 'bde', 'tele_caller',
+}
+
+
+def can_access_closed_deals(user):
+    """Who can open the Closed Deals module.
+
+    Access is the door; *which* deals are behind it is a separate question,
+    answered by the same scoping the Leads list uses — so a BDE opens the module
+    and finds their own closed deals in it, not the company's.
+    """
+    if not user or not user.is_authenticated:
+        return False
+    granted = custom_grant(user, 'closed-deals')
+    if granted is not None:
+        return granted
+    return (getattr(user, 'role', '') in CLOSED_DEALS_ROLES
+            or is_view_only(user))
+
+
 def can_access_doc_stage2(user):
     """Who can open Documentation Stage 2: the documentation team plus admins /
     general managers (same audience as Documentation Stage 1)."""

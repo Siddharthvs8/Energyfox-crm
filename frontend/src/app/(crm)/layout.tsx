@@ -201,6 +201,14 @@ const Nav = {
 // toggle. Mirrors users.models.B2B_ONLY_ROLES.
 const B2B_ONLY_ROLES = ["store_manager", "store_keeper", "accounts_b2b"];
 
+// Who gets the Closed Deals board: the sales side of the house — the people who
+// win the business and the people who manage them. The read-only spectator is
+// added separately. Mirrors leads.access.CLOSED_DEALS_ROLES.
+const CLOSED_DEALS_ROLES = [
+  "superadmin", "admin", "coo", "sales_manager", "leads_manager",
+  "branch_manager", "bde", "tele_caller",
+];
+
 const MODULE_LABELS: Record<string, string> = {
   "leads": "Leads",
   "documentation": "Documentation Stage 1",
@@ -622,6 +630,9 @@ export default function DashboardLayout({
     { href: `/`,               label: "Dashboard",       Icon: Nav.Dashboard, exact: true },
     { href: `/leads`,         label: "Leads",           Icon: Nav.Leads, leadsDeskFeature: true },
     { href: `/converted`,     label: "Converted Leads", Icon: Nav.Trophy },
+    // leadsDeskFeature so the leads manager's focused sidebar keeps it — that
+    // role is on the closed-deals list, and its early return would drop the item.
+    { href: `/closed-deals`,  label: "Closed Deals",    Icon: Nav.Trophy, closedDealsFeature: true, leadsDeskFeature: true, perm: "closed-deals" },
     { href: `/campaigns`,     label: "Campaigns",       Icon: Nav.Campaigns, managerFeature: true, leadsDeskFeature: true },
     { href: `/calls`,         label: "Calls",           Icon: Nav.Phone },
     { href: `/tasks`,         label: "Tasks",           Icon: Nav.Tasks },
@@ -754,6 +765,12 @@ export default function DashboardLayout({
     if (item.pmFeature) {
       // Project / Service / Team Stats — project manager (above) plus admins / general managers.
       return seesAllModules;
+    }
+    if (item.closedDealsFeature) {
+      // The sales side of the house — whoever wins the business or manages the
+      // people who do. Mirrors leads.access.CLOSED_DEALS_ROLES; what they then
+      // *see* inside is scoped by the server, so a BDE gets their own deals.
+      return CLOSED_DEALS_ROLES.includes(currentUser?.role) || isSpectator;
     }
     if (item.docTracker) {
       return true;   // read-only documentation tracker — everyone except the doc team

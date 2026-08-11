@@ -13,6 +13,7 @@ MODULE_PERMISSIONS = [
     ('dashboard', 'Dashboard', 'Core'),
     ('leads', 'Leads', 'Core'),
     ('converted', 'Converted Leads', 'Core'),
+    ('closed-deals', 'Closed Deals', 'Core'),
     ('campaigns', 'Campaigns', 'Core'),
     ('calls', 'Calls', 'Core'),
     ('tasks', 'Tasks', 'Core'),

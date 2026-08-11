@@ -4741,6 +4741,133 @@ class LeadViewSet(viewsets.ModelViewSet):
                 seen[key] = cleaned
         return Response([seen[k] for k in sorted(seen)])
 
+    @action(detail=False, methods=['get'], url_path='closed-deals')
+    def closed_deals(self, request):
+        """The Closed Deals board: converted leads whose money has landed.
+
+        Same definition the Converted Leads board already uses — in accounts with
+        a payment, part or full, actually received. Reaching documentation is not
+        a closed deal, it is work in progress; a deal the customer backed out of
+        is not one either.
+
+        Scoping is privilege-based and is not re-invented here: `scoped_leads()`
+        is the rule the Leads list already runs on, so a BDE sees the deals they
+        closed, a branch manager their branch's, and the admin tier the company's.
+        Who may open the module at all is `can_access_closed_deals`.
+        """
+        from decimal import Decimal
+        from .access import can_access_closed_deals
+        if not can_access_closed_deals(request.user):
+            return Response({'error': 'You do not have access to closed deals.'},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        board = [self._closed_deal_payload(lead) for lead in
+                 (self.scoped_leads()
+                  .filter(status='converted', is_lost=False, pushed_to_accounts=True,
+                          payment_verification__amount_received__gt=0)
+                  .select_related('payment_verification', 'product', 'assigned_to',
+                                  'tele_caller', 'bde')
+                  .order_by('-status_changed_at', '-created_at'))]
+
+        # The pickers list the people on this user's own board — a BDE is never
+        # offered colleagues whose deals they could not see anyway. Built before
+        # the filters are applied, so choosing one does not empty the others.
+        def people(id_key, name_key):
+            seen = {}
+            for d in board:
+                if d[id_key] and d[id_key] not in seen:
+                    seen[d[id_key]] = d[name_key]
+
+            return [{'id': pk, 'name': name}
+                    for pk, name in sorted(seen.items(), key=lambda kv: (kv[1] or '').lower())]
+
+        pickers = {'tele_callers': people('tele_caller', 'tele_caller_name'),
+                   'bdes': people('bde', 'bde_name')}
+
+        # Filtering happens here rather than in the client so what is counted in
+        # the summary is exactly what is listed under it.
+        payment = (request.query_params.get('payment') or '').strip()
+        if payment in ('fully_paid', 'partially_paid'):
+            board = [d for d in board if d['payment_status'] == payment]
+
+        tele_caller = (request.query_params.get('tele_caller') or '').strip()
+        if tele_caller.isdigit():
+            board = [d for d in board if d['tele_caller'] == int(tele_caller)]
+
+        bde = (request.query_params.get('bde') or '').strip()
+        if bde.isdigit():
+            board = [d for d in board if d['bde'] == int(bde)]
+
+        search = (request.query_params.get('search') or '').strip().lower()
+        if search:
+            board = [d for d in board if search in ' '.join(
+                str(d[k] or '') for k in ('name', 'email', 'phone', 'place', 'district')).lower()]
+
+        return Response({
+            'deals': [{**d,
+                       'value': str(d['value']),
+                       'amount_received': str(d['amount_received']),
+                       'balance': str(d['balance'])} for d in board],
+            'summary': {
+                'count': len(board),
+                'deal_value': str(sum((d['value'] for d in board), Decimal('0'))),
+                'received': str(sum((d['amount_received'] for d in board), Decimal('0'))),
+                'outstanding': str(sum((d['balance'] for d in board), Decimal('0'))),
+                'fully_paid': sum(1 for d in board if d['payment_status'] == 'fully_paid'),
+                'partially_paid': sum(1 for d in board if d['payment_status'] == 'partially_paid'),
+            },
+            **pickers,
+        })
+
+    @staticmethod
+    def _closed_deal_payload(lead):
+        """One row of the Closed Deals board.
+
+        Money comes off the payment verification rather than the lead: the deal
+        value is what was agreed, received and balance are what accounts banked.
+
+        The owner is the tele caller who worked it, falling back to the current
+        assignee — handing a lead to a BDE moves `assigned_to`, so reading the
+        owner off that alone would credit the deal to the wrong person.
+        """
+        from decimal import Decimal
+        pv = lead.payment_verification
+        received = pv.amount_received or Decimal('0')
+        balance = pv.balance_amount or Decimal('0')
+        owner = lead.tele_caller or lead.assigned_to
+
+        def full_name(*parts):
+            # Joined from the parts that exist. A lead's last_name is nullable
+            # and most Meta leads arrive without one, so formatting the pair
+            # straight would put "Asha None" on the board.
+            return ' '.join(str(p).strip() for p in parts if p and str(p).strip())
+
+        name_of = lambda u: (full_name(u.first_name, u.last_name) or u.username) if u else None
+        return {
+            'id': lead.id,
+            'name': full_name(lead.first_name, lead.last_name),
+            'email': lead.email,
+            'phone': lead.phone,
+            'place': lead.company,
+            'district': lead.district,
+            'source': lead.source,
+            'product': lead.product.name if lead.product else None,
+            'value': lead.value or Decimal('0'),
+            'amount_received': received,
+            'balance': balance,
+            'payment_status': 'fully_paid' if balance <= 0 else 'partially_paid',
+            'payment_verified': bool(pv.is_complete),
+            'tele_caller': owner.id if owner else None,
+            'tele_caller_name': name_of(owner),
+            'bde': lead.bde_id,
+            'bde_name': name_of(lead.bde),
+            'closed_on': (lead.status_changed_at or lead.created_at).isoformat(),
+            'created_at': lead.created_at.isoformat(),
+            'pipeline_stage': lead.pipeline_stage,
+            'pipeline_stage_label': Lead.PIPELINE_STAGE_LABELS.get(
+                lead.pipeline_stage, lead.pipeline_stage),
+        }
+
     @action(detail=False, methods=['get'], url_path='archive-stats')
     def archive_stats(self, request):
         """How many leads are archived vs active (for the Leads page toggle)."""

@@ -4299,3 +4299,212 @@ class LeadDistrictFilterTests(TestCase):
         r = self.client.get('/api/leads/districts/', HTTP_AUTHORIZATION=token_for(agent))
         self.assertEqual(r.status_code, 200, r.content[:300])
         self.assertEqual(r.json(), ['Thrissur'])
+
+
+class ClosedDealsBoardTests(TestCase):
+    """The Closed Deals module: who may open it, and whose deals they find.
+
+    Access and scope are two separate questions. Opening the board is a role
+    check; what is on it is the same privilege scoping the Leads list runs on —
+    so a BDE opens the module and finds the deals they closed, not the company's.
+    """
+
+    URL = '/api/leads/closed-deals/'
+
+    def setUp(self):
+        from decimal import Decimal
+        from .models import PaymentVerification
+        self.Decimal = Decimal
+        self.PV = PaymentVerification
+
+        self.admin = mk('cdb_admin', 'admin')
+        self.caller = mk('cdb_caller', 'tele_caller')
+        self.caller2 = mk('cdb_caller2', 'tele_caller')
+        self.bde = mk('cdb_bde', 'bde')
+        self.bde2 = mk('cdb_bde2', 'bde')
+
+        # One closed deal each, so every scope has something to be right about.
+        self.mine = self.closed_deal('Asha', '9895000001', value='100000', received='40000',
+                                     assigned_to=self.caller, bde=self.bde)
+        self.theirs = self.closed_deal('Biju', '9895000002', value='200000', received='200000',
+                                       assigned_to=self.caller2, bde=self.bde2)
+
+    def closed_deal(self, name, phone, value, received, assigned_to=None, bde=None,
+                    discount='0', complete=True, **extra):
+        lead = Lead.objects.create(first_name=name, phone=phone, status='converted',
+                                   value=self.Decimal(value), pushed_to_accounts=True,
+                                   assigned_to=assigned_to, tele_caller=assigned_to, bde=bde,
+                                   **extra)
+        self.PV.objects.create(lead=lead, amount_received=self.Decimal(received),
+                               discount_value=self.Decimal(discount), is_complete=complete)
+        return lead
+
+    def board(self, user, query='', expect=200):
+        r = self.client.get(f'{self.URL}{query}', HTTP_AUTHORIZATION=token_for(user))
+        self.assertEqual(r.status_code, expect, r.content[:300])
+        return r.json() if expect == 200 else None
+
+    def names(self, user, query=''):
+        return sorted(d['name'] for d in self.board(user, query)['deals'])
+
+    # ── Who may open it ──
+    def test_the_sales_side_may_open_it(self):
+        for role in ('superadmin', 'admin', 'coo', 'sales_manager', 'leads_manager',
+                     'branch_manager', 'bde', 'tele_caller'):
+            with self.subTest(role=role):
+                self.board(mk(f'cdb_ok_{role}', role))
+
+    def test_a_spectator_may_watch_it(self):
+        self.board(mk('cdb_spectator', 'spectator'))
+
+    def test_the_fulfilment_desks_may_not(self):
+        """They work a customer through their own stage and have their own queues."""
+        for role in ('documentation_staff', 'documentation_manager', 'accounts_staff',
+                     'accounts_manager', 'purchase_staff', 'project_manager',
+                     'liasoning_officer', 'store_keeper'):
+            with self.subTest(role=role):
+                self.board(mk(f'cdb_no_{role}', role), expect=403)
+
+    def test_a_custom_role_may_be_granted_it(self):
+        from users.models import CustomRole
+        role = CustomRole.objects.create(name='Deal Watcher', permissions=['closed-deals'])
+        u = mk('cdb_custom', 'custom')
+        u.custom_role = role
+        u.save()
+        self.board(u)
+        role.permissions = ['leads']
+        role.save()
+        u.refresh_from_db()
+        self.board(u, expect=403)
+
+    # ── Whose deals are on it ──
+    def test_an_admin_sees_the_whole_company(self):
+        self.assertEqual(self.names(self.admin), ['Asha', 'Biju'])
+
+    def test_a_bde_sees_only_the_deals_they_closed(self):
+        self.assertEqual(self.names(self.bde), ['Asha'])
+        self.assertEqual(self.names(self.bde2), ['Biju'])
+
+    def test_a_tele_caller_sees_only_their_own(self):
+        self.assertEqual(self.names(self.caller), ['Asha'])
+        self.assertEqual(self.names(self.caller2), ['Biju'])
+
+    def test_a_branch_manager_sees_their_branch(self):
+        from users.models import Branch
+        branch = Branch.objects.create(name='Kochi')
+        self.bde.branch = branch
+        self.bde.save()
+        manager = mk('cdb_bm', 'branch_manager')
+        manager.branch = branch
+        manager.save()
+        self.assertEqual(self.names(manager), ['Asha'])
+
+    def test_the_pickers_only_offer_people_on_your_own_board(self):
+        """A BDE must not be shown colleagues whose deals they cannot open."""
+        board = self.board(self.bde)
+        self.assertEqual([p['name'] for p in board['bdes']], ['cdb_bde'])
+        self.assertEqual([p['id'] for p in board['tele_callers']], [self.caller.id])
+
+    # ── What counts as closed ──
+    def test_a_converted_lead_with_no_payment_is_not_on_the_board(self):
+        Lead.objects.create(first_name='Nothing', phone='9895000003', status='converted',
+                            value=self.Decimal('50000'))
+        self.assertNotIn('Nothing', self.names(self.admin))
+
+    def test_reaching_documentation_is_not_a_closed_deal(self):
+        Lead.objects.create(first_name='InDocs', phone='9895000004', status='converted',
+                            value=self.Decimal('50000'), pushed_to_documentation=True)
+        self.assertNotIn('InDocs', self.names(self.admin))
+
+    def test_accounts_without_money_taken_is_not_a_closed_deal(self):
+        """Accounts can open a verification before the customer has paid."""
+        lead = Lead.objects.create(first_name='Unpaid', phone='9895000005', status='converted',
+                                   value=self.Decimal('50000'), pushed_to_accounts=True)
+        self.PV.objects.create(lead=lead, amount_received=self.Decimal('0'))
+        self.assertNotIn('Unpaid', self.names(self.admin))
+
+    def test_a_lost_deal_drops_off_the_board(self):
+        self.mine.is_lost = True
+        self.mine.save()
+        self.assertEqual(self.names(self.admin), ['Biju'])
+
+    def test_a_trashed_deal_drops_off_the_board(self):
+        self.mine.is_trashed = True
+        self.mine.save()
+        self.assertEqual(self.names(self.admin), ['Biju'])
+
+    def test_a_part_payment_is_already_a_closed_deal(self):
+        deal = next(d for d in self.board(self.admin)['deals'] if d['name'] == 'Asha')
+        self.assertEqual(deal['payment_status'], 'partially_paid')
+
+    def test_paid_in_full_reads_as_fully_paid(self):
+        deal = next(d for d in self.board(self.admin)['deals'] if d['name'] == 'Biju')
+        self.assertEqual(deal['payment_status'], 'fully_paid')
+
+    def test_a_discount_can_settle_the_balance(self):
+        """Balance is deal value − received − discount, the same as accounts."""
+        self.closed_deal('Discounted', '9895000006', value='100000', received='90000',
+                         discount='10000', assigned_to=self.caller)
+        deal = next(d for d in self.board(self.admin)['deals'] if d['name'] == 'Discounted')
+        self.assertEqual(deal['payment_status'], 'fully_paid')
+        self.assertEqual(Decimal(deal['balance']), Decimal('0'))
+
+    # ── The money on it ──
+    def test_the_row_carries_the_figures_accounts_banked(self):
+        deal = next(d for d in self.board(self.admin)['deals'] if d['name'] == 'Asha')
+        self.assertEqual(Decimal(deal['value']), Decimal('100000'))
+        self.assertEqual(Decimal(deal['amount_received']), Decimal('40000'))
+        self.assertEqual(Decimal(deal['balance']), Decimal('60000'))
+
+    def test_the_summary_totals_the_board(self):
+        s = self.board(self.admin)['summary']
+        self.assertEqual(s['count'], 2)
+        self.assertEqual(Decimal(s['deal_value']), Decimal('300000'))
+        self.assertEqual(Decimal(s['received']), Decimal('240000'))
+        self.assertEqual(Decimal(s['outstanding']), Decimal('60000'))
+        self.assertEqual(s['fully_paid'], 1)
+        self.assertEqual(s['partially_paid'], 1)
+
+    def test_the_summary_describes_only_what_is_listed(self):
+        """Filter the board and the totals under it must follow, or the numbers
+        would describe rows the user cannot see."""
+        s = self.board(self.admin, '?payment=fully_paid')['summary']
+        self.assertEqual(s['count'], 1)
+        self.assertEqual(Decimal(s['received']), Decimal('200000'))
+
+    def test_a_bdes_totals_cover_only_their_own_deals(self):
+        s = self.board(self.bde)['summary']
+        self.assertEqual(s['count'], 1)
+        self.assertEqual(Decimal(s['deal_value']), Decimal('100000'))
+
+    # ── The filters ──
+    def test_filtering_by_payment(self):
+        self.assertEqual(self.names(self.admin, '?payment=partially_paid'), ['Asha'])
+        self.assertEqual(self.names(self.admin, '?payment=fully_paid'), ['Biju'])
+
+    def test_filtering_by_tele_caller(self):
+        self.assertEqual(self.names(self.admin, f'?tele_caller={self.caller.id}'), ['Asha'])
+
+    def test_filtering_by_bde(self):
+        self.assertEqual(self.names(self.admin, f'?bde={self.bde2.id}'), ['Biju'])
+
+    def test_searching_by_name_and_phone(self):
+        self.assertEqual(self.names(self.admin, '?search=asha'), ['Asha'])
+        self.assertEqual(self.names(self.admin, '?search=9895000002'), ['Biju'])
+
+    def test_searching_by_district(self):
+        self.closed_deal('Local', '9895000007', value='1000', received='1000',
+                         assigned_to=self.caller, district='Ernakulam')
+        self.assertEqual(self.names(self.admin, '?search=ernakulam'), ['Local'])
+
+    def test_the_filters_combine(self):
+        self.assertEqual(self.names(self.admin, f'?payment=fully_paid&bde={self.bde.id}'), [])
+        self.assertEqual(self.names(self.admin, f'?payment=partially_paid&bde={self.bde.id}'), ['Asha'])
+
+    def test_a_filter_cannot_reach_past_your_scope(self):
+        """Naming someone else's id must not hand over their deals."""
+        self.assertEqual(self.names(self.bde, f'?bde={self.bde2.id}'), [])
+
+    def test_rubbish_in_a_filter_is_ignored_rather_than_fatal(self):
+        self.assertEqual(self.names(self.admin, '?tele_caller=abc&bde=&payment=maybe'),
+                         ['Asha', 'Biju'])
