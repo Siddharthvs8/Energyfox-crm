@@ -127,6 +127,17 @@ const Nav = {
       <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
     </svg>
   ),
+  // A lead that became a customer. Its own icon because Converted Leads sat
+  // under the same trophy as Closed Deals, one above the other in the sidebar,
+  // and two adjacent items with one icon are two items nobody can tell apart.
+  // The trophy stays with Closed Deals, where the win actually is.
+  Converted: () => (
+    <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>
+      <circle cx="9" cy="7" r="4"></circle>
+      <polyline points="16 11 18 13 22 9"></polyline>
+    </svg>
+  ),
   Trophy: () => (
     <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
       <path d="M6 9H4.5a2.5 2.5 0 010-5H6"></path>
@@ -629,7 +640,7 @@ export default function DashboardLayout({
   const allNavItems: any[] = [
     { href: `/`,               label: "Dashboard",       Icon: Nav.Dashboard, exact: true },
     { href: `/leads`,         label: "Leads",           Icon: Nav.Leads, leadsDeskFeature: true },
-    { href: `/converted`,     label: "Converted Leads", Icon: Nav.Trophy },
+    { href: `/converted`,     label: "Converted Leads", Icon: Nav.Converted },
     // leadsDeskFeature so the leads manager's focused sidebar keeps it — that
     // role is on the closed-deals list, and its early return would drop the item.
     { href: `/closed-deals`,  label: "Closed Deals",    Icon: Nav.Trophy, closedDealsFeature: true, leadsDeskFeature: true, perm: "closed-deals" },
@@ -1048,7 +1059,11 @@ export default function DashboardLayout({
       </aside>
 
       {/* ── Main content ── */}
-      <main className="flex-1 lg:ml-60 flex flex-col min-h-screen">
+      {/* min-w-0: a flex item defaults to min-width:auto and so refuses to
+          shrink below its content. Without it a wide toolbar or table pushes
+          main past the viewport and the whole page scrolls sideways, taking
+          the sidebar and header with it. */}
+      <main className="flex-1 min-w-0 lg:ml-60 flex flex-col min-h-screen">
         {/* Mobile topbar */}
         <header className="lg:hidden h-14 bg-white border-b border-slate-200/60 px-4 flex items-center justify-between sticky top-0 z-30 flex-shrink-0">
           <button onClick={() => setSidebarOpen(true)} className="p-2 rounded-xl hover:bg-slate-100 text-slate-600 transition-colors">

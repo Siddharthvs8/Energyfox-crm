@@ -5571,6 +5571,62 @@ class WonMeansClosedEverywhereTests(TestCase):
         self.assertEqual(progress['actual_leads'], 1)
         self.assertEqual(Decimal(str(progress['actual_amount'])), Decimal('200000'))
 
+    # ── A BDE's own report ──
+    def test_a_bdes_report_counts_the_deals_they_closed(self):
+        """Handing a lead to a BDE moves nothing — `assigned_to` stays with the
+        tele caller — so a report scoped on the owner shows a BDE as having
+        closed nothing at all, whatever the win rule says."""
+        d = self.get(f'/api/users/{self.bde.id}/performance/')['summary']
+        self.assertEqual(d['total_leads'], 2)          # both leads are theirs as BDE
+        self.assertEqual(d['won_count'], 1)            # one of them closed
+        self.assertEqual(Decimal(str(d['won_value'])), Decimal('200000'))
+        self.assertEqual(d['win_rate'], 50.0)
+
+    def test_the_tele_caller_keeps_their_own_credit_too(self):
+        """Ownership is shared, not moved: the same deal counts for both."""
+        d = self.get(f'/api/users/{self.agent.id}/performance/')['summary']
+        self.assertEqual(d['won_count'], 1)
+
+    # ── Revenue is what was actually charged ──
+    def test_revenue_is_net_of_the_discount_accounts_gave(self):
+        """Lead.value is already price minus the BDE's discount, but accounts can
+        give another when the money is taken, and that never reaches the lead.
+        Summing value alone reports revenue nobody was charged."""
+        pv = self.closed.payment_verification
+        pv.discount_value = Decimal('20000')
+        pv.save(update_fields=['discount_value'])
+        self.assertEqual(Decimal(str(self.get('/api/dashboard-stats/')['total_revenue'])),
+                         Decimal('180000'))                       # 200000 - 20000
+
+    def test_every_revenue_figure_nets_the_same_discount(self):
+        pv = self.closed.payment_verification
+        pv.discount_value = Decimal('20000')
+        pv.save(update_fields=['discount_value'])
+        expected = Decimal('180000')
+        self.assertEqual(Decimal(str(self.get('/api/dashboard-stats/')['total_revenue'])), expected)
+        self.assertEqual(Decimal(str(self.get('/api/converted-analytics/')['total_revenue'])), expected)
+        rows = self.get('/api/leaderboard/?period=all_time')['leaderboard']
+        mine = next(r for r in rows if r['id'] == self.bde.id)
+        self.assertEqual(Decimal(str(mine['revenue'])), expected)
+        perf = self.get(f'/api/users/{self.agent.id}/performance/')['summary']
+        self.assertEqual(Decimal(str(perf['won_value'])), expected)
+
+    def test_no_discount_leaves_revenue_at_the_deal_value(self):
+        self.assertEqual(Decimal(str(self.get('/api/dashboard-stats/')['total_revenue'])),
+                         Decimal('200000'))
+
+    def test_a_target_counts_the_discounted_amount(self):
+        from ai_manager.engine import check_monthly_progress
+        from ai_manager.models import MonthlyTarget
+        pv = self.closed.payment_verification
+        pv.discount_value = Decimal('20000')
+        pv.save(update_fields=['discount_value'])
+        today = timezone.localdate()
+        MonthlyTarget.objects.create(agent=self.agent, month=today.month, year=today.year,
+                                     target_leads=5, target_amount=Decimal('500000'))
+        progress = check_monthly_progress(self.agent, today.month, today.year)
+        self.assertEqual(Decimal(str(progress['actual_amount'])), Decimal('180000'))
+
     def test_paying_the_promised_deal_moves_every_figure_together(self):
         self.promised.pushed_to_accounts = True
         self.promised.save(update_fields=['pushed_to_accounts'])

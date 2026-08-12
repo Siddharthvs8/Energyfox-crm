@@ -9,7 +9,10 @@ towards won revenue.
 
 Both rules live here so a figure can never disagree with the rows behind it.
 """
-from django.db.models import Q
+from decimal import Decimal
+
+from django.db.models import DecimalField, ExpressionWrapper, F, Q, Sum, Value
+from django.db.models.functions import Coalesce
 
 from .models import Lead
 
@@ -68,3 +71,31 @@ def closed_deal_q(prefix=''):
 def closed_deals(qs=None):
     """The won deals in a queryset of leads (live ones by default)."""
     return (live_leads() if qs is None else qs).filter(**CLOSED_DEAL_FILTER)
+
+
+# ─── What a won deal is worth ────────────────────────────────────────────────
+# The agreed value, less the discount accounts gave. `Lead.value` is already net
+# of the discount the BDE set on the site visit (it is price − discount), but
+# accounts can give a further one when the money is taken, and that never
+# reaches the lead. Summing `value` alone therefore reports revenue the business
+# never charged for.
+_MONEY = DecimalField(max_digits=16, decimal_places=2)
+
+
+def net_value(prefix=''):
+    """A deal's worth after every discount, as an expression to sum.
+
+    `prefix` reaches the lead across a relation — `net_value('bde_leads__')` for
+    a Sum over a BDE's leads, say.
+    """
+    return ExpressionWrapper(
+        Coalesce(F(f'{prefix}value'), Value(Decimal('0')))
+        - Coalesce(F(f'{prefix}payment_verification__discount_value'), Value(Decimal('0'))),
+        output_field=_MONEY,
+    )
+
+
+def closed_deal_revenue(qs=None):
+    """Revenue from the won deals in a queryset — net of discount."""
+    return closed_deals(qs).aggregate(
+        t=Coalesce(Sum(net_value()), Value(Decimal('0')), output_field=_MONEY))['t']

@@ -179,12 +179,17 @@ class WorkspaceTeamViewSet(viewsets.ModelViewSet):
     def performance(self, request, pk=None):
         """Returns detailed performance metrics for a specific team."""
         from leads.models import Lead
-        from django.db.models import Sum, Count
+        from django.db.models import Sum, Count, Q
         
         team = self.get_object()
         members = team.members.filter(is_active=True)
-        from leads.scopes import closed_deals
-        team_leads = Lead.objects.filter(assigned_to__in=members)
+        from leads.scopes import closed_deals, net_value, own_leads_q
+        # A member's BDE work is theirs too: handing a lead over moves nothing —
+        # `assigned_to` stays with the tele caller — so scoping on the owner
+        # alone reports a BDE as having closed nothing at all.
+        team_leads = Lead.objects.filter(
+            Q(assigned_to__in=members) | Q(bde__in=members) | Q(tele_caller__in=members)
+        ).distinct()
         # Won means closed: in accounts with money received. See
         # leads.scopes.CLOSED_DEAL_FILTER — one definition for every figure.
         won_leads = closed_deals(team_leads)
@@ -213,12 +218,12 @@ class WorkspaceTeamViewSet(viewsets.ModelViewSet):
         # Leaderboard
         leaderboard = []
         for member in members:
-            member_leads = Lead.objects.filter(assigned_to=member)
+            member_leads = Lead.objects.filter(own_leads_q(member)).distinct()
             m_won = closed_deals(member_leads)
             leaderboard.append({
                 "id": member.id,
                 "name": f"{member.first_name} {member.last_name}".strip() or member.username,
-                "won_value": float(m_won.aggregate(total=Sum('value'))['total'] or 0),
+                "won_value": float(m_won.aggregate(total=Sum(net_value()))['total'] or 0),
                 "won_count": m_won.count(),
                 "total_leads": member_leads.count(),
                 "pipeline_value": float(member_leads.aggregate(total=Sum('value'))['total'] or 0)
@@ -231,7 +236,7 @@ class WorkspaceTeamViewSet(viewsets.ModelViewSet):
                 "name": team.name,
             },
             "summary": {
-                "won_value": float(won_leads.aggregate(total=Sum('value'))['total'] or 0),
+                "won_value": float(won_leads.aggregate(total=Sum(net_value()))['total'] or 0),
                 "won_count": enrolled_count,
                 "total_leads": total_count,
                 "pipeline_value": float(team_leads.aggregate(total=Sum('value'))['total'] or 0),
@@ -516,15 +521,20 @@ class UserViewSet(viewsets.ModelViewSet):
         from leads.models import Lead
         from django.db.models import Sum, Count
         
+        from leads.scopes import own_leads_q
         user = self.get_object()
-        user_leads = Lead.objects.filter(assigned_to=user)
+        # The leads this person works, not only the ones they own. Handing a lead
+        # to a BDE moves nothing — `assigned_to` stays with the tele caller — so
+        # scoping on the owner alone reports a BDE as having closed nothing at
+        # all. Same relation the leaderboard credits the sale to.
+        user_leads = Lead.objects.filter(own_leads_q(user)).distinct()
         
         date_from = request.query_params.get('date_from')
         date_to = request.query_params.get('date_to')
         if date_from and date_to:
             user_leads = user_leads.filter(created_at__date__gte=date_from, created_at__date__lte=date_to)
 
-        from leads.scopes import closed_deals
+        from leads.scopes import closed_deals, net_value
         won_leads = closed_deals(user_leads)
 
         total_count = user_leads.count()
@@ -554,7 +564,7 @@ class UserViewSet(viewsets.ModelViewSet):
                 "role": "Admin" if user.is_staff else ("General Manager" if user.is_general_manager else ("Manager" if user.is_manager else "Agent"))
             },
             "summary": {
-                "won_value": float(won_leads.aggregate(total=Sum('value'))['total'] or 0),
+                "won_value": float(won_leads.aggregate(total=Sum(net_value()))['total'] or 0),
                 "won_count": enrolled_count,
                 "total_leads": total_count,
                 "pipeline_value": float(user_leads.aggregate(total=Sum('value'))['total'] or 0),

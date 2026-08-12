@@ -17,7 +17,7 @@ from . import ai_meeting as ai_meeting_engine
 from rest_framework.exceptions import PermissionDenied
 from core.permissions import watches_everything
 # Won means closed — one definition, shared with every other figure in the CRM.
-from leads.scopes import closed_deals
+from leads.scopes import closed_deals, net_value
 
 
 # ─── Custom Permission ────────────────────────────────────────────────────────
@@ -294,7 +294,7 @@ class AIDashboardView(APIView):
             status_changed_at__month=month,
         ))
         actual_enrolled = enrolled_this_month.count()
-        actual_revenue = enrolled_this_month.aggregate(t=Sum('value'))['t'] or 0
+        actual_revenue = enrolled_this_month.aggregate(t=Sum(net_value()))['t'] or 0
 
         return Response({
             'config': ManagerConfigSerializer(config).data,
@@ -382,7 +382,7 @@ class TeamPerformanceView(APIView):
             assigned_to__in=agents,
         ))
         actual_enrolled = enrolled_this_month.count()
-        actual_revenue = enrolled_this_month.aggregate(t=Sum('value'))['t'] or 0
+        actual_revenue = enrolled_this_month.aggregate(t=Sum(net_value()))['t'] or 0
 
         return Response({
             'agents': agent_data,
@@ -559,7 +559,7 @@ class MyPerformanceView(APIView):
             status_changed_at__month=month,
         ))
         enrolled_count = enrolled_this_month.count()
-        enrolled_revenue = enrolled_this_month.aggregate(t=Sum('value'))['t'] or 0
+        enrolled_revenue = enrolled_this_month.aggregate(t=Sum(net_value()))['t'] or 0
 
         # Win rate
         total_decided = my_leads.filter(

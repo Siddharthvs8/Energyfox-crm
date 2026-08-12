@@ -256,7 +256,8 @@ def auto_assign_project(lead):
     return assignee
 
 
-from .scopes import live_leads, own_leads_q, closed_deals, closed_deal_q, CLOSED_DEAL_FILTER  # noqa: E402
+from .scopes import (live_leads, own_leads_q, closed_deals, closed_deal_q,  # noqa: E402
+                     net_value, CLOSED_DEAL_FILTER)
 
 
 def reporting_scope(user):
@@ -4238,11 +4239,18 @@ class LeadViewSet(viewsets.ModelViewSet):
 
         # Archived (old, terminal) leads are out of the hot working set by
         # default — pass ?archived=true to view them, ?archived=all for both.
+        #
+        # Only when a list is being asked for. A detail route is a lookup by id,
+        # and archived means "out of the way", not "gone": a link to one has to
+        # open it. Applied here as well, it 404'd every archived lead — including
+        # the ones the Archived toggle had just listed, and the past customers
+        # added for periodic maintenance, which are archived on the way in.
         archived_param = (self.request.query_params.get('archived') or '').lower()
-        if archived_param in ('true', '1', 'yes', 'only'):
-            queryset = queryset.filter(is_archived=True)
-        elif archived_param != 'all':
-            queryset = queryset.filter(is_archived=False)
+        if not getattr(self, 'detail', False):
+            if archived_param in ('true', '1', 'yes', 'only'):
+                queryset = queryset.filter(is_archived=True)
+            elif archived_param != 'all':
+                queryset = queryset.filter(is_archived=False)
 
         # Filter by "Assigned to Me"
         assigned_to_me = self.request.query_params.get('assigned_to_me')
@@ -5440,7 +5448,7 @@ class DashboardStatsView(APIView):
         # overstates the business. Feeds the six-month Revenue series below too,
         # so the tile and the chart cannot disagree.
         won_qs = closed_deals(base_qs)
-        total_revenue = won_qs.aggregate(total=Sum('value'))['total'] or 0
+        total_revenue = won_qs.aggregate(total=Sum(net_value()))['total'] or 0
         
         # Team/Member Performance (Only for Admin/Manager)
         performance_stats = []
@@ -5464,7 +5472,7 @@ class DashboardStatsView(APIView):
                 calc_leads_count=Count('assigned_leads'),
                 calc_pipeline_value=Sum('assigned_leads__value'),
                 calc_won_count=Count('assigned_leads', filter=closed_deal_q('assigned_leads__')),
-                calc_won_value=Sum('assigned_leads__value', filter=closed_deal_q('assigned_leads__'))
+                calc_won_value=Sum(net_value('assigned_leads__'), filter=closed_deal_q('assigned_leads__'))
             )
             for u in users_with_stats:
                 performance_stats.append({
@@ -5482,7 +5490,7 @@ class DashboardStatsView(APIView):
                 calc_leads_count=Count('members__assigned_leads'),
                 calc_pipeline_value=Sum('members__assigned_leads__value'),
                 calc_won_count=Count('members__assigned_leads', filter=closed_deal_q('members__assigned_leads__')),
-                calc_won_value=Sum('members__assigned_leads__value', filter=closed_deal_q('members__assigned_leads__'))
+                calc_won_value=Sum(net_value('members__assigned_leads__'), filter=closed_deal_q('members__assigned_leads__'))
             )
             for t in teams_with_stats:
                 team_stats.append({
@@ -5539,7 +5547,7 @@ class DashboardStatsView(APIView):
             m_rev = won_qs.filter(
                 Q(status_changed_at__gte=start_dt, status_changed_at__lt=end_dt) |
                 (Q(status_changed_at__isnull=True) & Q(created_at__gte=start_dt, created_at__lt=end_dt))
-            ).aggregate(total=Sum('value'))['total'] or 0
+            ).aggregate(total=Sum(net_value()))['total'] or 0
             
             six_months_revenue.append({"name": month_label, "Revenue": float(m_rev)})
 
@@ -5596,7 +5604,7 @@ class LeaderboardView(APIView):
         from users.models import ROLE_BDE
         users = WorkspaceUser.objects.filter(is_active=True, role=ROLE_BDE).annotate(
             closed_sales=Count('bde_leads', filter=won_filter),
-            revenue=Coalesce(Sum('bde_leads__value', filter=won_filter), Decimal('0'))
+            revenue=Coalesce(Sum(net_value('bde_leads__'), filter=won_filter), Decimal('0'))
         ).order_by('-revenue', '-closed_sales', 'first_name', 'last_name')
 
         leaderboard = []
@@ -5650,7 +5658,7 @@ class ConvertedAnalyticsView(APIView):
         sources_data = won_qs.values('source').annotate(count=Count('id')).order_by('-count')
         sources = [{"source": item['source'] or 'manual', "count": item['count']} for item in sources_data]
 
-        closed = closed_deals(base_qs).aggregate(count=Count('id'), revenue=Sum('value'))
+        closed = closed_deals(base_qs).aggregate(count=Count('id'), revenue=Sum(net_value()))
         return Response({
             "total_conversions": agg['total_conversions'] or 0,
             # Won revenue is the money on the deals that actually closed, with the

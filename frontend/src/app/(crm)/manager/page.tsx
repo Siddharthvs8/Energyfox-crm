@@ -303,7 +303,7 @@ export default function ManagerPage({ params: paramsPromise }: { params: Promise
 
         autoTable(doc, {
           startY: currentY,
-          head: [['Pipeline Value', 'Won Value', 'Conversion Rate']],
+          head: [['Pipeline Value', 'Won Value', 'Close Rate']],
           body: [[
             `Rs. ${(newReport.summary.pipeline_value || 0).toLocaleString('en-IN')}`,
             `Rs. ${(newReport.summary.won_value || 0).toLocaleString('en-IN')}`,
@@ -969,7 +969,7 @@ export default function ManagerPage({ params: paramsPromise }: { params: Promise
                           <div className="flex gap-3">
                             <div className="text-center">
                               <p className="text-2xl font-black text-slate-800">{agentReport.summary?.won_count || 0}</p>
-                              <p className="text-xs text-slate-400">Converted</p>
+                              <p className="text-xs text-slate-400">Closed</p>
                             </div>
                             <div className="text-center">
                               <p className="text-2xl font-black text-slate-800">{agentReport.summary?.total_leads || 0}</p>
@@ -992,7 +992,7 @@ export default function ManagerPage({ params: paramsPromise }: { params: Promise
                               <ProgressRing pct={selectedAgent.monthly_progress.leads_pct} size={64} color="#6366f1" />
                               <div>
                                 <p className="text-sm font-bold text-slate-800">{selectedAgent.monthly_progress.actual_leads}/{selectedAgent.monthly_progress.target_leads} Leads</p>
-                                <p className="text-xs text-slate-500">Converted this month</p>
+                                <p className="text-xs text-slate-500">Closed this month</p>
                               </div>
                             </div>
                             <div className="bg-emerald-50 rounded-xl p-4 flex items-center gap-4">
@@ -1132,7 +1132,7 @@ export default function ManagerPage({ params: paramsPromise }: { params: Promise
                             <p className="text-2xl font-black text-emerald-600">₹{(agentReport.summary.won_value || 0).toLocaleString('en-IN')}</p>
                           </div>
                           <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
-                            <p className="text-xs font-medium text-slate-400 mb-2">Conversion Rate</p>
+                            <p className="text-xs font-medium text-slate-400 mb-2">Close Rate</p>
                             <p className="text-2xl font-black text-indigo-600">{agentReport.summary.win_rate || 0}%</p>
                           </div>
                         </div>

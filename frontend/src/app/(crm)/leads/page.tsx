@@ -979,7 +979,9 @@ This cannot be undone.`)) return;
       {/* ── Header ───────────────────────────────────────────────────────────── */}
       <div className="bg-white border-b border-slate-200/70 sticky top-0 z-20 shadow-sm shadow-slate-100">
         <div className="max-w-[1440px] mx-auto px-4 sm:px-6 xl:px-8">
-          <div className="flex items-center justify-between h-[60px] gap-4">
+          {/* Wraps rather than overflows: the six tools here do not shrink,
+              and on a narrower window they need a second line. */}
+          <div className="flex flex-wrap items-center justify-between gap-3 py-2.5 min-h-[60px]">
 
             {/* Title */}
             <div className="flex items-center gap-3 min-w-0">
