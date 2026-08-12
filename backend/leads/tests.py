@@ -231,8 +231,11 @@ class LeaderboardTests(TestCase):
         self.bde1 = mk('t_bde1', 'bde')
         self.bde2 = mk('t_bde2', 'bde')
         # Owned by the tele caller, closed by bde1 — the money follows the BDE.
-        Lead.objects.create(first_name='A', last_name='Won', phone='9993000001',
-                            status='converted', assigned_to=self.caller, bde=self.bde1, value=86676)
+        # Paid, because won means closed: see leads.scopes.CLOSED_DEAL_FILTER.
+        won = Lead.objects.create(first_name='A', last_name='Won', phone='9993000001',
+                                  status='converted', assigned_to=self.caller,
+                                  bde=self.bde1, value=86676, pushed_to_accounts=True)
+        PaymentVerification.objects.create(lead=won, amount_received=86676)
         Lead.objects.create(first_name='B', last_name='Open', phone='9993000002',
                             status='interested', assigned_to=self.caller, bde=self.bde2, value=50000)
 
@@ -2041,14 +2044,19 @@ class LeaderboardAndPerformanceIgnoreDeletedTests(TestCase):
         self.admin.save()
 
         # Owned by the tele caller, closed by the BDE — the normal shape.
+        # Both are closed deals — money received — so the deleted one is off the
+        # board for being deleted, which is what these tests are about.
         self.won = Lead.objects.create(first_name='L', last_name='Won', phone='9993600001',
                                        status='converted', assigned_to=self.caller,
-                                       bde=self.bde, value=Decimal('100000'))
+                                       bde=self.bde, value=Decimal('100000'),
+                                       pushed_to_accounts=True)
+        PaymentVerification.objects.create(lead=self.won, amount_received=Decimal('100000'))
         self.deleted = Lead.objects.create(first_name='L', last_name='Deleted',
                                            phone='9993600002', status='converted',
                                            assigned_to=self.caller, bde=self.bde,
-                                           value=Decimal('900000'),
+                                           value=Decimal('900000'), pushed_to_accounts=True,
                                            is_trashed=True, trashed_at=timezone.now())
+        PaymentVerification.objects.create(lead=self.deleted, amount_received=Decimal('900000'))
 
     def board(self, actor=None):
         r = self.client.get('/api/leaderboard/?period=all_time',
@@ -4598,12 +4606,18 @@ class DashboardRevenueIsClosedDealsTests(TestCase):
         lead.save(update_fields=['is_trashed'])
         self.assertEqual(self.revenue(), Decimal('0'))
 
-    def test_the_converted_board_still_counts_every_converted_lead(self):
-        """The two figures answer different questions and are allowed to differ."""
+    def test_the_converted_board_agrees_on_the_money(self):
+        """Won means closed on both, so the revenue figures match. What still
+        differs is the *count*: the converted board lists every converted lead,
+        because that is what its table shows."""
         self.close(self.lead('k', '100000'), '100000')
         self.lead('l', '900000')                       # converted, unpaid
         self.assertEqual(self.revenue(), Decimal('100000'))
-        self.assertEqual(self.won_revenue(), Decimal('1000000'))
+        self.assertEqual(self.won_revenue(), Decimal('100000'))
+        r = self.client.get('/api/converted-analytics/',
+                            HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.json()['total_conversions'], 2)
+        self.assertEqual(r.json()['closed_deal_count'], 1)
 
     def test_a_plain_user_sees_only_their_own_closed_deals(self):
         other = mk('rev_other', 'tele_caller')
@@ -5454,3 +5468,113 @@ class PastMaintenanceCustomerTests(TestCase):
     def test_an_admin_may_do_both(self):
         admin = mk('pm_admin', 'admin')
         self.assertEqual(self.add(user=admin).status_code, 201)
+
+
+class WonMeansClosedEverywhereTests(TestCase):
+    """A deal is won when the money has landed, and every screen agrees.
+
+    One definition — leads.scopes.CLOSED_DEAL_FILTER — read by the dashboard, the
+    Converted Leads board, the leaderboard, My Performance, the team report and
+    the targets. A lead flagged converted with nothing against it is a promise,
+    and the point of these tests is that no figure counts promises.
+    """
+
+    def setUp(self):
+        self.admin = mk('won_admin', 'admin')
+        self.agent = mk('won_agent', 'tele_caller')
+        self.bde = mk('won_bde', 'bde')
+        # One that landed, one that only says it did.
+        self.closed = self.lead('Closed', '9895800001', '200000', paid='200000')
+        self.promised = self.lead('Promised', '9895800002', '900000')
+
+    def lead(self, name, phone, value, paid=None):
+        obj = Lead.objects.create(first_name=name, phone=phone, status='converted',
+                                  assigned_to=self.agent, tele_caller=self.agent,
+                                  bde=self.bde, value=Decimal(value),
+                                  status_changed_at=timezone.now())
+        if paid is not None:
+            obj.pushed_to_accounts = True
+            obj.save(update_fields=['pushed_to_accounts'])
+            PaymentVerification.objects.create(lead=obj, amount_received=Decimal(paid))
+        return obj
+
+    def get(self, path, user=None):
+        r = self.client.get(path, HTTP_AUTHORIZATION=token_for(user or self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        return r.json()
+
+    # ── The definition itself ──
+    def test_the_filter_picks_only_the_landed_deal(self):
+        from leads.scopes import closed_deals
+        self.assertEqual([l.first_name for l in closed_deals()], ['Closed'])
+
+    def test_a_part_payment_still_counts_as_won(self):
+        from leads.scopes import closed_deals
+        self.lead('Partly', '9895800003', '500000', paid='1')
+        self.assertIn('Partly', [l.first_name for l in closed_deals()])
+
+    def test_a_lost_deal_is_not_won(self):
+        from leads.scopes import closed_deals
+        self.closed.is_lost = True
+        self.closed.save(update_fields=['is_lost'])
+        self.assertEqual(list(closed_deals()), [])
+
+    # ── Every screen reads it ──
+    def test_the_dashboard_revenue_is_the_closed_deal(self):
+        d = self.get('/api/dashboard-stats/')
+        self.assertEqual(Decimal(str(d['total_revenue'])), Decimal('200000'))
+
+    def test_the_converted_boards_won_revenue_is_the_closed_deal(self):
+        d = self.get('/api/converted-analytics/')
+        self.assertEqual(Decimal(str(d['total_revenue'])), Decimal('200000'))
+        self.assertEqual(d['closed_deal_count'], 1)
+
+    def test_the_converted_board_still_counts_every_converted_lead(self):
+        """Its table lists them, so its count has to match what is on screen."""
+        self.assertEqual(self.get('/api/converted-analytics/')['total_conversions'], 2)
+
+    def test_the_leaderboard_credits_only_the_closed_deal(self):
+        rows = self.get('/api/leaderboard/?period=all_time')['leaderboard']
+        mine = next(r for r in rows if r['id'] == self.bde.id)
+        self.assertEqual(mine['closed_sales'], 1)
+        self.assertEqual(Decimal(str(mine['revenue'])), Decimal('200000'))
+
+    def test_my_performance_counts_the_closed_deal(self):
+        d = self.get(f'/api/users/{self.agent.id}/performance/')
+        self.assertEqual(d['summary']['won_count'], 1)
+        self.assertEqual(Decimal(str(d['summary']['won_value'])), Decimal('200000'))
+
+    def test_the_dashboards_member_table_agrees(self):
+        d = self.get('/api/dashboard-stats/')
+        rows = {r['name']: r for r in d.get('performance_stats', [])}
+        mine = next((r for n, r in rows.items() if 'won_agent' in n or 'won_agent' == n), None)
+        if mine:
+            self.assertEqual(mine['won_count'], 1)
+            self.assertEqual(Decimal(str(mine['won_value'])), Decimal('200000'))
+
+    def test_the_figures_agree_with_the_closed_deals_board(self):
+        """The whole point: the same question, asked once."""
+        board = self.get('/api/leads/closed-deals/')
+        self.assertEqual(board['summary']['count'], 1)
+        self.assertEqual(Decimal(board['summary']['deal_value']),
+                         Decimal(str(self.get('/api/dashboard-stats/')['total_revenue'])))
+
+    # ── Targets are met by business landed ──
+    def test_a_target_is_measured_against_closed_deals(self):
+        """Achievement is business landed, not leads marked converted."""
+        from ai_manager.engine import check_monthly_progress
+        from ai_manager.models import MonthlyTarget
+        today = timezone.localdate()
+        MonthlyTarget.objects.create(agent=self.agent, month=today.month, year=today.year,
+                                     target_leads=5, target_amount=Decimal('500000'))
+        progress = check_monthly_progress(self.agent, today.month, today.year)
+        self.assertEqual(progress['actual_leads'], 1)
+        self.assertEqual(Decimal(str(progress['actual_amount'])), Decimal('200000'))
+
+    def test_paying_the_promised_deal_moves_every_figure_together(self):
+        self.promised.pushed_to_accounts = True
+        self.promised.save(update_fields=['pushed_to_accounts'])
+        PaymentVerification.objects.create(lead=self.promised, amount_received=Decimal('10'))
+        self.assertEqual(Decimal(str(self.get('/api/dashboard-stats/')['total_revenue'])),
+                         Decimal('1100000'))
+        self.assertEqual(self.get('/api/leads/closed-deals/')['summary']['count'], 2)

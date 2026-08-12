@@ -256,7 +256,7 @@ def auto_assign_project(lead):
     return assignee
 
 
-from .scopes import live_leads, own_leads_q  # noqa: E402
+from .scopes import live_leads, own_leads_q, closed_deals, closed_deal_q, CLOSED_DEAL_FILTER  # noqa: E402
 
 
 def reporting_scope(user):
@@ -5145,9 +5145,7 @@ class LeadViewSet(viewsets.ModelViewSet):
                             status=status.HTTP_403_FORBIDDEN)
 
         board = [self._closed_deal_payload(lead) for lead in
-                 (self.scoped_leads()
-                  .filter(status='converted', is_lost=False, pushed_to_accounts=True,
-                          payment_verification__amount_received__gt=0)
+                 (closed_deals(self.scoped_leads())
                   .select_related('payment_verification', 'product', 'assigned_to',
                                   'tele_caller', 'bde')
                   .order_by('-status_changed_at', '-created_at'))]
@@ -5441,9 +5439,7 @@ class DashboardStatsView(APIView):
         # money against it is a promise, and counting promises as revenue
         # overstates the business. Feeds the six-month Revenue series below too,
         # so the tile and the chart cannot disagree.
-        won_qs = base_qs.filter(status='converted', is_lost=False,
-                                pushed_to_accounts=True,
-                                payment_verification__amount_received__gt=0)
+        won_qs = closed_deals(base_qs)
         total_revenue = won_qs.aggregate(total=Sum('value'))['total'] or 0
         
         # Team/Member Performance (Only for Admin/Manager)
@@ -5467,8 +5463,8 @@ class DashboardStatsView(APIView):
             users_with_stats = users_to_check.annotate(
                 calc_leads_count=Count('assigned_leads'),
                 calc_pipeline_value=Sum('assigned_leads__value'),
-                calc_won_count=Count('assigned_leads', filter=Q(assigned_leads__status__in=['converted'])),
-                calc_won_value=Sum('assigned_leads__value', filter=Q(assigned_leads__status__in=['converted']))
+                calc_won_count=Count('assigned_leads', filter=closed_deal_q('assigned_leads__')),
+                calc_won_value=Sum('assigned_leads__value', filter=closed_deal_q('assigned_leads__'))
             )
             for u in users_with_stats:
                 performance_stats.append({
@@ -5485,8 +5481,8 @@ class DashboardStatsView(APIView):
             teams_with_stats = teams_to_check.annotate(
                 calc_leads_count=Count('members__assigned_leads'),
                 calc_pipeline_value=Sum('members__assigned_leads__value'),
-                calc_won_count=Count('members__assigned_leads', filter=Q(members__assigned_leads__status__in=['converted'])),
-                calc_won_value=Sum('members__assigned_leads__value', filter=Q(members__assigned_leads__status__in=['converted']))
+                calc_won_count=Count('members__assigned_leads', filter=closed_deal_q('members__assigned_leads__')),
+                calc_won_value=Sum('members__assigned_leads__value', filter=closed_deal_q('members__assigned_leads__'))
             )
             for t in teams_with_stats:
                 team_stats.append({
@@ -5573,8 +5569,7 @@ class LeaderboardView(APIView):
         # relation that actually carries the sale.
         # A deleted lead is not a closed sale — its value must not sit on
         # anyone's board. Restoring it from the Trash puts it back.
-        won_filter = Q(bde_leads__status__in=['converted'],
-                       bde_leads__is_trashed=False)
+        won_filter = closed_deal_q('bde_leads__') & Q(bde_leads__is_trashed=False)
 
         if period == 'daily':
             won_filter &= (
@@ -5628,14 +5623,13 @@ class ConvertedAnalyticsView(APIView):
         
         base_qs = reporting_scope(user)
 
-        # Base QS for converted leads
-        won_qs = base_qs.filter(status__in=['converted'])
-
-        # Aggregate everything in a single DB query
-        agg = won_qs.aggregate(
-            total_conversions=Count('id'),
-            total_revenue=Sum('value'),
-        )
+        # This page lists converted leads, so its count, its pace and its source
+        # mix describe those. Revenue does not: won means closed — in accounts
+        # with money received — and revenue is the one figure that must agree
+        # with the dashboard, the leaderboard and the Closed Deals board.
+        converted_qs = base_qs.filter(status='converted')
+        agg = converted_qs.aggregate(total_conversions=Count('id'))
+        won_qs = converted_qs
 
         # Average time to convert — use DB-level aggregation instead of Python loop
         time_to_convert_days = 0
@@ -5656,9 +5650,13 @@ class ConvertedAnalyticsView(APIView):
         sources_data = won_qs.values('source').annotate(count=Count('id')).order_by('-count')
         sources = [{"source": item['source'] or 'manual', "count": item['count']} for item in sources_data]
 
+        closed = closed_deals(base_qs).aggregate(count=Count('id'), revenue=Sum('value'))
         return Response({
             "total_conversions": agg['total_conversions'] or 0,
-            "total_revenue": float(agg['total_revenue'] or 0),
+            # Won revenue is the money on the deals that actually closed, with the
+            # count beside it so the two tiles cannot be read as one figure.
+            "total_revenue": float(closed['revenue'] or 0),
+            "closed_deal_count": closed['count'] or 0,
             "avg_conversion_days": time_to_convert_days,
             "top_sources": sources
         })

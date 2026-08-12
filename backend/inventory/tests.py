@@ -15,7 +15,7 @@ from organization.models import OrgSettings
 from users.models import User
 from .models import (Vendor, StockItem, StockCustomer, GoodsReceipt, StockDispatch,
                      StockPurchaseOrder, StockQuote, StockQuoteItem, Quote,
-                     DispatchPayment)
+                     DispatchPayment, DocumentNumberSeries, series_key)
 
 
 def token_for(user):
@@ -2139,3 +2139,93 @@ class StockPaymentsModuleTests(TestCase):
 
     def test_someone_with_no_dispatch_access_may_not(self):
         self.board(user=mk('pay_keeper', 'store_keeper'), expect=403)
+
+
+class DocumentNumbersAreNeverReusedTests(TestCase):
+    """A number, once on a document, must never appear on a second one.
+
+    The counter is the fast path, but it can fall behind: the dispatch form lets
+    an invoice number be typed by hand, and that number never passes through it.
+    Two things keep the series honest — a supplied number is absorbed as it is
+    saved, and issuing skips anything already in use.
+    """
+
+    def setUp(self):
+        self.item = StockItem.objects.create(code='NUM-PNL', category='Solar Panel',
+                                             opening_stock=Decimal('1000'),
+                                             unit_cost=Decimal('100'))
+
+    def dispatch(self, invoice_no='', when=None):
+        return StockDispatch.objects.create(
+            invoice_no=invoice_no, date=when or timezone.localdate(),
+            item=self.item, quantity=Decimal('1'), rate=Decimal('100'))
+
+    def numbers(self):
+        return list(StockDispatch.objects.values_list('invoice_no', flat=True))
+
+    # ── The ordinary path ──
+    def test_numbers_run_in_sequence(self):
+        self.assertTrue(self.dispatch().invoice_no.endswith('IN001'))
+        self.assertTrue(self.dispatch().invoice_no.endswith('IN002'))
+
+    def test_a_deleted_number_is_not_handed_out_again(self):
+        """It went to a customer; deleting our copy does not unspend it."""
+        first = self.dispatch()
+        first.delete()
+        self.assertTrue(self.dispatch().invoice_no.endswith('IN002'))
+
+    # ── A number typed by hand ──
+    def test_a_typed_number_moves_the_counter_past_itself(self):
+        key = series_key('IN')
+        self.dispatch(invoice_no=f'{key}007')
+        self.assertTrue(self.dispatch().invoice_no.endswith('IN008'))
+
+    def test_a_typed_number_is_never_issued_to_someone_else(self):
+        """The bug this fixes: a hand-typed number the counter never saw, then
+        re-issued to a different delivery weeks later."""
+        key = series_key('IN')
+        self.dispatch(invoice_no=f'{key}002')
+        for _ in range(4):
+            self.dispatch()
+        self.assertEqual(len(set(self.numbers())), len(self.numbers()))
+
+    def test_a_typed_number_below_the_counter_changes_nothing(self):
+        self.dispatch()                       # IN001
+        self.dispatch()                       # IN002
+        key = series_key('IN')
+        self.dispatch(invoice_no=f'{key}001')  # a row joining an existing delivery
+        self.assertTrue(self.dispatch().invoice_no.endswith('IN003'))
+
+    def test_a_number_from_another_series_is_left_alone(self):
+        self.dispatch(invoice_no='SOMETHING-ELSE-99')
+        self.assertTrue(self.dispatch().invoice_no.endswith('IN001'))
+
+    # ── A counter that has already drifted ──
+    def test_issuing_skips_a_number_already_in_use(self):
+        """Self-healing: even with the counter behind, nothing collides."""
+        key = series_key('IN')
+        StockDispatch.objects.create(invoice_no=f'{key}001', date=timezone.localdate(),
+                                     item=self.item, quantity=Decimal('1'), rate=Decimal('100'))
+        # Wind the counter back, as if it had never seen that number.
+        DocumentNumberSeries.objects.update_or_create(key=key, defaults={'last_seq': 0})
+        self.assertTrue(self.dispatch().invoice_no.endswith('IN002'))
+        self.assertEqual(len(set(self.numbers())), 2)
+
+    def test_a_badly_drifted_counter_still_finds_a_free_number(self):
+        key = series_key('IN')
+        for seq in range(1, 6):
+            StockDispatch.objects.create(invoice_no=f'{key}{seq:03d}',
+                                         date=timezone.localdate(), item=self.item,
+                                         quantity=Decimal('1'), rate=Decimal('100'))
+        DocumentNumberSeries.objects.update_or_create(key=key, defaults={'last_seq': 0})
+        self.assertTrue(self.dispatch().invoice_no.endswith('IN006'))
+
+    # ── The whole delivery still shares one number ──
+    def test_the_rows_of_one_delivery_keep_the_same_number(self):
+        first = self.dispatch()
+        second = self.dispatch(invoice_no=first.invoice_no)
+        self.assertEqual(first.invoice_no, second.invoice_no)
+        self.assertEqual(len(set(self.numbers())), 1)
+
+    def test_a_row_never_ends_up_without_a_number(self):
+        self.assertTrue(all(self.numbers()))

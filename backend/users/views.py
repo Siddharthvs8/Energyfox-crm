@@ -183,8 +183,11 @@ class WorkspaceTeamViewSet(viewsets.ModelViewSet):
         
         team = self.get_object()
         members = team.members.filter(is_active=True)
+        from leads.scopes import closed_deals
         team_leads = Lead.objects.filter(assigned_to__in=members)
-        won_leads = team_leads.filter(status='converted')
+        # Won means closed: in accounts with money received. See
+        # leads.scopes.CLOSED_DEAL_FILTER — one definition for every figure.
+        won_leads = closed_deals(team_leads)
         
         total_count = team_leads.count()
         enrolled_count = won_leads.count()
@@ -211,7 +214,7 @@ class WorkspaceTeamViewSet(viewsets.ModelViewSet):
         leaderboard = []
         for member in members:
             member_leads = Lead.objects.filter(assigned_to=member)
-            m_won = member_leads.filter(status='converted')
+            m_won = closed_deals(member_leads)
             leaderboard.append({
                 "id": member.id,
                 "name": f"{member.first_name} {member.last_name}".strip() or member.username,
@@ -521,8 +524,9 @@ class UserViewSet(viewsets.ModelViewSet):
         if date_from and date_to:
             user_leads = user_leads.filter(created_at__date__gte=date_from, created_at__date__lte=date_to)
 
-        won_leads = user_leads.filter(status='converted')
-        
+        from leads.scopes import closed_deals
+        won_leads = closed_deals(user_leads)
+
         total_count = user_leads.count()
         enrolled_count = won_leads.count()
         win_rate = (enrolled_count / total_count * 100) if total_count > 0 else 0

@@ -65,6 +65,7 @@ def assign_lead(lead):
 def _round_robin_assign(agents):
     """Assign to the agent who received a lead least recently."""
     from leads.models import Lead
+    from leads.scopes import closed_deals
 
     agent_list = list(agents)
     # Find the agent who was last assigned a lead the longest time ago
@@ -82,6 +83,7 @@ def _round_robin_assign(agents):
 def _workload_balanced_assign(agents):
     """Assign to the agent with the fewest active (non-terminal) leads."""
     from leads.models import Lead
+    from leads.scopes import closed_deals
     from django.db.models import Count, Q
 
     terminal_statuses = ['converted', 'not_interested']
@@ -110,6 +112,7 @@ def generate_daily_targets(monthly_target):
     """
     from .models import DailyTarget, Holiday
     from leads.models import Lead
+    from leads.scopes import closed_deals
     from django.db.models import Sum, Count
     from django.db.models.functions import ExtractWeekDay
     from django.utils import timezone
@@ -137,13 +140,15 @@ def generate_daily_targets(monthly_target):
 
         # 2. Get past actuals (up to yesterday)
         yesterday = today - timedelta(days=1)
-        actual_past_qs = Lead.objects.filter(
+        # Won means closed — in accounts with money received. A target is met
+        # by business landed, not by leads marked converted. One definition,
+        # shared: leads.scopes.CLOSED_DEAL_FILTER.
+        actual_past_qs = closed_deals(Lead.objects.filter(
             assigned_to=monthly_target.agent,
-            status='converted',
             status_changed_at__year=year,
             status_changed_at__month=month,
-            status_changed_at__date__lte=yesterday
-        )
+            status_changed_at__date__lte=yesterday,
+        ))
         actual_leads_past = actual_past_qs.count()
         actual_amount_past = actual_past_qs.aggregate(t=Sum('value'))['t'] or Decimal('0.00')
 
@@ -196,11 +201,10 @@ def generate_daily_targets(monthly_target):
     six_months_ago = timezone.now() - timedelta(days=180)
     agent = monthly_target.agent
     
-    historical_qs = Lead.objects.filter(
+    historical_qs = closed_deals(Lead.objects.filter(
         assigned_to=agent,
-        status='converted',
-        status_changed_at__gte=six_months_ago
-    ).annotate(
+        status_changed_at__gte=six_months_ago,
+    )).annotate(
         weekday=ExtractWeekDay('status_changed_at')
     ).values('weekday').annotate(
         conversions=Count('id')
@@ -376,6 +380,7 @@ def check_daily_progress(agent, check_date=None):
     """
     from .models import DailyTarget
     from leads.models import Lead
+    from leads.scopes import closed_deals
 
     if check_date is None:
         check_date = timezone.localdate()
@@ -389,19 +394,17 @@ def check_daily_progress(agent, check_date=None):
         }
 
     # Count leads enrolled today for this agent
-    enrolled_today = Lead.objects.filter(
+    enrolled_today = closed_deals(Lead.objects.filter(
         assigned_to=agent,
-        status='converted',
-        status_changed_at__date=check_date
-    ).count()
+        status_changed_at__date=check_date,
+    )).count()
 
     # Revenue from enrolled leads today
     from django.db.models import Sum
-    revenue_today = Lead.objects.filter(
+    revenue_today = closed_deals(Lead.objects.filter(
         assigned_to=agent,
-        status='converted',
-        status_changed_at__date=check_date
-    ).aggregate(total=Sum('value'))['total'] or 0
+        status_changed_at__date=check_date,
+    )).aggregate(total=Sum('value'))['total'] or 0
 
     leads_pct = (enrolled_today / daily_target.target_leads * 100) if daily_target.target_leads > 0 else 0
     amount_pct = (float(revenue_today) / float(daily_target.target_amount) * 100) if daily_target.target_amount > 0 else 0
@@ -433,6 +436,7 @@ def check_monthly_progress(agent, month=None, year=None):
     """Returns agent's progress towards their monthly target."""
     from .models import MonthlyTarget
     from leads.models import Lead
+    from leads.scopes import closed_deals
     from django.db.models import Sum
 
     now = timezone.now()
@@ -447,12 +451,11 @@ def check_monthly_progress(agent, month=None, year=None):
         return {'has_target': False, 'month': month, 'year': year}
 
     # Enrolled this month
-    enrolled = Lead.objects.filter(
+    enrolled = closed_deals(Lead.objects.filter(
         assigned_to=agent,
-        status='converted',
         status_changed_at__year=year,
-        status_changed_at__month=month
-    )
+        status_changed_at__month=month,
+    ))
     enrolled_count = enrolled.count()
     enrolled_revenue = enrolled.aggregate(total=Sum('value'))['total'] or 0
 

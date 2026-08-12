@@ -185,14 +185,72 @@ class DocumentNumberSeries(models.Model):
         row = cls.objects.filter(key=key).first()
         return (row.last_seq if row else 0) + 1
 
+    @classmethod
+    def absorb(cls, key, seq):
+        """Move the counter up to `seq` if it is behind.
+
+        A number can reach a document without passing through here — the dispatch
+        form lets one be typed by hand, and imported paperwork carries its own.
+        The counter never sees those, falls behind, and later hands out a number
+        that is already on a customer's invoice. Absorbing a supplied number as
+        it is saved is what stops that at the source.
+        """
+        from django.db import transaction
+        with transaction.atomic():
+            cls.objects.get_or_create(key=key)
+            row = cls.objects.select_for_update().get(key=key)
+            if seq > row.last_seq:
+                row.last_seq = seq
+                row.save(update_fields=['last_seq', 'updated_at'])
+            return row.last_seq
+
+
+# How to tell whether a number is already on a document, per series. The counter
+# is the fast path; this is the backstop that makes a duplicate impossible even
+# when the counter has drifted behind numbers it never issued.
+def document_number_in_use(kind, number):
+    from django.apps import apps
+    model, field = {
+        'IN': ('StockDispatch', 'invoice_no'),
+        'PI': ('StockQuote', 'number'),
+        'PO': ('StockPurchaseOrder', 'number'),
+    }.get(kind, (None, None))
+    if not model:
+        return False
+    return apps.get_model('inventory', model).objects.filter(**{field: number}).exists()
+
+
+# A drifted counter is caught within a few steps; the bound is only here so a
+# broken `in use` check can never spin forever.
+_MAX_NUMBER_ATTEMPTS = 200
+
 
 def next_document_number(kind, on=None):
-    """Issue the next number in the REN<fy>-<kind><seq> series, e.g. REN2627-PI001.
+    """Issue the next unused number in the REN<fy>-<kind><seq> series.
 
     Spends the number — call it only when a document is actually being created.
+
+    Numbers already on a document are skipped rather than handed out again. The
+    counter only moves forward, but it can still fall behind: a number typed by
+    hand into the dispatch form never passes through it. Skipping what is taken
+    means the series heals itself instead of colliding.
     """
     key = series_key(kind, on)
-    return f"{key}{DocumentNumberSeries.issue(key):03d}"
+    for _ in range(_MAX_NUMBER_ATTEMPTS):
+        candidate = f"{key}{DocumentNumberSeries.issue(key):03d}"
+        if not document_number_in_use(kind, candidate):
+            return candidate
+    raise RuntimeError(f"Could not find a free number in the {key} series.")
+
+
+def absorb_document_number(kind, number, on=None):
+    """Teach the counter about a number that did not come from it."""
+    key = series_key(kind, on)
+    if not str(number or '').startswith(key):
+        return                      # a different series (or year); not ours to move
+    tail = str(number)[len(key):]
+    if tail.isdigit():
+        DocumentNumberSeries.absorb(key, int(tail))
 
 
 def peek_document_number(kind, on=None):
@@ -513,8 +571,13 @@ class StockDispatch(_StockMovement):
         # A delivery of several products is several rows sharing one invoice
         # number, so only a row that arrives without one mints it — the client
         # sends the number it got back on the rest of the set.
-        if self._state.adding and not self.invoice_no:
-            self.invoice_no = next_document_number('IN', on=self.date)
+        if self._state.adding:
+            if not self.invoice_no:
+                self.invoice_no = next_document_number('IN', on=self.date)
+            else:
+                # Typed by hand, or carried over from the set: tell the counter,
+                # so the series cannot issue this number to someone else later.
+                absorb_document_number('IN', self.invoice_no, on=self.date)
         super().save(*args, **kwargs)
 
     @property

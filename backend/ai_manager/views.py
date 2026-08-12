@@ -16,6 +16,8 @@ from . import ai_meeting as ai_meeting_engine
 
 from rest_framework.exceptions import PermissionDenied
 from core.permissions import watches_everything
+# Won means closed — one definition, shared with every other figure in the CRM.
+from leads.scopes import closed_deals
 
 
 # ─── Custom Permission ────────────────────────────────────────────────────────
@@ -284,12 +286,13 @@ class AIDashboardView(APIView):
         total_target_leads = monthly_targets.aggregate(t=Sum('target_leads'))['t'] or 0
         total_target_amount = monthly_targets.aggregate(t=Sum('target_amount'))['t'] or 0
 
-        # Actual enrollments this month
-        enrolled_this_month = Lead.objects.filter(
-            status='converted',
+        # Actual wins this month. Won means closed — in accounts with money
+        # received (leads.scopes.CLOSED_DEAL_FILTER) — so achievement against a
+        # target is measured in business landed, not leads marked converted.
+        enrolled_this_month = closed_deals(Lead.objects.filter(
             status_changed_at__year=year,
-            status_changed_at__month=month
-        )
+            status_changed_at__month=month,
+        ))
         actual_enrolled = enrolled_this_month.count()
         actual_revenue = enrolled_this_month.aggregate(t=Sum('value'))['t'] or 0
 
@@ -372,13 +375,12 @@ class TeamPerformanceView(APIView):
         total_target_leads = monthly_targets.aggregate(t=Sum('target_leads'))['t'] or 0
         total_target_amount = monthly_targets.aggregate(t=Sum('target_amount'))['t'] or 0
 
-        # Actual enrollments this month for the team
-        enrolled_this_month = Lead.objects.filter(
-            status='converted',
+        # Actual wins this month for the team — closed, not merely converted.
+        enrolled_this_month = closed_deals(Lead.objects.filter(
             status_changed_at__year=year,
             status_changed_at__month=month,
-            assigned_to__in=agents
-        )
+            assigned_to__in=agents,
+        ))
         actual_enrolled = enrolled_this_month.count()
         actual_revenue = enrolled_this_month.aggregate(t=Sum('value'))['t'] or 0
 
@@ -551,12 +553,11 @@ class MyPerformanceView(APIView):
         status_data = my_leads.values('status').annotate(count=Count('id'))
         status_breakdown = {item['status']: item['count'] for item in status_data}
 
-        # Enrolled this month
-        enrolled_this_month = my_leads.filter(
-            status='converted',
+        # Won this month — closed, not merely converted.
+        enrolled_this_month = closed_deals(my_leads.filter(
             status_changed_at__year=year,
-            status_changed_at__month=month
-        )
+            status_changed_at__month=month,
+        ))
         enrolled_count = enrolled_this_month.count()
         enrolled_revenue = enrolled_this_month.aggregate(t=Sum('value'))['t'] or 0
 

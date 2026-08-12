@@ -127,7 +127,7 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
         fetch(`${getApiBase(domain)}/api/users/me/`, { headers: { Authorization: `Bearer ${token}` } }),
       ]);
       if (mRes.ok) setMetrics(await mRes.json());
-      else setMetrics({ total_conversions: 0, total_revenue: 0, avg_conversion_days: 0, top_sources: [] });
+      else setMetrics({ total_conversions: 0, total_revenue: 0, closed_deal_count: 0, avg_conversion_days: 0, top_sources: [] });
       if (lRes.ok) { const d = await lRes.json(); setLeads(Array.isArray(d) ? d : d.results || []); }
       if (uRes.ok) setCurrentUser(await uRes.json());
     } catch (e) { console.error(e); }
@@ -190,7 +190,7 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
   };
 
   // ── Derived
-  const data = metrics || { total_conversions: 0, total_revenue: 0, avg_conversion_days: 0, top_sources: [] };
+  const data = metrics || { total_conversions: 0, total_revenue: 0, closed_deal_count: 0, avg_conversion_days: 0, top_sources: [] };
   const maxSrc = data.top_sources.length > 0 ? Math.max(...data.top_sources.map((s: any) => s.count)) : 1;
   const isManagerOrAdmin = !!(currentUser?.is_staff || currentUser?.is_general_manager || currentUser?.is_manager);
 
@@ -318,7 +318,10 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
         {/* ─── KPI Grid ─────────────────────────────────────────────────── */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-5 mb-7">
           {[
-            { label: "Won Revenue",     value: formatCurrency(data.total_revenue), icon: <I.TrendUp />, color: "from-emerald-400 to-teal-400", badge: "All Time", badgeColor: "bg-emerald-50 text-emerald-600" },
+            // Won means closed — in accounts with money received. The badge says
+            // so, because it sits next to a count of every converted lead and
+            // the two would otherwise read as one figure.
+            { label: "Won Revenue",     value: formatCurrency(data.total_revenue), icon: <I.TrendUp />, color: "from-emerald-400 to-teal-400", badge: `${data.closed_deal_count ?? 0} closed deals`, badgeColor: "bg-emerald-50 text-emerald-600" },
             { label: "Total Converts",  value: `${data.total_conversions}`, sub: "deals", icon: <I.Trophy />, color: "from-indigo-400 to-violet-400", badge: "Active Lifecycle", badgeColor: "bg-indigo-50 text-indigo-600" },
             { label: "Avg Time to Close", value: `${data.avg_conversion_days}`, sub: "days", icon: <I.Clock />, color: "from-amber-400 to-orange-400", badge: "From Creation", badgeColor: "bg-amber-50 text-amber-600" },
             { label: "Top Source", value: data.top_sources[0]?.source ? getSourceLabel(data.top_sources[0].source) : "—", icon: <I.Target />, color: "from-fuchsia-400 to-pink-400", badge: data.top_sources[0]?.count ? `${data.top_sources[0].count} leads` : "No data", badgeColor: "bg-fuchsia-50 text-fuchsia-600" },
