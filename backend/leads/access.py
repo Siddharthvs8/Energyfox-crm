@@ -282,6 +282,26 @@ def can_access_closed_deals(user):
             or is_view_only(user))
 
 
+# Who may open Company Performance. It reports the whole company — every
+# branch's revenue, every team's, every person's — so it is the top of the house
+# only: the super admin, the admin and the COO, plus the read-only spectator.
+# Deliberately not the general-manager tier at large: a sales or documentation
+# manager runs a function, and the Manager module already reports their people
+# to them. Narrower than User.sees_everything for that reason.
+COMPANY_PERFORMANCE_ROLES = {'superadmin', 'admin', 'coo', 'spectator'}
+
+
+def can_access_company_performance(user):
+    """Company-wide performance reporting. Read-only by nature, so the spectator
+    belongs here on the same footing as the others."""
+    if not user or not user.is_authenticated:
+        return False
+    granted = custom_grant(user, 'company-performance')
+    if granted is not None:
+        return granted
+    return getattr(user, 'role', '') in COMPANY_PERFORMANCE_ROLES
+
+
 def can_access_doc_stage2(user):
     """Who can open Documentation Stage 2: the documentation team plus admins /
     general managers (same audience as Documentation Stage 1)."""

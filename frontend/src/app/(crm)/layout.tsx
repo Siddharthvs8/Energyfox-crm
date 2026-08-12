@@ -117,6 +117,19 @@ const Nav = {
       <path d="M18 9h1.5a1.5 1.5 0 000-3H18" />
     </svg>
   ),
+  // The company itself, and how it is doing: an office block with a rising
+  // trend over it. Distinct from Leaderboard and My Performance, which sit a
+  // few rows away and both already read as charts.
+  CompanyPerformance: () => (
+    <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+      <path d="M3 21h18" />
+      <path d="M4 21V6a1 1 0 011-1h6a1 1 0 011 1v15" />
+      <path d="M7 9h2M7 13h2M7 17h2" />
+      <path d="M15 21v-6.5" />
+      <path d="M15 11l3-3 3 3" />
+      <path d="M18 8v6.5" />
+    </svg>
+  ),
   Phone: () => (
     <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" viewBox="0 0 24 24">
       <path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l2.27-2.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z" />
@@ -215,6 +228,11 @@ const B2B_ONLY_ROLES = ["store_manager", "store_keeper", "accounts_b2b"];
 // Who gets the Closed Deals board: the sales side of the house — the people who
 // win the business and the people who manage them. The read-only spectator is
 // added separately. Mirrors leads.access.CLOSED_DEALS_ROLES.
+// Who may open Company Performance. The top of the house only — it reports
+// every branch's and every person's revenue. Mirrors
+// leads.access.COMPANY_PERFORMANCE_ROLES; the spectator is added separately.
+const COMPANY_PERFORMANCE_ROLES = ["superadmin", "admin", "coo"];
+
 const CLOSED_DEALS_ROLES = [
   "superadmin", "admin", "coo", "sales_manager", "leads_manager",
   "branch_manager", "bde", "tele_caller",
@@ -651,6 +669,8 @@ export default function DashboardLayout({
     { href: `/leaderboard`,    label: "Leaderboard",     Icon: Nav.Leaderboard },
     { href: `/my-performance`,label: "My Performance",  Icon: Nav.MyPerformance, hideForManager: true },
     { href: `/team-performance`,label: "Team Performance",Icon: Nav.Team, managerOnly: true },
+    { href: `/company-performance`, label: "Company Performance", Icon: Nav.CompanyPerformance,
+      companyPerformance: true, perm: "company-performance" },
     { href: `/manager`,       label: "Manager",         Icon: Nav.Admin, managerFeature: true },
     { href: `/automations`,   label: "Automations",    Icon: Nav.Automation, adminOnly: true },
     { href: `/meta`,          label: "Meta Integration",Icon: Nav.Meta, strictAdminOnly: true, leadsDeskFeature: true },
@@ -776,6 +796,9 @@ export default function DashboardLayout({
     if (item.pmFeature) {
       // Project / Service / Team Stats — project manager (above) plus admins / general managers.
       return seesAllModules;
+    }
+    if (item.companyPerformance) {
+      return COMPANY_PERFORMANCE_ROLES.includes(currentUser?.role) || isSpectator;
     }
     if (item.closedDealsFeature) {
       // The sales side of the house — whoever wins the business or manages the

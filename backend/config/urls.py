@@ -9,6 +9,7 @@ from rest_framework_simplejwt.views import (
     TokenRefreshView,
 )
 from leads.views import LeadViewSet
+from leads.performance import CompanyPerformanceView
 from leads.webhooks import meta_leads_webhook
 from tasks.views import TaskViewSet
 from users.views import (UserViewSet, SubscriptionStatusView, WorkspaceTeamViewSet,
@@ -59,6 +60,8 @@ urlpatterns = [
     path('api/dashboard-stats/', DashboardStatsView.as_view(), name='dashboard-stats'),
     path('api/leaderboard/', LeaderboardView.as_view(), name='leaderboard'),
     path('api/converted-analytics/', ConvertedAnalyticsView.as_view(), name='converted-analytics'),
+    path('api/company-performance/', CompanyPerformanceView.as_view(),
+         name='company-performance'),
     path('api/campaigns/', include('campaigns.urls')),
     path('api/automations/', include('automations.urls')),
     path('api/whatsapp/', include('messaging.urls')),

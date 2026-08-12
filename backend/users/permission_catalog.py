@@ -44,6 +44,7 @@ MODULE_PERMISSIONS = [
     ('team-performance', 'Team Performance', 'People'),
     ('team', 'Team', 'People'),
     ('branches', 'Branches', 'People'),
+    ('company-performance', 'Company Performance', 'People'),
 
     ('automations', 'Automations', 'Admin'),
     ('meta', 'Meta Integration', 'Admin'),

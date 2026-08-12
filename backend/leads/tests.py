@@ -5786,3 +5786,490 @@ class EditAndRemoveMaintenanceTests(TestCase):
     def test_someone_without_the_module_cannot_remove(self):
         self.assertEqual(self.delete(user=self.outsider).status_code, 403)
         self.assertTrue(self.PM.objects.filter(lead=self.lead).exists())
+
+
+class CompanyPerformanceTests(TestCase):
+    """One report over the whole company, agreeing with every other screen.
+
+    A deal counts here on the same terms it counts on the Closed Deals board —
+    converted, not lost, pushed to accounts, money actually received — and it is
+    worth the agreed value less any discount.
+    """
+
+    def setUp(self):
+        from users.models import Branch
+        self.boss = mk('cp_super', 'superadmin')
+        self.kochi = Branch.objects.create(name='Kochi', code='KCH')
+        self.kollam = Branch.objects.create(name='Kollam', code='KLM')
+        self.bde_k = mk('cp_bde_kochi', 'bde')
+        self.bde_k.branch = self.kochi
+        self.bde_k.save()
+        self.bde_l = mk('cp_bde_kollam', 'bde')
+        self.bde_l.branch = self.kollam
+        self.bde_l.save()
+
+    def auth(self, user=None):
+        return {'HTTP_AUTHORIZATION': token_for(user or self.boss)}
+
+    def get(self, user=None, **params):
+        qs = '&'.join(f'{k}={v}' for k, v in params.items())
+        return self.client.get(f'/api/company-performance/?{qs}', **self.auth(user))
+
+    def won(self, value, discount=0, bde=None, when=None, source='manual', district='Ernakulam'):
+        """A deal on the same terms the Closed Deals board uses."""
+        from .models import PaymentVerification
+        who = bde or self.bde_k
+        lead = Lead.objects.create(
+            first_name='Won', last_name=str(value), phone=f'98{value:08d}',
+            status='converted', is_lost=False, pushed_to_accounts=True,
+            value=Decimal(value), bde=who, assigned_to=who,
+            source=source, district=district)
+        PaymentVerification.objects.create(
+            lead=lead, amount_received=Decimal(value) - Decimal(discount),
+            discount_value=Decimal(discount))
+        stamp = when or timezone.now()
+        Lead.objects.filter(pk=lead.pk).update(status_changed_at=stamp)
+        if when:
+            Lead.objects.filter(pk=lead.pk).update(created_at=when)
+        return lead
+
+    # -- Who may look --
+    def test_the_top_of_the_house_may_look(self):
+        for role in ('superadmin', 'admin', 'coo'):
+            user = mk(f'cp_ok_{role}', role)
+            self.assertEqual(self.get(user).status_code, 200, role)
+
+    def test_the_spectator_may_look(self):
+        self.assertEqual(self.get(mk('cp_spec', 'spectator')).status_code, 200)
+
+    def test_a_manager_may_not(self):
+        """They run a function; the Manager module reports their own people."""
+        for role in ('sales_manager', 'branch_manager', 'leads_manager'):
+            user = mk(f'cp_no_{role}', role)
+            self.assertEqual(self.get(user).status_code, 403, role)
+
+    def test_a_bde_may_not(self):
+        self.assertEqual(self.get(self.bde_k).status_code, 403)
+
+    def test_a_stranger_may_not(self):
+        self.assertEqual(self.client.get('/api/company-performance/').status_code, 401)
+
+    # -- What counts as won --
+    def test_revenue_is_the_value_after_discount(self):
+        self.won(100000, discount=10000)
+        head = self.get(period='all').json()['headline']
+        self.assertEqual(head['revenue'], '90000.00')
+        self.assertEqual(head['discounts'], '10000.00')
+
+    def test_a_converted_lead_without_money_is_not_a_closed_deal(self):
+        Lead.objects.create(first_name='NoMoney', phone='9800000001', status='converted',
+                            value=Decimal(50000), pushed_to_accounts=True)
+        head = self.get(period='all').json()['headline']
+        self.assertEqual(head['converted'], 1)
+        self.assertEqual(head['closed_deals'], 0)
+        self.assertEqual(head['revenue'], '0.00')
+
+    def test_a_lost_deal_is_not_won(self):
+        lead = self.won(50000)
+        Lead.objects.filter(pk=lead.pk).update(is_lost=True)
+        self.assertEqual(self.get(period='all').json()['headline']['closed_deals'], 0)
+
+    def test_a_trashed_lead_is_out_of_every_figure(self):
+        lead = self.won(50000)
+        Lead.objects.filter(pk=lead.pk).update(is_trashed=True)
+        head = self.get(period='all').json()['headline']
+        self.assertEqual((head['leads'], head['closed_deals'], head['revenue']), (0, 0, '0.00'))
+
+    def test_outstanding_is_what_is_still_owed(self):
+        self.won(100000, discount=0)
+        lead = self.won(200000)
+        lead.payment_verification.amount_received = Decimal(50000)
+        lead.payment_verification.save()
+        head = self.get(period='all').json()['headline']
+        self.assertEqual(head['revenue'], '300000.00')
+        self.assertEqual(head['collected'], '150000.00')
+        self.assertEqual(head['outstanding'], '150000.00')
+
+    def test_an_overpayment_is_not_a_negative_debt(self):
+        lead = self.won(100000)
+        lead.payment_verification.amount_received = Decimal(120000)
+        lead.payment_verification.save()
+        self.assertEqual(self.get(period='all').json()['headline']['outstanding'], '0.00')
+
+    def test_the_average_deal_is_net_too(self):
+        self.won(100000, discount=20000)
+        self.won(60000)
+        self.assertEqual(self.get(period='all').json()['headline']['avg_deal_value'], '70000.00')
+
+    # -- The window --
+    def test_money_is_counted_by_when_the_deal_was_won(self):
+        """A lead from last year that closes this month is this month's revenue."""
+        lead = self.won(80000, when=timezone.now() - timedelta(days=400))
+        Lead.objects.filter(pk=lead.pk).update(status_changed_at=timezone.now())
+        data = self.get(period='this_month').json()
+        self.assertEqual(data['headline']['closed_deals'], 1)
+        self.assertEqual(data['headline']['revenue'], '80000.00')
+        self.assertEqual(data['headline']['leads'], 0)
+
+    def test_this_month_leaves_out_last_year(self):
+        self.won(80000, when=timezone.now() - timedelta(days=400))
+        self.assertEqual(self.get(period='this_month').json()['headline']['closed_deals'], 0)
+
+    def test_all_time_takes_everything(self):
+        self.won(80000, when=timezone.now() - timedelta(days=400))
+        self.assertEqual(self.get(period='all').json()['headline']['closed_deals'], 1)
+
+    def test_a_custom_window_is_honoured(self):
+        self.won(80000, when=timezone.now() - timedelta(days=100))
+        self.won(50000)
+        far = (timezone.localdate() - timedelta(days=120)).isoformat()
+        near = (timezone.localdate() - timedelta(days=80)).isoformat()
+        data = self.get(period='custom', **{'from': far, 'to': near}).json()
+        self.assertEqual(data['headline']['revenue'], '80000.00')
+
+    def test_a_backwards_custom_window_is_read_the_right_way_round(self):
+        self.won(80000, when=timezone.now() - timedelta(days=100))
+        far = (timezone.localdate() - timedelta(days=120)).isoformat()
+        near = (timezone.localdate() - timedelta(days=80)).isoformat()
+        data = self.get(period='custom', **{'from': near, 'to': far}).json()
+        self.assertEqual(data['headline']['revenue'], '80000.00')
+
+    # -- Branches --
+    def test_a_branch_is_credited_through_the_people_who_worked_the_lead(self):
+        self.won(300000, bde=self.bde_k)
+        self.won(100000, bde=self.bde_l)
+        rows = {r['name']: r for r in self.get(period='all').json()['branches']['rows']}
+        self.assertEqual(rows['Kochi']['revenue'], '300000.00')
+        self.assertEqual(rows['Kollam']['revenue'], '100000.00')
+
+    def test_the_best_and_least_earning_branches_are_named(self):
+        self.won(300000, bde=self.bde_k)
+        self.won(100000, bde=self.bde_l)
+        branches = self.get(period='all').json()['branches']
+        self.assertEqual(branches['best']['name'], 'Kochi')
+        self.assertEqual(branches['worst']['name'], 'Kollam')
+
+    def test_a_branch_that_earned_nothing_is_named_rather_than_ranked_last(self):
+        """A tie on zero is not a ranking anyone can act on."""
+        self.won(300000, bde=self.bde_k)
+        branches = self.get(period='all').json()['branches']
+        self.assertEqual(branches['best']['name'], 'Kochi')
+        self.assertEqual(branches['without_revenue'], ['Kollam'])
+
+    def test_one_earner_is_not_reported_as_both_ends(self):
+        """The same name as most and least revenue is not a ranking."""
+        self.won(300000, bde=self.bde_k)
+        branches = self.get(period='all').json()['branches']
+        self.assertTrue(branches['only_earner'])
+        self.assertIsNone(branches['worst'])
+
+    def test_nothing_is_the_best_when_nobody_earned(self):
+        """Calling a branch on zero the top earner would be a plain untruth."""
+        Lead.objects.create(first_name='Raw', phone='9800000003', assigned_to=self.bde_k)
+        branches = self.get(period='all').json()['branches']
+        self.assertIsNone(branches['best'])
+        self.assertIsNone(branches['worst'])
+        self.assertIn('Kochi', branches['without_revenue'])
+
+    def test_revenue_nobody_can_be_credited_with_is_declared(self):
+        """Branch rows will not add up when the closer is on no branch, and the
+        difference is stated rather than left for someone to chase."""
+        loose = mk('cp_no_branch', 'bde')
+        self.won(300000, bde=self.bde_k)
+        self.won(70000, bde=loose)
+        branches = self.get(period='all').json()['branches']
+        self.assertEqual(branches['unattributed_revenue'], '70000.00')
+        self.assertEqual(branches['unattributed_deals'], 1)
+        self.assertEqual(sum(Decimal(r['revenue']) for r in branches['rows']), Decimal('300000'))
+
+    def test_nothing_is_unattributed_when_everyone_has_a_branch(self):
+        self.won(300000, bde=self.bde_k)
+        self.assertEqual(self.get(period='all').json()['branches']['unattributed_revenue'], '0.00')
+
+    # -- People --
+    def test_a_bde_is_credited_for_what_they_closed(self):
+        self.won(250000, bde=self.bde_k)
+        rows = {r['name']: r for r in self.get(period='all').json()['employees']['rows']}
+        self.assertEqual(rows['cp_bde_kochi']['revenue'], '250000.00')
+
+    def test_a_bde_is_credited_even_when_the_lead_is_owned_by_someone_else(self):
+        """Handing a lead to a BDE moves the work, not the credit."""
+        lead = self.won(120000, bde=self.bde_k)
+        Lead.objects.filter(pk=lead.pk).update(assigned_to=self.boss)
+        rows = {r['name']: r for r in self.get(period='all').json()['employees']['rows']}
+        self.assertEqual(rows['cp_bde_kochi']['revenue'], '120000.00')
+
+    def test_people_who_worked_nothing_are_left_out(self):
+        self.won(120000, bde=self.bde_k)
+        names = [r['name'] for r in self.get(period='all').json()['employees']['rows']]
+        self.assertNotIn('cp_bde_kollam', names)
+
+    # -- The rest of the board --
+    def test_the_funnel_narrows(self):
+        self.won(50000)
+        Lead.objects.create(first_name='Raw', phone='9800000002')
+        funnel = {s['stage']: s['count'] for s in self.get(period='all').json()['funnel']}
+        self.assertEqual(funnel['Leads'], 2)
+        self.assertEqual(funnel['Converted'], 1)
+        self.assertEqual(funnel['Closed deals'], 1)
+
+    def test_sources_and_districts_carry_their_revenue(self):
+        self.won(90000, source='meta', district='Ernakulam')
+        data = self.get(period='all').json()
+        self.assertEqual(data['sources'][0]['name'], 'meta')
+        self.assertEqual(data['sources'][0]['revenue'], '90000.00')
+        self.assertEqual(data['districts'][0]['name'], 'Ernakulam')
+
+    def test_a_lead_without_a_district_is_labelled_not_dropped(self):
+        self.won(40000, district='')
+        names = [r['name'] for r in self.get(period='all').json()['districts']]
+        self.assertIn('No district', names)
+
+    def test_the_monthly_series_is_capped_at_a_year(self):
+        self.won(10000, when=timezone.now() - timedelta(days=900))
+        self.assertLessEqual(len(self.get(period='all').json()['monthly']), 12)
+
+    def test_the_report_agrees_with_the_closed_deals_board(self):
+        """The whole point: two screens, one definition."""
+        self.won(100000, discount=15000)
+        self.won(60000)
+        board = self.client.get('/api/leads/closed-deals/', **self.auth()).json()
+        head = self.get(period='all').json()['headline']
+        self.assertEqual(head['closed_deals'], board['summary']['count'])
+        self.assertEqual(head['collected'], board['summary']['received'])
+        # The board reports the value agreed; revenue is that less the discount.
+        self.assertEqual(Decimal(head['revenue']),
+                         Decimal(board['summary']['deal_value']) - Decimal(head['discounts']))
+
+
+class CompanyPerformanceRoleBoardsTests(TestCase):
+    """The BDE and tele caller boards are the People rows filtered by role.
+
+    Not a second calculation: a person's figures must read the same on their own
+    board, on Everyone, and on My Performance.
+    """
+
+    def setUp(self):
+        self.boss = mk('cpr_super', 'superadmin')
+        self.bde = mk('cpr_bde', 'bde')
+        self.caller = mk('cpr_caller', 'tele_caller')
+        self.manager = mk('cpr_mgr', 'branch_manager')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': token_for(self.boss)}
+
+    def board(self, key, period='all'):
+        data = self.client.get(f'/api/company-performance/?period={period}', **self.auth()).json()
+        return data[key]
+
+    def won(self, value, bde=None, caller=None, owner=None):
+        from .models import PaymentVerification
+        lead = Lead.objects.create(
+            first_name='Won', last_name=str(value), phone=f'97{value:08d}',
+            status='converted', is_lost=False, pushed_to_accounts=True,
+            value=Decimal(value), bde=bde, tele_caller=caller, assigned_to=owner or bde or caller)
+        PaymentVerification.objects.create(lead=lead, amount_received=Decimal(value))
+        Lead.objects.filter(pk=lead.pk).update(status_changed_at=timezone.now())
+        return lead
+
+    def test_the_bde_board_holds_only_bdes(self):
+        self.won(100000, bde=self.bde, caller=self.caller)
+        roles = {r['role_key'] for r in self.board('bdes')['rows']}
+        self.assertEqual(roles, {'bde'})
+
+    def test_the_tele_caller_board_holds_only_tele_callers(self):
+        self.won(100000, bde=self.bde, caller=self.caller)
+        roles = {r['role_key'] for r in self.board('tele_callers')['rows']}
+        self.assertEqual(roles, {'tele_caller'})
+
+    def test_a_person_reads_the_same_on_their_own_board(self):
+        """The whole reason the boards are a filter and not a second sum."""
+        self.won(250000, bde=self.bde, caller=self.caller)
+        everyone = {r['name']: r for r in self.board('employees')['rows']}
+        bdes = {r['name']: r for r in self.board('bdes')['rows']}
+        self.assertEqual(bdes['cpr_bde'], everyone['cpr_bde'])
+
+    def test_both_roles_are_credited_for_the_deal_they_shared(self):
+        self.won(250000, bde=self.bde, caller=self.caller)
+        self.assertEqual(self.board('bdes')['rows'][0]['revenue'], '250000.00')
+        self.assertEqual(self.board('tele_callers')['rows'][0]['revenue'], '250000.00')
+
+    def test_everyone_still_holds_the_other_roles(self):
+        self.won(90000, bde=self.bde, owner=self.manager)
+        names = [r['name'] for r in self.board('employees')['rows']]
+        self.assertIn('cpr_mgr', names)
+        self.assertNotIn('cpr_mgr', [r['name'] for r in self.board('bdes')['rows']])
+
+    def test_each_board_is_ranked_on_its_own_members(self):
+        """Sorting one board must not disturb another — they share their rows."""
+        other = mk('cpr_bde2', 'bde')
+        self.won(50000, bde=self.bde)
+        self.won(300000, bde=other)
+        bdes = self.board('bdes')
+        self.assertEqual([r['name'] for r in bdes['rows']], ['cpr_bde2', 'cpr_bde'])
+        self.assertEqual(bdes['best']['name'], 'cpr_bde2')
+        self.assertEqual(bdes['worst']['name'], 'cpr_bde')
+
+    def test_the_count_is_the_board_not_the_company(self):
+        self.won(100000, bde=self.bde, caller=self.caller)
+        self.assertEqual(self.board('bdes')['count'], 1)
+        self.assertEqual(self.board('tele_callers')['count'], 1)
+        self.assertEqual(self.board('employees')['count'], 2)
+
+    def test_an_empty_role_board_says_so_rather_than_erroring(self):
+        self.won(100000, bde=self.bde)
+        callers = self.board('tele_callers')
+        self.assertEqual(callers['rows'], [])
+        self.assertIsNone(callers['best'])
+
+
+class CompanyPerformanceAnalysisTests(TestCase):
+    """Losses, collection, delivery and segments — the sections that say why."""
+
+    def setUp(self):
+        self.boss = mk('cpa_super', 'superadmin')
+        self.bde = mk('cpa_bde', 'bde')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': token_for(self.boss)}
+
+    def get(self, key, period='all'):
+        return self.client.get(f'/api/company-performance/?period={period}', **self.auth()).json()[key]
+
+    def won(self, value, discount=0, received=None, mode='cash', conn='', roof=''):
+        from .models import PaymentVerification, SiteVisit
+        lead = Lead.objects.create(
+            first_name='Won', last_name=str(value), phone=f'96{value:08d}',
+            status='converted', is_lost=False, pushed_to_accounts=True,
+            value=Decimal(value), bde=self.bde, assigned_to=self.bde)
+        net = Decimal(value) - Decimal(discount)
+        PaymentVerification.objects.create(
+            lead=lead, amount_received=net if received is None else Decimal(received),
+            discount_value=Decimal(discount), payment_mode=mode)
+        if conn or roof:
+            SiteVisit.objects.create(lead=lead, connection_type=conn, roof_type=roof)
+        Lead.objects.filter(pk=lead.pk).update(status_changed_at=timezone.now())
+        return lead
+
+    def lost(self, value, reason='', when=None, stage=None, owner=True):
+        # owner=False leaves the lead unassigned: handing one to a BDE fills in
+        # the bde field, which moves it to the Site Visit stage.
+        lead = Lead.objects.create(
+            first_name='Lost', last_name=str(value), phone=f'95{value:08d}',
+            value=Decimal(value), is_lost=True, lost_reason=reason,
+            assigned_to=self.bde if owner else None, **(stage or {}))
+        Lead.objects.filter(pk=lead.pk).update(lost_at=when or timezone.now())
+        return lead
+
+    # ── Losses ──
+    def test_losses_are_counted_with_their_value(self):
+        self.lost(120000, 'Price too high')
+        self.lost(80000, 'Price too high')
+        self.lost(50000, 'Went elsewhere')
+        lost = self.get('lost')
+        self.assertEqual(lost['count'], 3)
+        self.assertEqual(lost['value'], '250000.00')
+        self.assertEqual(lost['reasons'][0], {'name': 'Price too high', 'count': 2, 'value': '200000.00'})
+
+    def test_a_loss_with_no_reason_is_labelled_not_dropped(self):
+        self.lost(40000, '   ')
+        self.assertEqual(self.get('lost')['reasons'][0]['name'], 'No reason given')
+
+    def test_blank_and_missing_reasons_collapse_into_one_row(self):
+        self.lost(10000, '')
+        self.lost(20000, '  ')
+        reasons = self.get('lost')['reasons']
+        self.assertEqual(len(reasons), 1)
+        self.assertEqual(reasons[0]['count'], 2)
+
+    def test_a_loss_is_dated_by_when_it_was_written_off(self):
+        """A lead from last year written off this month is this month's loss."""
+        lead = self.lost(90000, 'Dropped')
+        Lead.objects.filter(pk=lead.pk).update(created_at=timezone.now() - timedelta(days=400))
+        self.assertEqual(self.get('lost', period='this_month')['count'], 1)
+
+    def test_a_loss_written_off_long_ago_is_out_of_this_month(self):
+        self.lost(90000, 'Dropped', when=timezone.now() - timedelta(days=400))
+        self.assertEqual(self.get('lost', period='this_month')['count'], 0)
+
+    def test_how_far_a_lost_deal_got_is_reported(self):
+        self.lost(50000, 'Finance', stage={'pushed_to_accounts': True})
+        self.lost(30000, 'Quote ignored')                  # with a BDE: site visit
+        self.lost(20000, 'No contact', owner=False)        # never left the desk
+        stages = {r['stage']: r['count'] for r in self.get('lost')['by_stage']}
+        self.assertEqual(stages, {'accounts': 1, 'site_visit': 1, 'tele_caller': 1})
+
+    def test_a_trashed_lost_lead_is_not_a_loss(self):
+        lead = self.lost(50000, 'Gone')
+        Lead.objects.filter(pk=lead.pk).update(is_trashed=True)
+        self.assertEqual(self.get('lost')['count'], 0)
+
+    # ── Collection ──
+    def test_a_discounted_deal_paid_in_full_is_fully_paid(self):
+        """Net, not gross — otherwise every discount looks like a shortfall."""
+        self.won(100000, discount=20000)
+        c = self.get('collection')
+        self.assertEqual(c['fully_paid'], 1)
+        self.assertEqual(c['partially_paid'], 0)
+        self.assertEqual(c['billed'], '80000.00')
+
+    def test_a_short_payment_is_partly_paid(self):
+        self.won(100000, received=40000)
+        c = self.get('collection')
+        self.assertEqual((c['fully_paid'], c['partially_paid']), (0, 1))
+        self.assertEqual(c['collection_rate'], 40.0)
+
+    def test_payment_modes_are_split_by_what_came_in(self):
+        self.won(100000, mode='cash')
+        self.won(60000, mode='upi')
+        modes = {m['mode']: m['amount'] for m in self.get('collection')['by_mode']}
+        self.assertEqual(modes, {'cash': '100000.00', 'upi': '60000.00'})
+
+    def test_a_deal_with_no_recorded_mode_is_named_not_hidden(self):
+        self.won(50000, mode='')
+        modes = [m['label'] for m in self.get('collection')['by_mode']]
+        self.assertIn('Not recorded', modes)
+
+    # ── Delivery ──
+    def test_delivery_counts_built_against_won(self):
+        from .models import Project
+        a = self.won(100000)
+        self.won(50000)
+        Project.objects.create(lead=a, is_complete=True, completed_at=timezone.now())
+        d = self.get('delivery')
+        self.assertEqual(d['won'], 2)
+        self.assertEqual(d['completed'], 1)
+        self.assertEqual(d['not_started'], 1)
+        self.assertEqual(d['completion_rate'], 50.0)
+
+    def test_a_project_underway_is_neither_done_nor_unstarted(self):
+        from .models import Project
+        lead = self.won(100000)
+        Project.objects.create(lead=lead, is_complete=False)
+        d = self.get('delivery')
+        self.assertEqual((d['completed'], d['in_progress'], d['not_started']), (0, 1, 0))
+
+    # ── Segments ──
+    def test_revenue_splits_by_connection_type(self):
+        self.won(300000, conn='commercial')
+        self.won(100000, conn='residential')
+        rows = {r['name']: r['revenue'] for r in self.get('segments')['by_connection']}
+        self.assertEqual(rows, {'Commercial': '300000.00', 'Residential': '100000.00'})
+
+    def test_a_deal_with_no_site_visit_is_labelled_not_recorded(self):
+        self.won(90000)
+        rows = [r['name'] for r in self.get('segments')['by_connection']]
+        self.assertEqual(rows, ['Not recorded'])
+
+    # ── Running total ──
+    def test_the_monthly_series_carries_a_running_total(self):
+        self.won(100000)
+        monthly = self.client.get('/api/company-performance/?period=all',
+                                  **self.auth()).json()['monthly']
+        self.assertEqual(monthly[-1]['cumulative'], '100000.00')
+
+    def test_the_running_total_ends_at_the_period_revenue(self):
+        self.won(100000)
+        self.won(50000)
+        data = self.client.get('/api/company-performance/?period=all', **self.auth()).json()
+        self.assertEqual(data['monthly'][-1]['cumulative'], data['headline']['revenue'])
