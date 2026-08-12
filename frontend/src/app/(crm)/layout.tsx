@@ -832,6 +832,9 @@ export default function DashboardLayout({
     { href: `/inventory/customers`,  label: "Customers",          Icon: Nav.Team, mod: "customers" },
     { href: `/inventory/quotes`,     label: "Proforma Invoice",   Icon: Nav.Quote, mod: "proforma" },
     { href: `/inventory/dispatch`,   label: "Sales / Dispatches",  Icon: Nav.StockOut, mod: "dispatch" },
+    // Reads the same module as dispatches: it is those deliveries, seen by what
+    // has been paid against them.
+    { href: `/inventory/payments`,   label: "Payments",            Icon: Nav.Billing, mod: "dispatch" },
     { href: `/inventory/purchase-orders`, label: "Purchases",     Icon: Nav.StockIn, mod: "purchases" },
   ].filter(i => {
     // Until `me` has answered, show the group rather than flashing it in.

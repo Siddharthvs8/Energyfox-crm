@@ -7,12 +7,22 @@
  * The figures come from the stock register, where closing stock is derived from
  * movements rather than stored.
  */
-import React from "react";
+import React, { useMemo, useState } from "react";
 import Link from "next/link";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
 } from "recharts";
-import { rupee, num, useStock, StockPage, Panel, Empty, I } from "./shared";
+import { rupee, num, useStock, StockPage, Panel, Empty, I, FIELD } from "./shared";
+import { exportInventoryDashboardPdf } from "./dashboardPdf";
+
+type Period = "all" | "this_month" | "this_year" | "custom";
+
+const PERIODS: { key: Period; label: string }[] = [
+  { key: "all", label: "All time" },
+  { key: "this_month", label: "This month" },
+  { key: "this_year", label: "This year" },
+  { key: "custom", label: "Custom" },
+];
 
 const STATUS_STYLE: Record<string, string> = {
   draft: "bg-slate-100 text-slate-600",
@@ -23,8 +33,33 @@ const STATUS_STYLE: Record<string, string> = {
 };
 
 export default function StockDashboardPage() {
-  const { summary, loading, denied } = useStock(["summary"], "dashboard");
+  const [period, setPeriod] = useState<Period>("this_month");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [exporting, setExporting] = useState(false);
+
+  // A custom range with neither end chosen would ask the server for everything
+  // twice over, so it waits until there is something to ask for.
+  const query = useMemo(() => {
+    const q = new URLSearchParams({ period });
+    if (period === "custom") {
+      if (!from && !to) return "period=all";
+      if (from) q.append("from", from);
+      if (to) q.append("to", to);
+    }
+    return q.toString();
+  }, [period, from, to]);
+
+  const { summary, loading, denied } = useStock(["summary"], "dashboard", query);
   const d = summary || null;
+
+  const exportPdf = async () => {
+    if (!d) return;
+    setExporting(true);
+    try { await exportInventoryDashboardPdf(d); }
+    catch { alert("Could not build the PDF."); }
+    finally { setExporting(false); }
+  };
 
   const chart = ((d?.monthly || []) as any[]).map(m => ({
     name: m.name, Purchases: Number(m.purchases), Sales: Number(m.sales),
@@ -33,7 +68,42 @@ export default function StockDashboardPage() {
 
   return (
     <StockPage title="Inventory Dashboard" loading={loading} denied={denied}
-      subtitle="Stock on hand, and where the quotes, receipts and dispatches stand.">
+      subtitle="Stock on hand, and where the quotes, receipts and dispatches stand."
+      action={
+        <button onClick={exportPdf} disabled={!d || exporting}
+          className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 active:scale-[0.97] transition-all disabled:opacity-50">
+          <I.Download /> {exporting ? "Building…" : "Export PDF"}
+        </button>
+      }>
+
+      {/* Period. Governs the movement figures — the quotes, receipts and
+          dispatches. Stock on hand is what is on the shelf now and does not
+          move with it, which the note below spells out. */}
+      <div className="bg-white border border-slate-200 rounded-2xl p-3 mb-5 flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap gap-1">
+          {PERIODS.map(p => (
+            <button key={p.key} onClick={() => setPeriod(p.key)}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                period === p.key ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+              {p.label}
+            </button>
+          ))}
+        </div>
+        {period === "custom" && (
+          <div className="flex items-center gap-2">
+            <input type="date" value={from} max={to || undefined} onChange={e => setFrom(e.target.value)}
+              aria-label="From date" className={`${FIELD} !w-auto !py-1.5 text-xs`} />
+            <span className="text-xs text-slate-400">to</span>
+            <input type="date" value={to} min={from || undefined} onChange={e => setTo(e.target.value)}
+              aria-label="To date" className={`${FIELD} !w-auto !py-1.5 text-xs`} />
+          </div>
+        )}
+        {d?.period_label && (
+          <span className="ml-auto text-[11px] text-slate-400">
+            Movements: <b className="text-slate-600">{d.period_label}</b> · stock on hand is current
+          </span>
+        )}
+      </div>
 
       {!d ? <Empty text="No stock data yet." /> : (
         <>
@@ -42,11 +112,11 @@ export default function StockDashboardPage() {
             <Metric label="Stock Value" value={rupee(d.total_value)} accent />
             <Metric label="Low Stock" value={d.reorder_count ?? 0} warn={(d.reorder_count ?? 0) > 0} href="/inventory/items" />
             <Metric label="Open Quotes" value={rupee(d.open_quote_value)} href="/inventory/quotes" />
-            <Metric label="This Month Dispatch" value={rupee(d.month_sales)} href="/inventory/dispatch" />
+            <Metric label="Dispatched" value={rupee(d.period_sales)} href="/inventory/dispatch" />
           </div>
 
           <div className="grid lg:grid-cols-[1.5fr_1fr] gap-5">
-            <Panel title="Purchases vs sales" subtitle="Movement value, last 6 months">
+            <Panel title="Purchases vs sales" subtitle={`Movement value · ${d.period_label || ""}`}>
               <div className="h-[270px]">
                 {chart.length === 0 ? <Empty text="No movements yet." /> : (
                   <ResponsiveContainer width="100%" height="100%">
@@ -97,11 +167,11 @@ export default function StockDashboardPage() {
             <Pipeline title="Quotes" href="/inventory/quotes" total={d.quote_count} counts={d.quote_status}
               footer={<>Open value <b className="text-slate-700">{rupee(d.open_quote_value)}</b></>} />
             <Pipeline title="Sales / Dispatches" href="/inventory/dispatch" total={d.dispatch_count}
-              footer={<>This month <b className="text-slate-700">{rupee(d.month_sales)}</b> · {d.customer_count ?? 0} customers</>} />
+              footer={<>Dispatched <b className="text-slate-700">{rupee(d.period_sales)}</b> · {d.customer_count ?? 0} customers</>} />
             {/* Counts the stock received to date; the module itself is now the
                 purchase orders raised on suppliers. */}
             <Pipeline title="Purchases" href="/inventory/purchase-orders" total={d.receipt_count}
-              footer={<>This month <b className="text-slate-700">{rupee(d.month_purchases)}</b> · {d.supplier_count ?? 0} suppliers</>} />
+              footer={<>Received <b className="text-slate-700">{rupee(d.period_purchases)}</b> · {d.supplier_count ?? 0} suppliers</>} />
           </div>
         </>
       )}

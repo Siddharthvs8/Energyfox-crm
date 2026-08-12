@@ -562,12 +562,12 @@ def StockModule(module):
     return _Permission
 
 
-def _movement_total(model, field='quantity'):
+def _movement_total(model, field='quantity', **extra):
     """Per-item Sum as a subquery — two plain annotations across two reverse FKs
     would multiply each other's rows and inflate both totals."""
     return Coalesce(
         Subquery(
-            model.objects.filter(item=OuterRef('pk')).values('item')
+            model.objects.filter(item=OuterRef('pk'), **extra).values('item')
             .annotate(t=Sum(field)).values('t')[:1],
             output_field=_MONEY,
         ),
@@ -593,11 +593,16 @@ def _reserved_total():
 
 
 def stock_items_with_ledger():
-    """Item master annotated with its received/dispatched/reserved totals."""
+    """Item master annotated with its received/dispatched/reserved totals.
+
+    Only a *released* dispatch has moved stock; one still waiting on payment
+    holds it instead, alongside the proformas — see StockItem.reserved.
+    """
     return StockItem.objects.annotate(
         received_qty=_movement_total(GoodsReceipt),
-        dispatched_qty=_movement_total(StockDispatch),
-        reserved_qty=_reserved_total(),
+        dispatched_qty=_movement_total(StockDispatch, status=StockDispatch.RELEASED),
+        reserved_qty=_reserved_total() + _movement_total(StockDispatch,
+                                                         status=StockDispatch.PENDING),
     )
 
 
@@ -700,44 +705,51 @@ def to_date(value):
         return None
 
 
-def check_payment(raw, invoice_total, paid_on_default=None):
-    """Validate the payment-verification step against what the delivery costs.
+def check_payment(raw, invoice_total, already_received=Decimal('0'), paid_on_default=None):
+    """Validate one payment against what is still owed on a document.
 
-    The rule is full payment: the goods do not leave until the invoice has been
-    settled to the paisa. Returns ``(kwargs, error)`` — kwargs ready for a
-    DispatchPayment, or a response body explaining what is missing. The error
-    carries the figures as well as the sentence, so the popup can show the
-    shortfall rather than only complain about it.
+    Verifying and dispatching are separate acts: a payment may be part of the
+    total — instalments are normal — and it is *releasing* the goods that needs
+    the invoice settled in full. So the only rules here are that the payment is a
+    real amount, in a real mode, and does not exceed what is left owing.
+
+    Returns ``(kwargs, error)`` — kwargs ready for a DispatchPayment, or a
+    response body explaining what is wrong. The error carries the figures as well
+    as the sentence, so the screen can show the position rather than only
+    complain about it.
     """
     raw = raw if isinstance(raw, dict) else {}
     invoice_total = to_money(invoice_total) or Decimal('0')
+    already = to_money(already_received) or Decimal('0')
+    outstanding = invoice_total - already
 
     if invoice_total <= 0:
-        return None, {'error': 'This delivery has no value to collect against. '
-                               'Check the quantities and rates before dispatching.'}
+        return None, {'error': 'This document has no value to collect against. '
+                               'Check the quantities and rates first.'}
+    if outstanding <= 0:
+        return None, {'error': 'This invoice has already been settled in full.',
+                      'invoice_total': str(invoice_total),
+                      'amount_received': str(already), 'balance': '0'}
 
     received = to_money(raw.get('amount_received'), default=None)
     if received is None:
-        return None, {'error': 'Enter the amount received before dispatching.',
-                      'invoice_total': str(invoice_total)}
+        return None, {'error': 'Enter the amount received.',
+                      'invoice_total': str(invoice_total), 'balance': str(outstanding)}
+    if received <= 0:
+        return None, {'error': 'Enter an amount greater than zero.',
+                      'invoice_total': str(invoice_total), 'balance': str(outstanding)}
 
     mode = str(raw.get('mode') or '').strip().lower()
     if mode not in {m for m, _label in DispatchPayment.MODE_CHOICES}:
         return None, {'error': 'Choose how the payment was received.',
-                      'invoice_total': str(invoice_total)}
+                      'invoice_total': str(invoice_total), 'balance': str(outstanding)}
 
-    if received != invoice_total:
-        short = invoice_total - received
-        if short > 0:
-            message = (f'Payment is short by ₹{short}. The full invoice of '
-                       f'₹{invoice_total} must be received before the goods can '
-                       f'be dispatched.')
-        else:
-            message = (f'The amount received (₹{received}) is more than the '
-                       f'invoice of ₹{invoice_total}. Correct one of the two '
-                       f'before dispatching.')
-        return None, {'error': message, 'invoice_total': str(invoice_total),
-                      'amount_received': str(received), 'balance': str(short)}
+    if received > outstanding:
+        return None, {
+            'error': (f'That is more than the ₹{outstanding} still owing on this '
+                      f'invoice. Record what was actually received.'),
+            'invoice_total': str(invoice_total),
+            'amount_received': str(already), 'balance': str(outstanding)}
 
     paid_on = to_date(raw.get('paid_on')) or paid_on_default or timezone.localdate()
     return {
@@ -749,6 +761,34 @@ def check_payment(raw, invoice_total, paid_on_default=None):
         'notes': str(raw.get('notes') or ''),
     }, None
 
+
+def payment_state(total, received):
+    """The money position on a document, as every screen reports it."""
+    total = to_money(total) or Decimal('0')
+    received = to_money(received) or Decimal('0')
+    balance = total - received
+    return {
+        'invoice_total': str(total),
+        'amount_received': str(received),
+        'balance': str(balance if balance > 0 else Decimal('0')),
+        'fully_paid': bool(total > 0 and balance <= 0),
+    }
+
+
+def payment_rows(payments):
+    """The verified payments on a document, oldest first, for the history list."""
+    return [{
+        'id': p.id,
+        'amount_received': str(p.amount_received),
+        'mode': p.mode,
+        'mode_label': p.get_mode_display(),
+        'reference': p.reference,
+        'paid_on': p.paid_on.isoformat() if p.paid_on else None,
+        'notes': p.notes,
+        'verified_by': (f"{p.verified_by.first_name} {p.verified_by.last_name}".strip()
+                        or p.verified_by.username) if p.verified_by else None,
+        'verified_at': p.verified_at.isoformat() if p.verified_at else None,
+    } for p in payments]
 
 class _MovementViewSet(viewsets.ModelViewSet):
     # Subclasses set their own module: receipts belong to purchases, dispatches
@@ -790,13 +830,13 @@ class StockDispatchViewSet(_MovementViewSet):
 
     @action(detail=False, methods=['post'], url_path='dispatch')
     def dispatch_document(self, request):
-        """Release a whole delivery: every line, plus the payment that freed it.
+        """Raise a whole delivery, pending payment.
 
-        This is what Save Dispatch calls. A delivery is several rows sharing one
-        invoice number and one payment, so it is written here in a single
-        transaction rather than a row at a time — a half-written delivery, or
-        one whose goods left against an unverified payment, must not be a state
-        the database can reach.
+        This is what Save Dispatch calls. The rows are written together in one
+        transaction — a half-written delivery must not be a state the database
+        can reach — but they are *pending*: the goods stay on the shelf, held
+        rather than moved, until the invoice is settled and the delivery
+        released. Payments go to `verify-payment`, releasing to `release`.
 
         The plain ``POST /api/stock-dispatches/`` is still the row primitive
         (editing a line, the quote conversion's own rows); the payment gate
@@ -829,16 +869,11 @@ class StockDispatchViewSet(_MovementViewSet):
         invoice_total = to_money(goods + (goods * tax_percent / Decimal('100')))
 
         dispatch_date = to_date(data.get('date')) or timezone.localdate()
-        payment, error = check_payment(data.get('payment'), invoice_total,
-                                       paid_on_default=dispatch_date)
-        if error:
-            return Response(error, status=status.HTTP_400_BAD_REQUEST)
-
         customer_id = data.get('customer') or None
         invoice_no = (str(data.get('invoice_no') or '').strip()
                       or next_document_number('IN', on=dispatch_date))
-        if DispatchPayment.objects.filter(invoice_no=invoice_no).exists():
-            return Response({'error': f'{invoice_no} has already been dispatched.'},
+        if StockDispatch.objects.filter(invoice_no=invoice_no).exists():
+            return Response({'error': f'{invoice_no} already exists.'},
                             status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
@@ -846,16 +881,25 @@ class StockDispatchViewSet(_MovementViewSet):
                 StockDispatch.objects.create(
                     invoice_no=invoice_no, date=dispatch_date, customer_id=customer_id,
                     item_id=item_id, quantity=quantity, rate=rate,
+                    status=StockDispatch.PENDING,
                     tax_percent=tax_percent, serial_numbers=serials,
                     site=str(data.get('site') or ''), notes=str(data.get('notes') or ''),
                     created_by=request.user if request.user.is_authenticated else None,
                 )
                 for item_id, quantity, rate, serials in lines
             ]
-            DispatchPayment.objects.create(
-                invoice_no=invoice_no,
-                verified_by=request.user if request.user.is_authenticated else None,
-                **payment)
+            # An opening payment can come with the delivery; it is optional, and
+            # partial is fine — releasing is the step that needs the full amount.
+            if data.get('payment'):
+                payment, error = check_payment(data.get('payment'), invoice_total,
+                                               paid_on_default=dispatch_date)
+                if error:
+                    transaction.set_rollback(True)
+                    return Response(error, status=status.HTTP_400_BAD_REQUEST)
+                DispatchPayment.objects.create(
+                    invoice_no=invoice_no,
+                    verified_by=request.user if request.user.is_authenticated else None,
+                    **payment)
 
         return Response({
             'invoice_no': invoice_no,
@@ -865,6 +909,100 @@ class StockDispatchViewSet(_MovementViewSet):
                 self.get_queryset().filter(id__in=[r.id for r in rows]),
                 many=True, context={'request': request}).data,
         }, status=status.HTTP_201_CREATED)
+
+    # ── Money, then goods ──
+    @staticmethod
+    def invoice_total_for(rows):
+        """What a delivery's rows come to, tax included — one rounding, at the
+        end, so the figure matches the one the screen adds up."""
+        goods = sum((r.amount or Decimal('0') for r in rows), Decimal('0'))
+        tax = sum((r.tax_amount or Decimal('0') for r in rows), Decimal('0'))
+        return to_money(goods + tax) or Decimal('0')
+
+    def _invoice_rows(self, invoice_no):
+        return list(StockDispatch.objects.filter(invoice_no=invoice_no)
+                    .select_related('item', 'customer').order_by('id'))
+
+    @action(detail=False, methods=['get', 'post'], url_path='verify-payment')
+    def verify_payment(self, request):
+        """Record a payment against a pending delivery, or read its position.
+
+        Verifying is not dispatching: a payment may be part of the total, and
+        several of them may arrive before the invoice is settled. Releasing the
+        goods is a separate act — see `release`.
+        """
+        invoice_no = str(request.data.get('invoice_no')
+                         or request.query_params.get('invoice_no') or '').strip()
+        rows = self._invoice_rows(invoice_no) if invoice_no else []
+        if not rows:
+            return Response({'error': 'No delivery found under that invoice number.'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        total = self.invoice_total_for(rows)
+
+        def position():
+            payments = DispatchPayment.objects.filter(invoice_no=invoice_no)
+            received = DispatchPayment.received_for(invoice_no=invoice_no)
+            return {
+                'invoice_no': invoice_no,
+                'status': rows[0].status,
+                **payment_state(total, received),
+                'payments': payment_rows(payments),
+            }
+
+        if request.method == 'GET':
+            return Response(position())
+
+        if rows[0].status == StockDispatch.RELEASED:
+            return Response({'error': f'{invoice_no} has already been dispatched.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        payment, error = check_payment(
+            request.data.get('payment') or request.data, total,
+            already_received=DispatchPayment.received_for(invoice_no=invoice_no),
+            paid_on_default=rows[0].date)
+        if error:
+            return Response(error, status=status.HTTP_400_BAD_REQUEST)
+
+        DispatchPayment.objects.create(
+            invoice_no=invoice_no,
+            verified_by=request.user if request.user.is_authenticated else None,
+            **payment)
+        return Response(position(), status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=['post'], url_path='release')
+    def release(self, request):
+        """Send a settled delivery out: pending → released.
+
+        This is the step the stock ledger has been waiting for. Until now the
+        goods were reserved — on the shelf but spoken for; releasing is what
+        moves them, and it needs the invoice paid in full.
+        """
+        invoice_no = str(request.data.get('invoice_no') or '').strip()
+        rows = self._invoice_rows(invoice_no) if invoice_no else []
+        if not rows:
+            return Response({'error': 'No delivery found under that invoice number.'},
+                            status=status.HTTP_404_NOT_FOUND)
+        if rows[0].status == StockDispatch.RELEASED:
+            return Response({'error': f'{invoice_no} has already been dispatched.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        total = self.invoice_total_for(rows)
+        received = DispatchPayment.received_for(invoice_no=invoice_no)
+        state = payment_state(total, received)
+        if not state['fully_paid']:
+            return Response({
+                'error': (f"₹{state['balance']} of ₹{state['invoice_total']} is still "
+                          f"owing. The invoice must be settled in full before the "
+                          f"goods can leave."),
+                **state,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        now = timezone.now()
+        StockDispatch.objects.filter(invoice_no=invoice_no).update(
+            status=StockDispatch.RELEASED, released_at=now)
+        return Response({'invoice_no': invoice_no, 'status': StockDispatch.RELEASED,
+                         'released_at': now.isoformat(), **state})
 
     # ── The invoice for a dispatch ──
     def _document_rows(self, dispatch):
@@ -950,14 +1088,189 @@ class StockDispatchViewSet(_MovementViewSet):
         return Response(payload, status=code)
 
 
+class StockPaymentsView(APIView):
+    """Inventory → Payments: every document money has been verified against.
+
+    Three sections, and they are exclusive so a document appears once and the
+    counts add up:
+
+      * credit         — anything released on terms. Credit settles an invoice, so
+                         these would otherwise sit under "fully paid" and hide the
+                         fact that no money came in.
+      * fully paid     — settled, in real money.
+      * partially paid — some received, a balance still owing.
+
+    Both kinds of document are here. A delivery is the usual one, but a proforma
+    takes its instalments before it becomes one — leaving those out would hide
+    part-paid business precisely while it is part-paid, which is when someone
+    wants to see it.
+    """
+    permission_classes = [permissions.IsAuthenticated, StockModule('dispatch')]
+
+    def get(self, request):
+        rows = [*self._invoice_rows(), *self._proforma_rows()]
+
+        sections = {'credit': [], 'fully_paid': [], 'partially_paid': []}
+        for row in rows:
+            sections[row.pop('_section')].append(row)
+
+        # Newest first within each section — the money that just moved is the
+        # money being looked for.
+        for group in sections.values():
+            group.sort(key=lambda r: (r['last_paid_on'] or '', r['number']), reverse=True)
+
+        return Response({
+            'sections': {name: self._summarise(group) for name, group in sections.items()},
+            'totals': self._summarise(rows[:])['totals'] if rows else self._summarise([])['totals'],
+        })
+
+    @staticmethod
+    def _summarise(rows):
+        received = sum((Decimal(r['received']) for r in rows), Decimal('0'))
+        billed = sum((Decimal(r['invoice_total']) for r in rows), Decimal('0'))
+        owing = sum((Decimal(r['balance']) for r in rows), Decimal('0'))
+        return {
+            'rows': rows,
+            'totals': {'count': len(rows), 'invoice_total': str(billed),
+                       'received': str(received), 'balance': str(owing)},
+        }
+
+    @staticmethod
+    def _classify(received, total, has_credit):
+        if has_credit:
+            return 'credit'
+        return 'fully_paid' if total > 0 and received >= total else 'partially_paid'
+
+    def _row(self, *, number, kind, customer, date, total, payments, status, status_label):
+        received = sum((p.amount_received or Decimal('0') for p in payments), Decimal('0'))
+        total = to_money(total) or Decimal('0')
+        balance = total - received
+        modes = []
+        for p in payments:                       # ordered oldest first, kept that way
+            if p.mode not in modes:
+                modes.append(p.mode)
+        paid_dates = [p.paid_on.isoformat() for p in payments if p.paid_on]
+        return {
+            '_section': self._classify(received, total, any(p.mode == 'credit' for p in payments)),
+            'number': number,
+            'kind': kind,                        # 'invoice' | 'proforma'
+            'customer': customer,
+            'date': date.isoformat() if date else None,
+            'invoice_total': str(total),
+            'received': str(received),
+            'balance': str(balance if balance > 0 else Decimal('0')),
+            'modes': modes,
+            'payment_count': len(payments),
+            'last_paid_on': max(paid_dates) if paid_dates else None,
+            'status': status,
+            'status_label': status_label,
+            'payments': payment_rows(payments),
+        }
+
+    def _invoice_rows(self):
+        """One row per dispatch invoice that has taken a payment."""
+        payments = (DispatchPayment.objects.exclude(invoice_no='')
+                    .select_related('verified_by'))
+        by_invoice = {}
+        for p in payments:
+            by_invoice.setdefault(p.invoice_no, []).append(p)
+        if not by_invoice:
+            return []
+
+        lines = (StockDispatch.objects.filter(invoice_no__in=by_invoice)
+                 .select_related('customer'))
+        grouped = {}
+        for line in lines:
+            grouped.setdefault(line.invoice_no, []).append(line)
+
+        out = []
+        for invoice_no, paid in by_invoice.items():
+            dispatch_lines = grouped.get(invoice_no, [])
+            head = dispatch_lines[0] if dispatch_lines else None
+            total = (StockDispatchViewSet.invoice_total_for(dispatch_lines)
+                     if dispatch_lines
+                     # The delivery was deleted out from under its payments; the
+                     # money still happened, so report it against what was owed.
+                     else max((p.invoice_total for p in paid), default=Decimal('0')))
+            out.append(self._row(
+                number=invoice_no, kind='invoice',
+                customer=head.customer.name if head and head.customer else None,
+                date=head.date if head else None,
+                total=total, payments=paid,
+                status=head.status if head else StockDispatch.RELEASED,
+                status_label=head.get_status_display() if head else 'Released',
+            ))
+        return out
+
+    def _proforma_rows(self):
+        """Proformas still collecting — their payments have not moved onto an
+        invoice yet, because there is no delivery until they are settled."""
+        quotes = (StockQuote.objects.filter(payments__isnull=False)
+                  .select_related('customer').prefetch_related('items', 'payments')
+                  .distinct())
+        return [self._row(
+            number=q.number, kind='proforma',
+            customer=q.customer.name if q.customer else None,
+            date=q.quote_date, total=q.total, payments=list(q.payments.all()),
+            status=q.status, status_label=q.get_status_display(),
+        ) for q in quotes]
+
 class StockSummaryView(APIView):
     """Dashboard figures for the stock register: total value, reorder alerts,
     this month's movement, a six-month series and the quote pipeline — the same
     shape the retail inventory dashboard reports, so the two screens match."""
     permission_classes = [permissions.IsAuthenticated, StockModule('dashboard')]
     MONTHS = 6
+    # A month per bar; more than a year of them is unreadable, so a long period
+    # (or all time) shows the most recent twelve. Short windows get a bar a day
+    # instead — "this month" as one bar tells nobody anything.
+    MAX_BUCKETS = 12
+    DAILY_UP_TO_DAYS = 62
+    MAX_DAILY_BUCKETS = 62
+
+    @staticmethod
+    def resolve_period(request):
+        """The window the movement figures cover: (start, end, key, label).
+
+        `start` of None means all time. Defaults to this month, which is what the
+        dashboard reported before it could be asked for anything else.
+
+        Stock on hand is deliberately *not* part of this — items, stock value and
+        the reorder list describe the warehouse as it is now, and a date range
+        cannot change what is on the shelf today.
+        """
+        today = timezone.localdate()
+        key = (request.query_params.get('period') or 'this_month').strip().lower()
+
+        if key == 'all':
+            return None, None, 'all', 'All time'
+        if key == 'this_year':
+            return today.replace(month=1, day=1), today, 'this_year', f'This year ({today.year})'
+        if key == 'custom':
+            start = to_date(request.query_params.get('from'))
+            end = to_date(request.query_params.get('to')) or today
+            if start and end < start:
+                start, end = end, start
+            if not start:
+                # A "to" on its own reads as everything up to that date.
+                return None, end, 'custom', f'Up to {end.strftime("%d %b %Y")}'
+            return start, end, 'custom', (f'{start.strftime("%d %b %Y")} – '
+                                          f'{end.strftime("%d %b %Y")}')
+        start = today.replace(day=1)
+        return start, today, 'this_month', f'This month ({today.strftime("%B %Y")})'
 
     def get(self, request):
+        start, end, period_key, period_label = self.resolve_period(request)
+
+        def within(field='date'):
+            """Date filter for the chosen window, as kwargs."""
+            out = {}
+            if start:
+                out[f'{field}__gte'] = start
+            if end:
+                out[f'{field}__lte'] = end
+            return out
+
         items = list(stock_items_with_ledger())
 
         total_value = sum((i.stock_value for i in items), Decimal('0'))
@@ -968,7 +1281,6 @@ class StockSummaryView(APIView):
             by_category[i.category] = by_category.get(i.category, Decimal('0')) + i.stock_value
 
         today = timezone.localdate()
-        month_start = today.replace(day=1)
 
         def movement_value(model, **filters):
             """Money moved. For dispatches that is the invoiced figure, tax
@@ -980,29 +1292,44 @@ class StockSummaryView(APIView):
                 t=Coalesce(Sum(line, output_field=_MONEY),
                            Value(Decimal('0')), output_field=_MONEY))['t']
 
-        month_in = movement_value(GoodsReceipt, date__gte=month_start)
-        month_out = movement_value(StockDispatch, date__gte=month_start)
+        period_in = movement_value(GoodsReceipt, **within())
+        period_out = movement_value(StockDispatch, **within())
 
-        # Six-month purchases-vs-sales series, matching the retail dashboard's
-        # chart. Walk the months so an empty month still gets a bar.
-        start_month = month_start
-        for _ in range(self.MONTHS - 1):
-            start_month = (start_month - timezone.timedelta(days=1)).replace(day=1)
+        # Purchases-vs-sales across the chosen window. The bucket follows the
+        # span rather than being fixed: a month asked for as a single bar is not
+        # a chart, and five years of days is not one either. Empty buckets are
+        # still drawn, so a quiet week reads as quiet rather than disappearing.
+        first_movement = min(
+            (d for d in (GoodsReceipt.objects.order_by('date').values_list('date', flat=True).first(),
+                         StockDispatch.objects.order_by('date').values_list('date', flat=True).first())
+             if d), default=today)
+        chart_end = end or today
+        chart_start = start or first_movement
+        if chart_start > chart_end:
+            chart_start = chart_end
+        daily = (chart_end - chart_start).days <= self.DAILY_UP_TO_DAYS
 
         monthly = []
-        cursor = start_month
-        while cursor <= today:
-            nxt = (cursor.replace(day=28) + timezone.timedelta(days=4)).replace(day=1)
+        cursor = chart_start if daily else chart_start.replace(day=1)
+        while cursor <= chart_end:
+            if daily:
+                nxt = cursor + timezone.timedelta(days=1)
+                name = cursor.strftime('%d %b')
+            else:
+                nxt = (cursor.replace(day=28) + timezone.timedelta(days=4)).replace(day=1)
+                name = cursor.strftime('%b %y')
+            stop = min(nxt, chart_end + timezone.timedelta(days=1))
             monthly.append({
-                'name': cursor.strftime('%b'),
-                'purchases': movement_value(GoodsReceipt, date__gte=cursor, date__lt=nxt),
-                'sales': movement_value(StockDispatch, date__gte=cursor, date__lt=nxt),
+                'name': name,
+                'purchases': movement_value(GoodsReceipt, date__gte=cursor, date__lt=stop),
+                'sales': movement_value(StockDispatch, date__gte=cursor, date__lt=stop),
             })
             cursor = nxt
+        monthly = monthly[-(self.MAX_DAILY_BUCKETS if daily else self.MAX_BUCKETS):]
 
         # Quote pipeline. Totals come from the model's own `total` property, since
         # discount and tax live on the header — see InventoryDashboardView.
-        quotes = list(StockQuote.objects.prefetch_related('items'))
+        quotes = list(StockQuote.objects.filter(**within('quote_date')).prefetch_related('items'))
         quote_status = {}
         for q in quotes:
             quote_status[q.status] = quote_status.get(q.status, 0) + 1
@@ -1010,14 +1337,22 @@ class StockSummaryView(APIView):
                                if q.status in {'draft', 'sent', 'accepted'})
 
         return Response({
+            # What the window is, so the screen can label its own figures rather
+            # than guessing at them.
+            'period': period_key,
+            'period_label': period_label,
+            'period_from': start.isoformat() if start else None,
+            'period_to': end.isoformat() if end else None,
+            # Stock on hand — the warehouse as it stands, whatever the period.
             'sku_count': len(items),
             'total_value': total_value,
             'reorder_count': len(low),
-            'month_purchases': month_in,
-            'month_sales': month_out,
+            # Everything below is within the window.
+            'period_purchases': period_in,
+            'period_sales': period_out,
             'monthly': monthly,
-            'receipt_count': GoodsReceipt.objects.count(),
-            'dispatch_count': StockDispatch.objects.count(),
+            'receipt_count': GoodsReceipt.objects.filter(**within()).count(),
+            'dispatch_count': StockDispatch.objects.filter(**within()).count(),
             'supplier_count': Vendor.objects.count(),
             'customer_count': StockCustomer.objects.count(),
             'quote_count': len(quotes),
@@ -1183,15 +1518,54 @@ class StockQuoteViewSet(ProformaDocumentMixin, viewsets.ModelViewSet):
         label = item.description or f"{it.brand} {it.model_name}".strip() or it.code
         return label, it.hsn, it.unit
 
+    def payment_position(self, quote):
+        """What has been verified against this proforma, and what is left."""
+        received = DispatchPayment.received_for(quote=quote)
+        return {
+            'number': quote.number,
+            'status': quote.status,
+            **payment_state(quote.total, received),
+            'payments': payment_rows(quote.payments.all()),
+        }
+
+    @action(detail=True, methods=['get', 'post'], url_path='verify-payment')
+    def verify_payment(self, request, pk=None):
+        """Record a payment against this proforma, or read its position.
+
+        Verifying is not dispatching. Money can arrive in instalments and each
+        one is checked here; the goods move only once the whole invoice is
+        settled, which is `convert`.
+        """
+        quote = self.get_object()
+        if request.method == 'GET':
+            return Response(self.payment_position(quote))
+
+        if quote.status == 'converted':
+            return Response({'error': f'{quote.number} has already been dispatched.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        payment, error = check_payment(
+            request.data.get('payment') or request.data, quote.total,
+            already_received=DispatchPayment.received_for(quote=quote),
+            paid_on_default=quote.quote_date or timezone.localdate())
+        if error:
+            return Response(error, status=status.HTTP_400_BAD_REQUEST)
+
+        DispatchPayment.objects.create(
+            quote=quote,
+            verified_by=request.user if request.user.is_authenticated else None,
+            **payment)
+        return Response(self.payment_position(quote), status=status.HTTP_201_CREATED)
+
     @action(detail=True, methods=['post'])
     def convert(self, request, pk=None):
-        """Turn an accepted proforma into stock dispatches — one row per line,
-        all sharing one invoice number.
+        """Turn a settled proforma into stock dispatches — one row per line, all
+        sharing one invoice number.
 
-        The payment is verified first, on the proforma's own total: this action
-        is what puts the goods out of the door, so it is behind the same gate as
-        Save Dispatch. Guarded so it can only happen once, too — a second call
-        would take the same goods out of stock twice.
+        This is the step that puts the goods out of the door, so it needs the
+        invoice paid in full; the payments themselves were verified one at a time
+        against the proforma (see `verify-payment`). Guarded so it can only
+        happen once, too — a second call would take the same goods out twice.
         """
         quote = self.get_object()
         if quote.status == 'converted':
@@ -1203,10 +1577,28 @@ class StockQuoteViewSet(ProformaDocumentMixin, viewsets.ModelViewSet):
                             status=status.HTTP_400_BAD_REQUEST)
 
         dispatch_date = quote.quote_date or timezone.localdate()
-        payment, error = check_payment(request.data.get('payment'), quote.total,
-                                       paid_on_default=dispatch_date)
-        if error:
-            return Response(error, status=status.HTTP_400_BAD_REQUEST)
+        # A final payment may come with the request, so the last instalment and
+        # the dispatch can be one action from the screen.
+        if request.data.get('payment'):
+            payment, error = check_payment(
+                request.data.get('payment'), quote.total,
+                already_received=DispatchPayment.received_for(quote=quote),
+                paid_on_default=dispatch_date)
+            if error:
+                return Response(error, status=status.HTTP_400_BAD_REQUEST)
+            DispatchPayment.objects.create(
+                quote=quote,
+                verified_by=request.user if request.user.is_authenticated else None,
+                **payment)
+
+        state = payment_state(quote.total, DispatchPayment.received_for(quote=quote))
+        if not state['fully_paid']:
+            return Response({
+                'error': (f"₹{state['balance']} of ₹{state['invoice_total']} is still "
+                          f"owing on {quote.number}. The invoice must be settled in "
+                          f"full before the goods can leave."),
+                **state,
+            }, status=status.HTTP_400_BAD_REQUEST)
 
         # The dispatch is a sale, so it takes its own number from the invoice
         # series rather than carrying the proforma's. One number for the whole
@@ -1224,10 +1616,9 @@ class StockQuoteViewSet(ProformaDocumentMixin, viewsets.ModelViewSet):
                 )
                 for line in lines
             ]
-            DispatchPayment.objects.create(
-                invoice_no=invoice_no,
-                verified_by=request.user if request.user.is_authenticated else None,
-                **payment)
+            # The payments followed the proforma; move them onto the invoice
+            # they actually paid for, so the delivery carries its own history.
+            quote.payments.update(invoice_no=invoice_no, quote=None)
             quote.status = 'converted'
             quote.converted_at = timezone.now()
             quote.save(update_fields=['status', 'converted_at', 'updated_at'])

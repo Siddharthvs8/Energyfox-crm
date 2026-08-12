@@ -15,7 +15,7 @@ import { buildProformaPdf, proformaFileName } from "@/lib/proformaPdf";
 import {
   FIELD, rupee, num, todayISO, useStock, StockPage, AddButton, SearchBar,
   DataTable, Modal, Fld, Row, DocActions, DocumentPreview, I,
-  PaymentVerificationModal, VerifiedPayment,
+  PaymentVerificationModal, VerifiedPayment, PaymentRow,
 } from "../shared";
 
 type Line = { item: string; serial_numbers: string; quantity: string; rate: string };
@@ -44,6 +44,11 @@ export default function StockDispatchPage() {
   // gate, and the gate is what posts it. Nothing exists until the invoice has
   // been settled.
   const [pendingLines, setPendingLines] = useState<Line[] | null>(null);
+  // A delivery already on the books, open at its payment screen.
+  const [settling, setSettling] = useState<any>(null);
+  const [position, setPosition] = useState<{ total: number; received: number; payments: PaymentRow[] }>(
+    { total: 0, received: 0, payments: [] });
+  const [working, setWorking] = useState(false);
 
   const lines: Line[] = form.lines;
   const setLine = (i: number, patch: Partial<Line>) =>
@@ -104,14 +109,14 @@ export default function StockDispatchPage() {
       return;
     }
 
-    // A new delivery: hold the lines and let the payment gate release them.
+    // A new delivery: raise it, then settle it. Nothing ships yet.
     setPendingLines(valid);
   };
 
-  /** The gate's answer. Only here does the delivery reach the database — every
-   *  line and the payment in one request, so a half-released delivery is not a
-   *  state that can exist. */
-  const dispatchVerified = async (payment: VerifiedPayment) => {
+  /** Write the delivery. Every line in one request, so a half-written delivery
+   *  is not a state that can exist — but *pending*: its goods stay on the shelf,
+   *  reserved, until the invoice is settled and it is released. */
+  const raiseDispatch = async (payment?: VerifiedPayment) => {
     if (!pendingLines) return;
     setSaving(true);
     const d = await act("stock-dispatches/dispatch", {
@@ -121,15 +126,51 @@ export default function StockDispatchPage() {
         item: l.item, serial_numbers: l.serial_numbers,
         quantity: l.quantity, rate: l.rate || 0,
       })),
-      payment,
+      ...(payment ? { payment } : {}),
     });
     setSaving(false);
-    if (!d) return;                            // the gate refused; stay put
+    if (!d) return;                            // refused; stay put
     setPendingLines(null);
     setShow(false);
     setEditing(null);
     setForm(blankForm());
-    alert(`Dispatched on invoice ${d.invoice_no} — ${d.dispatched_lines} line(s), payment verified.`);
+    // Straight on to its payment screen: raising it is only half the job.
+    openPayments({ invoice_no: d.invoice_no });
+  };
+
+  /** Open a delivery's payment screen, showing what it has taken so far. */
+  const openPayments = async (r: any) => {
+    setPosition({ total: 0, received: 0, payments: [] });
+    setSettling(r);
+    try {
+      const res = await fetch(`${api}/api/stock-dispatches/verify-payment/?invoice_no=${encodeURIComponent(r.invoice_no)}`,
+        { headers: authHeader() });
+      if (res.ok) {
+        const d = await res.json();
+        setPosition({ total: Number(d.invoice_total || 0), received: Number(d.amount_received || 0),
+                      payments: d.payments || [] });
+      }
+    } catch { /* the modal still opens */ }
+  };
+
+  const verifyPayment = async (payment: VerifiedPayment) => {
+    if (!settling) return;
+    setWorking(true);
+    const d = await act("stock-dispatches/verify-payment", { invoice_no: settling.invoice_no, payment });
+    setWorking(false);
+    if (!d) return;
+    setPosition({ total: Number(d.invoice_total || 0), received: Number(d.amount_received || 0),
+                  payments: d.payments || [] });
+  };
+
+  const releaseNow = async () => {
+    if (!settling) return;
+    setWorking(true);
+    const d = await act("stock-dispatches/release", { invoice_no: settling.invoice_no });
+    setWorking(false);
+    if (!d) return;
+    setSettling(null);
+    alert(`${settling.invoice_no} dispatched — the stock has moved.`);
   };
 
   const api = getApiBase(APP_SLUG);
@@ -198,6 +239,15 @@ export default function StockDispatchPage() {
 
       <SearchBar value={search} onChange={setSearch} placeholder="Search dispatches..." />
 
+      {/* A pending delivery is stock held, not stock gone — worth saying once at
+          the top rather than leaving it to be inferred from the badges. */}
+      {list.some(r => r.status === "pending") && (
+        <p className="mb-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5">
+          Deliveries marked <b>not yet shipped</b> are recorded and their stock is held, but the
+          goods have not left. Settle the invoice, then dispatch.
+        </p>
+      )}
+
       <DataTable
         minWidth={880} compact
         columns={[
@@ -210,7 +260,14 @@ export default function StockDispatchPage() {
         onRowClick={i => setPreview(filtered[i])}
         rowTitle="Open the invoice"
         rows={filtered.map(r => [
-          <span className="font-mono text-xs font-semibold text-slate-900 whitespace-nowrap">{r.invoice_no || "—"}</span>,
+          <span className="font-mono text-xs font-semibold text-slate-900 whitespace-nowrap">
+            {r.invoice_no || "—"}
+            {r.status === "pending" && (
+              <span className="block text-[9px] font-bold uppercase tracking-wider text-amber-600">
+                not yet shipped
+              </span>
+            )}
+          </span>,
           r.customer_name || "—",
           <span className="font-mono text-xs text-slate-500 whitespace-nowrap">{r.date || "—"}</span>,
           <div className="min-w-[120px]">
@@ -240,15 +297,19 @@ export default function StockDispatchPage() {
           })(),
           <span className="tabular-nums">{num(r.quantity)}</span>,
           <span className="tabular-nums font-semibold">{rupee(r.total)}</span>,
-          r.payment_verified ? (
-            <span title={`${rupee(r.payment_amount)} · ${r.payment_mode || ""}${r.payment_reference ? ` · ${r.payment_reference}` : ""}`}
-              className="inline-flex text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full bg-emerald-50 text-emerald-700">
-              Paid
-            </span>
+          r.status === "pending" ? (
+            <button onClick={e => { e.stopPropagation(); openPayments(r); }}
+              title={`${rupee(r.amount_received)} received · ${rupee(r.balance)} owing`}
+              className={`inline-flex text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full transition-colors ${
+                r.fully_paid
+                  ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                  : "bg-amber-50 text-amber-700 hover:bg-amber-100"}`}>
+              {r.fully_paid ? "Settled · dispatch" : `Owing ${rupee(r.balance)}`}
+            </button>
           ) : (
-            <span title="No payment was verified against this invoice."
-              className="inline-flex text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full bg-slate-100 text-slate-500">
-              —
+            <span title={`Released${r.released_at ? ` on ${new Date(r.released_at).toLocaleDateString("en-IN")}` : ""}`}
+              className="inline-flex text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full bg-slate-100 text-slate-600">
+              Dispatched
             </span>
           ),
           <DocActions busy={busy === r.id}
@@ -360,13 +421,51 @@ export default function StockDispatchPage() {
       </Modal>
 
       {/* Nothing has been written yet — this is what releases the delivery. */}
+      {/* Raising a delivery is its own step now — it asks whether to take an
+          opening payment with it, and neither answer ships anything. */}
+      {pendingLines !== null && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
+            <div className="px-6 py-4 border-b border-slate-100">
+              <h2 className="text-lg font-bold text-slate-900">Raise this delivery?</h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                It is recorded and its stock held, but nothing ships until the invoice is
+                settled and you dispatch it.
+              </p>
+            </div>
+            <div className="p-6">
+              <div className="flex items-center justify-between rounded-xl bg-slate-50 border border-slate-200 px-4 py-3">
+                <span className="text-sm font-semibold text-slate-600">Invoice total</span>
+                <span className="text-lg font-bold text-slate-900 tabular-nums">
+                  {rupee(totalOf(pendingLines || []))}
+                </span>
+              </div>
+            </div>
+            <div className="px-6 py-4 border-t border-slate-100 flex gap-3">
+              <button onClick={() => setPendingLines(null)} disabled={saving}
+                className="flex-1 px-4 py-2.5 text-slate-600 font-medium hover:bg-slate-50 rounded-xl transition">
+                Cancel
+              </button>
+              <button onClick={() => raiseDispatch()} disabled={saving}
+                className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 rounded-xl transition disabled:opacity-50">
+                {saving ? "Saving…" : "Raise & take payment"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <PaymentVerificationModal
-        show={pendingLines !== null}
-        invoiceTotal={totalOf(pendingLines || [])}
+        show={!!settling}
+        invoiceTotal={position.total}
+        alreadyReceived={position.received}
+        payments={position.payments}
+        title={settling ? `Payment Verification · ${settling.invoice_no}` : "Payment Verification"}
         defaultDate={form.date}
-        saving={saving}
-        onCancel={() => setPendingLines(null)}
-        onConfirm={dispatchVerified} />
+        saving={working}
+        onCancel={() => setSettling(null)}
+        onVerify={verifyPayment}
+        onDispatch={releaseNow} />
     </StockPage>
   );
 }

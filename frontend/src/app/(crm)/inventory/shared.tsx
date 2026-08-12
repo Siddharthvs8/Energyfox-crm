@@ -60,6 +60,7 @@ const SOURCES: Record<string, string> = {
   suppliers: "vendors",
   customers: "stock-customers",
   quotes: "stock-quotes",
+  payments: "stock-payments",
   purchaseOrders: "stock-purchase-orders",
 };
 
@@ -77,7 +78,9 @@ const explain = async (r: Response, fallback: string) => {
 export type B2BModule = "dashboard" | "items" | "suppliers" | "customers"
   | "proforma" | "dispatch" | "purchases";
 
-export function useStock(want: (keyof typeof SOURCES)[], module?: B2BModule) {
+/** `query` is appended to every source fetch; changing it refetches. Used by
+ *  the dashboard, whose figures are asked for over a period. */
+export function useStock(want: (keyof typeof SOURCES)[], module?: B2BModule, query?: string) {
   const domain = APP_SLUG;
   const api = getApiBase(domain);
   const router = useRouter();
@@ -96,17 +99,20 @@ export function useStock(want: (keyof typeof SOURCES)[], module?: B2BModule) {
     const names = key.split(",") as (keyof typeof SOURCES)[];
     try {
       const h = { Authorization: `Bearer ${token()}` };
-      const res = await Promise.all(names.map(n => fetch(`${api}/api/${SOURCES[n]}/`, { headers: h })));
+      const qs = query ? `?${query}` : "";
+      const res = await Promise.all(names.map(n => fetch(`${api}/api/${SOURCES[n]}/${qs}`, { headers: h })));
       if (res.some(r => r.status === 403)) { setDenied(true); return; }
       const next: Record<string, any> = {};
       for (let i = 0; i < names.length; i++) {
         if (!res[i].ok) continue;
         const body = await res[i].json();
-        next[names[i]] = names[i] === "summary" ? body : asArray(body);
+        // The dashboard and the payments board answer with an object, not a
+        // list; everything else is a collection.
+        next[names[i]] = ["summary", "payments"].includes(names[i]) ? body : asArray(body);
       }
       setData(next);
     } catch { /* keep what we had */ } finally { setLoading(false); }
-  }, [api, key]);
+  }, [api, key, query]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -607,6 +613,9 @@ const PAYMENT_MODES: { value: string; label: string }[] = [
   { value: "bank", label: "Bank Transfer" },
   { value: "cheque", label: "Cheque" },
   { value: "card", label: "Card" },
+  // Goods released on agreed terms. It settles the invoice — that is the point
+  // of recording it — while still reading as credit rather than money in.
+  { value: "credit", label: "Credit" },
 ];
 
 /**
@@ -619,23 +628,42 @@ const PAYMENT_MODES: { value: string; label: string }[] = [
  * visible while it is still being typed, rather than arriving as an error after
  * the fact.
  */
+export type PaymentRow = {
+  id: number; amount_received: string; mode: string; mode_label: string;
+  reference: string; paid_on: string | null; notes: string;
+  verified_by: string | null; verified_at: string | null;
+};
+
+/**
+ * Payment verification, in two acts.
+ *
+ * Verifying records money as it arrives — in parts, as often as it takes.
+ * Dispatching is the separate step that puts the goods out, and it stays shut
+ * until the invoice has been settled in full. Credit counts towards settling it:
+ * that is how a delivery goes out on agreed terms, and it is still recorded as
+ * credit rather than pretending money arrived.
+ */
 export function PaymentVerificationModal({
-  show, invoiceTotal, title, submitLabel, saving, defaultDate, onCancel, onConfirm,
+  show, invoiceTotal, alreadyReceived = 0, payments = [], title, dispatchLabel,
+  saving, defaultDate, onCancel, onVerify, onDispatch,
 }: {
   show: boolean;
   invoiceTotal: number;
+  alreadyReceived?: number;
+  payments?: PaymentRow[];
   title?: string;
-  submitLabel?: string;
+  dispatchLabel?: string;
   saving?: boolean;
   defaultDate?: string;
   onCancel: () => void;
-  onConfirm: (payment: VerifiedPayment) => void;
+  onVerify: (payment: VerifiedPayment) => void;
+  onDispatch: () => void;
 }) {
   const [form, setForm] = useState<VerifiedPayment>({
     amount_received: "", mode: "cash", reference: "", paid_on: defaultDate || todayISO(), notes: "",
   });
 
-  // Reopening is a fresh verification — never inherit the last one's figures.
+  // Reopening is a fresh entry — never inherit the last one's figures.
   useEffect(() => {
     if (show) {
       setForm({
@@ -645,83 +673,154 @@ export function PaymentVerificationModal({
     }
   }, [show, defaultDate]);
 
+  // Cleared once a payment lands, so the box is ready for the next instalment.
+  useEffect(() => { setForm(f => ({ ...f, amount_received: "", reference: "", notes: "" })); },
+    [alreadyReceived]);
+
   if (!show) return null;
 
-  // Compared in paise so a floating-point tail can't withhold a settled invoice.
+  // Compared in paise so a floating-point tail cannot withhold a settled invoice.
   const due = Math.round((Number(invoiceTotal) || 0) * 100);
-  const paid = Math.round((Number(form.amount_received) || 0) * 100);
-  const balance = due - paid;
-  const entered = form.amount_received.trim() !== "";
-  const settled = entered && balance === 0 && due > 0;
+  const had = Math.round((Number(alreadyReceived) || 0) * 100);
+  const outstanding = due - had;
+  const entering = Math.round((Number(form.amount_received) || 0) * 100);
+  const entered = form.amount_received.trim() !== "" && entering > 0;
+  const overpaying = entering > outstanding;
+  const settled = outstanding <= 0 && due > 0;
+  const wouldSettle = entered && !overpaying && entering === outstanding;
 
-  const submit = (e: React.FormEvent) => {
+  const verify = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!settled) return;
-    onConfirm(form);
+    if (!entered || overpaying || settled) return;
+    onVerify(form);
   };
 
   return (
-    <Modal show={show} title={title || "Payment Verification"} onClose={onCancel}
-      onSubmit={submit} saving={saving} submitLabel={submitLabel || "Verify & Dispatch"}
-      submitDisabled={!settled}>
+    <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[92vh] overflow-y-auto">
+        <div className="px-6 py-4 border-b border-slate-100 flex items-start justify-between gap-4">
+          <h2 className="text-lg font-bold text-slate-900">{title || "Payment Verification"}</h2>
+          <button onClick={onCancel} aria-label="Close"
+            className="text-slate-400 hover:text-slate-700 transition"><I.X /></button>
+        </div>
 
-      <div className="flex items-center justify-between rounded-xl bg-slate-50 border border-slate-200 px-4 py-3">
-        <span className="text-sm font-semibold text-slate-600">Invoice total</span>
-        <span className="text-lg font-bold text-slate-900 tabular-nums">{rupee(invoiceTotal)}</span>
+        <form onSubmit={verify} className="p-6 space-y-4">
+          {/* Where the invoice stands, before anything is typed. */}
+          <div className="rounded-xl bg-slate-50 border border-slate-200 px-4 py-3 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold text-slate-600">Invoice total</span>
+              <span className="text-lg font-bold text-slate-900 tabular-nums">{rupee(invoiceTotal)}</span>
+            </div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-semibold text-slate-500">Received</span>
+              <span className="font-bold text-emerald-600 tabular-nums">{rupee(had / 100)}</span>
+            </div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-semibold text-slate-500">Balance</span>
+              <span className={`font-bold tabular-nums ${outstanding > 0 ? "text-amber-600" : "text-emerald-600"}`}>
+                {rupee(Math.max(0, outstanding) / 100)}
+              </span>
+            </div>
+          </div>
+
+          {payments.length > 0 && (
+            <div className="rounded-xl border border-slate-200 divide-y divide-slate-100">
+              {payments.map(p => (
+                <div key={p.id} className="flex items-center justify-between gap-3 px-3 py-2 text-xs">
+                  <div className="min-w-0">
+                    <span className="font-semibold text-slate-700">{p.mode_label}</span>
+                    {p.reference && <span className="ml-1.5 font-mono text-slate-400">{p.reference}</span>}
+                    <span className="block text-[10px] text-slate-400">
+                      {p.paid_on || "—"}{p.verified_by ? ` · ${p.verified_by}` : ""}
+                    </span>
+                  </div>
+                  <span className="font-bold tabular-nums text-slate-800 flex-shrink-0">
+                    {rupee(p.amount_received)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {!settled && (
+            <>
+              <Row>
+                <Fld label="Amount received *">
+                  <input type="number" step="0.01" min="0" autoFocus
+                    value={form.amount_received}
+                    onChange={e => setForm({ ...form, amount_received: e.target.value })}
+                    className={FIELD} placeholder="0.00" />
+                </Fld>
+                <Fld label="Mode *">
+                  <select value={form.mode} onChange={e => setForm({ ...form, mode: e.target.value })}
+                    className={FIELD}>
+                    {PAYMENT_MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+                  </select>
+                </Fld>
+              </Row>
+
+              <Row>
+                <Fld label="Reference">
+                  <input value={form.reference} onChange={e => setForm({ ...form, reference: e.target.value })}
+                    className={FIELD} placeholder="UTR / cheque no. / txn id" />
+                </Fld>
+                <Fld label="Paid on *">
+                  <input type="date" required value={form.paid_on}
+                    onChange={e => setForm({ ...form, paid_on: e.target.value })} className={FIELD} />
+                </Fld>
+              </Row>
+
+              <Fld label="Notes">
+                <textarea rows={2} value={form.notes}
+                  onChange={e => setForm({ ...form, notes: e.target.value })} className={FIELD} />
+              </Fld>
+            </>
+          )}
+
+          {form.mode === "credit" && !settled && (
+            <p className="rounded-xl bg-violet-50 border border-violet-200 px-4 py-3 text-xs font-semibold text-violet-700">
+              Credit settles the invoice so the goods can go out on agreed terms. It is
+              recorded as credit, not as money received.
+            </p>
+          )}
+
+          {overpaying ? (
+            <p className="rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-xs font-semibold text-amber-700">
+              That is {rupee((entering - outstanding) / 100)} more than the balance. Record what
+              was actually received.
+            </p>
+          ) : settled ? (
+            <p className="rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-3 text-xs font-semibold text-emerald-700">
+              Settled in full — the goods can be dispatched.
+            </p>
+          ) : wouldSettle ? (
+            <p className="rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-3 text-xs font-semibold text-emerald-700">
+              This settles the invoice. Verify it, then dispatch.
+            </p>
+          ) : (
+            <p className="text-xs text-slate-500">
+              Part payments are fine — verify each as it arrives. The goods go out once the
+              balance reaches zero.
+            </p>
+          )}
+
+          <div className="flex gap-3 pt-2 border-t border-slate-100">
+            <button type="button" onClick={onCancel}
+              className="flex-1 px-4 py-2.5 text-slate-600 font-medium hover:bg-slate-50 rounded-xl transition">
+              Cancel
+            </button>
+            <button type="submit" disabled={saving || settled || !entered || overpaying}
+              className="flex-1 bg-white border border-indigo-200 text-indigo-700 font-semibold py-2.5 rounded-xl transition hover:bg-indigo-50 disabled:opacity-40 disabled:cursor-not-allowed">
+              {saving ? "Saving..." : "Verify Payment"}
+            </button>
+            <button type="button" onClick={onDispatch} disabled={saving || !settled}
+              title={settled ? undefined : "The invoice must be settled in full first."}
+              className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 rounded-xl transition shadow-sm disabled:opacity-40 disabled:cursor-not-allowed">
+              {dispatchLabel || "Dispatch"}
+            </button>
+          </div>
+        </form>
       </div>
-
-      <Row>
-        <Fld label="Amount received *">
-          <input type="number" step="0.01" min="0" required autoFocus
-            value={form.amount_received}
-            onChange={e => setForm({ ...form, amount_received: e.target.value })}
-            className={FIELD} placeholder="0.00" />
-        </Fld>
-        <Fld label="Mode *">
-          <select value={form.mode} onChange={e => setForm({ ...form, mode: e.target.value })}
-            className={FIELD}>
-            {PAYMENT_MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
-          </select>
-        </Fld>
-      </Row>
-
-      <Row>
-        <Fld label="Reference">
-          <input value={form.reference} onChange={e => setForm({ ...form, reference: e.target.value })}
-            className={FIELD} placeholder="UTR / cheque no. / txn id" />
-        </Fld>
-        <Fld label="Paid on *">
-          <input type="date" required value={form.paid_on}
-            onChange={e => setForm({ ...form, paid_on: e.target.value })} className={FIELD} />
-        </Fld>
-      </Row>
-
-      <Fld label="Notes">
-        <textarea rows={2} value={form.notes}
-          onChange={e => setForm({ ...form, notes: e.target.value })} className={FIELD} />
-      </Fld>
-
-      {/* Three states, and the button follows the third: nothing typed yet,
-          short (or over), or settled and ready to release the goods. */}
-      {!entered ? (
-        <p className="text-xs text-slate-500">
-          Goods are released against a settled invoice. Enter the full amount received to continue.
-        </p>
-      ) : balance > 0 ? (
-        <p className="rounded-xl bg-rose-50 border border-rose-200 px-4 py-3 text-xs font-semibold text-rose-700">
-          Short by {rupee(balance / 100)}. The full invoice must be received before the goods
-          can be dispatched.
-        </p>
-      ) : balance < 0 ? (
-        <p className="rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-xs font-semibold text-amber-700">
-          {rupee(-balance / 100)} more than the invoice. Correct the amount or the invoice
-          before dispatching.
-        </p>
-      ) : (
-        <p className="rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-3 text-xs font-semibold text-emerald-700">
-          Invoice settled in full — the goods can be released.
-        </p>
-      )}
-    </Modal>
+    </div>
   );
 }

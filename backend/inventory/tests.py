@@ -1,5 +1,5 @@
 """Stock register: the derived ledger, its dashboard figures, and who may use it."""
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from django.test import TestCase
@@ -135,8 +135,8 @@ class StockSummaryTests(TestCase):
         self.assertEqual(d['sku_count'], 2)
         # panel: (10+5−3)=12 × 100 = 1200; inverter: (1+1)=2 × 5000 = 10000
         self.assertEqual(Decimal(d['total_value']), Decimal('11200'))
-        self.assertEqual(Decimal(d['month_purchases']), Decimal('450'))    # 5 × 90, this month only
-        self.assertEqual(Decimal(d['month_sales']), Decimal('450'))        # 3 × 150
+        self.assertEqual(Decimal(d['period_purchases']), Decimal('450'))   # 5 × 90, this month only
+        self.assertEqual(Decimal(d['period_sales']), Decimal('450'))       # 3 × 150
         self.assertEqual(d['reorder_count'], 1)                            # inverter: 2 <= 5
         self.assertEqual(d['reorder_alerts'][0]['code'], 'I1')
         by_cat = {c['name']: Decimal(c['value']) for c in d['by_category']}
@@ -425,13 +425,18 @@ class StockSummaryShapeTests(TestCase):
         self.assertEqual(r.status_code, 200)
         return r.json()
 
-    def test_six_month_series_ends_this_month(self):
+    def test_the_series_covers_the_period_a_bar_a_day(self):
+        """The chart follows the window the figures do. This month is short
+        enough to read a day at a time — as one monthly bar it would say
+        nothing. Today carries the movement; the rest of the month is quiet.
+        """
         d = self.get()
-        self.assertEqual(len(d['monthly']), 6)
+        today = timezone.localdate()
+        self.assertEqual(len(d['monthly']), today.day)
         last = d['monthly'][-1]
-        self.assertEqual(Decimal(last['purchases']), Decimal('450'))    # 5 × 90
-        self.assertEqual(Decimal(last['sales']), Decimal('300'))        # 2 × 150
-        # Earlier months have no movement at all.
+        self.assertEqual(last['name'], today.strftime('%d %b'))
+        self.assertEqual(Decimal(last['purchases']), Decimal('450'))    # 5 x 90
+        self.assertEqual(Decimal(last['sales']), Decimal('300'))        # 2 x 150
         self.assertTrue(all(Decimal(m['purchases']) == 0 and Decimal(m['sales']) == 0
                             for m in d['monthly'][:-1]))
 
@@ -459,8 +464,8 @@ class StockSummaryShapeTests(TestCase):
     def test_existing_fields_are_untouched(self):
         """The old keys still drive the low-stock panel and KPI cards."""
         d = self.get()
-        for key in ('sku_count', 'total_value', 'reorder_count', 'month_purchases',
-                    'month_sales', 'by_category', 'reorder_alerts', 'stock_levels'):
+        for key in ('sku_count', 'total_value', 'reorder_count', 'period_purchases',
+                    'period_sales', 'by_category', 'reorder_alerts', 'stock_levels'):
             self.assertIn(key, d)
         self.assertEqual(d['sku_count'], 1)
         self.assertEqual(Decimal(d['total_value']), Decimal('2300'))   # (20+5−2) × 100
@@ -638,7 +643,7 @@ class DispatchTaxTests(TestCase):
             'quantity': '10', 'rate': '11200', 'tax_percent': '18',
         }, content_type='application/json', **self.auth())
         r = self.client.get('/api/stock-summary/', **self.auth())
-        self.assertEqual(Decimal(r.json()['month_sales']), Decimal('132160'))
+        self.assertEqual(Decimal(r.json()['period_sales']), Decimal('132160'))
         self.assertEqual(Decimal(r.json()['monthly'][-1]['sales']), Decimal('132160'))
 
     def test_editing_a_dispatch_can_change_its_tax(self):
@@ -1290,11 +1295,12 @@ class ItemDeleteWithMovementsTests(TestCase):
 
 
 class DispatchPaymentGateTests(TestCase):
-    """Goods do not leave until the invoice has been paid in full.
+    """Verifying and dispatching are two acts.
 
-    Both doors are covered: Save Dispatch on a new delivery, and Convert to
-    Dispatch on a proforma invoice. A refusal must leave nothing behind — no
-    rows, no stock movement, and no invoice number spent.
+    A delivery is raised first and waits: its goods stay in the warehouse,
+    reserved rather than moved. Payment can arrive in instalments and each is
+    verified as it comes. Only once the invoice is settled in full can the
+    delivery be released, and that is what finally moves the stock.
     """
 
     def setUp(self):
@@ -1310,11 +1316,8 @@ class DispatchPaymentGateTests(TestCase):
     def auth(self, user=None):
         return {'HTTP_AUTHORIZATION': token_for(user or self.admin)}
 
-    # ── Save Dispatch ──
-    LINES = [
-        {'item': None, 'quantity': '10', 'rate': '11200', 'serial_numbers': 'SN1-SN10'},
-        {'item': None, 'quantity': '100', 'rate': '60'},
-    ]
+    # goods 112000 + 6000 = 118000; +18% tax = 139240
+    FULL = Decimal('139240.00')
 
     def body(self, payment=None, lines=None, tax='18'):
         rows = lines if lines is not None else [
@@ -1327,162 +1330,198 @@ class DispatchPaymentGateTests(TestCase):
             out['payment'] = payment
         return out
 
-    # goods 112000 + 6000 = 118000; +18% tax = 139240
-    FULL = Decimal('139240.00')
-
-    def pay(self, amount, **extra):
-        body = {'amount_received': str(amount), 'mode': 'bank',
+    def pay(self, amount, mode='bank', **extra):
+        body = {'amount_received': str(amount), 'mode': mode,
                 'reference': 'UTR7781', 'paid_on': str(timezone.localdate())}
         body.update(extra)
         return body
 
-    def dispatch(self, payment=None, **kwargs):
+    def raise_dispatch(self, payment=None, **kwargs):
         return self.client.post('/api/stock-dispatches/dispatch/',
                                 data=self.body(payment=payment, **kwargs),
                                 content_type='application/json', **self.auth())
 
-    def test_a_settled_invoice_releases_every_line(self):
-        r = self.dispatch(self.pay(self.FULL))
+    def verify(self, invoice_no, payment, user=None):
+        return self.client.post('/api/stock-dispatches/verify-payment/',
+                                data={'invoice_no': invoice_no, 'payment': payment},
+                                content_type='application/json', **self.auth(user))
+
+    def release(self, invoice_no, user=None):
+        return self.client.post('/api/stock-dispatches/release/',
+                                data={'invoice_no': invoice_no},
+                                content_type='application/json', **self.auth(user))
+
+    def stock(self):
+        self.panel.refresh_from_db()
+        return self.panel
+
+    def new_invoice(self, payment=None):
+        r = self.raise_dispatch(payment)
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        return r.json()['invoice_no']
+
+    # ── Raising one ──
+    def test_a_delivery_is_raised_pending(self):
+        r = self.raise_dispatch()
         self.assertEqual(r.status_code, 201, r.content[:300])
         self.assertEqual(r.json()['dispatched_lines'], 2)
-        self.assertEqual(StockDispatch.objects.count(), 2)
+        self.assertTrue(all(d.status == StockDispatch.PENDING
+                            for d in StockDispatch.objects.all()))
 
-    def test_the_whole_delivery_shares_one_invoice_number(self):
-        r = self.dispatch(self.pay(self.FULL))
-        numbers = set(StockDispatch.objects.values_list('invoice_no', flat=True))
-        self.assertEqual(len(numbers), 1)
-        self.assertEqual(numbers.pop(), r.json()['invoice_no'])
+    def test_a_pending_delivery_holds_its_stock_rather_than_moving_it(self):
+        """The panels are still in the warehouse — spoken for, not gone."""
+        self.raise_dispatch()
+        item = self.stock()
+        self.assertEqual(item.physical_stock, Decimal('100'))
+        self.assertEqual(item.reserved, Decimal('10'))
+        self.assertEqual(item.closing_stock, Decimal('90'))
+        self.assertEqual(item.dispatched, Decimal('0'))
 
-    def test_the_payment_is_recorded_against_the_invoice(self):
-        r = self.dispatch(self.pay(self.FULL))
-        p = DispatchPayment.objects.get(invoice_no=r.json()['invoice_no'])
-        self.assertEqual(p.amount_received, self.FULL)
-        self.assertEqual(p.invoice_total, self.FULL)
-        self.assertEqual(p.mode, 'bank')
-        self.assertEqual(p.reference, 'UTR7781')
-        self.assertEqual(p.verified_by, self.admin)
+    def test_it_can_be_raised_with_no_payment_at_all(self):
+        r = self.raise_dispatch()
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        self.assertEqual(DispatchPayment.objects.count(), 0)
 
-    def test_the_stock_moves_only_once_the_payment_is_in(self):
-        self.dispatch(self.pay(self.FULL))
-        self.panel.refresh_from_db()
-        self.assertEqual(self.panel.closing_stock, Decimal('90'))
+    def test_it_can_be_raised_with_a_part_payment(self):
+        invoice = self.new_invoice(self.pay('40000'))
+        self.assertEqual(DispatchPayment.received_for(invoice_no=invoice), Decimal('40000'))
 
-    # ── Refusals ──
-    def assert_nothing_happened(self, response):
-        self.assertEqual(response.status_code, 400, response.content[:300])
+    def test_an_opening_payment_over_the_invoice_is_refused(self):
+        r = self.raise_dispatch(self.pay('200000'))
+        self.assertEqual(r.status_code, 400, r.content[:300])
         self.assertEqual(StockDispatch.objects.count(), 0)
         self.assertEqual(DispatchPayment.objects.count(), 0)
-        self.panel.refresh_from_db()
-        self.assertEqual(self.panel.closing_stock, Decimal('100'))
 
-    def test_a_short_payment_is_refused(self):
-        r = self.dispatch(self.pay('100000'))
-        self.assert_nothing_happened(r)
-        self.assertIn('short by', r.json()['error'].lower())
+    # ── Verifying, in parts ──
+    def test_payments_add_up_across_instalments(self):
+        invoice = self.new_invoice(self.pay('40000'))
+        r = self.verify(invoice, self.pay('60000', mode='cash'))
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        body = r.json()
+        self.assertEqual(Decimal(body['amount_received']), Decimal('100000'))
+        self.assertEqual(Decimal(body['balance']), self.FULL - Decimal('100000'))
+        self.assertFalse(body['fully_paid'])
+        self.assertEqual(len(body['payments']), 2)
 
-    def test_the_refusal_says_what_is_still_owed(self):
-        r = self.dispatch(self.pay('100000'))
-        self.assertEqual(Decimal(r.json()['balance']), Decimal('39240.00'))
-        self.assertEqual(Decimal(r.json()['invoice_total']), self.FULL)
+    def test_the_last_instalment_settles_it(self):
+        invoice = self.new_invoice(self.pay('40000'))
+        body = self.verify(invoice, self.pay(self.FULL - Decimal('40000'))).json()
+        self.assertTrue(body['fully_paid'])
+        self.assertEqual(Decimal(body['balance']), Decimal('0'))
 
-    def test_a_payment_one_paisa_short_is_still_short(self):
-        """Full means full — this is the case a rounding slip would let through."""
-        self.assert_nothing_happened(self.dispatch(self.pay('139239.99')))
+    def test_more_than_the_balance_is_refused(self):
+        invoice = self.new_invoice(self.pay('40000'))
+        r = self.verify(invoice, self.pay(self.FULL))
+        self.assertEqual(r.status_code, 400, r.content[:300])
+        self.assertIn('still owing', r.json()['error'])
 
-    def test_paying_more_than_the_invoice_is_refused(self):
-        r = self.dispatch(self.pay('150000'))
-        self.assert_nothing_happened(r)
-        self.assertIn('more than the invoice', r.json()['error'])
-
-    def test_no_payment_at_all_is_refused(self):
-        self.assert_nothing_happened(self.dispatch())
-
-    def test_an_empty_payment_is_refused(self):
-        self.assert_nothing_happened(self.dispatch({}))
-
-    def test_a_payment_without_a_mode_is_refused(self):
-        self.assert_nothing_happened(
-            self.dispatch({'amount_received': str(self.FULL)}))
+    def test_a_payment_of_nothing_is_refused(self):
+        invoice = self.new_invoice()
+        self.assertEqual(self.verify(invoice, self.pay('0')).status_code, 400)
 
     def test_a_made_up_mode_is_refused(self):
-        self.assert_nothing_happened(
-            self.dispatch({'amount_received': str(self.FULL), 'mode': 'iou'}))
+        invoice = self.new_invoice()
+        self.assertEqual(self.verify(invoice, {'amount_received': '100', 'mode': 'iou'}).status_code, 400)
 
-    def test_a_non_numeric_amount_is_refused(self):
-        self.assert_nothing_happened(self.dispatch(self.pay('later')))
+    def test_the_position_can_be_read_back(self):
+        invoice = self.new_invoice(self.pay('40000'))
+        r = self.client.get(f'/api/stock-dispatches/verify-payment/?invoice_no={invoice}',
+                            **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(Decimal(r.json()['amount_received']), Decimal('40000'))
+        self.assertEqual(r.json()['status'], StockDispatch.PENDING)
 
-    def test_a_delivery_with_no_lines_is_refused(self):
-        r = self.client.post('/api/stock-dispatches/dispatch/',
-                             data={'date': str(timezone.localdate()), 'lines': [],
-                                   'payment': self.pay('0')},
-                             content_type='application/json', **self.auth())
-        self.assert_nothing_happened(r)
+    def test_an_unknown_invoice_is_not_found(self):
+        self.assertEqual(self.verify('REN9999-IN999', self.pay('1')).status_code, 404)
 
-    def test_a_refusal_does_not_spend_an_invoice_number(self):
-        """The number is issued after the payment clears, so a refused attempt
-        must not leave a gap in the series."""
-        self.dispatch(self.pay('1'))
-        r = self.dispatch(self.pay(self.FULL))
-        self.assertTrue(r.json()['invoice_no'].endswith('IN001'), r.json()['invoice_no'])
+    # ── Credit settles it ──
+    def test_credit_counts_towards_the_invoice(self):
+        """Recording the balance as credit is how goods go out on terms."""
+        invoice = self.new_invoice(self.pay('40000'))
+        body = self.verify(invoice, self.pay(self.FULL - Decimal('40000'), mode='credit')).json()
+        self.assertTrue(body['fully_paid'])
+        self.assertEqual(self.release(invoice).status_code, 200)
 
-    # ── What the invoice costs ──
-    def test_tax_is_part_of_what_must_be_paid(self):
-        """The goods value alone does not settle the invoice."""
-        self.assert_nothing_happened(self.dispatch(self.pay('118000')))
+    def test_credit_is_still_recorded_as_credit(self):
+        """It settles the invoice without pretending money arrived."""
+        invoice = self.new_invoice(self.pay(self.FULL, mode='credit'))
+        self.assertEqual(DispatchPayment.objects.get(invoice_no=invoice).mode, 'credit')
 
-    def test_an_untaxed_delivery_is_settled_by_its_goods_value(self):
-        r = self.dispatch(self.pay('118000'), tax='0')
-        self.assertEqual(r.status_code, 201, r.content[:300])
+    # ── Releasing ──
+    def test_it_will_not_release_while_anything_is_owing(self):
+        invoice = self.new_invoice(self.pay('40000'))
+        r = self.release(invoice)
+        self.assertEqual(r.status_code, 400, r.content[:300])
+        self.assertIn('still owing', r.json()['error'])
+        self.assertEqual(self.stock().dispatched, Decimal('0'))
 
-    def test_a_line_without_an_item_is_not_charged_for(self):
-        """The modal drops such a row before asking for payment; the server must
-        agree, or the two would disagree about the total."""
-        rows = [{'item': self.panel.id, 'quantity': '1', 'rate': '100'},
-                {'item': '', 'quantity': '5', 'rate': '1000'}]
-        r = self.dispatch(self.pay('118'), lines=rows)      # 100 + 18% only
-        self.assertEqual(r.status_code, 201, r.content[:300])
-        self.assertEqual(StockDispatch.objects.count(), 1)
+    def test_a_settled_invoice_releases(self):
+        invoice = self.new_invoice(self.pay(self.FULL))
+        r = self.release(invoice)
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertTrue(all(d.status == StockDispatch.RELEASED
+                            for d in StockDispatch.objects.all()))
+        self.assertIsNotNone(StockDispatch.objects.first().released_at)
 
-    # ── What the list shows ──
-    def test_a_gated_dispatch_reads_as_paid(self):
-        self.dispatch(self.pay(self.FULL))
-        rows = self.client.get('/api/stock-dispatches/', **self.auth()).json()
-        rows = rows if isinstance(rows, list) else rows['results']
-        self.assertTrue(all(r['payment_verified'] for r in rows))
-        self.assertEqual(Decimal(rows[0]['payment_amount']), self.FULL)
-        self.assertEqual(rows[0]['payment_mode'], 'bank')
+    def test_releasing_is_what_moves_the_stock(self):
+        invoice = self.new_invoice(self.pay(self.FULL))
+        self.release(invoice)
+        item = self.stock()
+        self.assertEqual(item.dispatched, Decimal('10'))
+        self.assertEqual(item.reserved, Decimal('0'))
+        self.assertEqual(item.physical_stock, Decimal('90'))
+        self.assertEqual(item.closing_stock, Decimal('90'))
 
-    def test_a_row_written_straight_to_the_row_endpoint_reads_as_unpaid(self):
-        """The row primitive is still there for edits and corrections; it is not
-        a verified dispatch, and the list says so rather than implying it was."""
-        StockDispatch.objects.create(item=self.panel, date=timezone.localdate(),
-                                     quantity=Decimal('1'), rate=Decimal('100'))
-        rows = self.client.get('/api/stock-dispatches/', **self.auth()).json()
-        rows = rows if isinstance(rows, list) else rows['results']
-        self.assertFalse(rows[0]['payment_verified'])
-        self.assertIsNone(rows[0]['payment_amount'])
+    def test_what_is_left_to_sell_does_not_move_on_release(self):
+        """It came off when the delivery was raised; releasing only turns the
+        hold into a movement."""
+        invoice = self.new_invoice(self.pay(self.FULL))
+        before = self.stock().closing_stock
+        self.release(invoice)
+        self.assertEqual(self.stock().closing_stock, before)
 
-    # ── Who may pass the gate ──
-    def test_a_read_only_role_cannot_dispatch(self):
-        """Verification is not a second person's sign-off, but it is still only
-        open to the people who may dispatch at all."""
+    def test_it_cannot_be_released_twice(self):
+        invoice = self.new_invoice(self.pay(self.FULL))
+        self.release(invoice)
+        r = self.release(invoice)
+        self.assertEqual(r.status_code, 400, r.content[:300])
+        self.assertIn('already been dispatched', r.json()['error'])
+
+    def test_a_released_delivery_takes_no_more_payments(self):
+        invoice = self.new_invoice(self.pay(self.FULL))
+        self.release(invoice)
+        self.assertEqual(self.verify(invoice, self.pay('1')).status_code, 400)
+
+    def test_releasing_an_unknown_invoice_is_not_found(self):
+        self.assertEqual(self.release('REN9999-IN999').status_code, 404)
+
+    # ── Who may ──
+    def test_a_read_only_role_can_neither_verify_nor_release(self):
         watcher = mk('gate_watcher', 'store_manager')       # read on dispatch
-        r = self.client.post('/api/stock-dispatches/dispatch/',
-                             data=self.body(payment=self.pay(self.FULL)),
-                             content_type='application/json', **self.auth(watcher))
-        self.assertEqual(r.status_code, 403, r.content[:200])
-        self.assertEqual(StockDispatch.objects.count(), 0)
+        invoice = self.new_invoice(self.pay(self.FULL))
+        self.assertEqual(self.verify(invoice, self.pay('1'), user=watcher).status_code, 403)
+        self.assertEqual(self.release(invoice, user=watcher).status_code, 403)
 
-    def test_accounts_b2b_may_dispatch(self):
+    def test_accounts_b2b_may_run_the_whole_flow(self):
         clerk = mk('gate_clerk', 'accounts_b2b')
         r = self.client.post('/api/stock-dispatches/dispatch/',
                              data=self.body(payment=self.pay(self.FULL)),
                              content_type='application/json', **self.auth(clerk))
         self.assertEqual(r.status_code, 201, r.content[:300])
+        self.assertEqual(self.release(r.json()['invoice_no'], user=clerk).status_code, 200)
+
+    # ── What the list shows ──
+    def test_the_list_reports_where_a_delivery_stands(self):
+        self.new_invoice(self.pay('40000'))
+        rows = self.client.get('/api/stock-dispatches/', **self.auth()).json()
+        rows = rows if isinstance(rows, list) else rows['results']
+        self.assertTrue(all(r['status'] == StockDispatch.PENDING for r in rows))
 
 
 class ProformaDispatchPaymentGateTests(TestCase):
-    """Convert to Dispatch is the same door: it is what puts the goods out."""
+    """The proforma is the other door, and it works the same way: payments are
+    verified against it one at a time, and converting — which is what dispatches
+    the goods — needs it settled in full."""
 
     def setUp(self):
         self.admin = mk('pgate_admin', 'superadmin')
@@ -1493,72 +1532,113 @@ class ProformaDispatchPaymentGateTests(TestCase):
                                                tax_percent=Decimal('18'))
         StockQuoteItem.objects.create(quote=self.quote, item=self.item,
                                       quantity=Decimal('10'), unit_price=Decimal('11200'))
+        self.total = Decimal('132160.00')          # 112000 + 18%
 
     def auth(self):
         return {'HTTP_AUTHORIZATION': token_for(self.admin)}
+
+    def pay(self, amount, mode='upi'):
+        return {'amount_received': str(amount), 'mode': mode,
+                'reference': 'TXN44', 'paid_on': str(timezone.localdate())}
+
+    def verify(self, payment):
+        return self.client.post(f'/api/stock-quotes/{self.quote.id}/verify-payment/',
+                                data={'payment': payment}, content_type='application/json',
+                                **self.auth())
 
     def convert(self, payment=None):
         body = {} if payment is None else {'payment': payment}
         return self.client.post(f'/api/stock-quotes/{self.quote.id}/convert/', data=body,
                                 content_type='application/json', **self.auth())
 
-    def pay(self, amount):
-        return {'amount_received': str(amount), 'mode': 'upi',
-                'reference': 'TXN44', 'paid_on': str(timezone.localdate())}
+    def fresh(self):
+        self.item.refresh_from_db()
+        return self.item
 
-    def assert_not_dispatched(self, response):
-        self.assertEqual(response.status_code, 400, response.content[:300])
+    def test_a_part_payment_can_be_verified_against_it(self):
+        r = self.verify(self.pay('50000'))
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        self.assertEqual(Decimal(r.json()['amount_received']), Decimal('50000'))
+        self.assertFalse(r.json()['fully_paid'])
+
+    def test_instalments_add_up(self):
+        self.verify(self.pay('50000'))
+        body = self.verify(self.pay('82160')).json()
+        self.assertTrue(body['fully_paid'])
+        self.assertEqual(len(body['payments']), 2)
+
+    def test_it_will_not_convert_while_anything_is_owing(self):
+        self.verify(self.pay('50000'))
+        r = self.convert()
+        self.assertEqual(r.status_code, 400, r.content[:300])
+        self.assertIn('still owing', r.json()['error'])
         self.quote.refresh_from_db()
         self.assertEqual(self.quote.status, 'draft')
-        self.assertIsNone(self.quote.converted_at)
         self.assertEqual(StockDispatch.objects.count(), 0)
-        self.assertEqual(DispatchPayment.objects.count(), 0)
-        self.item.refresh_from_db()
-        # Physical, not closing: the proforma is still live, so its 10 panels
-        # stay reserved. Nothing left the shelf.
-        self.assertEqual(self.item.physical_stock, Decimal('100'))
 
-    def test_converting_without_a_payment_is_refused(self):
-        self.assert_not_dispatched(self.convert())
+    def test_a_refused_convert_keeps_the_payment_already_verified(self):
+        """The money did arrive; refusing the dispatch must not discard it."""
+        self.verify(self.pay('50000'))
+        self.convert()
+        self.assertEqual(DispatchPayment.received_for(quote=self.quote), Decimal('50000'))
 
-    def test_converting_on_a_short_payment_is_refused(self):
-        self.assert_not_dispatched(self.convert(self.pay('100000')))
+    def test_it_will_not_convert_with_nothing_paid(self):
+        self.assertEqual(self.convert().status_code, 400)
 
-    def test_a_settled_proforma_is_dispatched(self):
-        r = self.convert(self.pay(self.quote.total))
+    def test_a_settled_proforma_converts(self):
+        self.verify(self.pay(self.total))
+        r = self.convert()
         self.assertEqual(r.status_code, 200, r.content[:300])
         self.quote.refresh_from_db()
         self.assertEqual(self.quote.status, 'converted')
         self.assertEqual(StockDispatch.objects.count(), 1)
-        self.item.refresh_from_db()
-        # The reservation becomes a real movement: the goods leave the shelf
-        # and the hold is released, so what is left to sell never moves.
-        self.assertEqual(self.item.physical_stock, Decimal('90'))
-        self.assertEqual(self.item.reserved, Decimal('0'))
-        self.assertEqual(self.item.closing_stock, Decimal('90'))
 
-    def test_the_payment_is_recorded_against_the_new_invoice(self):
-        r = self.convert(self.pay(self.quote.total))
-        p = DispatchPayment.objects.get(invoice_no=r.json()['invoice_no'])
-        self.assertEqual(p.invoice_total, Decimal('132160.00'))     # 112000 + 18%
-        self.assertEqual(p.amount_received, Decimal('132160.00'))
-        self.assertEqual(p.mode, 'upi')
-        self.assertEqual(p.verified_by, self.admin)
+    def test_the_last_instalment_can_come_with_the_dispatch(self):
+        """So the screen can settle and send in one action."""
+        self.verify(self.pay('50000'))
+        r = self.convert(self.pay('82160'))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(StockDispatch.objects.count(), 1)
 
-    def test_the_dispatch_it_writes_reads_as_paid(self):
-        self.convert(self.pay(self.quote.total))
-        rows = self.client.get('/api/stock-dispatches/', **self.auth()).json()
-        rows = rows if isinstance(rows, list) else rows['results']
-        self.assertTrue(rows[0]['payment_verified'])
+    def test_converting_moves_the_stock_for_real(self):
+        self.verify(self.pay(self.total))
+        self.convert()
+        item = self.fresh()
+        self.assertEqual(item.dispatched, Decimal('10'))
+        self.assertEqual(item.reserved, Decimal('0'))
+        self.assertEqual(item.closing_stock, Decimal('90'))
+
+    def test_the_payments_follow_the_goods_onto_the_invoice(self):
+        """They paid for a delivery; the delivery should carry its own history."""
+        self.verify(self.pay('50000'))
+        self.verify(self.pay('82160'))
+        invoice_no = self.convert().json()['invoice_no']
+        self.assertEqual(DispatchPayment.received_for(invoice_no=invoice_no), self.total)
+        self.assertEqual(DispatchPayment.received_for(quote=self.quote), Decimal('0'))
+
+    def test_credit_settles_a_proforma_too(self):
+        self.verify(self.pay(self.total, mode='credit'))
+        self.assertEqual(self.convert().status_code, 200)
+
+    def test_a_converted_proforma_takes_no_more_payments(self):
+        self.verify(self.pay(self.total))
+        self.convert()
+        self.assertEqual(self.verify(self.pay('1')).status_code, 400)
+
+    def test_more_than_the_balance_is_refused(self):
+        self.assertEqual(self.verify(self.pay(self.total + Decimal('1'))).status_code, 400)
+
+    def test_the_position_can_be_read_back(self):
+        self.verify(self.pay('50000'))
+        r = self.client.get(f'/api/stock-quotes/{self.quote.id}/verify-payment/', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(Decimal(r.json()['balance']), self.total - Decimal('50000'))
 
     def test_a_discount_lowers_what_has_to_be_paid(self):
-        """The gate charges the proforma's own total, discount and all."""
         self.quote.discount_percent = Decimal('10')
         self.quote.save()
-        self.assert_not_dispatched(self.convert(self.pay('132160')))
-        r = self.convert(self.pay(self.quote.total))
-        self.assertEqual(r.status_code, 200, r.content[:300])
-
+        self.verify(self.pay(self.quote.total))
+        self.assertEqual(self.convert().status_code, 200)
 
 
 class StockReservationTests(TestCase):
@@ -1754,3 +1834,308 @@ class StockReservationTests(TestCase):
         self.assertEqual(self.fresh().reserved, Decimal('0'))
         other.refresh_from_db()
         self.assertEqual(other.reserved, Decimal('50'))
+
+
+class StockSummaryPeriodTests(TestCase):
+    """The dashboard's movement figures answer for a chosen window.
+
+    Stock on hand deliberately does not: items, stock value and the reorder list
+    describe the warehouse as it stands, and no date range changes what is on the
+    shelf today.
+    """
+
+    def setUp(self):
+        self.admin = mk('sp_admin', 'superadmin')
+        self.item = StockItem.objects.create(code='SP-PNL', category='Solar Panel',
+                                             opening_stock=Decimal('1000'),
+                                             unit_cost=Decimal('100'), reorder_level=Decimal('1'))
+        today = timezone.localdate()
+        self.today = today
+        self.this_month = today.replace(day=1)
+        # One movement in each window, so every period can be told apart.
+        last_month_end = self.this_month - timedelta(days=1)
+        self.last_year = date(today.year - 1, 6, 15)
+
+        self.mk_dispatch(today, '3', '100')                  # this month
+        self.mk_dispatch(last_month_end, '5', '100')         # earlier this year
+        self.mk_dispatch(self.last_year, '7', '100')         # a previous year
+        self.mk_receipt(today, '2', '50')
+        self.mk_receipt(self.last_year, '4', '50')
+
+    def mk_dispatch(self, when, qty, rate):
+        return StockDispatch.objects.create(item=self.item, date=when,
+                                            quantity=Decimal(qty), rate=Decimal(rate))
+
+    def mk_receipt(self, when, qty, rate):
+        return GoodsReceipt.objects.create(item=self.item, date=when,
+                                           quantity=Decimal(qty), rate=Decimal(rate))
+
+    def summary(self, query=''):
+        r = self.client.get(f'/api/stock-summary/{query}',
+                            HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        return r.json()
+
+    def sales(self, query=''):
+        return Decimal(self.summary(query)['period_sales'])
+
+    # ── The windows ──
+    def test_it_reports_this_month_by_default(self):
+        """What the dashboard showed before it could be asked for anything else."""
+        d = self.summary()
+        self.assertEqual(d['period'], 'this_month')
+        self.assertEqual(Decimal(d['period_sales']), Decimal('300'))     # 3 x 100
+
+    def test_all_time_takes_in_every_movement(self):
+        d = self.summary('?period=all')
+        self.assertEqual(d['period'], 'all')
+        self.assertEqual(Decimal(d['period_sales']), Decimal('1500'))    # 3 + 5 + 7, x100
+        self.assertIsNone(d['period_from'])
+
+    def test_this_year_leaves_out_last_year(self):
+        d = self.summary('?period=this_year')
+        self.assertEqual(Decimal(d['period_sales']), Decimal('800'))     # 3 + 5, x100
+        self.assertEqual(d['period_from'], date(self.today.year, 1, 1).isoformat())
+
+    def test_a_custom_range_covers_exactly_its_own_days(self):
+        d = self.summary(f'?period=custom&from={self.today}&to={self.today}')
+        self.assertEqual(Decimal(d['period_sales']), Decimal('300'))
+
+    def test_a_custom_range_can_reach_back_years(self):
+        self.assertEqual(
+            self.sales(f'?period=custom&from={self.last_year}&to={self.today}'),
+            Decimal('1500'))
+
+    def test_a_range_given_backwards_is_read_the_right_way_round(self):
+        self.assertEqual(
+            self.sales(f'?period=custom&from={self.today}&to={self.last_year}'),
+            Decimal('1500'))
+
+    def test_a_to_date_on_its_own_means_everything_up_to_it(self):
+        self.assertEqual(self.sales(f'?period=custom&to={self.last_year}'), Decimal('700'))
+
+    def test_a_range_with_nothing_in_it_reports_zero(self):
+        far = date(self.today.year - 5, 1, 1)
+        self.assertEqual(self.sales(f'?period=custom&from={far}&to={far}'), Decimal('0'))
+
+    def test_an_unknown_period_falls_back_to_this_month(self):
+        self.assertEqual(self.summary('?period=fortnight')['period'], 'this_month')
+
+    def test_a_malformed_date_does_not_break_the_page(self):
+        d = self.summary('?period=custom&from=not-a-date')
+        self.assertEqual(d['period'], 'custom')
+
+    # ── Receipts follow the window too ──
+    def test_purchases_are_scoped_the_same_way(self):
+        self.assertEqual(Decimal(self.summary()['period_purchases']), Decimal('100'))
+        self.assertEqual(Decimal(self.summary('?period=all')['period_purchases']), Decimal('300'))
+
+    def test_the_document_counts_follow_the_window(self):
+        self.assertEqual(self.summary()['dispatch_count'], 1)
+        self.assertEqual(self.summary('?period=all')['dispatch_count'], 3)
+        self.assertEqual(self.summary('?period=all')['receipt_count'], 2)
+
+    def test_proformas_are_counted_by_their_own_date(self):
+        StockQuote.objects.create(quote_date=self.today, status='draft')
+        StockQuote.objects.create(quote_date=self.last_year, status='draft')
+        self.assertEqual(self.summary()['quote_count'], 1)
+        self.assertEqual(self.summary('?period=all')['quote_count'], 2)
+
+    # ── Stock on hand stands outside it ──
+    def test_stock_on_hand_is_the_same_whatever_the_period(self):
+        """It is what is on the shelf now; a date range cannot change that."""
+        for query in ('', '?period=all', '?period=this_year',
+                      f'?period=custom&from={self.today}&to={self.today}'):
+            with self.subTest(query=query):
+                d = self.summary(query)
+                self.assertEqual(d['sku_count'], 1)
+                # opening 1000 + received 6 - dispatched 15 = 991, at 100 each
+                self.assertEqual(Decimal(d['total_value']), Decimal('99100'))
+
+    # ── The chart ──
+    def test_a_short_window_is_charted_a_day_at_a_time(self):
+        """This month as a single monthly bar would say nothing."""
+        months = self.summary()['monthly']
+        self.assertEqual(len(months), self.today.day)
+        self.assertEqual(months[-1]['name'], self.today.strftime('%d %b'))
+
+    def test_a_long_window_falls_back_to_a_bar_a_month_and_is_capped(self):
+        """All time here reaches back to last year, so it is charted monthly —
+        and never more than a year of bars, which stops being readable."""
+        months = self.summary('?period=all')['monthly']
+        self.assertLessEqual(len(months), 12)
+        self.assertGreater(len(months), 1)
+        self.assertEqual(months[-1]['name'], self.today.strftime('%b %y'))
+
+    def test_the_screen_is_told_what_window_it_is_looking_at(self):
+        d = self.summary('?period=this_year')
+        self.assertIn(str(self.today.year), d['period_label'])
+
+
+class StockPaymentsModuleTests(TestCase):
+    """Inventory → Payments: every document money has been verified against,
+    in three sections that do not overlap."""
+
+    URL = '/api/stock-payments/'
+
+    def setUp(self):
+        self.admin = mk('pay_admin', 'superadmin')
+        self.customer = StockCustomer.objects.create(name='Bluebird Energy')
+        self.item = StockItem.objects.create(code='PY-PNL', category='Solar Panel',
+                                             opening_stock=Decimal('1000'),
+                                             unit_cost=Decimal('100'))
+
+    def auth(self, user=None):
+        return {'HTTP_AUTHORIZATION': token_for(user or self.admin)}
+
+    def board(self, user=None, expect=200):
+        r = self.client.get(self.URL, **self.auth(user))
+        self.assertEqual(r.status_code, expect, r.content[:300])
+        return r.json() if expect == 200 else None
+
+    def rows(self, section, user=None):
+        return self.board(user)['sections'][section]['rows']
+
+    def numbers(self, section, user=None):
+        return sorted(r['number'] for r in self.rows(section, user))
+
+    def dispatch(self, invoice_no, qty='10', rate='100', tax='0'):
+        StockDispatch.objects.create(invoice_no=invoice_no, date=timezone.localdate(),
+                                     customer=self.customer, item=self.item,
+                                     quantity=Decimal(qty), rate=Decimal(rate),
+                                     tax_percent=Decimal(tax),
+                                     status=StockDispatch.PENDING)
+        return invoice_no
+
+    def paid(self, amount, *, invoice_no=None, quote=None, mode='cash'):
+        return DispatchPayment.objects.create(
+            invoice_no=invoice_no or '', quote=quote,
+            invoice_total=Decimal('1000'), amount_received=Decimal(amount),
+            mode=mode, paid_on=timezone.localdate(), verified_by=self.admin)
+
+    def proforma(self, number_hint='PF'):
+        q = StockQuote.objects.create(customer=self.customer, quote_date=timezone.localdate())
+        StockQuoteItem.objects.create(quote=q, item=self.item, quantity=Decimal('10'),
+                                      unit_price=Decimal('100'))
+        return q
+
+    # ── The three sections ──
+    def test_a_settled_invoice_reads_as_fully_paid(self):
+        self.dispatch('IN-A')
+        self.paid('1000', invoice_no='IN-A')
+        self.assertEqual(self.numbers('fully_paid'), ['IN-A'])
+        self.assertEqual(self.numbers('partially_paid'), [])
+
+    def test_a_part_paid_invoice_reads_as_partially_paid(self):
+        self.dispatch('IN-B')
+        self.paid('400', invoice_no='IN-B')
+        self.assertEqual(self.numbers('partially_paid'), ['IN-B'])
+        row = self.rows('partially_paid')[0]
+        self.assertEqual(Decimal(row['received']), Decimal('400'))
+        self.assertEqual(Decimal(row['balance']), Decimal('600'))
+
+    def test_anything_on_credit_reads_as_credit(self):
+        """Credit settles an invoice, so without its own section it would sit
+        under fully paid and hide that no money came in."""
+        self.dispatch('IN-C')
+        self.paid('1000', invoice_no='IN-C', mode='credit')
+        self.assertEqual(self.numbers('credit'), ['IN-C'])
+        self.assertEqual(self.numbers('fully_paid'), [])
+
+    def test_part_cash_part_credit_counts_as_credit(self):
+        self.dispatch('IN-D')
+        self.paid('400', invoice_no='IN-D')
+        self.paid('600', invoice_no='IN-D', mode='credit')
+        self.assertEqual(self.numbers('credit'), ['IN-D'])
+        self.assertEqual(self.numbers('fully_paid'), [])
+        self.assertEqual(self.numbers('partially_paid'), [])
+
+    def test_a_document_appears_in_exactly_one_section(self):
+        for n, mode, amount in (('IN-E', 'cash', '1000'), ('IN-F', 'cash', '300'),
+                                ('IN-G', 'credit', '1000')):
+            self.dispatch(n)
+            self.paid(amount, invoice_no=n, mode=mode)
+        seen = [r['number'] for s in ('fully_paid', 'partially_paid', 'credit')
+                for r in self.rows(s)]
+        self.assertEqual(sorted(seen), ['IN-E', 'IN-F', 'IN-G'])
+        self.assertEqual(len(seen), len(set(seen)))
+
+    # ── What is on the board ──
+    def test_a_delivery_with_no_payment_is_not_on_it(self):
+        """It is a payments board; an unpaid delivery has nothing to show."""
+        self.dispatch('IN-H')
+        board = self.board()
+        self.assertEqual(sum(board['sections'][s]['totals']['count']
+                             for s in ('fully_paid', 'partially_paid', 'credit')), 0)
+
+    def test_a_part_paid_proforma_is_on_it_too(self):
+        """Its instalments have not moved onto an invoice yet, because there is
+        no delivery until it is settled — leaving it out would hide part-paid
+        business exactly while it is part-paid."""
+        q = self.proforma()
+        self.paid('400', quote=q)
+        self.assertEqual(self.numbers('partially_paid'), [q.number])
+        self.assertEqual(self.rows('partially_paid')[0]['kind'], 'proforma')
+
+    def test_the_rows_carry_the_payments_behind_them(self):
+        self.dispatch('IN-I')
+        self.paid('400', invoice_no='IN-I')
+        self.paid('600', invoice_no='IN-I', mode='upi')
+        row = self.rows('fully_paid')[0]
+        self.assertEqual(row['payment_count'], 2)
+        self.assertEqual(row['modes'], ['cash', 'upi'])
+        self.assertEqual(len(row['payments']), 2)
+        self.assertEqual(row['payments'][0]['verified_by'], 'pay_admin')
+
+    def test_a_row_says_whether_the_goods_have_gone(self):
+        invoice = self.dispatch('IN-J')
+        self.paid('1000', invoice_no=invoice)
+        self.assertEqual(self.rows('fully_paid')[0]['status'], StockDispatch.PENDING)
+        StockDispatch.objects.filter(invoice_no=invoice).update(status=StockDispatch.RELEASED)
+        self.assertEqual(self.rows('fully_paid')[0]['status'], StockDispatch.RELEASED)
+
+    def test_tax_is_part_of_what_is_owed(self):
+        self.dispatch('IN-K', tax='18')            # 1000 + 18% = 1180
+        self.paid('1000', invoice_no='IN-K')
+        row = self.rows('partially_paid')[0]
+        self.assertEqual(Decimal(row['invoice_total']), Decimal('1180'))
+        self.assertEqual(Decimal(row['balance']), Decimal('180'))
+
+    # ── The totals ──
+    def test_each_section_totals_its_own_rows(self):
+        self.dispatch('IN-L'); self.paid('1000', invoice_no='IN-L')
+        self.dispatch('IN-M'); self.paid('250', invoice_no='IN-M')
+        board = self.board()
+        self.assertEqual(Decimal(board['sections']['fully_paid']['totals']['received']),
+                         Decimal('1000'))
+        partial = board['sections']['partially_paid']['totals']
+        self.assertEqual(Decimal(partial['received']), Decimal('250'))
+        self.assertEqual(Decimal(partial['balance']), Decimal('750'))
+
+    def test_the_board_totals_everything_on_it(self):
+        self.dispatch('IN-N'); self.paid('1000', invoice_no='IN-N')
+        self.dispatch('IN-O'); self.paid('250', invoice_no='IN-O')
+        self.assertEqual(Decimal(self.board()['totals']['received']), Decimal('1250'))
+        self.assertEqual(self.board()['totals']['count'], 2)
+
+    def test_an_empty_board_still_answers(self):
+        board = self.board()
+        self.assertEqual(board['totals']['count'], 0)
+        for s in ('fully_paid', 'partially_paid', 'credit'):
+            self.assertEqual(board['sections'][s]['rows'], [])
+
+    def test_payments_outlive_the_delivery_they_paid_for(self):
+        """Deleting the rows does not unmake the money; it still has to be seen."""
+        self.dispatch('IN-P')
+        self.paid('1000', invoice_no='IN-P')
+        StockDispatch.objects.filter(invoice_no='IN-P').delete()
+        self.assertEqual(self.numbers('fully_paid'), ['IN-P'])
+
+    # ── Who may look ──
+    def test_a_read_only_role_may_read_it(self):
+        self.dispatch('IN-Q'); self.paid('1000', invoice_no='IN-Q')
+        self.assertEqual(self.numbers('fully_paid', user=mk('pay_watch', 'store_manager')),
+                         ['IN-Q'])
+
+    def test_someone_with_no_dispatch_access_may_not(self):
+        self.board(user=mk('pay_keeper', 'store_keeper'), expect=403)

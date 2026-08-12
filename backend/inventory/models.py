@@ -369,26 +369,33 @@ class StockItem(models.Model):
 
     @property
     def dispatched(self):
+        """Units that have actually left. A pending dispatch has not shipped, so
+        it reserves rather than moves — see `reserved`."""
         cached = getattr(self, 'dispatched_qty', None)
         if cached is not None:
             return cached
-        return self.dispatches.aggregate(t=models.Sum('quantity'))['t'] or Decimal('0')
+        return (self.dispatches.filter(status=StockDispatch.RELEASED)
+                .aggregate(t=models.Sum('quantity'))['t'] or Decimal('0'))
 
     @property
     def reserved(self):
-        """Units promised on proforma invoices that have not gone out yet.
+        """Units promised but not yet gone: live proforma lines, plus dispatches
+        raised and waiting on payment.
 
         Held rather than moved: the goods are still on the shelf, but they are
         spoken for, so they must not be offered to a second customer. The figure
-        is summed from the live proforma lines rather than stored, which is what
-        makes it release itself — delete the proforma, or decline it, and the
-        stock is available again with nothing to unwind.
+        is summed from those documents rather than stored, which is what makes it
+        release itself — delete the proforma, decline it, or release the dispatch,
+        and the stock follows with nothing to unwind.
         """
         cached = getattr(self, 'reserved_qty', None)
         if cached is not None:
             return cached
-        return (self.quote_lines.filter(quote__status__in=LIVE_QUOTE_STATUSES)
-                .aggregate(t=models.Sum('quantity'))['t'] or Decimal('0'))
+        on_quotes = (self.quote_lines.filter(quote__status__in=LIVE_QUOTE_STATUSES)
+                     .aggregate(t=models.Sum('quantity'))['t'] or Decimal('0'))
+        on_dispatches = (self.dispatches.filter(status=StockDispatch.PENDING)
+                         .aggregate(t=models.Sum('quantity'))['t'] or Decimal('0'))
+        return on_quotes + on_dispatches
 
     @property
     def physical_stock(self):
@@ -471,7 +478,19 @@ class GoodsReceipt(_StockMovement):
 
 
 class StockDispatch(_StockMovement):
-    """Stock out — a delivery to a customer / project site."""
+    """Stock out — a delivery to a customer / project site.
+
+    A dispatch is raised before it ships. While it is `pending` the goods are
+    still in the warehouse — spoken for, but not gone — so it *reserves* stock
+    rather than moving it, exactly as a live proforma does. Releasing it is what
+    takes the goods off the shelf, and that needs the invoice settled in full.
+    """
+    PENDING, RELEASED = 'pending', 'released'
+    STATUS_CHOICES = [(PENDING, 'Pending payment'), (RELEASED, 'Released')]
+
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES,
+                              default=RELEASED, db_index=True)
+    released_at = models.DateTimeField(null=True, blank=True)
     invoice_no = models.CharField(max_length=30, blank=True, default='', db_index=True)
     customer = models.ForeignKey(StockCustomer, on_delete=models.SET_NULL, null=True, blank=True, related_name='dispatches')
     item = models.ForeignKey(StockItem, on_delete=models.PROTECT, related_name='dispatches')
@@ -511,15 +530,16 @@ class StockDispatch(_StockMovement):
 
 
 class DispatchPayment(models.Model):
-    """The payment that was checked before a delivery's goods were released.
+    """One verified payment against a document, in instalments if need be.
 
-    One per invoice number rather than one per row: a delivery of several
-    products is several StockDispatch rows sharing an invoice_no, and the
-    customer pays for the delivery, not for a row of it.
+    Verifying and dispatching are two separate acts: money can be taken and
+    checked in parts, and the goods go out only once the whole invoice has been
+    settled. So this is one row *per payment*, not one per document — a delivery
+    paid half in cash and half by transfer has two of them.
 
-    Written in the same transaction as the rows it releases — see
-    StockDispatchViewSet.dispatch_document and StockQuoteViewSet.convert — so
-    neither of those two actions can put goods out without one.
+    It attaches to whichever document the customer is paying against: a proforma
+    invoice before there is a delivery, or a pending dispatch raised directly.
+    Exactly one of the two is set.
     """
     MODE_CHOICES = [
         ('cash', 'Cash'),
@@ -527,11 +547,20 @@ class DispatchPayment(models.Model):
         ('bank', 'Bank Transfer'),
         ('cheque', 'Cheque'),
         ('card', 'Card'),
+        # Goods released on agreed terms. It counts towards settling the invoice
+        # — that is the whole point of recording it — while still standing in the
+        # ledger as what it is, so a credit sale can be told from a paid one.
+        ('credit', 'Credit'),
     ]
-    invoice_no = models.CharField(max_length=30, unique=True, db_index=True)
-    # What was owed at the moment the goods went out, stored beside what was
-    # taken. Editing a line afterwards changes the invoice; it must not be able
-    # to rewrite the history of what was actually verified.
+    # The dispatch this pays for, by its invoice number: a delivery of several
+    # products is several StockDispatch rows sharing one, and the customer pays
+    # for the delivery rather than a row of it.
+    invoice_no = models.CharField(max_length=30, blank=True, default='', db_index=True)
+    quote = models.ForeignKey('StockQuote', on_delete=models.CASCADE, null=True, blank=True,
+                              related_name='payments')
+    # What was owed when this payment was taken, stored beside what was taken.
+    # Editing a line afterwards changes the document; it must not be able to
+    # rewrite the history of what was actually verified.
     invoice_total = models.DecimalField(max_digits=14, decimal_places=2)
     amount_received = models.DecimalField(max_digits=14, decimal_places=2)
     mode = models.CharField(max_length=20, choices=MODE_CHOICES)
@@ -544,10 +573,27 @@ class DispatchPayment(models.Model):
     verified_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ['-verified_at', '-id']
+        ordering = ['verified_at', 'id']
+        constraints = [
+            models.CheckConstraint(
+                check=(models.Q(quote__isnull=False, invoice_no='')
+                       | models.Q(quote__isnull=True) & ~models.Q(invoice_no='')),
+                name='payment_belongs_to_one_document',
+            ),
+        ]
 
     def __str__(self):
-        return f"{self.invoice_no} — {self.amount_received}"
+        return f"{self.invoice_no or self.quote_id} — {self.amount_received}"
+
+    @staticmethod
+    def received_for(*, quote=None, invoice_no=None):
+        """What has been verified against a document so far.
+
+        Credit counts: it is a way of settling the invoice, not a note beside it.
+        """
+        rows = (DispatchPayment.objects.filter(quote=quote) if quote is not None
+                else DispatchPayment.objects.filter(invoice_no=invoice_no))
+        return rows.aggregate(t=models.Sum('amount_received'))['t'] or Decimal('0')
 
 
 class StockQuote(_ProformaDoc):

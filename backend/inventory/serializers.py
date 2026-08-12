@@ -267,6 +267,48 @@ class StockDispatchSerializer(_MovementSerializer):
     payment_mode = serializers.CharField(read_only=True, default=None)
     payment_reference = serializers.CharField(read_only=True, default=None)
     payment_paid_on = serializers.DateField(read_only=True, default=None)
+    # Where the delivery stands: pending until the invoice is settled and the
+    # goods released. A pending row holds its stock rather than having moved it.
+    status_label = serializers.CharField(source='get_status_display', read_only=True)
+    amount_received = serializers.SerializerMethodField()
+    balance = serializers.SerializerMethodField()
+    fully_paid = serializers.SerializerMethodField()
+
+    def _received(self, obj):
+        from .models import DispatchPayment
+        if not obj.invoice_no:
+            return Decimal('0')
+        if not hasattr(self, '_received_cache'):
+            self._received_cache = {}
+        if obj.invoice_no not in self._received_cache:
+            self._received_cache[obj.invoice_no] = DispatchPayment.received_for(
+                invoice_no=obj.invoice_no)
+        return self._received_cache[obj.invoice_no]
+
+    def _invoice_total(self, obj):
+        """The whole delivery's worth, not this row's — the customer pays for
+        the delivery, and every row of it reports the same position."""
+        if not obj.invoice_no:
+            return obj.total or Decimal('0')
+        if not hasattr(self, '_total_cache'):
+            self._total_cache = {}
+        if obj.invoice_no not in self._total_cache:
+            rows = StockDispatch.objects.filter(invoice_no=obj.invoice_no)
+            self._total_cache[obj.invoice_no] = sum(
+                ((r.amount or Decimal('0')) + (r.tax_amount or Decimal('0')) for r in rows),
+                Decimal('0'))
+        return self._total_cache[obj.invoice_no]
+
+    def get_amount_received(self, obj):
+        return str(self._received(obj))
+
+    def get_balance(self, obj):
+        left = self._invoice_total(obj) - self._received(obj)
+        return str(left if left > 0 else Decimal('0'))
+
+    def get_fully_paid(self, obj):
+        total = self._invoice_total(obj)
+        return bool(total > 0 and self._received(obj) >= total)
 
     class Meta:
         model = StockDispatch
@@ -275,8 +317,12 @@ class StockDispatchSerializer(_MovementSerializer):
                   'serial_numbers', 'site', 'notes', 'pdf',
                   'payment_verified', 'payment_amount', 'payment_mode',
                   'payment_reference', 'payment_paid_on',
+                  'status', 'status_label', 'released_at',
+                  'amount_received', 'balance', 'fully_paid',
                   'created_by', 'created_by_name', 'created_at']
-        read_only_fields = ['created_by', 'created_at', 'pdf']
+        # Releasing is its own action, with the invoice settled first — it must
+        # not be reachable by PATCHing a row's status.
+        read_only_fields = ['created_by', 'created_at', 'pdf', 'status', 'released_at']
 
 
 class StockQuoteItemSerializer(serializers.ModelSerializer):

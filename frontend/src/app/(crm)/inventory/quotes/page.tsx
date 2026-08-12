@@ -14,7 +14,7 @@ import { STATES, HOME_STATE } from "@/lib/states";
 import {
   FIELD, rupee, num, todayISO, useStock, StockPage, AddButton, SearchBar,
   DataTable, Modal, Fld, Row, DocActions, DocumentPreview, I,
-  PaymentVerificationModal, VerifiedPayment,
+  PaymentVerificationModal, VerifiedPayment, PaymentRow,
 } from "../shared";
 
 type Line = { item: string; description: string; quantity: string; unit_price: string };
@@ -57,6 +57,10 @@ export default function StockQuotesPage() {
   // does — nothing is written while this is set.
   const [toDispatch, setToDispatch] = useState<any>(null);
   const [dispatching, setDispatching] = useState(false);
+  // Where the proforma's money stands, straight from the server so the two
+  // never disagree about what is still owing.
+  const [position, setPosition] = useState<{ received: number; payments: PaymentRow[] }>(
+    { received: 0, payments: [] });
 
   const lines = form.items;
   const setLine = (i: number, patch: Partial<Line>) =>
@@ -172,18 +176,40 @@ export default function StockQuotesPage() {
    *  document it is, and the customer is what people search their downloads for. */
   const docName = (q: any) => proformaFileName(q.number, q.customer_name);
 
-  const convert = (q: any) => setToDispatch(q);
+  /** Open the payment screen for a proforma, showing what it has taken so far. */
+  const openPayments = async (q: any) => {
+    setPosition({ received: 0, payments: [] });
+    setToDispatch(q);
+    try {
+      const r = await fetch(`${api}/api/stock-quotes/${q.id}/verify-payment/`, { headers: authHeader() });
+      if (r.ok) {
+        const d = await r.json();
+        setPosition({ received: Number(d.amount_received || 0), payments: d.payments || [] });
+      }
+    } catch { /* the modal still opens, showing nothing taken yet */ }
+  };
 
-  /** The gate's answer: verify the payment and release the stock in one call. */
-  const convertVerified = async (payment: VerifiedPayment) => {
+  /** Record one payment. Part payments are fine — this is not the dispatch. */
+  const verifyPayment = async (payment: VerifiedPayment) => {
     const q = toDispatch;
     if (!q) return;
     setDispatching(true);
-    const d = await act(`stock-quotes/${q.id}/convert`, { payment });
+    const d = await act(`stock-quotes/${q.id}/verify-payment`, { payment });
     setDispatching(false);
-    if (!d) return;                            // the gate refused; stay put
+    if (!d) return;                            // refused; the message is shown
+    setPosition({ received: Number(d.amount_received || 0), payments: d.payments || [] });
+  };
+
+  /** Settled: put the goods out. The server checks the balance again. */
+  const dispatchNow = async () => {
+    const q = toDispatch;
+    if (!q) return;
+    setDispatching(true);
+    const d = await act(`stock-quotes/${q.id}/convert`);
+    setDispatching(false);
+    if (!d) return;
     setToDispatch(null);
-    alert(`${q.number} dispatched on invoice ${d.invoice_no} — ${d.dispatched_lines} line(s) recorded, payment verified.`);
+    alert(`${q.number} dispatched on invoice ${d.invoice_no} — ${d.dispatched_lines} line(s) recorded.`);
   };
 
   const term = search.trim().toLowerCase();
@@ -228,7 +254,7 @@ export default function StockQuotesPage() {
                 onDownload={() => download(q)}
                 onEmail={() => sendTo(q, "email")}
                 onWhatsApp={() => sendTo(q, "whatsapp")}
-                onDispatch={readOnly || q.status === "converted" ? undefined : () => convert(q)}
+                onDispatch={readOnly || q.status === "converted" ? undefined : () => openPayments(q)}
                 onEdit={readOnly || q.status === "converted" ? undefined : () => openEdit(q)}
                 onDelete={readOnly ? undefined : () => remove("quotes", q.id, "proforma invoice",
                   q.status === "converted"
@@ -388,11 +414,14 @@ export default function StockQuotesPage() {
       <PaymentVerificationModal
         show={!!toDispatch}
         invoiceTotal={Number(toDispatch?.total || 0)}
+        alreadyReceived={position.received}
+        payments={position.payments}
         title={toDispatch ? `Payment Verification · ${toDispatch.number}` : "Payment Verification"}
         defaultDate={toDispatch?.quote_date || todayISO()}
         saving={dispatching}
         onCancel={() => setToDispatch(null)}
-        onConfirm={convertVerified} />
+        onVerify={verifyPayment}
+        onDispatch={dispatchNow} />
     </StockPage>
   );
 }
