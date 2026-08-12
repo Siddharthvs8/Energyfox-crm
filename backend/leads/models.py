@@ -557,6 +557,72 @@ class ActivityLog(models.Model):
     def __str__(self):
         return f"{self.activity_type} at {self.created_at}"
 
+class LeadNote(models.Model):
+    """One note on a lead, carrying who wrote it.
+
+    Notes were one text field the whole team appended to. That made them
+    anonymous, and anonymous notes cannot be edited safely: letting someone
+    correct their own words would have meant letting them rewrite everyone
+    else's. A row per note fixes that — the author is recorded, so a BDE can add
+    notes and tidy their own without touching a colleague's.
+
+    `Lead.notes` is kept in step as the joined-up text, because the lead list,
+    the CSV export and the edit form all read the lead's notes as one blob. This
+    model is the record; that field is the rendering of it.
+    """
+    lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name='note_entries')
+    body = models.TextField()
+    # Null for the notes that predate this model — the old blob was split into
+    # rows and there is nobody to attribute them to. Only the admin tier may
+    # edit those.
+    author = models.ForeignKey('users.User', on_delete=models.SET_NULL,
+                               null=True, blank=True, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    edited_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['created_at', 'id']
+
+    def __str__(self):
+        return f"note on lead {self.lead_id}"
+
+    def save(self, *args, **kwargs):
+        self.body = (self.body or '').strip()
+        super().save(*args, **kwargs)
+
+    def may_be_edited_by(self, user):
+        """Your own words, or an admin's prerogative.
+
+        A note is a record of what someone said; letting a colleague rewrite it
+        would make the timeline untrustworthy. The admin tier keeps the override
+        because someone has to be able to remove what should not have been
+        written — and because the notes carried over from the old blob have no
+        author to claim them.
+        """
+        if not user or not getattr(user, 'is_authenticated', False):
+            return False
+        if getattr(user, 'is_spectator', False):
+            return False
+        if self.author_id and self.author_id == user.id:
+            return True
+        return bool(user.is_staff or getattr(user, 'is_general_manager', False))
+
+
+def resync_lead_notes(lead):
+    """Rewrite `Lead.notes` from this lead's note rows.
+
+    One blob, blank-line separated, exactly as the field held before — so every
+    screen that reads it (the list, the export, the edit form) carries on
+    unchanged while the rows underneath become the real record.
+    """
+    joined = '\n\n'.join(n.body for n in lead.note_entries.all() if n.body)
+    if (lead.notes or '') != joined:
+        lead.notes = joined
+        lead.save(update_fields=['notes'])
+    return joined
+
+
 class LeadAttachment(models.Model):
     lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name='attachments')
     file = models.FileField(upload_to='lead_attachments/')

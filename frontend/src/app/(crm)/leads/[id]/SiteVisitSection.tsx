@@ -180,7 +180,13 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h3 className="text-xs font-bold text-indigo-600 uppercase tracking-wide mt-2 mb-1 sm:col-span-2 lg:col-span-3">{children}</h3>;
 }
 
-export default function SiteVisitSection({ leadId, canEdit = true, onSaved }: { leadId: string; canEdit?: boolean; onSaved?: () => void }) {
+export default function SiteVisitSection({ leadId, canEdit = true, onSaved, reloadKey = 0 }: {
+  leadId: string; canEdit?: boolean; onSaved?: () => void;
+  // Bumped by the page when it changes something this section reads — assigning
+  // a product, which seeds the price below. Without it the section keeps the
+  // data it loaded on mount and the new price only turns up on a refresh.
+  reloadKey?: number;
+}) {
   const [form, setForm] = useState<Form>(EMPTY);
   const [siteVisitComplete, setSiteVisitComplete] = useState(false);
   // lead.value, derived from the two below it rather than typed. Kept in state
@@ -232,7 +238,7 @@ export default function SiteVisitSection({ leadId, canEdit = true, onSaved }: { 
       .then(d => { if (d) load(d); })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [leadId]);
+  }, [leadId, reloadKey]);
 
   // Arriving from the Leads list's "Site Visit" button (/leads/<id>#site-visit).
   // Next.js can't honour the hash itself — this section mounts empty and grows once

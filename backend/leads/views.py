@@ -6,7 +6,7 @@ from django.http import HttpResponse
 import csv
 import io
 import logging
-from .models import Lead, District, IntegrationSettings, ActivityLog, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, LeadDocument, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, LiasoningDocument, Warranty, WarrantyDocument, EmergencyService, EmergencyServiceDocument, PeriodicMaintenance, MaintenanceVisit, MaintenanceVisitDocument, ModuleSeen, ReceiptVoucher
+from .models import Lead, District, LeadNote, resync_lead_notes, IntegrationSettings, ActivityLog, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, LeadDocument, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, LiasoningDocument, Warranty, WarrantyDocument, EmergencyService, EmergencyServiceDocument, PeriodicMaintenance, MaintenanceVisit, MaintenanceVisitDocument, ModuleSeen, ReceiptVoucher
 from .serializers import LeadSerializer, DistrictSerializer, IntegrationSettingsSerializer, LeadAttachmentSerializer, ProductSerializer, SiteVisitSerializer, DocumentationStage1Serializer, SiteVisitDocumentSerializer, DocumentationStage1DocumentSerializer, PaymentVerificationSerializer, PurchaseLogisticsSerializer, ProjectSerializer, ProjectDocumentSerializer, ServiceEntrySerializer, BalancePaymentSerializer, DocumentationStage2Serializer, DocumentationStage2DocumentSerializer, LiasoningServiceSerializer, LiasoningDocumentSerializer, WarrantySerializer, WarrantyDocumentSerializer, EmergencyServiceSerializer, EmergencyServiceDocumentSerializer, PeriodicMaintenanceSerializer, MaintenanceVisitSerializer, MaintenanceVisitDocumentSerializer, ReceiptVoucherSerializer
 from .document_kinds import SHARED_KIND_LABELS, kind_for
 # Module-level: the nine module payloads all report this one rule, and
@@ -4782,6 +4782,99 @@ class LeadViewSet(viewsets.ModelViewSet):
             if cleaned and key not in seen:
                 seen[key] = cleaned
         return Response([seen[k] for k in sorted(seen)])
+
+    # ── Notes ──
+    # Their own endpoints rather than a field on the lead, because writing a note
+    # is not editing the lead record: a BDE reports through the site visit and is
+    # refused on the lead itself, but the notes are how the team talks about a
+    # customer and they belong to whoever is working it.
+    @staticmethod
+    def _note_payload(note, user):
+        author = note.author
+        return {
+            'id': note.id,
+            'body': note.body,
+            'author': author.id if author else None,
+            'author_name': (f"{author.first_name} {author.last_name}".strip()
+                            or author.username) if author else None,
+            'created_at': note.created_at.isoformat(),
+            'edited_at': note.edited_at.isoformat() if note.edited_at else None,
+            'can_edit': note.may_be_edited_by(user),
+        }
+
+    @action(detail=True, methods=['get', 'post'])
+    def notes(self, request, pk=None):
+        """Read a lead's notes, or add one.
+
+        Anyone who can open the lead can add a note — that includes the BDE
+        working the site visit. A view-only account cannot.
+        """
+        lead = self.get_object()
+        if request.method == 'GET':
+            return Response([self._note_payload(n, request.user)
+                             for n in lead.note_entries.select_related('author')])
+
+        from .access import is_view_only
+        if is_view_only(request.user):
+            return Response({'error': 'This is a view-only account.'},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        body = str(request.data.get('body') or '').strip()
+        if not body:
+            return Response({'error': 'Write something before saving the note.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        note = LeadNote.objects.create(
+            lead=lead, body=body,
+            author=request.user if request.user.is_authenticated else None)
+        resync_lead_notes(lead)
+        ActivityLog.objects.create(
+            activity_type='note_added',
+            description=f"Note added to {lead.first_name} {lead.last_name or ''}".strip(),
+            actor=request.user if request.user.is_authenticated else None,
+            lead=lead, extra={'note': body})
+        return Response(self._note_payload(note, request.user),
+                        status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['patch', 'delete'],
+            url_path=r'notes/(?P<note_id>[^/.]+)')
+    def note_detail(self, request, pk=None, note_id=None):
+        """Correct or remove a single note — your own, or an admin's override.
+
+        A note records what someone said, so a colleague rewriting it would make
+        the timeline untrustworthy. See LeadNote.may_be_edited_by.
+        """
+        lead = self.get_object()
+        note = lead.note_entries.filter(pk=note_id).select_related('author').first()
+        if note is None:
+            return Response({'error': 'That note is not on this lead.'},
+                            status=status.HTTP_404_NOT_FOUND)
+        if not note.may_be_edited_by(request.user):
+            return Response({'error': 'You can only edit the notes you wrote.'},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        if request.method == 'DELETE':
+            note.delete()
+            resync_lead_notes(lead)
+            ActivityLog.objects.create(
+                activity_type='note_added',
+                description=f"Note deleted on {lead.first_name} {lead.last_name or ''}".strip(),
+                actor=request.user, lead=lead, extra={'note': note.body})
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        body = str(request.data.get('body') or '').strip()
+        if not body:
+            return Response({'error': 'A note cannot be emptied. Delete it instead.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        note.body = body
+        note.edited_at = timezone.now()
+        note.save(update_fields=['body', 'edited_at', 'updated_at'])
+        resync_lead_notes(lead)
+        ActivityLog.objects.create(
+            activity_type='note_added',
+            description=f"Note edited on {lead.first_name} {lead.last_name or ''}".strip(),
+            actor=request.user, lead=lead, extra={'note': body})
+        return Response(self._note_payload(note, request.user))
 
     @action(detail=False, methods=['get'], url_path='closed-deals')
     def closed_deals(self, request):

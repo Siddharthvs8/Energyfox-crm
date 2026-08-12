@@ -53,8 +53,10 @@ export default function LeadDetailPage({
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [newNote, setNewNote] = useState("");
   const [addingNote, setAddingNote] = useState(false);
-  // Correcting what is already written, as opposed to appending to it.
-  const [editingNotes, setEditingNotes] = useState(false);
+  // Notes are their own records now, each carrying who wrote it — that is what
+  // lets someone tidy their own words without touching a colleague's.
+  const [noteList, setNoteList] = useState<any[]>([]);
+  const [editingNote, setEditingNote] = useState<number | null>(null);
   const [notesDraft, setNotesDraft] = useState("");
   const [savingNotes, setSavingNotes] = useState(false);
   const [newEditNote, setNewEditNote] = useState("");
@@ -68,6 +70,9 @@ export default function LeadDetailPage({
   const [productChoice, setProductChoice] = useState("");
   const [seedPrice, setSeedPrice] = useState(true);
   const [savingProduct, setSavingProduct] = useState(false);
+  // Bumped when the product changes, to make the site visit re-read its deal —
+  // the price is seeded from the product, and it should not wait for a refresh.
+  const [dealVersion, setDealVersion] = useState(0);
   const [pushingDoc, setPushingDoc] = useState(false);
   const [docList, setDocList] = useState<{ id: number; name: string; branch_name: string | null }[]>([]);
   const [showDocModal, setShowDocModal] = useState(false);
@@ -190,6 +195,7 @@ export default function LeadDetailPage({
     fetchCalls();
     fetchHistory();
     fetchWa();
+    fetchNotes();
   };
 
   useEffect(() => {
@@ -281,7 +287,8 @@ export default function LeadDetailPage({
         return;
       }
       setShowProductModal(false);
-      fetchData();                       // the header label and the deal follow
+      fetchData();                       // the header label follows
+      setDealVersion(v => v + 1);        // and so does the site visit's deal
     } catch {
       alert("Network error. Please try again.");
     } finally {
@@ -409,35 +416,34 @@ export default function LeadDetailPage({
     }
   };
 
+  const notesUrl = `${getApiBase(APP_SLUG)}/api/leads/${params.id}/notes/`;
+  const authJson = () => ({
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${localStorage.getItem(`${APP_SLUG}_access`)}`,
+  });
+
+  const fetchNotes = async () => {
+    try {
+      const r = await fetch(notesUrl, { headers: authJson() });
+      if (r.ok) setNoteList(await r.json());
+    } catch { /* the panel keeps what it had */ }
+  };
+
   const handleAddNote = async () => {
     if (!newNote.trim()) return;
     setAddingNote(true);
-    const token = localStorage.getItem(`${APP_SLUG}_access`);
-    if (!token) { setAddingNote(false); return; }
-
-    const existingNotes = lead.notes || "";
-    const updatedNotes = existingNotes
-      ? `${existingNotes}\n\n${newNote.trim()}`
-      : newNote.trim();
-
     try {
-      const res = await fetch(`${getApiBase(APP_SLUG)}/api/leads/${params.id}/`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ notes: updatedNotes }),
+      const r = await fetch(notesUrl, {
+        method: "POST", headers: authJson(),
+        body: JSON.stringify({ body: newNote.trim() }),
       });
-      if (res.ok) {
-        const updatedLead = await res.json();
-        setLead(updatedLead);
-        setNewNote("");
-        fetchHistory();
-      } else {
-        const err = await res.json();
-        alert(err.error || "Failed to add note");
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        alert(err.error || err.detail || "Could not add the note.");
+        return;
       }
+      setNewNote("");
+      await Promise.all([fetchNotes(), fetchHistory()]);
     } catch {
       alert("Network error. Please try again.");
     } finally {
@@ -445,31 +451,23 @@ export default function LeadDetailPage({
     }
   };
 
-  /** Rewrite the lead's notes.
-   *
-   *  Notes are one text field that each new note is appended to, so editing
-   *  works on the whole of it rather than on a single entry — saving back only
-   *  the latest one would take the earlier ones with it. The server logs the
-   *  change either way (see LeadViewSet.perform_update).
-   */
-  const saveNotes = async () => {
+  /** Correct one note. Only its author — or an admin — gets here; the server
+   *  checks again, and the pencil is only drawn when it says `can_edit`. */
+  const saveNote = async (id: number) => {
+    if (!notesDraft.trim()) return;
     setSavingNotes(true);
-    const token = localStorage.getItem(`${APP_SLUG}_access`);
-    if (!token) { setSavingNotes(false); return; }
     try {
-      const res = await fetch(`${getApiBase(APP_SLUG)}/api/leads/${params.id}/`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ notes: notesDraft.trim() }),
+      const r = await fetch(`${notesUrl}${id}/`, {
+        method: "PATCH", headers: authJson(),
+        body: JSON.stringify({ body: notesDraft.trim() }),
       });
-      if (res.ok) {
-        setLead(await res.json());
-        setEditingNotes(false);
-        fetchHistory();
-      } else {
-        const err = await res.json().catch(() => ({}));
-        alert(err.error || err.detail || "Could not save the notes.");
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        alert(err.error || err.detail || "Could not save the note.");
+        return;
       }
+      setEditingNote(null);
+      await Promise.all([fetchNotes(), fetchHistory()]);
     } catch {
       alert("Network error. Please try again.");
     } finally {
@@ -477,7 +475,19 @@ export default function LeadDetailPage({
     }
   };
 
-  const startEditNotes = () => { setNotesDraft(lead?.notes || ""); setEditingNotes(true); };
+  const deleteNote = async (id: number) => {
+    if (!confirm("Delete this note?")) return;
+    try {
+      const r = await fetch(`${notesUrl}${id}/`, { method: "DELETE", headers: authJson() });
+      if (!r.ok && r.status !== 204) {
+        const err = await r.json().catch(() => ({}));
+        alert(err.error || err.detail || "Could not delete the note.");
+        return;
+      }
+      await Promise.all([fetchNotes(), fetchHistory()]);
+    } catch { alert("Network error. Please try again."); }
+  };
+
 
   // A view-only (spectator) account reads this page and touches nothing on it.
   // The per-lead can_* flags already arrive false from the server; these are the
@@ -841,50 +851,61 @@ export default function LeadDetailPage({
           <div className="bg-white rounded-2xl border border-slate-100 p-6 animate-fade-in-up delay-200">
             <div className="flex items-center justify-between mb-4">
               <h2 className="font-semibold text-slate-900">Notes</h2>
-              {/* Gated on canEditLead, not merely on not-being-a-spectator: the
-                  notes live on the lead record, and the server refuses a BDE's
-                  write to it outright (leads.access.can_edit_leads). Showing the
-                  control to someone the API will turn away is worse than not
-                  offering it. */}
-              {canEditLead && !editingNotes && (lead.notes || "").trim() && (
-                <button onClick={startEditNotes}
-                  className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 transition-colors">
-                  Edit
-                </button>
+              {noteList.length > 0 && (
+                <span className="text-[11px] text-slate-400">{noteList.length} note{noteList.length === 1 ? "" : "s"}</span>
               )}
             </div>
 
-            {editingNotes ? (
-              <>
-                {(lead.notes || "").trim().split(/\r?\n\s*\r?\n/).filter(Boolean).length > 1 && (
-                  <p className="text-[11px] text-slate-400 mb-2">
-                    Every note on this lead, oldest first — a blank line separates one from the next.
-                    The panel shows only the newest, but all of them save together.
-                  </p>
-                )}
-                <textarea
-                  className="form-input font-mono text-[13px]"
-                  rows={Math.min(16, Math.max(4, notesDraft.split("\n").length + 1))}
-                  value={notesDraft}
-                  onChange={(e) => setNotesDraft(e.target.value)}
-                  placeholder="Notes on this lead…"
-                />
-                <div className="mt-2 flex items-center gap-2">
-                  <button className="btn btn-primary btn-sm" onClick={saveNotes}
-                    disabled={savingNotes || notesDraft.trim() === (lead.notes || "").trim()}>
-                    {savingNotes ? "Saving..." : "Save Notes"}
-                  </button>
-                  <button className="btn btn-secondary btn-sm" onClick={() => setEditingNotes(false)}
-                    disabled={savingNotes}>
-                    Cancel
-                  </button>
-                </div>
-              </>
+            {/* One entry per note, each carrying who wrote it. The pencil shows
+                only on `can_edit`, which the server works out — your own words,
+                or an admin's override. */}
+            {noteList.length === 0 ? (
+              <p className="text-sm text-slate-400">No notes added yet.</p>
             ) : (
-              <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">{getLatestNote(lead.notes)}</p>
+              <div className="space-y-3">
+                {noteList.map(n => (
+                  <div key={n.id} className="rounded-xl border border-slate-100 bg-slate-50/60 px-3.5 py-2.5">
+                    {editingNote === n.id ? (
+                      <>
+                        <textarea className="form-input" rows={3} value={notesDraft} autoFocus
+                          onChange={e => setNotesDraft(e.target.value)} />
+                        <div className="mt-2 flex items-center gap-2">
+                          <button className="btn btn-primary btn-sm" onClick={() => saveNote(n.id)}
+                            disabled={savingNotes || !notesDraft.trim() || notesDraft.trim() === n.body}>
+                            {savingNotes ? "Saving..." : "Save"}
+                          </button>
+                          <button className="btn btn-secondary btn-sm" onClick={() => setEditingNote(null)}
+                            disabled={savingNotes}>Cancel</button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{n.body}</p>
+                        <div className="mt-1.5 flex items-center gap-2 text-[10px] text-slate-400">
+                          <span>{n.author_name || "Unknown"}</span>
+                          <span>·</span>
+                          <span>{new Date(n.created_at).toLocaleString("en-IN",
+                            { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
+                          {n.edited_at && <span className="italic">· edited</span>}
+                          {n.can_edit && (
+                            <span className="ml-auto flex items-center gap-2">
+                              <button onClick={() => { setNotesDraft(n.body); setEditingNote(n.id); }}
+                                className="font-semibold text-indigo-600 hover:text-indigo-800">Edit</button>
+                              <button onClick={() => deleteNote(n.id)}
+                                className="font-semibold text-rose-500 hover:text-rose-700">Delete</button>
+                            </span>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
             )}
 
-            {canEditLead && !editingNotes && (
+            {/* Adding is open to anyone working the lead — the BDE included.
+                Writing a note is not editing the lead record. */}
+            {!isSpectator && (
             <div className="mt-4">
               <textarea
                 className="form-input"
@@ -1289,7 +1310,8 @@ export default function LeadDetailPage({
         </div>
       </div>
 
-      <SiteVisitSection leadId={String(params.id)} canEdit={!!lead.can_edit_site_visit} onSaved={fetchData} />
+      <SiteVisitSection leadId={String(params.id)} canEdit={!!lead.can_edit_site_visit}
+        onSaved={fetchData} reloadKey={dealVersion} />
 
       {/* Push to documentation — the hand-off that follows the site visit above. */}
       {lead.can_edit_site_visit && !lead.pushed_to_documentation && (

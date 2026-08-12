@@ -5057,3 +5057,175 @@ class SiteVisitDealTests(TestCase):
     def test_a_spectator_cannot(self):
         r = self.patch(mk('sd_spectator', 'spectator'), {'product_price': '1'})
         self.assertEqual(r.status_code, 403, r.content[:200])
+
+
+class LeadNoteTests(TestCase):
+    """Notes carry who wrote them, which is what makes "edit your own" possible.
+
+    Anyone working the lead can add one — the BDE included, because writing a
+    note is not editing the lead record. Correcting one is limited to its author,
+    with an admin override for the notes nobody owns.
+    """
+
+    def setUp(self):
+        from .models import LeadNote
+        self.LeadNote = LeadNote
+        self.admin = mk('ln_admin', 'admin')
+        self.caller = mk('ln_caller', 'tele_caller')
+        self.bde = mk('ln_bde', 'bde')
+        self.other_bde = mk('ln_bde2', 'bde')
+        self.lead = Lead.objects.create(first_name='Anoop', phone='9895700001',
+                                        assigned_to=self.caller, tele_caller=self.caller,
+                                        bde=self.bde)
+
+    def url(self, note_id=None):
+        base = f'/api/leads/{self.lead.id}/notes/'
+        return f'{base}{note_id}/' if note_id else base
+
+    def add(self, actor, body):
+        return self.client.post(self.url(), data={'body': body},
+                                content_type='application/json',
+                                HTTP_AUTHORIZATION=token_for(actor))
+
+    def edit(self, actor, note_id, body):
+        return self.client.patch(self.url(note_id), data={'body': body},
+                                 content_type='application/json',
+                                 HTTP_AUTHORIZATION=token_for(actor))
+
+    def remove(self, actor, note_id):
+        return self.client.delete(self.url(note_id), HTTP_AUTHORIZATION=token_for(actor))
+
+    def listing(self, actor):
+        r = self.client.get(self.url(), HTTP_AUTHORIZATION=token_for(actor))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        return r.json()
+
+    def note_by(self, actor, body='A note'):
+        r = self.add(actor, body)
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        return r.json()['id']
+
+    # ── Adding ──
+    def test_a_bde_can_add_a_note(self):
+        """The reason for all of this: a BDE is refused on the lead record, but
+        the notes are how the team talks about a customer."""
+        r = self.add(self.bde, 'Met the customer, roof is clear')
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        self.assertEqual(r.json()['author_name'], 'ln_bde')
+
+    def test_a_tele_caller_can_add_one(self):
+        self.assertEqual(self.add(self.caller, 'Called back').status_code, 201)
+
+    def test_a_spectator_cannot(self):
+        self.assertEqual(self.add(mk('ln_spectator', 'spectator'), 'Watching').status_code, 403)
+
+    def test_an_empty_note_is_refused(self):
+        self.assertEqual(self.add(self.bde, '   ').status_code, 400)
+
+    def test_notes_come_back_oldest_first(self):
+        self.add(self.caller, 'First')
+        self.add(self.bde, 'Second')
+        self.assertEqual([n['body'] for n in self.listing(self.admin)], ['First', 'Second'])
+
+    def test_adding_shows_on_the_timeline(self):
+        from .models import ActivityLog
+        self.add(self.bde, 'Site looks good')
+        log = ActivityLog.objects.filter(lead=self.lead, activity_type='note_added').latest('created_at')
+        self.assertEqual(log.actor, self.bde)
+        self.assertEqual(log.extra.get('note'), 'Site looks good')
+
+    # ── Editing: your own only ──
+    def test_a_bde_can_edit_their_own_note(self):
+        note_id = self.note_by(self.bde, 'Roof is clear')
+        r = self.edit(self.bde, note_id, 'Roof is clear, 12 panels fit')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(r.json()['body'], 'Roof is clear, 12 panels fit')
+        self.assertIsNotNone(r.json()['edited_at'])
+
+    def test_a_bde_cannot_edit_someone_elses(self):
+        note_id = self.note_by(self.caller, 'Customer called')
+        r = self.edit(self.bde, note_id, 'Rewritten by the BDE')
+        self.assertEqual(r.status_code, 403, r.content[:200])
+        self.assertEqual(self.LeadNote.objects.get(pk=note_id).body, 'Customer called')
+
+    def test_one_bde_cannot_edit_anothers(self):
+        """A BDE on another lead cannot see this one at all, so the scoping
+        turns them away before the note's own rule is reached."""
+        note_id = self.note_by(self.bde, 'Mine')
+        self.assertEqual(self.edit(self.other_bde, note_id, 'Not yours').status_code, 404)
+        self.assertEqual(self.LeadNote.objects.get(pk=note_id).body, 'Mine')
+
+    def test_an_admin_can_edit_anyones(self):
+        """Someone has to be able to take back what should not have been said."""
+        note_id = self.note_by(self.bde, 'Careless remark')
+        self.assertEqual(self.edit(self.admin, note_id, 'Redacted').status_code, 200)
+
+    def test_a_tele_caller_cannot_edit_a_bdes_note(self):
+        note_id = self.note_by(self.bde, 'Mine')
+        self.assertEqual(self.edit(self.caller, note_id, 'Theirs').status_code, 403)
+
+    def test_a_note_cannot_be_emptied(self):
+        note_id = self.note_by(self.bde, 'Something')
+        self.assertEqual(self.edit(self.bde, note_id, '  ').status_code, 400)
+
+    def test_an_unowned_note_is_an_admins_to_edit(self):
+        """The ones carried over from the old blob have no author to claim them."""
+        note = self.LeadNote.objects.create(lead=self.lead, body='Legacy note', author=None)
+        self.assertEqual(self.edit(self.bde, note.id, 'Mine now').status_code, 403)
+        self.assertEqual(self.edit(self.admin, note.id, 'Tidied').status_code, 200)
+
+    def test_the_listing_says_who_may_edit_what(self):
+        """So the pencil is only drawn where the API would accept it."""
+        self.add(self.bde, 'By the BDE')
+        self.add(self.caller, 'By the tele caller')
+        by_body = {n['body']: n['can_edit'] for n in self.listing(self.bde)}
+        self.assertTrue(by_body['By the BDE'])
+        self.assertFalse(by_body['By the tele caller'])
+
+    # ── Deleting ──
+    def test_the_author_can_delete_their_own(self):
+        note_id = self.note_by(self.bde, 'Mistake')
+        self.assertEqual(self.remove(self.bde, note_id).status_code, 204)
+        self.assertFalse(self.LeadNote.objects.filter(pk=note_id).exists())
+
+    def test_someone_else_cannot_delete_it(self):
+        """The tele caller can see the lead, so this is the note's own rule
+        rather than the scoping — and it still says no."""
+        note_id = self.note_by(self.bde, 'Mine')
+        self.assertEqual(self.remove(self.caller, note_id).status_code, 403)
+        self.assertTrue(self.LeadNote.objects.filter(pk=note_id).exists())
+
+    def test_a_note_on_another_lead_is_not_found_here(self):
+        other = Lead.objects.create(first_name='Someone', phone='9895700002')
+        stray = self.LeadNote.objects.create(lead=other, body='Elsewhere', author=self.bde)
+        self.assertEqual(self.edit(self.bde, stray.id, 'Reached across').status_code, 404)
+
+    # ── The lead's own notes field follows ──
+    def test_the_lead_still_reads_as_one_blob(self):
+        """The list, the export and the edit form all read Lead.notes; the rows
+        are the record, that field is the rendering of it."""
+        self.add(self.caller, 'First')
+        self.add(self.bde, 'Second')
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.notes, 'First\n\nSecond')
+
+    def test_editing_a_note_rewrites_the_blob(self):
+        note_id = self.note_by(self.caller, 'First')
+        self.add(self.bde, 'Second')
+        self.edit(self.caller, note_id, 'First, corrected')
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.notes, 'First, corrected\n\nSecond')
+
+    def test_deleting_a_note_takes_it_out_of_the_blob(self):
+        note_id = self.note_by(self.caller, 'First')
+        self.add(self.bde, 'Second')
+        self.remove(self.caller, note_id)
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.notes, 'Second')
+
+    def test_a_bde_still_cannot_edit_the_lead_record(self):
+        """Notes opened up; the lead itself did not."""
+        r = self.client.patch(f'/api/leads/{self.lead.id}/', data={'first_name': 'Changed'},
+                              content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.bde))
+        self.assertEqual(r.status_code, 403, r.content[:200])
