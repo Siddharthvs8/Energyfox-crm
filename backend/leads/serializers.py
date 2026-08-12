@@ -107,15 +107,44 @@ class SiteVisitSerializer(serializers.ModelSerializer):
     # as "". That's fine for the CharFields but a DateField rejects it outright,
     # which would fail the whole save over a field the user never touched.
     DATE_FIELDS = ('po_signed_date', 'kseb_feasibility_date')
+    # Same story for the money fields: an emptied price box means nothing owed,
+    # not a validation error.
+    MONEY_FIELDS = ('product_price', 'discount')
 
     def to_internal_value(self, data):
         if hasattr(data, 'get'):
             blanks = [f for f in self.DATE_FIELDS if data.get(f) == '']
-            if blanks:
+            # `f in data` matters: without it a key the request never mentioned
+            # reads as None and gets coerced to 0, so saving the roof section
+            # would quietly wipe the price and discount off the deal.
+            zeros = [f for f in self.MONEY_FIELDS
+                     if f in data and data.get(f) in ('', None)]
+            if blanks or zeros:
                 data = data.copy()
                 for f in blanks:
                     data[f] = None
+                for f in zeros:
+                    data[f] = 0
         return super().to_internal_value(data)
+
+    def validate(self, attrs):
+        """The deal value is price − discount, so the pair has to make sense: a
+        discount bigger than the price would put a negative deal on the books and
+        take the revenue figures with it."""
+        from decimal import Decimal
+        current = lambda f: getattr(self.instance, f, None) or Decimal('0')
+        price = attrs.get('product_price', current('product_price'))
+        discount = attrs.get('discount', current('discount'))
+        errors = {}
+        if price < 0:
+            errors['product_price'] = 'The product price cannot be negative.'
+        if discount < 0:
+            errors['discount'] = 'The discount cannot be negative.'
+        if not errors and discount > price:
+            errors['discount'] = 'The discount cannot be more than the product price.'
+        if errors:
+            raise serializers.ValidationError(errors)
+        return attrs
 
     def validate_rcc_roof_types(self, value):
         allowed = {'flat', 'slope', 'tiled', 'non_linear'}

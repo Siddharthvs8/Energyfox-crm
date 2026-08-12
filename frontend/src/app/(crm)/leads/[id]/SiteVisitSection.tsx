@@ -183,7 +183,12 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 export default function SiteVisitSection({ leadId, canEdit = true, onSaved }: { leadId: string; canEdit?: boolean; onSaved?: () => void }) {
   const [form, setForm] = useState<Form>(EMPTY);
   const [siteVisitComplete, setSiteVisitComplete] = useState(false);
-  const [dealValue, setDealValue] = useState("");  // lead.value — entered by the BDE here
+  // lead.value, derived from the two below it rather than typed. Kept in state
+  // so the box shows the server's figure until the next save recomputes it.
+  const [dealValue, setDealValue] = useState("");
+  const [productPrice, setProductPrice] = useState("");
+  const [discount, setDiscount] = useState("");
+  const [productName, setProductName] = useState<string | null>(null);
   const [documents, setDocuments] = useState<SVDoc[]>([]);
   const [uploadingType, setUploadingType] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -191,6 +196,13 @@ export default function SiteVisitSection({ leadId, canEdit = true, onSaved }: { 
   const [saved, setSaved] = useState(false);
   // Set once the PO date has just been saved — sends the BDE to KSEB Feasibility.
   const [poPrompt, setPoPrompt] = useState(false);
+
+  // Worked out here as well as on the server so the figure moves as it is typed
+  // rather than only after a save. The server is still the one that decides it.
+  const priceNum = Number(productPrice) || 0;
+  const discountNum = Number(discount) || 0;
+  const overDiscounted = discountNum > priceNum;
+  const computedDeal = Math.max(0, priceNum - discountNum);
 
   const apiBase = getApiBase(APP_SLUG);
   const url = `${apiBase}/api/leads/${leadId}/site-visit/`;
@@ -204,6 +216,12 @@ export default function SiteVisitSection({ leadId, canEdit = true, onSaved }: { 
     } as Form);
     setSiteVisitComplete(!!d.site_visit_complete);
     setDealValue(d.deal_value != null ? String(d.deal_value) : "");
+    // Trailing zeros off the server's decimals — "150000.00" in a number box is
+    // noise, and it makes the field look edited the moment it loads.
+    const money = (v: any) => (v == null || v === "" ? "" : String(Number(v)));
+    setProductPrice(money(d.product_price));
+    setDiscount(money(d.discount));
+    setProductName(d.product_name || null);
     setDocuments(Array.isArray(d.documents) ? d.documents : []);
   };
 
@@ -289,7 +307,10 @@ export default function SiteVisitSection({ leadId, canEdit = true, onSaved }: { 
     po_signed_date: f.po_signed_date || null,
     rcc_roof_types: f.rcc_roof_types,
     site_visit_complete: siteVisitComplete,
-    deal_value: dealValue === "" ? "0" : dealValue,
+    // The deal value is not sent: the server derives it from these two, and
+    // posting a third figure would only give it something to disagree with.
+    product_price: productPrice === "" ? "0" : productPrice,
+    discount: discount === "" ? "0" : discount,
   });
 
   /** Pull something readable out of a DRF error body for the alert. */
@@ -375,14 +396,38 @@ ${field}: ${Array.isArray(msg) ? msg[0] : msg}`;
         <>
         <SiteVisitCtx.Provider value={ctx}>
         <div className="p-6 grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {/* Deal — value entered by the BDE (no longer by the tele caller) */}
+          {/* Deal — settled by the BDE (no longer by the tele caller). The value
+              is derived from the two figures above it rather than typed, so it
+              can always be explained by the price and the discount. */}
           <SectionTitle>Deal</SectionTitle>
           <div>
-            <label className={labelCls}>Deal Value (₹)</label>
-            <input type="number" min="0" value={dealValue} disabled={!canEdit}
-              onChange={e => { setDealValue(e.target.value); setSaved(false); }}
+            <label className={labelCls}>Product Price (₹)</label>
+            <input type="number" min="0" step="0.01" value={productPrice} disabled={!canEdit}
+              onChange={e => { setProductPrice(e.target.value); setSaved(false); }}
               placeholder="0"
               className={`${inputCls} font-mono disabled:opacity-70 disabled:cursor-not-allowed`} />
+            {productName && (
+              <p className="mt-1 text-[11px] text-slate-400">{productName}</p>
+            )}
+          </div>
+          <div>
+            <label className={labelCls}>Discount (₹)</label>
+            <input type="number" min="0" step="0.01" value={discount} disabled={!canEdit}
+              onChange={e => { setDiscount(e.target.value); setSaved(false); }}
+              placeholder="0"
+              className={`${inputCls} font-mono disabled:opacity-70 disabled:cursor-not-allowed`} />
+            {overDiscounted && (
+              <p className="mt-1 text-[11px] font-semibold text-rose-600">
+                More than the product price — the deal cannot be worth less than nothing.
+              </p>
+            )}
+          </div>
+          <div>
+            <label className={labelCls}>Deal Value (₹)</label>
+            <input type="text" readOnly value={computedDeal.toLocaleString("en-IN")}
+              title="Product price minus discount. Change either of those to change it."
+              className={`${inputCls} font-mono bg-slate-100 text-slate-700 cursor-not-allowed`} />
+            <p className="mt-1 text-[11px] text-slate-400">Price − discount.</p>
           </div>
 
           {/* Roof */}
@@ -563,7 +608,9 @@ ${field}: ${Array.isArray(msg) ? msg[0] : msg}`;
           </label>
           {saved && <span className="text-xs font-semibold text-emerald-600">Saved ✓</span>}
           {canEdit ? (
-            <button onClick={save} disabled={saving || loading} className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 transition-all disabled:opacity-40">
+            <button onClick={save} disabled={saving || loading || overDiscounted}
+              title={overDiscounted ? "The discount is more than the product price." : undefined}
+              className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 transition-all disabled:opacity-40">
               {saving ? "Saving…" : "Save Site Visit"}
             </button>
           ) : (

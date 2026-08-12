@@ -4845,3 +4845,215 @@ class DistrictMatchingOnImportTests(TestCase):
                               HTTP_AUTHORIZATION=token_for(self.admin))
         self.assertEqual(r.status_code, 200, r.content[:300])
         self.assertEqual(r.json()['district'], 'Kollam')
+
+
+class EditingNotesTests(TestCase):
+    """Notes can be corrected, not only appended to.
+
+    They are one text field the lead detail page rewrites wholesale, so the
+    interesting cases are the ones that are not a pure append: fixing a typo in
+    an earlier note, and clearing the field.
+    """
+
+    def setUp(self):
+        self.admin = mk('ne_admin', 'admin')
+        self.caller = mk('ne_caller', 'tele_caller')
+        self.bde = mk('ne_bde', 'bde')
+        self.lead = Lead.objects.create(first_name='Peter', phone='9895400001',
+                                        assigned_to=self.caller, bde=self.bde,
+                                        notes='Customer peter c/o')
+
+    def patch_notes(self, actor, notes):
+        return self.client.patch(f'/api/leads/{self.lead.id}/', data={'notes': notes},
+                                 content_type='application/json',
+                                 HTTP_AUTHORIZATION=token_for(actor))
+
+    def notes(self):
+        self.lead.refresh_from_db()
+        return self.lead.notes
+
+    def test_a_note_can_be_corrected(self):
+        r = self.patch_notes(self.caller, 'Customer Peter, care of his son')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(self.notes(), 'Customer Peter, care of his son')
+
+    def test_an_earlier_note_can_be_fixed_without_losing_the_later_ones(self):
+        """The whole field is rewritten, so the edit has to carry the history."""
+        self.patch_notes(self.caller, 'First note\n\nSecond note')
+        self.patch_notes(self.caller, 'First note, corrected\n\nSecond note')
+        self.assertEqual(self.notes(), 'First note, corrected\n\nSecond note')
+
+    def test_notes_can_be_cleared(self):
+        r = self.patch_notes(self.admin, '')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(self.notes(), '')
+
+    def test_an_edit_is_recorded_on_the_timeline(self):
+        from .models import ActivityLog
+        self.patch_notes(self.caller, 'Corrected note')
+        log = ActivityLog.objects.filter(lead=self.lead, activity_type='note_added').latest('created_at')
+        self.assertIn('Note updated', log.description)
+        self.assertEqual(log.actor, self.caller)
+
+    def test_appending_still_records_only_what_was_added(self):
+        """The append path logs the new note alone; a rewrite has no such tail to
+        isolate and logs what the field now says."""
+        from .models import ActivityLog
+        self.patch_notes(self.caller, 'Customer peter c/o\n\nCalled back, interested')
+        log = ActivityLog.objects.filter(lead=self.lead, activity_type='note_added').latest('created_at')
+        self.assertEqual(log.extra.get('note'), 'Called back, interested')
+
+    def test_a_bde_cannot_rewrite_them(self):
+        """The lead record belongs to the tele-calling side; a BDE reports through
+        the site visit. Mirrors BdeCannotEditOrDeleteLeadsTests — the detail page
+        withholds the Edit and Add Note controls from them for the same reason."""
+        r = self.patch_notes(self.bde, 'Rewritten by the BDE')
+        self.assertEqual(r.status_code, 403, r.content[:200])
+        self.assertEqual(self.notes(), 'Customer peter c/o')
+
+    def test_a_spectator_cannot_rewrite_them(self):
+        r = self.patch_notes(mk('ne_spectator', 'spectator'), 'Rewritten by a watcher')
+        self.assertEqual(r.status_code, 403, r.content[:200])
+        self.assertEqual(self.notes(), 'Customer peter c/o')
+
+
+class SiteVisitDealTests(TestCase):
+    """The deal value is derived, not typed: product price − discount.
+
+    It lives on the Lead, where every report and the whole accounts stage read
+    it, but it is settled on the site visit — the screen the BDE owns, since a
+    BDE cannot write to the lead record itself.
+    """
+
+    def setUp(self):
+        from .models import Product
+        self.admin = mk('sd_admin', 'admin')
+        self.bde = mk('sd_bde', 'bde')
+        self.other_bde = mk('sd_bde2', 'bde')
+        self.caller = mk('sd_caller', 'tele_caller')
+        self.lead = Lead.objects.create(first_name='Anoop', phone='9895600001',
+                                        assigned_to=self.caller, bde=self.bde)
+        self.panel = Product.objects.create(name='5kW Rooftop', default_price=Decimal('350000'))
+
+    def url(self):
+        return f'/api/leads/{self.lead.id}/site-visit/'
+
+    def patch(self, actor, payload):
+        return self.client.patch(self.url(), data=payload, content_type='application/json',
+                                 HTTP_AUTHORIZATION=token_for(actor))
+
+    def get(self, actor=None):
+        r = self.client.get(self.url(), HTTP_AUTHORIZATION=token_for(actor or self.bde))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        return r.json()
+
+    def value(self):
+        self.lead.refresh_from_db()
+        return self.lead.value
+
+    # ── The arithmetic ──
+    def test_the_deal_value_is_the_price_less_the_discount(self):
+        r = self.patch(self.bde, {'product_price': '350000', 'discount': '25000'})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(self.value(), Decimal('325000'))
+        self.assertEqual(Decimal(str(r.json()['deal_value'])), Decimal('325000'))
+
+    def test_no_discount_leaves_the_price_as_the_deal(self):
+        self.patch(self.bde, {'product_price': '350000', 'discount': '0'})
+        self.assertEqual(self.value(), Decimal('350000'))
+
+    def test_changing_the_discount_moves_the_deal_value(self):
+        self.patch(self.bde, {'product_price': '350000', 'discount': '25000'})
+        self.patch(self.bde, {'product_price': '350000', 'discount': '50000'})
+        self.assertEqual(self.value(), Decimal('300000'))
+
+    def test_changing_the_price_moves_it_too(self):
+        self.patch(self.bde, {'product_price': '350000', 'discount': '25000'})
+        self.patch(self.bde, {'product_price': '400000'})
+        self.assertEqual(self.value(), Decimal('375000'))     # the discount stands
+
+    def test_a_discount_equal_to_the_price_is_a_free_deal_not_an_error(self):
+        r = self.patch(self.bde, {'product_price': '350000', 'discount': '350000'})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(self.value(), Decimal('0'))
+
+    def test_a_discount_larger_than_the_price_is_refused(self):
+        """A negative deal value would flow straight into the revenue figures."""
+        r = self.patch(self.bde, {'product_price': '350000', 'discount': '400000'})
+        self.assertEqual(r.status_code, 400, r.content[:300])
+        self.assertEqual(self.value(), Decimal('0'))          # nothing was written
+
+    def test_a_negative_price_is_refused(self):
+        self.assertEqual(self.patch(self.bde, {'product_price': '-1'}).status_code, 400)
+
+    def test_an_emptied_price_box_means_nothing_owed(self):
+        self.patch(self.bde, {'product_price': '350000'})
+        r = self.patch(self.bde, {'product_price': '', 'discount': ''})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(self.value(), Decimal('0'))
+
+    def test_saving_the_rest_of_the_form_leaves_the_deal_alone(self):
+        """A PATCH that says nothing about money must not recompute it to zero —
+        nor quietly wipe the price and discount it was worked out from."""
+        self.patch(self.bde, {'product_price': '350000', 'discount': '50000'})
+        r = self.patch(self.bde, {'roof_type': 'rcc'})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(self.value(), Decimal('300000'))
+        d = self.get()
+        self.assertEqual(Decimal(d['product_price']), Decimal('350000'))
+        self.assertEqual(Decimal(d['discount']), Decimal('50000'))
+
+    def test_the_figures_come_back_on_the_next_visit(self):
+        self.patch(self.bde, {'product_price': '350000', 'discount': '25000'})
+        d = self.get()
+        self.assertEqual(Decimal(d['product_price']), Decimal('350000'))
+        self.assertEqual(Decimal(d['discount']), Decimal('25000'))
+        self.assertEqual(Decimal(str(d['deal_value'])), Decimal('325000'))
+
+    # ── The product ──
+    def test_a_bde_can_set_the_product_here(self):
+        """They are refused on the lead record, so this is their way in."""
+        r = self.patch(self.bde, {'product': self.panel.id})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.product, self.panel)
+        self.assertEqual(r.json()['product_name'], '5kW Rooftop')
+
+    def test_a_bde_still_cannot_edit_the_lead_record_itself(self):
+        r = self.client.patch(f'/api/leads/{self.lead.id}/', data={'product': self.panel.id},
+                              content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.bde))
+        self.assertEqual(r.status_code, 403, r.content[:200])
+
+    def test_the_product_can_be_set_with_its_price_in_one_go(self):
+        r = self.patch(self.bde, {'product': self.panel.id, 'product_price': '350000'})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(self.value(), Decimal('350000'))
+        self.assertEqual(Decimal(r.json()['product_default_price']), Decimal('350000'))
+
+    def test_the_product_can_be_cleared(self):
+        self.patch(self.bde, {'product': self.panel.id})
+        r = self.patch(self.bde, {'product': None})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.lead.refresh_from_db()
+        self.assertIsNone(self.lead.product)
+
+    def test_a_product_that_does_not_exist_is_refused(self):
+        r = self.patch(self.bde, {'product': 999999})
+        self.assertEqual(r.status_code, 400, r.content[:200])
+
+    def test_another_bdes_site_visit_is_not_theirs_to_touch(self):
+        """They cannot see the lead at all, so the scoping turns them away before
+        the site-visit permission is even asked."""
+        r = self.patch(self.other_bde, {'product': self.panel.id, 'product_price': '1'})
+        self.assertEqual(r.status_code, 404, r.content[:200])
+        self.assertEqual(self.value(), Decimal('0'))
+
+    def test_an_admin_can_settle_the_deal_too(self):
+        r = self.patch(self.admin, {'product_price': '200000', 'discount': '10000'})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(self.value(), Decimal('190000'))
+
+    def test_a_spectator_cannot(self):
+        r = self.patch(mk('sd_spectator', 'spectator'), {'product_price': '1'})
+        self.assertEqual(r.status_code, 403, r.content[:200])

@@ -356,6 +356,14 @@ class SiteVisit(models.Model):
     lead = models.OneToOneField(Lead, on_delete=models.CASCADE, related_name='site_visit')
     site_visit_complete = models.BooleanField(default=False)
 
+    # ── Deal ──
+    # What the customer is quoted, and what came off it. The lead's `value` — the
+    # figure every report and the whole accounts stage read — is derived from
+    # these two and never typed directly, so a deal value can always be explained
+    # by the price and the discount that produced it. See LeadViewSet.site_visit.
+    product_price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    discount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
     # ── Roof ──
     ROOF_TYPES = [('rcc', 'RCC'), ('sheet', 'Sheet'), ('mixed', 'Mixed')]
     roof_type = models.CharField(max_length=10, choices=ROOF_TYPES, blank=True, default='')

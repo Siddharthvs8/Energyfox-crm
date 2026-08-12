@@ -53,11 +53,21 @@ export default function LeadDetailPage({
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [newNote, setNewNote] = useState("");
   const [addingNote, setAddingNote] = useState(false);
+  // Correcting what is already written, as opposed to appending to it.
+  const [editingNotes, setEditingNotes] = useState(false);
+  const [notesDraft, setNotesDraft] = useState("");
+  const [savingNotes, setSavingNotes] = useState(false);
   const [newEditNote, setNewEditNote] = useState("");
   const [bdeList, setBdeList] = useState<{ id: number; name: string; branch_name: string | null }[]>([]);
   const [showBdeModal, setShowBdeModal] = useState(false);
   const [selectedBde, setSelectedBde] = useState("");
   const [assigningBde, setAssigningBde] = useState(false);
+  // The product on the deal, set from the header by whoever works the site visit.
+  const [productList, setProductList] = useState<{ id: number; name: string; default_price: string }[]>([]);
+  const [showProductModal, setShowProductModal] = useState(false);
+  const [productChoice, setProductChoice] = useState("");
+  const [seedPrice, setSeedPrice] = useState(true);
+  const [savingProduct, setSavingProduct] = useState(false);
   const [pushingDoc, setPushingDoc] = useState(false);
   const [docList, setDocList] = useState<{ id: number; name: string; branch_name: string | null }[]>([]);
   const [showDocModal, setShowDocModal] = useState(false);
@@ -232,6 +242,53 @@ export default function LeadDetailPage({
     setShowEditModal(true);
   };
 
+  /** The product picker.
+   *
+   *  Writes through the site-visit endpoint rather than the lead, because a BDE
+   *  is refused on the lead record itself — the site visit is the screen they
+   *  own, and the product and its price belong to the deal they settle there.
+   */
+  const openProductModal = async () => {
+    setProductChoice(lead?.product ? String(lead.product) : "");
+    setShowProductModal(true);
+    const token = localStorage.getItem(`${APP_SLUG}_access`);
+    try {
+      const r = await fetch(`${getApiBase(APP_SLUG)}/api/products/`, { headers: { Authorization: `Bearer ${token}` } });
+      if (r.ok) {
+        const d = await r.json();
+        setProductList(Array.isArray(d) ? d : d.results || []);
+      }
+    } catch {}
+  };
+
+  const saveProduct = async () => {
+    setSavingProduct(true);
+    const token = localStorage.getItem(`${APP_SLUG}_access`);
+    const chosen = productList.find(p => String(p.id) === productChoice);
+    // Picking a product seeds the price from its catalogue figure; the BDE can
+    // still change it in the Deal section, where the discount lives.
+    const body: Record<string, unknown> = { product: productChoice || null };
+    if (chosen && seedPrice) body.product_price = String(chosen.default_price ?? 0);
+    try {
+      const r = await fetch(`${getApiBase(APP_SLUG)}/api/leads/${params.id}/site-visit/`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        alert(err.error || err.detail || "Could not save the product.");
+        return;
+      }
+      setShowProductModal(false);
+      fetchData();                       // the header label and the deal follow
+    } catch {
+      alert("Network error. Please try again.");
+    } finally {
+      setSavingProduct(false);
+    }
+  };
+
   const openBdeModal = async () => {
     setSelectedBde(lead?.bde?.toString() || "");
     setShowBdeModal(true);
@@ -387,6 +444,40 @@ export default function LeadDetailPage({
       setAddingNote(false);
     }
   };
+
+  /** Rewrite the lead's notes.
+   *
+   *  Notes are one text field that each new note is appended to, so editing
+   *  works on the whole of it rather than on a single entry — saving back only
+   *  the latest one would take the earlier ones with it. The server logs the
+   *  change either way (see LeadViewSet.perform_update).
+   */
+  const saveNotes = async () => {
+    setSavingNotes(true);
+    const token = localStorage.getItem(`${APP_SLUG}_access`);
+    if (!token) { setSavingNotes(false); return; }
+    try {
+      const res = await fetch(`${getApiBase(APP_SLUG)}/api/leads/${params.id}/`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ notes: notesDraft.trim() }),
+      });
+      if (res.ok) {
+        setLead(await res.json());
+        setEditingNotes(false);
+        fetchHistory();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || err.detail || "Could not save the notes.");
+      }
+    } catch {
+      alert("Network error. Please try again.");
+    } finally {
+      setSavingNotes(false);
+    }
+  };
+
+  const startEditNotes = () => { setNotesDraft(lead?.notes || ""); setEditingNotes(true); };
 
   // A view-only (spectator) account reads this page and touches nothing on it.
   // The per-lead can_* flags already arrive false from the server; these are the
@@ -675,6 +766,16 @@ export default function LeadDetailPage({
             <Link href={`/leads`} className="btn btn-secondary btn-sm">
               ← Back
             </Link>
+            {/* The BDE's way in to the product: they cannot edit the lead record
+                (leads.access.can_edit_leads), so it is set through the site
+                visit, which is theirs. Anyone who can edit the site visit gets
+                it — the assigned BDE, their manager, and the admin tier. */}
+            {lead.can_edit_site_visit && (
+              <button onClick={openProductModal}
+                className={`btn btn-sm ${lead.product ? "btn-secondary" : "bg-violet-600 hover:bg-violet-700 text-white font-semibold border border-violet-600"}`}>
+                {lead.product ? "Edit Product" : "Add Product"}
+              </button>
+            )}
             {lead.invoice && (
               <a 
                 href={lead.invoice} 
@@ -738,9 +839,52 @@ export default function LeadDetailPage({
 
           {/* Notes */}
           <div className="bg-white rounded-2xl border border-slate-100 p-6 animate-fade-in-up delay-200">
-            <h2 className="font-semibold text-slate-900 mb-4">Notes</h2>
-            <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">{getLatestNote(lead.notes)}</p>
-            {!isSpectator && (
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-semibold text-slate-900">Notes</h2>
+              {/* Gated on canEditLead, not merely on not-being-a-spectator: the
+                  notes live on the lead record, and the server refuses a BDE's
+                  write to it outright (leads.access.can_edit_leads). Showing the
+                  control to someone the API will turn away is worse than not
+                  offering it. */}
+              {canEditLead && !editingNotes && (lead.notes || "").trim() && (
+                <button onClick={startEditNotes}
+                  className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 transition-colors">
+                  Edit
+                </button>
+              )}
+            </div>
+
+            {editingNotes ? (
+              <>
+                {(lead.notes || "").trim().split(/\r?\n\s*\r?\n/).filter(Boolean).length > 1 && (
+                  <p className="text-[11px] text-slate-400 mb-2">
+                    Every note on this lead, oldest first — a blank line separates one from the next.
+                    The panel shows only the newest, but all of them save together.
+                  </p>
+                )}
+                <textarea
+                  className="form-input font-mono text-[13px]"
+                  rows={Math.min(16, Math.max(4, notesDraft.split("\n").length + 1))}
+                  value={notesDraft}
+                  onChange={(e) => setNotesDraft(e.target.value)}
+                  placeholder="Notes on this lead…"
+                />
+                <div className="mt-2 flex items-center gap-2">
+                  <button className="btn btn-primary btn-sm" onClick={saveNotes}
+                    disabled={savingNotes || notesDraft.trim() === (lead.notes || "").trim()}>
+                    {savingNotes ? "Saving..." : "Save Notes"}
+                  </button>
+                  <button className="btn btn-secondary btn-sm" onClick={() => setEditingNotes(false)}
+                    disabled={savingNotes}>
+                    Cancel
+                  </button>
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">{getLatestNote(lead.notes)}</p>
+            )}
+
+            {canEditLead && !editingNotes && (
             <div className="mt-4">
               <textarea
                 className="form-input"
@@ -1165,6 +1309,50 @@ export default function LeadDetailPage({
           </button>
         </div>
       )}
+
+      {/* Product Modal */}
+      {showProductModal && (() => {
+        const chosen = productList.find(p => String(p.id) === productChoice);
+        return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
+          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="px-6 py-4 border-b border-slate-100">
+              <h2 className="text-[15px] font-bold text-slate-900">{lead.product ? "Edit Product" : "Add Product"}</h2>
+              <p className="text-xs text-slate-400 mt-0.5">What this customer is buying. The price and any discount are set in the Deal section of the site visit.</p>
+            </div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Product</label>
+                <select value={productChoice} onChange={e => setProductChoice(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all">
+                  <option value="">— None —</option>
+                  {productList.map(p => (
+                    <option key={p.id} value={p.id}>{p.name}{Number(p.default_price) > 0 ? ` — ₹${Number(p.default_price).toLocaleString("en-IN")}` : ""}</option>
+                  ))}
+                </select>
+                {productList.length === 0 && (
+                  <p className="text-[11px] text-amber-600 mt-2">No products yet. Add one under Inventory → Item Master first.</p>
+                )}
+              </div>
+              {chosen && (
+                <label className="flex items-start gap-2.5 cursor-pointer">
+                  <input type="checkbox" checked={seedPrice} onChange={e => setSeedPrice(e.target.checked)}
+                    className="mt-0.5 w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500/30" />
+                  <span className="text-xs text-slate-600 leading-snug">
+                    Set the product price to <strong className="font-mono">₹{Number(chosen.default_price || 0).toLocaleString("en-IN")}</strong>,
+                    this product&apos;s catalogue price. Untick to leave the price on the deal as it is.
+                  </span>
+                </label>
+              )}
+            </div>
+            <div className="px-6 py-4 border-t border-slate-100 flex gap-3">
+              <button onClick={() => setShowProductModal(false)} className="flex-1 py-2.5 border border-slate-200 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-all">Cancel</button>
+              <button onClick={saveProduct} disabled={savingProduct} className="flex-1 py-2.5 bg-violet-600 text-white rounded-xl text-sm font-semibold hover:bg-violet-700 disabled:opacity-50 transition-all">{savingProduct ? "Saving…" : "Save Product"}</button>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
 
       {/* Assign to BDE Modal */}
       {showBdeModal && (

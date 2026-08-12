@@ -332,7 +332,7 @@ class LeadViewSet(viewsets.ModelViewSet):
         sv, _ = SiteVisit.objects.get_or_create(lead=lead)
         if request.method == 'GET':
             data = SiteVisitSerializer(sv).data
-            data['deal_value'] = lead.value  # deal value is entered here by the BDE
+            data.update(self._site_visit_deal(lead, sv))
             return Response(data)
         if not can_edit_site_visit(request.user, lead):
             return Response({'error': 'You do not have permission to edit this site visit.'},
@@ -348,20 +348,55 @@ class LeadViewSet(viewsets.ModelViewSet):
         po_just_signed = bool(sv.po_signed_date) and not had_po_date
         if sv.po_signed_date:
             self._sync_feasibility_reminder(lead, sv)
-        # The deal value lives on the Lead but is now entered by the BDE during the
-        # site visit (no longer by the tele caller). Persist it when provided.
-        if 'deal_value' in request.data:
-            from decimal import Decimal, InvalidOperation
-            try:
-                lead.value = Decimal(str(request.data.get('deal_value') or 0))
-                lead.save(update_fields=['value'])
-            except (InvalidOperation, TypeError, ValueError):
-                pass
+        # The product and the deal value both live on the Lead but are settled
+        # here, during the site visit — a BDE cannot write to the lead record
+        # itself (leads.access.can_edit_leads), and this is the screen they own.
+        lead_updates = []
+        if 'product' in request.data:
+            raw = request.data.get('product')
+            product_id = None if raw in (None, '', 'none') else raw
+            if product_id is None:
+                lead.product = None
+            else:
+                try:
+                    lead.product = Product.objects.get(pk=product_id)
+                except (Product.DoesNotExist, ValueError, TypeError):
+                    return Response({'error': 'That product no longer exists.'},
+                                    status=status.HTTP_400_BAD_REQUEST)
+            lead_updates.append('product')
+
+        # Deal value is derived, never typed: whenever a price or a discount is
+        # sent, the lead's value is recomputed from the pair. That is what keeps
+        # the figure on the lead explainable by the two numbers behind it.
+        if {'product_price', 'discount'} & set(request.data):
+            lead.value = sv.product_price - sv.discount
+            lead_updates.append('value')
+
+        if lead_updates:
+            lead.save(update_fields=lead_updates)
+
         data = serializer.data
-        data['deal_value'] = lead.value
+        data.update(self._site_visit_deal(lead, sv))
         # Tells the site-visit screen to send the BDE on to KSEB Feasibility.
         data['po_just_signed'] = po_just_signed
         return Response(data)
+
+    @staticmethod
+    def _site_visit_deal(lead, sv):
+        """The deal block the site-visit screen reads.
+
+        `deal_value` is reported rather than stored twice — it is the lead's own
+        value, which the price and discount above it produced.
+        """
+        return {
+            'product': lead.product_id,
+            'product_name': lead.product.name if lead.product else None,
+            'product_default_price': (str(lead.product.default_price)
+                                      if lead.product else None),
+            'product_price': str(sv.product_price),
+            'discount': str(sv.discount),
+            'deal_value': lead.value,
+        }
 
     @staticmethod
     def _sync_feasibility_reminder(lead, sv):
