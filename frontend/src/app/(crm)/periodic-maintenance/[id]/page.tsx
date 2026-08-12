@@ -118,6 +118,12 @@ export default function MaintenanceDetailPage({ params: paramsPromise }: { param
   const [draft, setDraft] = useState<any>({});
   const [saving, setSaving] = useState(false);
   const [uploadingSlot, setUploadingSlot] = useState<string | null>(null);
+  // Correcting the customer, and taking them off the schedule. Both live here
+  // because this is the only page that knows the schedule exists.
+  const [editing, setEditing] = useState(false);
+  const [editForm, setEditForm] = useState({ name: "", phone: "", location: "", completed_on: "" });
+  const [editSaving, setEditSaving] = useState(false);
+  const [removing, setRemoving] = useState(false);
 
   const token = () => localStorage.getItem(`${domain}_access`);
   const authHeader = () => ({ Authorization: `Bearer ${token()}` });
@@ -135,6 +141,69 @@ export default function MaintenanceDetailPage({ params: paramsPromise }: { param
   }, [apiBase, id, router]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { load(); }, [load]);
+
+  const customerUrl = `${apiBase}/api/leads/${id}/maintenance-customer/`;
+  const authJson = () => ({ "Content-Type": "application/json", ...authHeader() });
+
+  const openEdit = () => {
+    if (!data) return;
+    setEditForm({
+      name: `${data.first_name} ${data.last_name || ""}`.trim(),
+      phone: data.phone || "",
+      location: data.location || "",
+      completed_on: data.plan?.start_date || "",
+    });
+    setEditing(true);
+  };
+
+  /** Moving the completed date re-dates the visits still to come; the ones
+   *  already done keep their dates, because they happened. */
+  const saveCustomer = async () => {
+    setEditSaving(true);
+    try {
+      const r = await fetch(customerUrl, {
+        method: "PATCH", headers: authJson(), body: JSON.stringify(editForm),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(d.error || "Could not save the customer."); return; }
+      setEditing(false);
+      setData(d);
+      if (d.visits_moved) alert(`Saved — ${d.visits_moved} upcoming visit(s) re-dated.`);
+    } catch { alert("Network error. Please try again."); }
+    finally { setEditSaving(false); }
+  };
+
+  /** Removes the schedule, not the customer: they can be scheduled again. What
+   *  goes is the visits, and any readings and photos recorded against them. */
+  const removeSchedule = async () => {
+    const visits = data?.plan?.visits || [];
+    const done = visits.filter((v: Visit) => v.is_complete).length;
+    const warn = done
+      ? `
+
+${done} of them are already filled in — those readings and photos go with them.`
+      : "";
+    if (!confirm(
+      `Take ${data?.first_name || "this customer"} off the maintenance schedule?`
+      + `
+
+All ${visits.length} visits will be deleted.${warn}`
+      + `
+
+The customer stays on the books and can be scheduled again.`
+    )) return;
+    setRemoving(true);
+    try {
+      const r = await fetch(customerUrl, { method: "DELETE", headers: authHeader() });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        alert(d.error || "Could not remove the schedule.");
+        return;
+      }
+      router.push("/periodic-maintenance");
+    } catch { alert("Network error. Please try again."); }
+    finally { setRemoving(false); }
+  };
 
   const openForm = (v: Visit) => {
     setDraft({
@@ -253,6 +322,58 @@ export default function MaintenanceDetailPage({ params: paramsPromise }: { param
 
   return (
     <div className="p-6 lg:p-8 max-w-[1100px]">
+      {editing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
+          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden">
+            <div className="px-6 py-4 border-b border-slate-100">
+              <h2 className="text-[15px] font-bold text-slate-900">Edit customer</h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Their details, and the date the project completed — the schedule is counted from it.
+              </p>
+            </div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Customer name *</label>
+                <input value={editForm.name} autoFocus
+                  onChange={e => setEditForm({ ...editForm, name: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Phone number *</label>
+                <input value={editForm.phone}
+                  onChange={e => setEditForm({ ...editForm, phone: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Location</label>
+                <input value={editForm.location}
+                  onChange={e => setEditForm({ ...editForm, location: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Project completed date</label>
+                <input type="date" value={editForm.completed_on} max={todayStr}
+                  onChange={e => setEditForm({ ...editForm, completed_on: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all" />
+                <p className="mt-1 text-[11px] text-slate-400">
+                  Changing this re-dates the visits still to come. Visits already filled in keep
+                  their dates and their readings.
+                </p>
+              </div>
+            </div>
+            <div className="px-6 py-4 border-t border-slate-100 flex gap-3">
+              <button onClick={() => setEditing(false)}
+                className="flex-1 py-2.5 border border-slate-200 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-all">Cancel</button>
+              <button onClick={saveCustomer}
+                disabled={editSaving || !editForm.name.trim() || !editForm.phone.trim()}
+                className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-all">
+                {editSaving ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <Link href="/periodic-maintenance" className="text-sm text-indigo-600 hover:underline">← Back to Periodic Maintenance</Link>
 
       <div className="mt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -260,9 +381,21 @@ export default function MaintenanceDetailPage({ params: paramsPromise }: { param
           <h1 className="text-2xl font-bold text-slate-900">{data.first_name} {data.last_name}</h1>
           <p className="text-sm text-slate-500 mt-0.5">{data.phone || "—"}{data.email ? ` · ${data.email}` : ""}{data.location ? ` · ${data.location}` : ""}</p>
         </div>
-        <div className="text-right">
-          <p className="text-[10px] text-slate-400 uppercase tracking-wide">Progress</p>
-          <p className={`text-sm font-bold ${done === visits.length ? "text-emerald-600" : "text-slate-700"}`}>{done}/{visits.length} visits done</p>
+        <div className="flex items-center gap-4">
+          <div className="text-right">
+            <p className="text-[10px] text-slate-400 uppercase tracking-wide">Progress</p>
+            <p className={`text-sm font-bold ${done === visits.length ? "text-emerald-600" : "text-slate-700"}`}>{done}/{visits.length} visits done</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={openEdit}
+              className="px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-all">
+              Edit customer
+            </button>
+            <button type="button" onClick={removeSchedule} disabled={removing}
+              className="px-3.5 py-2 bg-white border border-rose-200 rounded-xl text-xs font-semibold text-rose-600 hover:bg-rose-50 transition-all disabled:opacity-50">
+              {removing ? "Removing…" : "Delete service"}
+            </button>
+          </div>
         </div>
       </div>
 

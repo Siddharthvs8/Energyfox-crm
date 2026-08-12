@@ -5634,3 +5634,155 @@ class WonMeansClosedEverywhereTests(TestCase):
         self.assertEqual(Decimal(str(self.get('/api/dashboard-stats/')['total_revenue'])),
                          Decimal('1100000'))
         self.assertEqual(self.get('/api/leads/closed-deals/')['summary']['count'], 2)
+
+
+class EditAndRemoveMaintenanceTests(TestCase):
+    """A scheduled customer can be corrected, or taken off the schedule.
+
+    Correcting the completed date re-dates what is still to come; a visit
+    already filled in keeps its date and its readings, because it happened.
+    Removing takes away the schedule, not the customer.
+    """
+
+    def setUp(self):
+        from .models import PeriodicMaintenance, MaintenanceVisit
+        self.PM, self.MV = PeriodicMaintenance, MaintenanceVisit
+        self.officer = mk('me_officer', 'liasoning_officer')
+        self.outsider = mk('me_bde', 'bde')
+        r = self.client.post('/api/leads/maintenance-customers/',
+                             data={'name': 'Ramesh Kumar', 'phone': '9895000200',
+                                   'completed_on': '2023-03-15'},
+                             content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        self.lead = Lead.objects.get(pk=r.json()['id'])
+
+    def auth(self, user=None):
+        return {'HTTP_AUTHORIZATION': token_for(user or self.officer)}
+
+    def url(self, lead=None):
+        return f'/api/leads/{(lead or self.lead).id}/maintenance-customer/'
+
+    def patch(self, payload, user=None):
+        return self.client.patch(self.url(), data=payload, content_type='application/json',
+                                 **self.auth(user))
+
+    def delete(self, user=None):
+        return self.client.delete(self.url(), **self.auth(user))
+
+    def plan(self):
+        return self.PM.objects.get(lead=self.lead)
+
+    def due(self):
+        return list(self.plan().visits.order_by('sequence').values_list('due_date', flat=True))
+
+    # ── Editing ──
+    def test_the_name_can_be_corrected(self):
+        r = self.patch({'name': 'Ramesh Kumar Nair'})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.first_name, 'Ramesh')
+        self.assertEqual(self.lead.last_name, 'Kumar Nair')
+
+    def test_the_phone_can_be_corrected(self):
+        self.patch({'phone': '9895000201'})
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.phone, '9895000201')
+
+    def test_a_location_can_be_added(self):
+        self.patch({'location': 'Kollam'})
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.company, 'Kollam')
+
+    def test_the_phone_cannot_be_emptied(self):
+        r = self.patch({'phone': '  '})
+        self.assertEqual(r.status_code, 400, r.content[:200])
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.phone, '9895000200')
+
+    # ── Re-dating ──
+    def test_a_corrected_completed_date_re_dates_the_schedule(self):
+        r = self.patch({'completed_on': '2024-01-01'})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(r.json()['visits_moved'], 10)
+        self.assertEqual(self.plan().start_date, date(2024, 1, 1))
+        self.assertEqual(self.due()[0], date(2024, 7, 1))
+        self.assertEqual(self.due()[-1], date(2029, 1, 1))
+
+    def test_a_day_first_date_is_understood_here_too(self):
+        self.patch({'completed_on': '01/01/2024'})
+        self.assertEqual(self.plan().start_date, date(2024, 1, 1))
+
+    def test_a_visit_already_filled_in_keeps_its_date(self):
+        """It happened; re-dating it would rewrite history to match a typo."""
+        first = self.plan().visits.order_by('sequence').first()
+        first.is_complete = True
+        first.save(update_fields=['is_complete'])
+        original = first.due_date
+
+        r = self.patch({'completed_on': '2024-01-01'})
+        self.assertEqual(r.json()['visits_moved'], 9)      # the other nine
+        first.refresh_from_db()
+        self.assertEqual(first.due_date, original)
+        self.assertEqual(self.due()[1], date(2025, 1, 1))  # #2 moved
+
+    def test_a_future_completed_date_is_refused(self):
+        ahead = (timezone.localdate() + timedelta(days=10)).isoformat()
+        r = self.patch({'completed_on': ahead})
+        self.assertEqual(r.status_code, 400, r.content[:200])
+        self.assertEqual(self.plan().start_date, date(2023, 3, 15))
+
+    def test_an_unreadable_date_is_refused(self):
+        self.assertEqual(self.patch({'completed_on': 'whenever'}).status_code, 400)
+
+    def test_saving_without_a_date_leaves_the_schedule_alone(self):
+        before = self.due()
+        r = self.patch({'name': 'Ramesh K'})
+        self.assertEqual(r.json()['visits_moved'], 0)
+        self.assertEqual(self.due(), before)
+
+    # ── Removing ──
+    def test_the_schedule_can_be_removed(self):
+        r = self.delete()
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(r.json()['visits_deleted'], 10)
+        self.assertFalse(self.PM.objects.filter(lead=self.lead).exists())
+        self.assertEqual(self.MV.objects.count(), 0)
+
+    def test_removing_keeps_the_customer(self):
+        """They stay on the books, and can be scheduled again."""
+        self.delete()
+        self.lead.refresh_from_db()
+        self.assertTrue(Lead.objects.filter(pk=self.lead.pk).exists())
+        self.assertTrue(self.lead.pushed_to_liasoning)
+
+    def test_a_removed_customer_can_be_scheduled_again(self):
+        self.delete()
+        r = self.client.post(f'/api/leads/{self.lead.id}/schedule-maintenance/',
+                             data={'start_date': '2024-01-01'},
+                             content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(self.plan().visits.count(), 10)
+
+    def test_the_reply_says_how_much_recorded_work_it_cost(self):
+        visit = self.plan().visits.order_by('sequence').first()
+        visit.is_complete = True
+        visit.save(update_fields=['is_complete'])
+        self.assertEqual(self.delete().json()['completed_visits_deleted'], 1)
+
+    def test_removing_twice_is_not_found(self):
+        self.delete()
+        self.assertEqual(self.delete().status_code, 404)
+
+    def test_a_customer_who_was_never_scheduled_is_not_found(self):
+        other = Lead.objects.create(first_name='Unscheduled', phone='9895000202')
+        r = self.client.patch(self.url(other), data={'name': 'X'},
+                              content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 404, r.content[:200])
+
+    # ── Who may ──
+    def test_someone_without_the_module_cannot_edit(self):
+        self.assertEqual(self.patch({'name': 'Nope'}, user=self.outsider).status_code, 403)
+
+    def test_someone_without_the_module_cannot_remove(self):
+        self.assertEqual(self.delete(user=self.outsider).status_code, 403)
+        self.assertTrue(self.PM.objects.filter(lead=self.lead).exists())

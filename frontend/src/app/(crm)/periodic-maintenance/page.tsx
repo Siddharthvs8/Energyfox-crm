@@ -198,7 +198,7 @@ export default function PeriodicMaintenancePage() {
           </button>
           <button type="button" onClick={() => setShowAdd(true)}
             className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 active:scale-[0.97] transition-all">
-            + Past Customer
+            + Add Customer
           </button>
         </div>
       </div>
@@ -231,7 +231,7 @@ export default function PeriodicMaintenancePage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
           <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden">
             <div className="px-6 py-4 border-b border-slate-100">
-              <h2 className="text-[15px] font-bold text-slate-900">Add a past customer</h2>
+              <h2 className="text-[15px] font-bold text-slate-900">Add customer</h2>
               <p className="text-xs text-slate-400 mt-0.5">
                 Someone installed before this CRM. Their five years of visits are counted from
                 the day the project was completed.

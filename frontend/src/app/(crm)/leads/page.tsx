@@ -1535,7 +1535,7 @@ This cannot be undone.`)) return;
                         {/* Recent Activity */}
                         <td className="px-4 py-3.5">
                           {lead.recent_activity ? (
-                            <div className="flex flex-col gap-0.5 max-w-[200px]">
+                            <div className="flex flex-col gap-0.5 max-w-[170px]">
                               <p className="text-[11px] font-medium text-slate-700 truncate" title={lead.recent_activity.description}>
                                 {lead.recent_activity.description}
                               </p>
@@ -1555,8 +1555,8 @@ This cannot be undone.`)) return;
                         </td>
 
                         {/* Actions */}
-                        <td className="pr-3 py-3.5">
-                          <div className="flex items-center justify-end gap-1">
+                        <td className="pr-2 py-3.5">
+                          <div className="flex items-center justify-end gap-0.5">
                             {/* Jumps straight to the Site Visit Details section on the
                                 lead page, and doubles as the completion indicator. */}
                             {showSiteVisit && (
@@ -1569,7 +1569,7 @@ This cannot be undone.`)) return;
                               {lead.site_visit_complete ? (
                                 <>
                                   <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12" /></svg>
-                                  Site Visit Completed
+                                  Site Visit
                                 </>
                               ) : (
                                 <>

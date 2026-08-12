@@ -4021,6 +4021,99 @@ class LeadViewSet(viewsets.ModelViewSet):
         fire_automation('maintenance_scheduled', lead, {'start_date': start.isoformat()})
         return Response(self._pm_detail(lead, request))
 
+    @action(detail=True, methods=['patch', 'delete'], url_path='maintenance-customer')
+    def maintenance_customer(self, request, pk=None):
+        """Correct a scheduled customer's details, or take them off the schedule.
+
+        PATCH accepts name, phone and the date the project completed. Moving that
+        date re-dates the visits still to come, counted from it — a completion
+        date entered wrong is the whole schedule wrong. Visits already done keep
+        their dates and their readings: they happened, whatever the paperwork
+        said afterwards.
+
+        DELETE removes the schedule, not the customer. They stay on the books and
+        can be scheduled again; what goes is the plan and its visits, which is
+        why the reply says how much recorded work that costs.
+        """
+        from .access import can_access_liasoning
+        if not can_access_liasoning(request.user):
+            return Response({'error': 'You do not have access to periodic maintenance.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        lead = self.get_object()
+        plan = getattr(lead, 'periodic_maintenance', None)
+        if plan is None:
+            return Response({'error': 'This customer is not scheduled for maintenance.'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        if request.method == 'DELETE':
+            visits = list(plan.visits.all())
+            done = sum(1 for v in visits if v.is_complete)
+            ActivityLog.objects.create(
+                activity_type='note_added',
+                description=(f"Removed from the periodic maintenance schedule "
+                             f"({len(visits)} visits, {done} already done)."),
+                actor=request.user if request.user.is_authenticated else None,
+                lead=lead, extra={'auto_generated': True})
+            plan.delete()               # cascades to the visits and their documents
+            return Response({'removed': True, 'visits_deleted': len(visits),
+                             'completed_visits_deleted': done})
+
+        data = request.data
+        changed = []
+
+        name = str(data.get('name') or '').strip()
+        if name:
+            first, _, last = name.partition(' ')
+            lead.first_name, lead.last_name = first[:100], last.strip()[:100]
+            changed += ['first_name', 'last_name']
+
+        if 'phone' in data:
+            phone = str(data.get('phone') or '').strip()
+            if not phone:
+                return Response({'error': 'A customer needs a phone number.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+            lead.phone = phone[:20]
+            changed.append('phone')
+
+        if 'location' in data:
+            lead.company = str(data.get('location') or '').strip()[:200]
+            changed.append('company')
+
+        if changed:
+            lead.save(update_fields=changed)
+
+        completed_on = None
+        if data.get('completed_on'):
+            completed_on = self._maintenance_date(data.get('completed_on'))
+            if completed_on is None:
+                return Response({'error': 'Enter a valid project completed date.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+            if completed_on > timezone.localdate():
+                return Response({'error': 'The project cannot have been completed in the future.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+
+        moved = 0
+        if completed_on and completed_on != plan.start_date:
+            plan.start_date = completed_on
+            plan.save(update_fields=['start_date'])
+            # Only what has not happened yet. A visit already done is a record of
+            # a real trip; re-dating it would rewrite history to match a typo.
+            for visit in plan.visits.filter(is_complete=False):
+                visit.due_date = self._add_months(
+                    completed_on, PeriodicMaintenance.GAP_MONTHS * visit.sequence)
+                visit.save(update_fields=['due_date'])
+                moved += 1
+            ActivityLog.objects.create(
+                activity_type='note_added',
+                description=(f"Maintenance schedule re-dated from "
+                             f"{completed_on.strftime('%d/%m/%Y')} — {moved} visit(s) moved."),
+                actor=request.user if request.user.is_authenticated else None,
+                lead=lead, extra={'auto_generated': True})
+
+        payload = self._pm_detail(lead, request)
+        payload['visits_moved'] = moved
+        return Response(payload)
+
     @action(detail=True, methods=['get'], url_path='maintenance-detail')
     def maintenance_detail(self, request, pk=None):
         """Full maintenance view for one customer (plan + all visits)."""
