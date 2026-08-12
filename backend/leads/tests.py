@@ -1,5 +1,5 @@
 """Lead-status ownership and the site-visit indicator the Leads list renders."""
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -5229,3 +5229,228 @@ class LeadNoteTests(TestCase):
                               content_type='application/json',
                               HTTP_AUTHORIZATION=token_for(self.bde))
         self.assertEqual(r.status_code, 403, r.content[:200])
+
+
+class PastMaintenanceCustomerTests(TestCase):
+    """Customers installed before this CRM are still owed their visits.
+
+    They come in as a name, a phone number and the date the project finished —
+    and that date is the whole schedule, since every visit counts from it.
+    """
+
+    ADD = '/api/leads/maintenance-customers/'
+    IMPORT = '/api/leads/maintenance-import/'
+    TEMPLATE = '/api/leads/maintenance-template/'
+
+    def setUp(self):
+        from .models import PeriodicMaintenance
+        self.PM = PeriodicMaintenance
+        self.officer = mk('pm_officer', 'liasoning_officer')
+        self.outsider = mk('pm_bde', 'bde')
+
+    def auth(self, user=None):
+        return {'HTTP_AUTHORIZATION': token_for(user or self.officer)}
+
+    def add(self, name='Ramesh Kumar', phone='9895000000', completed_on='2023-03-15', user=None):
+        return self.client.post(self.ADD,
+                                data={'name': name, 'phone': phone, 'completed_on': completed_on},
+                                content_type='application/json', **self.auth(user))
+
+    def upload(self, text, filename='past.csv', user=None):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        return self.client.post(
+            self.IMPORT,
+            data={'file': SimpleUploadedFile(filename, text.encode('utf-8'),
+                                             content_type='text/csv')},
+            **self.auth(user))
+
+    def plan_for(self, name):
+        return self.PM.objects.get(lead__first_name=name)
+
+    # ── One at a time ──
+    def test_a_past_customer_is_added_and_scheduled(self):
+        r = self.add()
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        self.assertEqual(r.json()['visits'], self.PM.VISIT_COUNT)
+        plan = self.plan_for('Ramesh')
+        self.assertEqual(plan.start_date, date(2023, 3, 15))
+
+    def test_the_schedule_counts_from_the_completion_date(self):
+        """A visit every six months from the day the job finished."""
+        self.add(completed_on='2023-03-15')
+        due = list(self.plan_for('Ramesh').visits.order_by('sequence')
+                   .values_list('due_date', flat=True))
+        self.assertEqual(len(due), 10)
+        self.assertEqual(due[0], date(2023, 9, 15))
+        self.assertEqual(due[1], date(2024, 3, 15))
+        self.assertEqual(due[-1], date(2028, 3, 15))
+
+    def test_an_old_job_lands_part_way_through_its_five_years(self):
+        """Its earlier visits are already past, which is the point of taking the
+        completion date rather than today's."""
+        self.add(completed_on='2023-03-15')
+        today = timezone.localdate()
+        overdue = self.plan_for('Ramesh').visits.filter(due_date__lt=today).count()
+        self.assertGreater(overdue, 0)
+
+    def test_the_customer_shows_on_the_maintenance_board(self):
+        self.add()
+        r = self.client.get('/api/leads/periodic-maintenance/', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        names = [c['first_name'] for c in r.json()['scheduled']]
+        self.assertIn('Ramesh', names)
+
+    def test_the_name_is_split_into_first_and_last(self):
+        self.add(name='Ramesh Kumar Nair')
+        lead = Lead.objects.get(phone='9895000000')
+        self.assertEqual(lead.first_name, 'Ramesh')
+        self.assertEqual(lead.last_name, 'Kumar Nair')
+
+    def test_a_one_word_name_is_fine(self):
+        self.assertEqual(self.add(name='Ramesh').status_code, 201)
+
+    def test_they_are_kept_out_of_the_active_lead_book(self):
+        """The sale was years ago; a pile of history must not bury today's work."""
+        self.add()
+        lead = Lead.objects.get(phone='9895000000')
+        self.assertTrue(lead.is_archived)
+        self.assertTrue(lead.pushed_to_liasoning)
+
+    def test_why_they_are_here_is_written_on_the_lead(self):
+        self.add(completed_on='2023-03-15')
+        lead = Lead.objects.get(phone='9895000000')
+        self.assertIn('before this CRM', lead.notes)
+        self.assertIn('15/03/2023', lead.notes)
+
+    # ── What it refuses ──
+    def test_a_customer_with_no_name_is_refused(self):
+        self.assertEqual(self.add(name='  ').status_code, 400)
+
+    def test_a_customer_with_no_phone_is_refused(self):
+        self.assertEqual(self.add(phone='').status_code, 400)
+
+    def test_a_missing_completion_date_is_refused(self):
+        self.assertEqual(self.add(completed_on='').status_code, 400)
+
+    def test_a_completion_date_in_the_future_is_refused(self):
+        ahead = (timezone.localdate() + timedelta(days=30)).isoformat()
+        r = self.add(completed_on=ahead)
+        self.assertEqual(r.status_code, 400, r.content[:200])
+        self.assertEqual(self.PM.objects.count(), 0)
+
+    def test_a_refusal_leaves_no_half_made_customer(self):
+        self.add(completed_on='not a date')
+        self.assertEqual(Lead.objects.count(), 0)
+
+    # ── Dates as people write them ──
+    def test_a_day_first_date_is_understood(self):
+        self.add(completed_on='15/03/2023')
+        self.assertEqual(self.plan_for('Ramesh').start_date, date(2023, 3, 15))
+
+    def test_a_dashed_day_first_date_is_understood(self):
+        self.add(completed_on='15-03-2023')
+        self.assertEqual(self.plan_for('Ramesh').start_date, date(2023, 3, 15))
+
+    # ── In bulk ──
+    def test_a_csv_of_customers_is_imported_and_scheduled(self):
+        r = self.upload('customer name,phone number,project completed date\n'
+                        'Ramesh Kumar,9895000001,15/03/2023\n'
+                        'Asha Devi,9895000002,2022-11-01\n')
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        self.assertEqual(r.json()['created'], 2)
+        self.assertEqual(self.PM.objects.count(), 2)
+        self.assertEqual(self.plan_for('Asha').start_date, date(2022, 11, 1))
+
+    def test_every_imported_customer_gets_the_full_schedule(self):
+        self.upload('customer name,phone number,project completed date\n'
+                    'Ramesh Kumar,9895000001,15/03/2023\n')
+        self.assertEqual(self.plan_for('Ramesh').visits.count(), self.PM.VISIT_COUNT)
+
+    def test_a_bad_row_is_reported_and_the_rest_still_land(self):
+        """One unreadable date must not cost the other rows."""
+        r = self.upload('customer name,phone number,project completed date\n'
+                        'Ramesh Kumar,9895000001,15/03/2023\n'
+                        'Broken Row,9895000002,whenever\n'
+                        'Asha Devi,9895000003,2022-11-01\n')
+        body = r.json()
+        self.assertEqual(body['created'], 2)
+        self.assertEqual(body['skipped'], 1)
+        self.assertEqual(body['errors'][0]['row'], 3)
+        self.assertIn('Broken Row', body['errors'][0]['reason'])
+
+    def test_a_row_missing_a_phone_is_skipped_by_name(self):
+        r = self.upload('customer name,phone number,project completed date\n'
+                        'No Phone,,15/03/2023\n')
+        self.assertEqual(r.json()['skipped'], 1)
+        self.assertIn('no phone number', r.json()['errors'][0]['reason'])
+
+    def test_blank_lines_are_not_mistakes(self):
+        r = self.upload('customer name,phone number,project completed date\n'
+                        'Ramesh Kumar,9895000001,15/03/2023\n'
+                        ',,\n')
+        self.assertEqual(r.json()['created'], 1)
+        self.assertEqual(r.json()['skipped'], 0)
+
+    def test_loosely_spelled_headers_are_accepted(self):
+        r = self.upload('Name,Mobile,Completion Date\n'
+                        'Ramesh Kumar,9895000001,15/03/2023\n')
+        self.assertEqual(r.json()['created'], 1)
+
+    def test_an_empty_file_says_so(self):
+        r = self.upload('customer name,phone number,project completed date\n')
+        self.assertEqual(r.status_code, 400)
+
+    def test_a_file_of_only_bad_rows_is_a_failure_not_a_success(self):
+        r = self.upload('customer name,phone number,project completed date\n'
+                        'Broken,9895000002,whenever\n')
+        self.assertEqual(r.status_code, 400, r.content[:200])
+        self.assertEqual(r.json()['created'], 0)
+
+    def test_uploading_nothing_is_refused(self):
+        r = self.client.post(self.IMPORT, data={}, **self.auth())
+        self.assertEqual(r.status_code, 400)
+
+    def test_an_xlsx_file_is_read(self):
+        from io import BytesIO
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from openpyxl import Workbook
+        book = Workbook()
+        sheet = book.active
+        sheet.append(['customer name', 'phone number', 'project completed date'])
+        sheet.append(['Ramesh Kumar', '9895000001', date(2023, 3, 15)])
+        buf = BytesIO()
+        book.save(buf)
+        r = self.client.post(self.IMPORT, data={'file': SimpleUploadedFile(
+            'past.xlsx', buf.getvalue(),
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')},
+            **self.auth())
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        self.assertEqual(self.plan_for('Ramesh').start_date, date(2023, 3, 15))
+
+    # ── The template ──
+    def test_the_template_names_the_three_columns(self):
+        r = self.client.get(self.TEMPLATE, **self.auth())
+        self.assertEqual(r.status_code, 200)
+        header = r.content.decode().splitlines()[0].lower()
+        for column in ('customer name', 'phone number', 'project completed date'):
+            self.assertIn(column, header)
+
+    def test_the_template_round_trips_through_the_import(self):
+        """What it hands out must be what the import will take back."""
+        template = self.client.get(self.TEMPLATE, **self.auth()).content.decode()
+        r = self.upload(template)
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        self.assertEqual(r.json()['created'], 1)
+
+    # ── Who may ──
+    def test_someone_without_the_module_cannot_add(self):
+        self.assertEqual(self.add(user=self.outsider).status_code, 403)
+
+    def test_someone_without_the_module_cannot_import(self):
+        r = self.upload('customer name,phone number,project completed date\n'
+                        'Ramesh,9895000001,15/03/2023\n', user=self.outsider)
+        self.assertEqual(r.status_code, 403)
+
+    def test_an_admin_may_do_both(self):
+        admin = mk('pm_admin', 'admin')
+        self.assertEqual(self.add(user=admin).status_code, 201)

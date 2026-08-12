@@ -2,6 +2,7 @@ from rest_framework import viewsets, status, permissions, parsers
 from core.permissions import MetaIntegrationAccess, IsAdminOnly
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from django.db import transaction
 from django.http import HttpResponse
 import csv
 import io
@@ -3679,6 +3680,253 @@ class LeadViewSet(viewsets.ModelViewSet):
             'plan': PeriodicMaintenanceSerializer(plan, context={'request': request}).data if plan else None,
             'can_edit': can_access_liasoning(request.user),
         }
+
+    # ── Customers from before the CRM ──
+    # Five years of maintenance outlives any one system, so the customers who
+    # were installed before this one existed still have visits owing. They arrive
+    # as a name, a phone number and the date the project finished — which is all
+    # the schedule needs, since every visit is counted from it.
+    MAINTENANCE_COLUMNS = ('customer name', 'phone number', 'project completed date')
+
+    @staticmethod
+    def _maintenance_date(value):
+        """A completion date as typed, or None.
+
+        Spreadsheets hand back real dates; a CSV hands back whatever someone
+        typed, and in India that is usually day-first.
+        """
+        import datetime
+        if isinstance(value, datetime.datetime):
+            return value.date()
+        if isinstance(value, datetime.date):
+            return value
+        text = str(value or '').strip()
+        if not text:
+            return None
+        for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y', '%d.%m.%Y',
+                    '%d/%m/%y', '%d-%m-%y', '%Y/%m/%d'):
+            try:
+                return datetime.datetime.strptime(text, fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    def _build_maintenance_plan(self, lead, start, user):
+        """The plan and its visits: one every GAP_MONTHS, counted from `start`."""
+        plan = PeriodicMaintenance.objects.create(
+            lead=lead, start_date=start,
+            created_by=user if getattr(user, 'is_authenticated', False) else None)
+        MaintenanceVisit.objects.bulk_create([
+            MaintenanceVisit(plan=plan, sequence=i,
+                             due_date=self._add_months(start, PeriodicMaintenance.GAP_MONTHS * i))
+            for i in range(1, PeriodicMaintenance.VISIT_COUNT + 1)])
+        return plan
+
+    def _create_maintenance_customer(self, *, name, phone, completed_on, user):
+        """A past customer, as a lead with a maintenance plan already running.
+
+        They are recorded as a lead rather than as a row of their own, because
+        every screen that works a maintenance visit reads through one — the
+        queue, the visit form, the search. A customer is a customer whether the
+        CRM watched them buy or not.
+
+        Archived on the way in: the sale happened years ago, and dropping a
+        pile of historical customers into the active lead list (or the Converted
+        Leads board) would bury today's work under it. Archived leads stay fully
+        reachable, and the maintenance module reads its own queue regardless.
+        """
+        first, _, last = str(name).strip().partition(' ')
+        lead = Lead.objects.create(
+            first_name=first[:100] or 'Customer',
+            last_name=last.strip()[:100],
+            phone=str(phone or '').strip()[:20],
+            status='converted',
+            source='manual',
+            is_archived=True,
+            archived_at=timezone.now(),
+            pushed_to_liasoning=True,
+            pushed_to_liasoning_at=timezone.now(),
+        )
+        LeadNote.objects.create(
+            lead=lead,
+            body=(f"Added for periodic maintenance from records kept before this CRM. "
+                  f"Project completed on {completed_on.strftime('%d/%m/%Y')}."),
+            author=user if getattr(user, 'is_authenticated', False) else None)
+        resync_lead_notes(lead)
+        self._build_maintenance_plan(lead, completed_on, user)
+        ActivityLog.objects.create(
+            activity_type='lead_created',
+            description=(f"Past customer added for periodic maintenance — "
+                         f"project completed {completed_on.strftime('%d/%m/%Y')}."),
+            actor=user if getattr(user, 'is_authenticated', False) else None,
+            lead=lead, extra={'auto_generated': True})
+        return lead
+
+    @action(detail=False, methods=['post'], url_path='maintenance-customers')
+    def add_maintenance_customer(self, request):
+        """Add one past customer by hand and start their schedule."""
+        from .access import can_access_liasoning
+        if not can_access_liasoning(request.user):
+            return Response({'error': 'You do not have access to periodic maintenance.'},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        name = str(request.data.get('name') or '').strip()
+        phone = str(request.data.get('phone') or '').strip()
+        completed_on = self._maintenance_date(request.data.get('completed_on'))
+        errors = {}
+        if not name:
+            errors['name'] = 'Enter the customer name.'
+        if not phone:
+            errors['phone'] = 'Enter a phone number.'
+        if completed_on is None:
+            errors['completed_on'] = 'Enter the date the project was completed.'
+        elif completed_on > timezone.localdate():
+            errors['completed_on'] = 'The project cannot have been completed in the future.'
+        if errors:
+            return Response({'error': ' '.join(errors.values()), 'fields': errors},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            lead = self._create_maintenance_customer(
+                name=name, phone=phone, completed_on=completed_on, user=request.user)
+        plan = lead.periodic_maintenance
+        return Response({
+            'id': lead.id,
+            'name': f"{lead.first_name} {lead.last_name or ''}".strip(),
+            'phone': lead.phone,
+            'completed_on': completed_on.isoformat(),
+            'start_date': plan.start_date.isoformat(),
+            'visits': plan.visits.count(),
+            'next_due': plan.visits.order_by('due_date').values_list('due_date', flat=True).first(),
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=['get'], url_path='maintenance-template')
+    def maintenance_template(self, request):
+        """The CSV to fill in for a bulk upload — the three columns, and a row
+        showing the shape of each."""
+        from .access import can_access_liasoning
+        if not can_access_liasoning(request.user):
+            return Response({'error': 'You do not have access to periodic maintenance.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = 'attachment; filename="maintenance-customers-template.csv"'
+        writer = csv.writer(response)
+        writer.writerow(self.MAINTENANCE_COLUMNS)
+        writer.writerow(['Ramesh Kumar', '9895000000', '15/03/2023'])
+        return response
+
+    @action(detail=False, methods=['post'], url_path='maintenance-import',
+            parser_classes=[parsers.MultiPartParser, parsers.FormParser])
+    def import_maintenance_customers(self, request):
+        """Bulk-add past customers from a CSV or Excel file.
+
+        Every readable row is taken and every unreadable one is reported by its
+        line number — a single bad date should not cost the other four hundred
+        rows, and the person fixing the file needs to know which ones to fix.
+        """
+        from .access import can_access_liasoning
+        if not can_access_liasoning(request.user):
+            return Response({'error': 'You do not have access to periodic maintenance.'},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        upload = request.FILES.get('file')
+        if not upload:
+            return Response({'error': 'Choose a CSV or Excel file to upload.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            rows = self._read_tabular(upload)
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        if not rows:
+            return Response({'error': 'That file has no rows in it.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        name_keys = ('customer name', 'name', 'customer', 'client name', 'customer_name')
+        phone_keys = ('phone number', 'phone', 'mobile', 'contact', 'mobile number',
+                      'phone_number', 'contact number')
+        date_keys = ('project completed date', 'completed date', 'completion date',
+                     'project completed', 'completed on', 'date')
+
+        def pick(row, keys):
+            for k in keys:
+                if k in row and str(row[k] or '').strip():
+                    return row[k]
+            return ''
+
+        created, skipped = [], []
+        with transaction.atomic():
+            for line_no, row in enumerate(rows, start=2):     # row 1 is the header
+                name = str(pick(row, name_keys) or '').strip()
+                phone = str(pick(row, phone_keys) or '').strip()
+                raw_date = pick(row, date_keys)
+                completed_on = self._maintenance_date(raw_date)
+
+                if not any([name, phone, str(raw_date or '').strip()]):
+                    continue                                   # a blank line, not a mistake
+                if not name:
+                    skipped.append({'row': line_no, 'reason': 'No customer name.'})
+                    continue
+                if not phone:
+                    skipped.append({'row': line_no, 'reason': f'{name}: no phone number.'})
+                    continue
+                if completed_on is None:
+                    skipped.append({'row': line_no,
+                                    'reason': f'{name}: could not read the completed date '
+                                              f'"{raw_date}".'})
+                    continue
+                if completed_on > timezone.localdate():
+                    skipped.append({'row': line_no,
+                                    'reason': f'{name}: completed date is in the future.'})
+                    continue
+
+                lead = self._create_maintenance_customer(
+                    name=name, phone=phone, completed_on=completed_on, user=request.user)
+                created.append({'id': lead.id, 'name': name, 'phone': phone,
+                                'completed_on': completed_on.isoformat()})
+
+        return Response({
+            'created': len(created),
+            'skipped': len(skipped),
+            'customers': created,
+            'errors': skipped[:50],          # enough to fix the file by
+        }, status=status.HTTP_201_CREATED if created else status.HTTP_400_BAD_REQUEST)
+
+    @staticmethod
+    def _read_tabular(upload):
+        """A CSV or Excel upload as a list of lower-cased-key dicts.
+
+        Excel is read only if openpyxl is installed; saying so is better than a
+        500 that leaves someone wondering whether the file was at fault.
+        """
+        name = (upload.name or '').lower()
+        if name.endswith(('.xlsx', '.xlsm')):
+            try:
+                from openpyxl import load_workbook
+            except ImportError:
+                raise ValueError('Excel files need the openpyxl package on the server. '
+                                 'Save the sheet as CSV and upload that instead.')
+            try:
+                book = load_workbook(upload, read_only=True, data_only=True)
+            except Exception:
+                raise ValueError('That Excel file could not be read. Re-save it and try again.')
+            sheet = book.active
+            grid = list(sheet.iter_rows(values_only=True))
+            if not grid:
+                return []
+            header = [str(h or '').strip().lower() for h in grid[0]]
+            return [dict(zip(header, row)) for row in grid[1:]]
+
+        if name.endswith('.xls'):
+            raise ValueError('The old .xls format is not supported. Save the sheet as .xlsx '
+                             'or CSV and upload that.')
+
+        try:
+            text = upload.read().decode('utf-8-sig')
+        except UnicodeDecodeError:
+            raise ValueError('That file is not readable as text. Upload a CSV or an .xlsx file.')
+        reader = csv.DictReader(io.StringIO(text))
+        return [{(k or '').strip().lower(): v for k, v in row.items()} for row in reader]
 
     @action(detail=False, methods=['get'], url_path='periodic-maintenance')
     def periodic_maintenance(self, request):

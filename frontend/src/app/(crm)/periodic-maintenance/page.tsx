@@ -46,6 +46,15 @@ export default function PeriodicMaintenancePage() {
   // Three separate views rather than one long scroll. It opens on Upcoming: that
   // is the working list, and it is where the day-before reminder points.
   const [tab, setTab] = useState<"upcoming" | "scheduled" | "schedule">("upcoming");
+  // Customers installed before this CRM existed. Five years of maintenance
+  // outlives any one system, so their visits are still owed — they come in by
+  // hand or by the bucketload from whatever the office kept before.
+  const [showAdd, setShowAdd] = useState(false);
+  const [addForm, setAddForm] = useState({ name: "", phone: "", completed_on: "" });
+  const [addingPast, setAddingPast] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importReport, setImportReport] = useState<any>(null);
+  const importRef = React.useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [startDates, setStartDates] = useState<Record<number, string>>({});
@@ -79,6 +88,58 @@ export default function PeriodicMaintenancePage() {
   };
 
   useEffect(() => { if (allowed) load(); }, [allowed]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const api = getApiBase(domain);
+  const authJson = () => ({ "Content-Type": "application/json", Authorization: `Bearer ${token()}` });
+
+  /** Add one past customer. The schedule starts from the completion date, so
+   *  a job finished three years ago lands mid-way through its five years. */
+  const addPastCustomer = async () => {
+    setAddingPast(true);
+    try {
+      const r = await fetch(`${api}/api/leads/maintenance-customers/`, {
+        method: "POST", headers: authJson(), body: JSON.stringify(addForm),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(d.error || "Could not add the customer."); return; }
+      setShowAdd(false);
+      setAddForm({ name: "", phone: "", completed_on: "" });
+      load();
+      alert(`${d.name} scheduled — ${d.visits} visits, the next on ${d.next_due}.`);
+    } catch { alert("Network error. Please try again."); }
+    finally { setAddingPast(false); }
+  };
+
+  const downloadTemplate = async () => {
+    try {
+      const r = await fetch(`${api}/api/leads/maintenance-template/`,
+        { headers: { Authorization: `Bearer ${token()}` } });
+      if (!r.ok) { alert("Could not download the template."); return; }
+      const url = URL.createObjectURL(await r.blob());
+      const a = document.createElement("a");
+      a.href = url; a.download = "maintenance-customers-template.csv"; a.click();
+      URL.revokeObjectURL(url);
+    } catch { alert("Could not download the template."); }
+  };
+
+  /** Bulk upload. Every readable row is taken; the rest come back by line
+   *  number so the file can be fixed rather than guessed at. */
+  const importFile = async (file: File) => {
+    setImporting(true);
+    setImportReport(null);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const r = await fetch(`${api}/api/leads/maintenance-import/`, {
+        method: "POST", headers: { Authorization: `Bearer ${token()}` }, body,
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok && !d.created) { alert(d.error || "Could not read that file."); return; }
+      setImportReport(d);
+      load();
+    } catch { alert("Network error while uploading."); }
+    finally { setImporting(false); if (importRef.current) importRef.current.value = ""; }
+  };
 
   const schedule = async (id: number) => {
     setSchedulingId(id);
@@ -117,10 +178,103 @@ export default function PeriodicMaintenancePage() {
 
   return (
     <div className="p-6 lg:p-8 max-w-[1200px]">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-slate-900">Periodic Maintenance</h1>
-        <p className="text-sm text-slate-500 mt-1">Subsidy-redeemed / completed customers are scheduled for 5 years of maintenance with a tenure gap of 6 months.</p>
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900">Periodic Maintenance</h1>
+          <p className="text-sm text-slate-500 mt-1">Subsidy-redeemed / completed customers are scheduled for 5 years of maintenance with a tenure gap of 6 months.</p>
+        </div>
+        {/* Past customers: the ones installed before this CRM, who are still
+            owed visits. Their schedule counts from the day the project finished. */}
+        <div className="flex flex-wrap items-center gap-2">
+          <input ref={importRef} type="file" accept=".csv,.xlsx,.xlsm" className="hidden"
+            onChange={e => { const f = e.target.files?.[0]; if (f) importFile(f); }} />
+          <button type="button" onClick={downloadTemplate}
+            className="px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-all">
+            Template
+          </button>
+          <button type="button" onClick={() => importRef.current?.click()} disabled={importing}
+            className="px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-all disabled:opacity-50">
+            {importing ? "Importing…" : "Import"}
+          </button>
+          <button type="button" onClick={() => setShowAdd(true)}
+            className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 active:scale-[0.97] transition-all">
+            + Past Customer
+          </button>
+        </div>
       </div>
+
+      {/* What the upload made of the file — kept on screen rather than thrown
+          into an alert, because the skipped rows are a list to work through. */}
+      {importReport && (
+        <div className="mb-5 rounded-2xl border border-slate-200 bg-white p-4">
+          <div className="flex items-start justify-between gap-4">
+            <p className="text-sm font-semibold text-slate-800">
+              {importReport.created} customer{importReport.created === 1 ? "" : "s"} scheduled
+              {importReport.skipped > 0 && (
+                <span className="text-amber-600"> · {importReport.skipped} row{importReport.skipped === 1 ? "" : "s"} skipped</span>
+              )}
+            </p>
+            <button onClick={() => setImportReport(null)}
+              className="text-xs font-semibold text-slate-400 hover:text-slate-600">Dismiss</button>
+          </div>
+          {(importReport.errors || []).length > 0 && (
+            <ul className="mt-2 space-y-1">
+              {importReport.errors.map((e: any, i: number) => (
+                <li key={i} className="text-[11px] text-amber-700">Row {e.row}: {e.reason}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {showAdd && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
+          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden">
+            <div className="px-6 py-4 border-b border-slate-100">
+              <h2 className="text-[15px] font-bold text-slate-900">Add a past customer</h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Someone installed before this CRM. Their five years of visits are counted from
+                the day the project was completed.
+              </p>
+            </div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Customer name *</label>
+                <input value={addForm.name} autoFocus
+                  onChange={e => setAddForm({ ...addForm, name: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all"
+                  placeholder="Ramesh Kumar" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Phone number *</label>
+                <input value={addForm.phone}
+                  onChange={e => setAddForm({ ...addForm, phone: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all"
+                  placeholder="9895000000" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Project completed date *</label>
+                <input type="date" value={addForm.completed_on} max={today()}
+                  onChange={e => setAddForm({ ...addForm, completed_on: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all" />
+                <p className="mt-1 text-[11px] text-slate-400">
+                  The schedule starts here — a job finished three years ago lands part-way
+                  through its five years, with the visits already past marked due.
+                </p>
+              </div>
+            </div>
+            <div className="px-6 py-4 border-t border-slate-100 flex gap-3">
+              <button onClick={() => setShowAdd(false)}
+                className="flex-1 py-2.5 border border-slate-200 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-all">Cancel</button>
+              <button onClick={addPastCustomer}
+                disabled={addingPast || !addForm.name.trim() || !addForm.phone.trim() || !addForm.completed_on}
+                className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-all">
+                {addingPast ? "Adding…" : "Add & schedule"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="mb-5 flex flex-wrap items-center gap-3">
         <input
