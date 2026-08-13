@@ -6273,3 +6273,358 @@ class CompanyPerformanceAnalysisTests(TestCase):
         self.won(50000)
         data = self.client.get('/api/company-performance/?period=all', **self.auth()).json()
         self.assertEqual(data['monthly'][-1]['cumulative'], data['headline']['revenue'])
+
+
+class DuplicateLeadSubmissionTests(TestCase):
+    """The same lead submitted twice is one lead.
+
+    A double-click, a retried request or a second tab all arrive as separate
+    POSTs carrying identical details. Each used to become its own row, which is
+    how one customer appeared in the list five times over.
+    """
+
+    def setUp(self):
+        self.caller = mk('dup_caller', 'tele_caller')
+
+    def auth(self, user=None):
+        return {'HTTP_AUTHORIZATION': token_for(user or self.caller)}
+
+    def post(self, user=None, **fields):
+        payload = {'first_name': 'Pradeep', 'last_name': 'Kumar', 'phone': '918943350861'}
+        payload.update(fields)
+        return self.client.post('/api/leads/', data=payload,
+                                content_type='application/json', **self.auth(user))
+
+    def test_the_first_submission_creates_the_lead(self):
+        r = self.post()
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        self.assertEqual(Lead.objects.count(), 1)
+
+    def test_a_second_identical_submission_makes_no_second_lead(self):
+        self.post()
+        self.post()
+        self.assertEqual(Lead.objects.count(), 1)
+
+    def test_five_clicks_still_make_one_lead(self):
+        """The shape of the bug as it was reported."""
+        for _ in range(5):
+            self.post()
+        self.assertEqual(Lead.objects.filter(phone='918943350861').count(), 1)
+
+    def test_the_repeat_is_answered_with_the_lead_that_exists(self):
+        """Not an error: from the caller's side the submission did succeed."""
+        first = self.post().json()
+        again = self.post()
+        self.assertEqual(again.status_code, 200)
+        self.assertEqual(again.json()['id'], first['id'])
+
+    def test_a_different_person_on_the_same_phone_is_still_created(self):
+        """A shared family phone is not a duplicate."""
+        self.post()
+        self.post(first_name='Anitha')
+        self.assertEqual(Lead.objects.count(), 2)
+
+    def test_a_different_phone_is_still_created(self):
+        self.post()
+        self.post(phone='919000000001')
+        self.assertEqual(Lead.objects.count(), 2)
+
+    def test_a_lead_with_no_phone_is_never_treated_as_a_duplicate(self):
+        """Without a phone there is nothing identifying enough to match on."""
+        self.post(phone='')
+        self.post(phone='')
+        self.assertEqual(Lead.objects.count(), 2)
+
+    def test_the_same_customer_can_be_filed_again_later(self):
+        """A second enquiry weeks later is real business, not a stray click."""
+        self.post()
+        Lead.objects.all().update(created_at=timezone.now() - timedelta(days=30))
+        self.post()
+        self.assertEqual(Lead.objects.count(), 2)
+
+    def test_refiling_a_trashed_lead_creates_it_again(self):
+        """It was deleted on purpose; adding it back is a real create."""
+        self.post()
+        Lead.objects.all().update(is_trashed=True)
+        r = self.post()
+        self.assertEqual(r.status_code, 201, r.content[:200])
+        self.assertEqual(Lead.objects.filter(is_trashed=False).count(), 1)
+
+    def test_the_name_match_ignores_case_and_padding(self):
+        self.post()
+        self.post(first_name='  pradeep ', last_name='KUMAR')
+        self.assertEqual(Lead.objects.count(), 1)
+
+    def test_a_duplicate_leaves_no_second_activity_log(self):
+        """Otherwise the lead's history shows it being created twice."""
+        self.post()
+        self.post()
+        from .models import ActivityLog
+        created = ActivityLog.objects.filter(activity_type='lead_created').count()
+        self.assertEqual(created, 1)
+
+    def test_a_bde_is_still_refused_outright(self):
+        """The duplicate check must not become a way around who may add leads."""
+        bde = mk('dup_bde', 'bde')
+        self.assertEqual(self.post(user=bde).status_code, 403)
+        self.assertEqual(Lead.objects.count(), 0)
+
+
+class DuplicateGroupingTests(TestCase):
+    """Two leads are the same customer when they share a phone or an email."""
+
+    def setUp(self):
+        self.boss = mk('dg_admin', 'admin')
+
+    def auth(self, user=None):
+        return {'HTTP_AUTHORIZATION': token_for(user or self.boss)}
+
+    def lead(self, name, phone='', email=''):
+        return Lead.objects.create(first_name=name, phone=phone, email=email)
+
+    def groups(self, user=None):
+        r = self.client.get('/api/leads/duplicates/', **self.auth(user))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        return r.json()['groups']
+
+    # ── Phone shapes ──
+    def test_a_country_code_does_not_make_a_second_customer(self):
+        """The single biggest source of duplicates the import route produces."""
+        self.lead('Nikhil', phone='+919380077570')
+        self.lead('Prarthana', phone='9380077570')
+        groups = self.groups()
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]['match'], 'phone')
+        self.assertEqual(groups[0]['key'], '9380077570')
+        self.assertEqual(groups[0]['count'], 2)
+
+    def test_spacing_and_punctuation_are_ignored(self):
+        self.lead('A', phone='+91 93800-77570')
+        self.lead('B', phone='9380077570')
+        self.assertEqual(len(self.groups()), 1)
+
+    def test_different_numbers_are_not_grouped(self):
+        self.lead('A', phone='9380077570')
+        self.lead('B', phone='9380077571')
+        self.assertEqual(self.groups(), [])
+
+    def test_a_lead_with_no_phone_or_email_is_never_grouped(self):
+        self.lead('A')
+        self.lead('B')
+        self.assertEqual(self.groups(), [])
+
+    # ── Email ──
+    def test_the_same_email_groups_regardless_of_case(self):
+        self.lead('A', email='Shefin@Gmail.com')
+        self.lead('B', email='shefin@gmail.com')
+        groups = self.groups()
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]['match'], 'email')
+
+    def test_a_pair_sharing_both_is_reported_once(self):
+        """Otherwise merging the phone group leaves a stale email group behind."""
+        self.lead('A', phone='+919380077570', email='x@y.com')
+        self.lead('B', phone='9380077570', email='x@y.com')
+        groups = self.groups()
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]['match'], 'phone')
+
+    def test_an_email_pairing_the_phone_pass_missed_is_still_reported(self):
+        self.lead('A', phone='9000000001', email='same@y.com')
+        self.lead('B', phone='9000000002', email='same@y.com')
+        self.assertEqual([g['match'] for g in self.groups()], ['email'])
+
+    # ── What the page needs ──
+    def test_the_oldest_is_suggested_as_the_one_to_keep(self):
+        first = self.lead('Older', phone='9380077570')
+        self.lead('Newer', phone='9380077570')
+        Lead.objects.filter(pk=first.pk).update(created_at=timezone.now() - timedelta(days=5))
+        self.assertEqual(self.groups()[0]['suggested_keep'], first.pk)
+
+    def test_a_trashed_lead_is_not_a_duplicate(self):
+        self.lead('A', phone='9380077570')
+        gone = self.lead('B', phone='9380077570')
+        Lead.objects.filter(pk=gone.pk).update(is_trashed=True)
+        self.assertEqual(self.groups(), [])
+
+    def test_a_row_says_what_would_block_a_merge(self):
+        from .models import SiteVisit
+        self.lead('A', phone='9380077570')
+        stuck = self.lead('B', phone='9380077570')
+        SiteVisit.objects.create(lead=stuck)
+        rows = {r['id']: r for r in self.groups()[0]['leads']}
+        self.assertEqual(rows[stuck.pk]['blockers'], ['a site visit'])
+
+    def test_a_bde_cannot_open_the_duplicate_list(self):
+        self.assertEqual(
+            self.client.get('/api/leads/duplicates/', **self.auth(mk('dg_bde', 'bde'))).status_code,
+            403)
+
+
+class MergeDuplicateLeadsTests(TestCase):
+    """Merging keeps one lead and folds the others into it."""
+
+    def setUp(self):
+        self.boss = mk('md_admin', 'admin')
+        self.keep = Lead.objects.create(first_name='Nikhil', phone='+919380077570')
+        self.dupe = Lead.objects.create(first_name='Nikhil', last_name='Joseph',
+                                        phone='9380077570', email='nik@gmail.com',
+                                        district='Ernakulam')
+
+    def auth(self, user=None):
+        return {'HTTP_AUTHORIZATION': token_for(user or self.boss)}
+
+    def merge(self, keep=None, others=None, user=None):
+        return self.client.post('/api/leads/merge-duplicates/', data={
+            'keep': (keep or self.keep).pk,
+            'merge': [l.pk for l in (others or [self.dupe])],
+        }, content_type='application/json', **self.auth(user))
+
+    def test_the_duplicate_goes_to_trash(self):
+        r = self.merge()
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.dupe.refresh_from_db()
+        self.assertTrue(self.dupe.is_trashed)
+
+    def test_the_kept_lead_stays(self):
+        self.merge()
+        self.keep.refresh_from_db()
+        self.assertFalse(self.keep.is_trashed)
+
+    def test_the_merge_is_recoverable(self):
+        """Trashed, not destroyed — a merge made in error can be undone."""
+        self.merge()
+        self.assertTrue(Lead.objects.filter(pk=self.dupe.pk).exists())
+
+    def test_blanks_on_the_kept_lead_are_filled_in(self):
+        self.merge()
+        self.keep.refresh_from_db()
+        self.assertEqual(self.keep.email, 'nik@gmail.com')
+        self.assertEqual(self.keep.last_name, 'Joseph')
+        self.assertEqual(self.keep.district, 'Ernakulam')
+
+    def test_what_the_kept_lead_already_had_is_not_overwritten(self):
+        self.keep.district = 'Kollam'
+        self.keep.save()
+        self.merge()
+        self.keep.refresh_from_db()
+        self.assertEqual(self.keep.district, 'Kollam')
+
+    def test_notes_are_joined_rather_than_dropped(self):
+        """Two notes are two things the customer said."""
+        self.keep.notes = 'Called Monday'
+        self.keep.save()
+        self.dupe.notes = 'Wants a quote'
+        self.dupe.save()
+        self.merge()
+        self.keep.refresh_from_db()
+        self.assertIn('Called Monday', self.keep.notes)
+        self.assertIn('Wants a quote', self.keep.notes)
+
+    def test_history_moves_to_the_kept_lead(self):
+        from .models import ActivityLog
+        ActivityLog.objects.create(activity_type='note_added', description='Spoke to them',
+                                   lead=self.dupe)
+        self.merge()
+        self.assertTrue(ActivityLog.objects.filter(lead=self.keep,
+                                                   description='Spoke to them').exists())
+
+    def test_the_merge_is_recorded_on_the_kept_lead(self):
+        from .models import ActivityLog
+        self.merge()
+        self.assertTrue(ActivityLog.objects.filter(
+            lead=self.keep, description__icontains='Merged').exists())
+
+    # ── What it refuses ──
+    def test_a_duplicate_carrying_real_work_is_refused(self):
+        """Folding away a site visit would discard something that happened."""
+        from .models import SiteVisit
+        SiteVisit.objects.create(lead=self.dupe)
+        r = self.merge()
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('site visit', r.json()['error'])
+        self.dupe.refresh_from_db()
+        self.assertFalse(self.dupe.is_trashed)
+
+    def test_a_converted_duplicate_is_refused(self):
+        self.dupe.status = 'converted'
+        self.dupe.save()
+        self.assertEqual(self.merge().status_code, 400)
+
+    def test_work_on_the_kept_lead_is_no_obstacle(self):
+        """It is being kept, so nothing of its own is at risk."""
+        from .models import SiteVisit
+        SiteVisit.objects.create(lead=self.keep)
+        self.assertEqual(self.merge().status_code, 200)
+
+    def test_merging_a_lead_into_itself_is_refused(self):
+        r = self.merge(others=[self.keep])
+        self.assertEqual(r.status_code, 400)
+
+    def test_a_lead_that_is_not_visible_cannot_be_merged(self):
+        caller = mk('md_caller', 'tele_caller')
+        r = self.merge(user=caller)
+        self.assertIn(r.status_code, (403, 404))
+
+    def test_a_bde_cannot_merge(self):
+        self.assertEqual(self.merge(user=mk('md_bde', 'bde')).status_code, 403)
+
+
+class ImportSkipsDuplicateLeadsTests(TestCase):
+    """A re-uploaded sheet must not double the lead book."""
+
+    def setUp(self):
+        self.boss = mk('imp_admin', 'admin')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': token_for(self.boss)}
+
+    def upload(self, body):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        f = SimpleUploadedFile('leads.csv', body.encode('utf-8'), content_type='text/csv')
+        return self.client.post('/api/leads/bulk_upload/', data={'file': f}, **self.auth())
+
+    HEAD = 'first_name,last_name,email,phone\n'
+
+    def test_a_row_matching_an_existing_lead_is_skipped(self):
+        Lead.objects.create(first_name='Nikhil', phone='+919380077570')
+        r = self.upload(self.HEAD + 'Prarthana,,,9380077570\n')
+        self.assertEqual(r.json()['duplicates_skipped'], 1)
+        self.assertEqual(Lead.objects.count(), 1)
+
+    def test_a_row_matching_on_email_is_skipped(self):
+        Lead.objects.create(first_name='A', email='x@y.com')
+        r = self.upload(self.HEAD + 'B,,X@Y.com,9000000001\n')
+        self.assertEqual(r.json()['duplicates_skipped'], 1)
+        self.assertEqual(Lead.objects.count(), 1)
+
+    def test_the_same_person_listed_twice_in_one_sheet_lands_once(self):
+        r = self.upload(self.HEAD + 'A,,,9380077570\nA,,,+919380077570\n')
+        self.assertEqual(r.json()['created'], 1)
+        self.assertEqual(r.json()['duplicates_skipped'], 1)
+
+    def test_new_rows_still_import(self):
+        Lead.objects.create(first_name='Old', phone='9000000000')
+        r = self.upload(self.HEAD + 'New,,,9111111111\nOld,,,9000000000\n')
+        self.assertEqual(r.json()['created'], 1)
+        self.assertEqual(r.json()['duplicates_skipped'], 1)
+
+    def test_re_uploading_the_same_file_says_so_rather_than_failing(self):
+        """Not an error: there was simply nothing new in it."""
+        body = self.HEAD + 'A,,,9380077570\n'
+        self.upload(body)
+        r = self.upload(body)
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(r.json()['created'], 0)
+        self.assertIn('already on the books', r.json()['message'])
+
+    def test_rows_without_a_phone_or_email_are_all_imported(self):
+        """Nothing identifies them, so nothing marks them as the same person."""
+        r = self.upload(self.HEAD + 'A,,,\nB,,,\n')
+        self.assertEqual(r.json()['created'], 2)
+
+    def test_a_row_matching_a_trashed_lead_is_imported(self):
+        gone = Lead.objects.create(first_name='Old', phone='9380077570')
+        Lead.objects.filter(pk=gone.pk).update(is_trashed=True)
+        r = self.upload(self.HEAD + 'Back,,,9380077570\n')
+        self.assertEqual(r.json()['created'], 1)

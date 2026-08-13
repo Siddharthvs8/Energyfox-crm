@@ -2229,3 +2229,154 @@ class DocumentNumbersAreNeverReusedTests(TestCase):
 
     def test_a_row_never_ends_up_without_a_number(self):
         self.assertTrue(all(self.numbers()))
+
+
+class InvoiceRoundOffTests(TestCase):
+    """Invoices are billed in whole rupees, and that is the figure that settles.
+
+    Nobody hands over 65 paise. The document carries the adjustment as its own
+    line, and payment verification reconciles against the rounded total — an
+    invoice paid to the rupee has to read as paid in full, or the goods never
+    release.
+    """
+
+    def test_a_part_rupee_rounds_up_at_half(self):
+        from inventory.models import round_off_for
+        self.assertEqual(round_off_for(Decimal('95794.65')), (Decimal('95795'), Decimal('0.35')))
+
+    def test_a_part_rupee_rounds_down_below_half(self):
+        from inventory.models import round_off_for
+        self.assertEqual(round_off_for(Decimal('153430.20')), (Decimal('153430'), Decimal('-0.20')))
+
+    def test_exactly_half_rounds_up_not_to_even(self):
+        """Decimal's default is banker's rounding, which is not what an invoice
+        does — and the printed document and the payment screen must agree."""
+        from inventory.models import round_off_for
+        self.assertEqual(round_off_for(Decimal('94794.50'))[0], Decimal('94795'))
+        self.assertEqual(round_off_for(Decimal('94795.50'))[0], Decimal('94796'))
+
+    def test_a_whole_rupee_is_left_alone(self):
+        from inventory.models import round_off_for
+        self.assertEqual(round_off_for(Decimal('96138.00')), (Decimal('96138'), Decimal('0')))
+
+    def test_nothing_rounds_to_nothing(self):
+        from inventory.models import round_off_for
+        self.assertEqual(round_off_for(Decimal('0'))[0], Decimal('0'))
+
+    def test_the_printed_invoice_and_the_payment_screen_agree(self):
+        """The bug this rounding is here to prevent."""
+        from inventory.views import payment_state, totals_block
+        exact = Decimal('94794.50')
+        printed = totals_block(exact, Decimal('0'), Decimal('0'), exact)
+        state = payment_state(exact, Decimal('0'))
+        self.assertEqual(printed['grand_total'], state['invoice_total'])
+
+
+class ProformaGrandTotalTests(TestCase):
+    """The proforma invoice bills the rounded figure."""
+
+    def setUp(self):
+        from inventory.models import StockItem, StockQuote, StockQuoteItem
+        self.quote = StockQuote.objects.create(tax_percent=Decimal('18'))
+        item = StockItem.objects.create(code='RND-1')
+        StockQuoteItem.objects.create(quote=self.quote, item=item,
+                                      quantity=Decimal('3'), unit_price=Decimal('271.05'))
+
+    def test_the_exact_total_is_still_the_exact_arithmetic(self):
+        """Rounding sits on top; the tax maths underneath must not move."""
+        self.assertEqual(self.quote.total, Decimal('959.517'))
+
+    def test_the_grand_total_is_whole_rupees(self):
+        self.assertEqual(self.quote.grand_total, Decimal('960'))
+
+    def test_the_round_off_is_the_difference(self):
+        self.assertEqual(self.quote.grand_total - self.quote.round_off, self.quote.total)
+
+    def test_the_retail_proforma_rounds_the_same_way(self):
+        from inventory.models import Quote, QuoteItem
+        q = Quote.objects.create(tax_percent=Decimal('18'))
+        QuoteItem.objects.create(quote=q, description='x', quantity=Decimal('3'),
+                                 unit_price=Decimal('271.05'))
+        self.assertEqual(q.grand_total, Decimal('960'))
+
+
+class PaymentSettlesOnTheRoundedTotalTests(TestCase):
+    """Paying the round rupee settles the invoice."""
+
+    def state(self, total, received):
+        from inventory.views import payment_state
+        return payment_state(Decimal(total), Decimal(received))
+
+    def test_paying_the_rounded_figure_settles_it(self):
+        s = self.state('95794.65', '95795')
+        self.assertTrue(s['fully_paid'])
+        self.assertEqual(s['balance'], '0.00')
+
+    def test_the_exact_total_is_still_reported(self):
+        """The adjustment has to be visible, not silently absorbed."""
+        s = self.state('95794.65', '0')
+        self.assertEqual(s['invoice_total'], '95795.00')
+        self.assertEqual(s['exact_total'], '95794.65')
+        self.assertEqual(s['round_off'], '0.35')
+
+    def test_a_rounded_down_invoice_owes_the_rounded_figure(self):
+        s = self.state('153430.20', '0')
+        self.assertEqual(s['invoice_total'], '153430.00')
+        self.assertEqual(s['balance'], '153430.00')
+
+    def test_paying_the_exact_paise_figure_still_settles_a_rounded_down_bill(self):
+        s = self.state('153430.20', '153430.20')
+        self.assertTrue(s['fully_paid'])
+
+    def test_a_part_payment_is_still_short(self):
+        s = self.state('95794.65', '50000')
+        self.assertFalse(s['fully_paid'])
+        self.assertEqual(s['balance'], '45795.00')
+
+    def test_an_invoice_of_nothing_is_not_paid_in_full(self):
+        self.assertFalse(self.state('0', '0')['fully_paid'])
+
+
+class DispatchInvoiceRoundingTests(TestCase):
+    """A delivery of several lines rounds once, on the invoice."""
+
+    def setUp(self):
+        from inventory.models import StockItem, StockDispatch
+        self.item = StockItem.objects.create(code='RND-2')
+        # Three lines that each carry paise: rounding them one by one would land
+        # somewhere other than rounding their sum.
+        for rate in ('333.33', '333.33', '333.34'):
+            StockDispatch.objects.create(
+                invoice_no='REN2627-IN001', item=self.item, quantity=Decimal('1'),
+                rate=Decimal(rate), tax_percent=Decimal('0'),
+                date=timezone.localdate())
+
+    def rows(self):
+        from inventory.models import StockDispatch
+        from inventory.serializers import StockDispatchSerializer
+        qs = StockDispatch.objects.filter(invoice_no='REN2627-IN001')
+        return StockDispatchSerializer(qs, many=True).data
+
+    def test_the_invoice_total_is_the_rounded_sum_of_the_lines(self):
+        row = self.rows()[0]
+        self.assertEqual(row['invoice_total'], '1000.00')
+
+    def test_every_line_reports_the_same_invoice_position(self):
+        """The customer pays for the delivery, not for one line of it."""
+        totals = {r['invoice_total'] for r in self.rows()}
+        self.assertEqual(totals, {'1000.00'})
+
+    def test_the_line_totals_themselves_are_not_rounded(self):
+        """The stock ledger values movements at their goods value."""
+        self.assertEqual(sorted(r['total'] for r in self.rows()),
+                         ['333.33', '333.33', '333.34'])
+
+    def test_paying_the_rounded_invoice_clears_the_balance(self):
+        from inventory.models import DispatchPayment
+        DispatchPayment.objects.create(invoice_no='REN2627-IN001',
+                                       invoice_total=Decimal('1000'),
+                                       amount_received=Decimal('1000'), mode='cash',
+                                       paid_on=timezone.localdate())
+        row = self.rows()[0]
+        self.assertEqual(row['balance'], '0.00')
+        self.assertTrue(row['fully_paid'])

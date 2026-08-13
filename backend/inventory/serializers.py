@@ -98,13 +98,17 @@ class PurchaseOrderSerializer(_DocSerializer):
     created_by_name = serializers.SerializerMethodField()
     subtotal = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     total = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    # `total` is the exact arithmetic of the lines; `grand_total` is what the
+    # customer is billed, with `round_off` the adjustment between them.
+    grand_total = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    round_off = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
 
     class Meta:
         model = PurchaseOrder
         fields = [
             'id', 'number', 'vendor', 'vendor_name', 'status', 'order_date', 'expected_date',
             'notes', 'stock_received', 'created_by', 'created_by_name', 'created_at',
-            'items', 'subtotal', 'total',
+            'items', 'subtotal', 'total', 'grand_total', 'round_off',
         ]
         read_only_fields = ['number', 'created_by', 'stock_received']
 
@@ -133,6 +137,10 @@ class _TaxedDocSerializer(_DocSerializer):
     tax_amount = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     subtotal = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     total = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    # `total` is the exact arithmetic of the lines; `grand_total` is what the
+    # customer is billed, with `round_off` the adjustment between them.
+    grand_total = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    round_off = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     lead_name = serializers.SerializerMethodField()
 
     def get_lead_name(self, obj):
@@ -153,7 +161,7 @@ class QuoteSerializer(_TaxedDocSerializer):
             'site', 'ship_to_state', 'ship_to_gstin',
             'efc_ref_no', 'discount_percent', 'tax_percent', 'notes', 'pdf',
             'created_by', 'created_at',
-            'items', 'subtotal', 'discount_amount', 'taxable_amount', 'tax_amount', 'total',
+            'items', 'subtotal', 'discount_amount', 'taxable_amount', 'tax_amount', 'total', 'grand_total', 'round_off',
         ]
         read_only_fields = ['number', 'created_by', 'pdf']
 
@@ -168,7 +176,7 @@ class SalesOrderSerializer(_TaxedDocSerializer):
         fields = [
             'id', 'number', 'lead', 'lead_name', 'source_quote', 'status', 'order_date',
             'discount_percent', 'tax_percent', 'notes', 'stock_committed', 'created_by', 'created_at',
-            'items', 'subtotal', 'discount_amount', 'taxable_amount', 'tax_amount', 'total',
+            'items', 'subtotal', 'discount_amount', 'taxable_amount', 'tax_amount', 'total', 'grand_total', 'round_off',
         ]
         read_only_fields = ['number', 'created_by', 'stock_committed']
 
@@ -273,6 +281,10 @@ class StockDispatchSerializer(_MovementSerializer):
     amount_received = serializers.SerializerMethodField()
     balance = serializers.SerializerMethodField()
     fully_paid = serializers.SerializerMethodField()
+    # What the delivery is billed at once rounded, and the adjustment that got
+    # it there — the invoice prints both.
+    invoice_total = serializers.SerializerMethodField()
+    round_off = serializers.SerializerMethodField()
 
     def _received(self, obj):
         from .models import DispatchPayment
@@ -285,7 +297,7 @@ class StockDispatchSerializer(_MovementSerializer):
                 invoice_no=obj.invoice_no)
         return self._received_cache[obj.invoice_no]
 
-    def _invoice_total(self, obj):
+    def _exact_total(self, obj):
         """The whole delivery's worth, not this row's — the customer pays for
         the delivery, and every row of it reports the same position."""
         if not obj.invoice_no:
@@ -299,12 +311,30 @@ class StockDispatchSerializer(_MovementSerializer):
                 Decimal('0'))
         return self._total_cache[obj.invoice_no]
 
+    def _invoice_total(self, obj):
+        """What the customer owes: the delivery total, rounded to the rupee.
+
+        Rounded on the sum of the whole delivery rather than line by line —
+        rounding each row and adding them up lands somewhere else. The same
+        figure `payment_state` reconciles against, so this list and the
+        verification dialog cannot disagree about whether an invoice is settled.
+        """
+        from .models import round_off_for
+        return round_off_for(self._exact_total(obj))[0]
+
+    def get_invoice_total(self, obj):
+        return str(self._invoice_total(obj).quantize(Decimal('0.01')))
+
+    def get_round_off(self, obj):
+        from .models import round_off_for
+        return str(round_off_for(self._exact_total(obj))[1].quantize(Decimal('0.01')))
+
     def get_amount_received(self, obj):
-        return str(self._received(obj))
+        return str(self._received(obj).quantize(Decimal('0.01')))
 
     def get_balance(self, obj):
         left = self._invoice_total(obj) - self._received(obj)
-        return str(left if left > 0 else Decimal('0'))
+        return str((left if left > 0 else Decimal('0')).quantize(Decimal('0.01')))
 
     def get_fully_paid(self, obj):
         total = self._invoice_total(obj)
@@ -317,7 +347,7 @@ class StockDispatchSerializer(_MovementSerializer):
                   'serial_numbers', 'site', 'notes', 'pdf',
                   'payment_verified', 'payment_amount', 'payment_mode',
                   'payment_reference', 'payment_paid_on',
-                  'status', 'status_label', 'released_at',
+                  'status', 'status_label', 'released_at', 'invoice_total', 'round_off',
                   'amount_received', 'balance', 'fully_paid',
                   'created_by', 'created_by_name', 'created_at']
         # Releasing is its own action, with the invoice settled first — it must
@@ -363,7 +393,7 @@ class StockQuoteSerializer(_DocSerializer):
             'site', 'ship_to_state', 'ship_to_gstin',
             'efc_ref_no', 'discount_percent', 'tax_percent', 'notes', 'pdf',
             'created_by', 'created_by_name', 'created_at', 'converted_at',
-            'items', 'subtotal', 'discount_amount', 'taxable_amount', 'tax_amount', 'total',
+            'items', 'subtotal', 'discount_amount', 'taxable_amount', 'tax_amount', 'total', 'grand_total', 'round_off',
         ]
         # Status reaches 'converted' only through the convert action, which is what
         # writes the dispatch rows — setting it by hand would skip the stock move.

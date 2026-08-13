@@ -10,7 +10,8 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from . import b2b_access
-from .models import Vendor, PurchaseOrder, Quote, SalesOrder, SalesOrderItem
+from .models import (Vendor, PurchaseOrder, Quote, SalesOrder, SalesOrderItem,
+                     round_off_for)
 from .serializers import (
     VendorSerializer, PurchaseOrderSerializer, QuoteSerializer, SalesOrderSerializer,
 )
@@ -233,10 +234,16 @@ def summarise_lines(rows):
 
 
 def totals_block(taxable, discount, tax, grand):
-    """The figures under the table, with the rounding the document prints."""
+    """The figures under the table, with the rounding the document prints.
+
+    Rounds through the shared helper rather than a bare quantize: Decimal's
+    default is banker's rounding, so a total landing on exactly .50 printed one
+    figure while payment verification expected another, and the invoice would
+    never settle. One rule, one place.
+    """
     from leads.receipts import amount_in_words
     grand = grand or Decimal('0')
-    rounded = grand.quantize(Decimal('1'))
+    rounded, _adjustment = round_off_for(grand)
     return {
         'taxable': money(taxable),
         'discount': money(discount),
@@ -763,15 +770,32 @@ def check_payment(raw, invoice_total, already_received=Decimal('0'), paid_on_def
 
 
 def payment_state(total, received):
-    """The money position on a document, as every screen reports it."""
-    total = to_money(total) or Decimal('0')
+    """The money position on a document, as every screen reports it.
+
+    The figure the customer owes is the rounded one. Nobody pays 65 paise, so
+    settling an invoice of 95,794.65 with 95,795 has to read as paid in full —
+    against the exact total it would sit 35 paise short for ever and the goods
+    would never release. Rounding here rather than at each caller is deliberate:
+    this is the one function every payment screen reconciles through, so the
+    invoice, the verification dialog and the Payments module cannot disagree.
+
+    For a delivery of several lines the total handed in is already the sum of
+    the group, so the rounding lands on the invoice, not on each line.
+    """
+    exact = to_money(total) or Decimal('0')
+    grand, round_off = round_off_for(exact)
     received = to_money(received) or Decimal('0')
-    balance = total - received
+    balance = grand - received
+    # Every figure to paise, whole rupees included: a payload that mixed "95795"
+    # with "45795.00" made the screens format the same money two ways.
+    money2 = lambda v: str(v.quantize(PAISE))
     return {
-        'invoice_total': str(total),
-        'amount_received': str(received),
-        'balance': str(balance if balance > 0 else Decimal('0')),
-        'fully_paid': bool(total > 0 and balance <= 0),
+        'invoice_total': money2(grand),
+        'exact_total': money2(exact),
+        'round_off': money2(round_off),
+        'amount_received': money2(received),
+        'balance': money2(balance if balance > 0 else Decimal('0')),
+        'fully_paid': bool(grand > 0 and balance <= 0),
     }
 
 

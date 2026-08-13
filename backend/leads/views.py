@@ -13,6 +13,7 @@ from .document_kinds import SHARED_KIND_LABELS, kind_for
 # Module-level: the nine module payloads all report this one rule, and
 # access.py imports nothing, so there is no cycle to dodge.
 from .access import can_cleanup_deleted_lead
+from datetime import timedelta
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
@@ -4590,6 +4591,124 @@ class LeadViewSet(viewsets.ModelViewSet):
             return set()
         return user.assignable_lead_user_ids()
 
+    # How long a just-created lead shadows an identical one. Long enough to
+    # cover a slow save the user gave up on and clicked through again; far too
+    # short to get in the way of genuinely filing the same customer twice.
+    DUPLICATE_WINDOW_SECONDS = 90
+
+    def _recent_duplicate(self, data):
+        """The same lead this user filed moments ago, if there is one.
+
+        A double-click, a retried request or a second tab all arrive as separate
+        POSTs carrying identical details, and each one used to become its own
+        row — which is how one customer ended up in the list five times over.
+        Same phone, same name, filed within the window, counts as the same
+        submission rather than a second enquiry.
+
+        Matching needs a phone: it is the one field that identifies a person
+        here, and two different people called "Anil" in the same minute must not
+        collapse into one.
+        """
+        phone = str(data.get('phone') or '').strip()
+        if not phone:
+            return None
+
+        first = str(data.get('first_name') or '').strip()
+        last = str(data.get('last_name') or '').strip()
+        since = timezone.now() - timedelta(seconds=self.DUPLICATE_WINDOW_SECONDS)
+
+        # Not trashed ones: deleting a lead and filing it again is a real
+        # create, not a stray second click.
+        return Lead.objects.filter(
+            is_trashed=False, phone=phone,
+            first_name__iexact=first, last_name__iexact=last,
+            created_at__gte=since,
+        ).order_by('-created_at').first()
+
+    def create(self, request, *args, **kwargs):
+        """Create a lead, unless this is the same one arriving twice.
+
+        Hands back the lead that already exists rather than raising: from the
+        caller's side the submission succeeded, which is true — it succeeded the
+        first time. Raising here would show an error for something the user did
+        nothing wrong in.
+
+        Two genuinely simultaneous posts can still both pass this check before
+        either commits. The window catches the ordinary cases (the second click
+        lands after the first request has finished); the button in the Leads
+        modal is disabled while a save is in flight, which is what stops the
+        simultaneous ones at source.
+        """
+        existing = self._recent_duplicate(request.data)
+        if existing is not None:
+            logger.info('Ignored a duplicate lead submission for %s (kept #%s)',
+                        existing.phone, existing.pk)
+            return Response(self.get_serializer(existing).data, status=status.HTTP_200_OK)
+        return super().create(request, *args, **kwargs)
+
+    @action(detail=False, methods=['get'], url_path='duplicates')
+    def duplicates(self, request):
+        """Leads that are the same customer twice, grouped for merging.
+
+        Scoped like the Leads list itself, so a tele caller reviews duplicates
+        among their own book and the admin tier sees the company's. Read-only,
+        so it follows the same gate as the Trash and Archived views.
+        """
+        from .access import can_use_lead_tools
+        from .duplicates import find_duplicate_groups, serialise_groups
+
+        if not can_use_lead_tools(request.user):
+            return Response({'error': 'You do not have access to the duplicate list.'},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        groups = find_duplicate_groups(self.scoped_leads().filter(is_trashed=False))
+        return Response({
+            'groups': serialise_groups(groups),
+            'group_count': len(groups),
+            'lead_count': sum(len(g['leads']) for g in groups),
+        })
+
+    @action(detail=False, methods=['post'], url_path='merge-duplicates')
+    def merge_duplicates(self, request):
+        """Keep one lead of a duplicate set and fold the rest into it.
+
+        Discarding a lead is a delete by another name, so it needs the same
+        permission — and the leads have to be ones this user can already see,
+        or the merge would be a way to reach someone else's book.
+        """
+        from .access import can_delete_leads
+        from .duplicates import MergeRefused, merge_leads
+
+        if not can_delete_leads(request.user):
+            return Response({'error': 'You do not have permission to merge leads.'},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        keep_id = request.data.get('keep')
+        merge_ids = request.data.get('merge') or []
+        if not keep_id or not isinstance(merge_ids, list) or not merge_ids:
+            return Response({'error': 'Choose the lead to keep and at least one to merge in.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        visible = self.scoped_leads().filter(is_trashed=False)
+        keep = visible.filter(pk=keep_id).first()
+        if keep is None:
+            return Response({'error': 'That lead is not available to merge into.'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        discard = list(visible.filter(pk__in=merge_ids).exclude(pk=keep.pk))
+        if len(discard) != len([i for i in merge_ids if str(i) != str(keep.pk)]):
+            return Response({'error': 'One of those leads is no longer available.'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            result = merge_leads(keep, discard, actor=request.user)
+        except MergeRefused as refusal:
+            return Response({'error': str(refusal)}, status=status.HTTP_400_BAD_REQUEST)
+
+        result['message'] = (f'Merged {len(result["merged"])} duplicate(s) into '
+                             f'{keep.first_name or "the kept lead"}.')
+        return Response(result)
+
     def perform_create(self, serializer):
         from rest_framework.exceptions import PermissionDenied
         from .access import can_add_leads, can_edit_lead_status
@@ -4857,8 +4976,22 @@ class LeadViewSet(viewsets.ModelViewSet):
             'linkedin': 'linkedin',
         }
 
+        # Every phone and email already on the books, read once. A per-row
+        # query would be thousands of round trips on a big sheet, and the whole
+        # point of the import is that it is one operation.
+        from .duplicates import normalise_email, normalise_phone
+        seen_phones, seen_emails = set(), set()
+        for existing_phone, existing_email in live_leads().values_list('phone', 'email'):
+            key = normalise_phone(existing_phone)
+            if key:
+                seen_phones.add(key)
+            key = normalise_email(existing_email)
+            if key:
+                seen_emails.add(key)
+
         leads_to_create = []
         truncated = 0
+        duplicates_skipped = 0
         for row in reader:
             first_name = get_row_value(row, first_name_keys)
             if not first_name:
@@ -4871,6 +5004,19 @@ class LeadViewSet(viewsets.ModelViewSet):
             source = SOURCE_ALIASES.get(source.strip().lower(), source)
             status_val = get_row_value(row, status_keys) or 'new'
             district = districts.get(get_row_value(row, district_keys).strip().lower(), '')
+
+            # A row whose phone or email is already on the books is the same
+            # customer arriving again, so it is left out rather than filed as a
+            # second lead. The set grows as we go, which also catches a sheet
+            # that lists the same person twice.
+            phone_key, email_key = normalise_phone(phone), normalise_email(email)
+            if (phone_key and phone_key in seen_phones) or (email_key and email_key in seen_emails):
+                duplicates_skipped += 1
+                continue
+            if phone_key:
+                seen_phones.add(phone_key)
+            if email_key:
+                seen_emails.add(email_key)
 
             if any(len(v) > (Lead._meta.get_field(f).max_length or len(v))
                    for v, f in ((first_name, 'first_name'), (last_name, 'last_name'),
@@ -4911,11 +5057,23 @@ class LeadViewSet(viewsets.ModelViewSet):
                     logger.error(f"Failed to link bulk imported leads to campaign {campaign_id}: {e}")
 
             message = f'Successfully created {len(leads_to_create)} leads.'
+            if duplicates_skipped:
+                message += (f' {duplicates_skipped} row(s) matched a lead already on the '
+                            'books by phone or email and were skipped.')
             if truncated:
                 message += (f' {truncated} row(s) had a field longer than the CRM stores '
                             'and were shortened.')
             return Response({'message': message, 'created': len(leads_to_create),
-                             'truncated': truncated})
+                             'truncated': truncated, 'duplicates_skipped': duplicates_skipped})
+
+        # Nothing created is not always an empty sheet: a re-uploaded file is
+        # every row a duplicate, and saying so is the difference between "it
+        # worked, there was nothing new" and "the import is broken".
+        if duplicates_skipped:
+            return Response({
+                'message': (f'No new leads. All {duplicates_skipped} row(s) matched a lead '
+                            'already on the books by phone or email.'),
+                'created': 0, 'truncated': 0, 'duplicates_skipped': duplicates_skipped})
 
         return Response({'error': 'No valid leads found in the CSV file. Please make sure the CSV has a column for First Name.'}, status=status.HTTP_400_BAD_REQUEST)
 

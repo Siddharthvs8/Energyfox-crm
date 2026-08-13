@@ -45,6 +45,7 @@ const I = {
   Upload:      () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>,
   Download:    () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>,
   Edit:        () => <svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>,
+  Duplicates:  () => <svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" /></svg>,
   Trash:       () => <svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" /><path d="M10 11v6M14 11v6" /><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2" /></svg>,
   Users:       () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 00-3-3.87" /><path d="M16 3.13a4 4 0 010 7.75" /></svg>,
   X:           ({ className }: { className?: string }) => <svg className={className} width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" /></svg>,
@@ -217,7 +218,9 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   // Archived (old, terminal) leads live out of the active list; toggle to view.
   const [showArchived, setShowArchived] = useState(false);
   const [archivedCount, setArchivedCount] = useState(0);
+  const [duplicateCount, setDuplicateCount] = useState(0);
   const [showModal,      setShowModal]      = useState(false);
+  const [savingLead,     setSavingLead]     = useState(false);
   const [editingLead,    setEditingLead]    = useState<any>(null);
   const [teamMembers,    setTeamMembers]    = useState<{ id: number; name: string }[]>([]);
   const [selectedIds,    setSelectedIds]    = useState<number[]>([]);
@@ -651,7 +654,16 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
       if (r.ok) { const d = await r.json(); setArchivedCount(d.archived || 0); }
     } catch {}
   };
-  useEffect(() => { loadArchiveStats(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // The badge is the whole point of the button: nobody goes looking for
+  // duplicates, they need telling there are some.
+  const loadDuplicateCount = async () => {
+    try {
+      const token = localStorage.getItem(`${domain}_access`);
+      const r = await fetch(`${getApiBase(domain)}/api/leads/duplicates/`, { headers: { Authorization: `Bearer ${token}` } });
+      if (r.ok) { const d = await r.json(); setDuplicateCount(d.group_count || 0); }
+    } catch {}
+  };
+  useEffect(() => { loadArchiveStats(); loadDuplicateCount(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const archiveLead = async (id: number, archive: boolean) => {
     const token = localStorage.getItem(`${domain}_access`);
@@ -719,6 +731,22 @@ This cannot be undone.`)) return;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    // One click, one lead. The modal stays open until the server answers, and
+    // both the footer button and Enter inside the form land here — so without
+    // this guard an impatient second click on a slow connection files the whole
+    // lead again, which is how the same customer ended up in the list five
+    // times. The server refuses recent duplicates as well, for the retries and
+    // second tabs this cannot see.
+    if (savingLead) return;
+    setSavingLead(true);
+    try {
+      await saveLead();
+    } finally {
+      setSavingLead(false);
+    }
+  };
+
+  const saveLead = async () => {
     const token = localStorage.getItem(`${domain}_access`);
     if (!token) return;
     const finalNotes = newEditNote.trim()
@@ -1024,6 +1052,15 @@ This cannot be undone.`)) return;
                 <span className="hidden sm:inline">{showArchived ? "Viewing Archived" : "Archived"}</span>
                 {archivedCount > 0 && !showArchived && <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-slate-200 text-slate-600 text-[10px] font-bold flex items-center justify-center">{archivedCount > 99 ? "99+" : archivedCount}</span>}
               </button>
+              )}
+
+              {canUseLeadTools && (
+              <Link href="/leads/duplicates"
+                title="Leads that share a phone number or email with another"
+                className="flex items-center gap-1.5 px-4 py-2 bg-white border border-slate-200 text-slate-600 rounded-xl text-sm font-semibold hover:bg-slate-50 hover:text-indigo-600 active:scale-[0.97] transition-all shadow-sm shadow-slate-50">
+                <I.Duplicates /> <span className="hidden sm:inline">Duplicates</span>
+                {duplicateCount > 0 && <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-amber-100 text-amber-700 text-[10px] font-bold flex items-center justify-center">{duplicateCount > 99 ? "99+" : duplicateCount}</span>}
+              </Link>
               )}
 
               {canUseLeadTools && (
@@ -1967,10 +2004,10 @@ This cannot be undone.`)) return;
                 className="flex-1 py-2.5 border border-slate-200 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-100 transition-all bg-white">
                 Cancel
               </button>
-              <button onClick={handleSubmit as any}
-                className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 transition-all shadow-sm shadow-indigo-200">
-                {editingLead ? "Save Changes" : "Create Lead"}
-                {pendingTasks.filter(t => t.title.trim()).length > 0 && (
+              <button onClick={handleSubmit as any} disabled={savingLead}
+                className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 transition-all shadow-sm shadow-indigo-200 disabled:opacity-60 disabled:cursor-not-allowed">
+                {savingLead ? "Saving…" : editingLead ? "Save Changes" : "Create Lead"}
+                {!savingLead && pendingTasks.filter(t => t.title.trim()).length > 0 && (
                   <span className="ml-2 bg-white/20 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
                     +{pendingTasks.filter(t => t.title.trim()).length} task{pendingTasks.filter(t => t.title.trim()).length !== 1 ? "s" : ""}
                   </span>

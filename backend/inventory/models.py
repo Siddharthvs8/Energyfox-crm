@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from django.db import models
 
 
@@ -54,7 +54,45 @@ class _NumberedDoc(models.Model):
         return self.number or f"{self.NUMBER_PREFIX} #{self.pk}"
 
 
-class _TaxedDoc(_NumberedDoc):
+# ─── Rounding ───────────────────────────────────────────────────────────────
+RUPEE = Decimal('1')
+
+
+def round_off_for(total):
+    """A document total as whole rupees, and the adjustment that got it there.
+
+    Invoices here are settled in cash, by cheque and over UPI, and nobody hands
+    over 65 paise — so the customer is billed the round rupee and the invoice
+    carries the difference as its own line, the way a printed tax invoice always
+    has. Half a rupee rounds up, which is the convention every accountant here
+    will check the figure against.
+
+    Returns (grand_total, round_off): 95794.65 -> (95795, +0.35),
+    153430.20 -> (153430, -0.20).
+    """
+    total = Decimal(total or 0)
+    grand = total.quantize(RUPEE, rounding=ROUND_HALF_UP)
+    return grand, grand - total
+
+
+class RoundedTotalMixin:
+    """`grand_total` and `round_off` for anything with a `total`.
+
+    Kept apart from the total itself: `total` stays the exact arithmetic of the
+    lines so the stock ledger and the tax figures still add up, and the rounding
+    sits on top as its own visible line rather than quietly moving the maths.
+    """
+
+    @property
+    def round_off(self):
+        return round_off_for(self.total)[1]
+
+    @property
+    def grand_total(self):
+        return round_off_for(self.total)[0]
+
+
+class _TaxedDoc(RoundedTotalMixin, _NumberedDoc):
     """Header with discount + tax (Quotes & Sales Orders)."""
     discount_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     tax_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)

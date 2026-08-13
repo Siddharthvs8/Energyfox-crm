@@ -70,7 +70,11 @@ export default function StockQuotesPage() {
   const subtotal = lines.reduce((s, l) => s + (Number(l.quantity) || 0) * (Number(l.unit_price) || 0), 0);
   const discount = subtotal * (Number(form.discount_percent) || 0) / 100;
   const tax = (subtotal - discount) * (Number(form.tax_percent) || 0) / 100;
-  const total = subtotal - discount + tax;
+  const exactTotal = subtotal - discount + tax;
+  // Rounded the same way the server bills it, so the figure on the form is the
+  // one on the invoice rather than one the user has to reconcile afterwards.
+  const total = Math.round(exactTotal);
+  const roundOff = total - exactTotal;
 
   const openCreate = () => { setEditing(null); setForm(blankForm()); setShow(true); };
   const openEdit = (q: any) => {
@@ -247,7 +251,7 @@ export default function StockQuotesPage() {
               <span className={`inline-flex text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full ${STATUS_STYLE[q.status] || "bg-slate-100 text-slate-600"}`}>
                 {q.status}
               </span>,
-              <span className="tabular-nums font-semibold">{rupee(q.total)}</span>,
+              <span className="tabular-nums font-semibold">{rupee(q.grand_total ?? q.total)}</span>,
               // A converted invoice can no longer be dispatched or edited — its
               // stock has already gone out — but it can still be deleted.
               <DocActions busy={busy === q.id}
@@ -285,8 +289,11 @@ export default function StockQuotesPage() {
                 <span className="tabular-nums font-semibold">{rupee(l.line_total)}</span>,
               ])} />
             <p className="text-xs text-slate-500 px-6 py-4 text-right tabular-nums">
-              Subtotal {rupee(q.subtotal)} · Discount −{rupee(q.discount_amount)} · Tax {rupee(q.tax_amount)} ·{" "}
-              <b className="text-slate-800">Total {rupee(q.total)}</b>
+              Subtotal {rupee(q.subtotal)} · Discount −{rupee(q.discount_amount)} · Tax {rupee(q.tax_amount)}
+              {Number(q.round_off ?? 0) !== 0 && (
+                <> · Round off {Number(q.round_off) > 0 ? "+" : "−"}{rupee(Math.abs(Number(q.round_off)))}</>
+              )} ·{" "}
+              <b className="text-slate-800">Total {rupee(q.grand_total ?? q.total)}</b>
             </p>
           </div>
         );
@@ -404,6 +411,9 @@ export default function StockQuotesPage() {
         <div className="flex items-center justify-between gap-4 pt-3 border-t border-slate-100 text-sm">
           <span className="text-xs text-slate-400 tabular-nums">
             Subtotal {rupee(subtotal)} · Discount −{rupee(discount)} · Tax {rupee(tax)}
+            {Math.abs(roundOff) >= 0.005 && (
+              <> · Round off {roundOff > 0 ? "+" : "−"}{rupee(Math.abs(roundOff))}</>
+            )}
           </span>
           <span className="font-bold text-slate-900 tabular-nums">Total {rupee(total)}</span>
         </div>
@@ -413,7 +423,7 @@ export default function StockQuotesPage() {
           is the proforma's own, which is what the server checks against. */}
       <PaymentVerificationModal
         show={!!toDispatch}
-        invoiceTotal={Number(toDispatch?.total || 0)}
+        invoiceTotal={Number(toDispatch?.grand_total ?? toDispatch?.total ?? 0)}
         alreadyReceived={position.received}
         payments={position.payments}
         title={toDispatch ? `Payment Verification · ${toDispatch.number}` : "Payment Verification"}
