@@ -59,8 +59,10 @@ export default function StockQuotesPage() {
   const [dispatching, setDispatching] = useState(false);
   // Where the proforma's money stands, straight from the server so the two
   // never disagree about what is still owing.
-  const [position, setPosition] = useState<{ received: number; payments: PaymentRow[] }>(
-    { received: 0, payments: [] });
+  const [position, setPosition] = useState<{ received: number; exact: number | null;
+                                            balance: number | null; settled: boolean | null;
+                                            payments: PaymentRow[] }>(
+    { received: 0, exact: null, balance: null, settled: null, payments: [] });
 
   const lines = form.items;
   const setLine = (i: number, patch: Partial<Line>) =>
@@ -182,13 +184,16 @@ export default function StockQuotesPage() {
 
   /** Open the payment screen for a proforma, showing what it has taken so far. */
   const openPayments = async (q: any) => {
-    setPosition({ received: 0, payments: [] });
+    setPosition({ received: 0, exact: null, balance: null, settled: null, payments: [] });
     setToDispatch(q);
     try {
       const r = await fetch(`${api}/api/stock-quotes/${q.id}/verify-payment/`, { headers: authHeader() });
       if (r.ok) {
         const d = await r.json();
-        setPosition({ received: Number(d.amount_received || 0), payments: d.payments || [] });
+        setPosition({ received: Number(d.amount_received || 0),
+                      exact: d.exact_total != null ? Number(d.exact_total) : null,
+                      balance: d.balance != null ? Number(d.balance) : null,
+                      settled: d.fully_paid ?? null, payments: d.payments || [] });
       }
     } catch { /* the modal still opens, showing nothing taken yet */ }
   };
@@ -201,7 +206,10 @@ export default function StockQuotesPage() {
     const d = await act(`stock-quotes/${q.id}/verify-payment`, { payment });
     setDispatching(false);
     if (!d) return;                            // refused; the message is shown
-    setPosition({ received: Number(d.amount_received || 0), payments: d.payments || [] });
+    setPosition({ received: Number(d.amount_received || 0),
+                  exact: d.exact_total != null ? Number(d.exact_total) : null,
+                  balance: d.balance != null ? Number(d.balance) : null,
+                  settled: d.fully_paid ?? null, payments: d.payments || [] });
   };
 
   /** Settled: put the goods out. The server checks the balance again. */
@@ -425,6 +433,9 @@ export default function StockQuotesPage() {
         show={!!toDispatch}
         invoiceTotal={Number(toDispatch?.grand_total ?? toDispatch?.total ?? 0)}
         alreadyReceived={position.received}
+        exactTotal={position.exact}
+        serverBalance={position.balance}
+        serverSettled={position.settled}
         payments={position.payments}
         title={toDispatch ? `Payment Verification · ${toDispatch.number}` : "Payment Verification"}
         defaultDate={toDispatch?.quote_date || todayISO()}

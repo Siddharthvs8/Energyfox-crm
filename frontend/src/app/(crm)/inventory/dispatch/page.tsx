@@ -46,8 +46,10 @@ export default function StockDispatchPage() {
   const [pendingLines, setPendingLines] = useState<Line[] | null>(null);
   // A delivery already on the books, open at its payment screen.
   const [settling, setSettling] = useState<any>(null);
-  const [position, setPosition] = useState<{ total: number; received: number; payments: PaymentRow[] }>(
-    { total: 0, received: 0, payments: [] });
+  const [position, setPosition] = useState<{ total: number; received: number;
+                                            exact: number | null; balance: number | null;
+                                            settled: boolean | null; payments: PaymentRow[] }>(
+    { total: 0, received: 0, exact: null, balance: null, settled: null, payments: [] });
   const [working, setWorking] = useState(false);
 
   const lines: Line[] = form.lines;
@@ -140,7 +142,7 @@ export default function StockDispatchPage() {
 
   /** Open a delivery's payment screen, showing what it has taken so far. */
   const openPayments = async (r: any) => {
-    setPosition({ total: 0, received: 0, payments: [] });
+    setPosition({ total: 0, received: 0, exact: null, balance: null, settled: null, payments: [] });
     setSettling(r);
     try {
       const res = await fetch(`${api}/api/stock-dispatches/verify-payment/?invoice_no=${encodeURIComponent(r.invoice_no)}`,
@@ -148,7 +150,9 @@ export default function StockDispatchPage() {
       if (res.ok) {
         const d = await res.json();
         setPosition({ total: Number(d.invoice_total || 0), received: Number(d.amount_received || 0),
-                      payments: d.payments || [] });
+                      exact: d.exact_total != null ? Number(d.exact_total) : null,
+                      balance: d.balance != null ? Number(d.balance) : null,
+                      settled: d.fully_paid ?? null, payments: d.payments || [] });
       }
     } catch { /* the modal still opens */ }
   };
@@ -160,7 +164,9 @@ export default function StockDispatchPage() {
     setWorking(false);
     if (!d) return;
     setPosition({ total: Number(d.invoice_total || 0), received: Number(d.amount_received || 0),
-                  payments: d.payments || [] });
+                  exact: d.exact_total != null ? Number(d.exact_total) : null,
+                  balance: d.balance != null ? Number(d.balance) : null,
+                  settled: d.fully_paid ?? null, payments: d.payments || [] });
   };
 
   const releaseNow = async () => {
@@ -459,6 +465,9 @@ export default function StockDispatchPage() {
         show={!!settling}
         invoiceTotal={position.total}
         alreadyReceived={position.received}
+        exactTotal={position.exact}
+        serverBalance={position.balance}
+        serverSettled={position.settled}
         payments={position.payments}
         title={settling ? `Payment Verification · ${settling.invoice_no}` : "Payment Verification"}
         defaultDate={form.date}

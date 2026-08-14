@@ -644,11 +644,17 @@ export type PaymentRow = {
  * credit rather than pretending money arrived.
  */
 export function PaymentVerificationModal({
-  show, invoiceTotal, alreadyReceived = 0, payments = [], title, dispatchLabel,
+  show, invoiceTotal, alreadyReceived = 0, exactTotal = null,
+  serverBalance = null, serverSettled = null, payments = [], title, dispatchLabel,
   saving, defaultDate, onCancel, onVerify, onDispatch,
 }: {
   show: boolean;
   invoiceTotal: number;
+  // The server's own figures. `invoiceTotal` is what the invoice is billed at;
+  // these say what actually clears it, which rounding makes a different thing.
+  exactTotal?: number | null;
+  serverBalance?: number | null;
+  serverSettled?: boolean | null;
   alreadyReceived?: number;
   payments?: PaymentRow[];
   title?: string;
@@ -680,14 +686,28 @@ export function PaymentVerificationModal({
   if (!show) return null;
 
   // Compared in paise so a floating-point tail cannot withhold a settled invoice.
+  //
+  // An invoice carries two totals once rounding is applied: the rounded figure
+  // it is billed at, and the exact arithmetic of its lines. Either one clears
+  // it, and either one may be paid — so subtracting one from the other, as this
+  // used to, left an invoice paid to the paisa showing 35p owing with Dispatch
+  // dead. `settled` and `balance` come from the server, which owns that rule;
+  // the bounds below mirror it only so the form can react as the user types.
   const due = Math.round((Number(invoiceTotal) || 0) * 100);
   const had = Math.round((Number(alreadyReceived) || 0) * 100);
-  const outstanding = due - had;
+  const exact = Math.round((Number(exactTotal ?? invoiceTotal) || 0) * 100);
+  const clearsAt = Math.min(due, exact);          // either figure settles it
+  const ceiling = Math.max(due, exact) - had;     // and either may be paid
+
+  const outstanding = serverBalance != null
+    ? Math.round(serverBalance * 100)
+    : Math.max(due - had, 0);
+  const settled = serverSettled != null ? serverSettled : (had >= clearsAt && due > 0);
+
   const entering = Math.round((Number(form.amount_received) || 0) * 100);
   const entered = form.amount_received.trim() !== "" && entering > 0;
-  const overpaying = entering > outstanding;
-  const settled = outstanding <= 0 && due > 0;
-  const wouldSettle = entered && !overpaying && entering === outstanding;
+  const overpaying = entering > ceiling;
+  const wouldSettle = entered && !overpaying && had + entering >= clearsAt;
 
   const verify = (e: React.FormEvent) => {
     e.preventDefault();
@@ -786,7 +806,7 @@ export function PaymentVerificationModal({
 
           {overpaying ? (
             <p className="rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-xs font-semibold text-amber-700">
-              That is {rupee((entering - outstanding) / 100)} more than the balance. Record what
+              That is {rupee((entering - ceiling) / 100)} more than the balance. Record what
               was actually received.
             </p>
           ) : settled ? (
