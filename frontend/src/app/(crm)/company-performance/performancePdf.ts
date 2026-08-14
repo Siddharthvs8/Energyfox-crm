@@ -242,6 +242,75 @@ export async function exportCompanyPerformancePdf(d: Row, chartSvg: SVGElement |
     (d.funnel || []).map((f: Row) => [f.stage, f.count, pct(f.of_leads)]),
     { columnStyles: { 1: { halign: "right", cellWidth: 28 }, 2: { halign: "right", cellWidth: 28 } } });
 
+  // ── Against last period ──
+  const cmp = d.comparison;
+  if (cmp) {
+    heading("Against last period", `Same stretch of ${cmp.label}`);
+    table(["Metric", "Now", "Before", "Change"],
+      (cmp.metrics || []).map((m: Row) => [
+        m.label,
+        m.is_money ? inr(m.now) : String(m.now),
+        m.is_money ? inr(m.before) : String(m.before),
+        m.change_pct === null
+          ? (m.from_nothing ? "new" : "-")
+          : `${m.change_pct > 0 ? "+" : ""}${m.change_pct}%`,
+      ]),
+      { columnStyles: { 1: { halign: "right", cellWidth: 34 }, 2: { halign: "right", cellWidth: 34 },
+                        3: { halign: "right", cellWidth: 26 } } });
+  }
+
+  // ── Growth pace ──
+  const gr = d.growth;
+  if (gr) {
+    heading("Growth pace", "Month on month, over the last year");
+    table(["Month", "Revenue", "Change on the month before"],
+      (gr.points || []).map((pt: Row) => [
+        pt.name, inr(pt.revenue),
+        pt.growth_pct === null ? "-" : `${pt.growth_pct > 0 ? "+" : ""}${pt.growth_pct}%`,
+      ]),
+      { columnStyles: { 1: { halign: "right", cellWidth: 40 }, 2: { halign: "right", cellWidth: 50 } } });
+    const bits: string[] = [];
+    if (gr.average_pace !== null) bits.push(`Average ${gr.average_pace}% a month over ${gr.months_measured} month(s).`);
+    if (gr.best_month) bits.push(`Best month ${gr.best_month.name} (${inr(gr.best_month.revenue)}).`);
+    if (gr.recent_vs_earlier_pct !== null && gr.recent_vs_earlier_pct !== undefined)
+      bits.push(`The recent half is ${Math.abs(gr.recent_vs_earlier_pct)}% ${gr.recent_vs_earlier_pct >= 0 ? "above" : "below"} the earlier half.`);
+    if (bits.length) note(bits.join(" "));
+  }
+
+  // ── Projection ──
+  const proj = d.projections;
+  if (proj) {
+    heading("Projection", `Run rate to ${proj.period_ends}`);
+    table(["", ""], [
+      ["Revenue so far", inr(proj.revenue_so_far)],
+      ["Per day", inr(proj.revenue_per_day)],
+      ["Projected for the period", inr(proj.projected_revenue)],
+      ["Projected closed deals", String(proj.projected_closed_deals)],
+      ["Projected leads", String(proj.projected_leads)],
+      ["Days elapsed / total", `${proj.days_elapsed} / ${proj.days_total}`],
+      ["Open pipeline", `${inr(proj.open_pipeline_value)} (${proj.open_leads} leads)`],
+      ["Weighted by close rate", inr(proj.pipeline_weighted_value)],
+    ], { head: [], columnStyles: { 0: { fontStyle: "bold", cellWidth: 70 }, 1: { halign: "right" } } });
+    note(proj.assumption);
+  }
+
+  // ── What stands out ──
+  const findings: Row[] = d.findings || [];
+  if (findings.length) {
+    heading("What stands out", "Read off the figures in this report");
+    table(["", "Finding"], findings.map((f: Row) => [f.kind, f.text]),
+      { columnStyles: { 0: { cellWidth: 24, fontStyle: "bold" } } });
+  }
+  if (d.ai_suggestions) {
+    heading("Suggested next steps", "Written by AI from the figures above - check before acting");
+    const lines = doc.splitTextToSize(String(d.ai_suggestions), W);
+    room(lines.length * 4 + 6);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8.5);
+    doc.text(lines, L, y + 2);
+    y += lines.length * 4 + 6;
+  }
+
   // ── Money in ──
   const c = d.collection || {};
   heading("Money in", "How the closed deals were paid, and what has actually landed");

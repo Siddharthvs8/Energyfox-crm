@@ -6628,3 +6628,313 @@ class ImportSkipsDuplicateLeadsTests(TestCase):
         Lead.objects.filter(pk=gone.pk).update(is_trashed=True)
         r = self.upload(self.HEAD + 'Back,,,9380077570\n')
         self.assertEqual(r.json()['created'], 1)
+
+
+class ProjectionTests(TestCase):
+    """Where the period lands if the rest of it goes like the part already run."""
+
+    def setUp(self):
+        self.boss = mk('pj_admin', 'admin')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': token_for(self.boss)}
+
+    def get(self, period='this_fy'):
+        return self.client.get(f'/api/company-performance/?period={period}',
+                               **self.auth()).json()
+
+    def test_a_financial_year_projects_to_the_end_of_march(self):
+        """Not to today: `resolve_period` caps its end so no figure counts
+        tomorrow's business, but a year still finishes when it finishes."""
+        from leads.performance_insights import period_end_for
+        self.assertEqual(period_end_for('this_fy', date(2026, 4, 1), date(2026, 8, 13)),
+                         date(2027, 3, 31))
+
+    def test_a_month_projects_to_the_end_of_the_month(self):
+        from leads.performance_insights import period_end_for
+        self.assertEqual(period_end_for('this_month', date(2026, 8, 1), date(2026, 8, 13)),
+                         date(2026, 8, 31))
+
+    def test_february_is_not_assumed_to_have_thirty_days(self):
+        from leads.performance_insights import period_end_for
+        self.assertEqual(period_end_for('this_month', date(2024, 2, 1), date(2024, 2, 10)),
+                         date(2024, 2, 29))
+
+    def test_a_custom_range_ends_where_the_user_said(self):
+        from leads.performance_insights import period_end_for
+        self.assertEqual(period_end_for('custom', date(2026, 1, 1), date(2026, 3, 15)),
+                         date(2026, 3, 15))
+
+    def test_the_run_rate_scales_what_has_come_in(self):
+        from leads.performance_insights import build_projections
+        with patch('leads.performance_insights.timezone.localdate',
+                   return_value=date(2026, 8, 10)):
+            p = build_projections(start=date(2026, 8, 1), end=date(2026, 8, 10),
+                                  period_key='this_month', revenue=Decimal('100000'),
+                                  closed=5, leads=20, close_rate=25.0,
+                                  avg_deal=Decimal('20000'))
+        self.assertEqual((p['days_elapsed'], p['days_total']), (10, 31))
+        self.assertEqual(p['revenue_per_day'], '10000.00')
+        self.assertEqual(p['projected_revenue'], '310000.00')
+        self.assertEqual(p['projected_closed_deals'], 16)
+
+    def test_the_projection_says_what_it_assumed(self):
+        from leads.performance_insights import build_projections
+        with patch('leads.performance_insights.timezone.localdate',
+                   return_value=date(2026, 8, 10)):
+            p = build_projections(start=date(2026, 8, 1), end=date(2026, 8, 10),
+                                  period_key='this_month', revenue=Decimal('100000'),
+                                  closed=5, leads=20, close_rate=25.0,
+                                  avg_deal=Decimal('20000'))
+        self.assertIn('21 day(s)', p['assumption'])
+
+    def test_all_time_has_nothing_to_project_to(self):
+        self.assertIsNone(self.get(period='all')['projections'])
+
+    def test_the_open_pipeline_leaves_out_what_is_finished(self):
+        from .models import PaymentVerification
+        Lead.objects.create(first_name='Open', phone='9500000001', status='new',
+                            value=Decimal('50000'))
+        Lead.objects.create(first_name='Dead', phone='9500000002',
+                            status='not_interested', value=Decimal('90000'))
+        won = Lead.objects.create(first_name='Won', phone='9500000003',
+                                  status='converted', pushed_to_accounts=True,
+                                  value=Decimal('70000'))
+        PaymentVerification.objects.create(lead=won, amount_received=Decimal('70000'))
+        p = self.get()['projections']
+        self.assertEqual(p['open_leads'], 1)
+        self.assertEqual(p['open_pipeline_value'], '50000.00')
+
+
+class PeriodComparisonTests(TestCase):
+    """This period against the same stretch of the one before."""
+
+    def setUp(self):
+        self.boss = mk('cmp_admin', 'admin')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': token_for(self.boss)}
+
+    def test_a_part_month_is_compared_with_the_same_part_of_the_last(self):
+        """Comparing a fortnight against a whole month would show a collapse in
+        business every month."""
+        from leads.performance_insights import previous_window
+        self.assertEqual(previous_window('this_month', date(2026, 8, 1), date(2026, 8, 13)),
+                         (date(2026, 7, 1), date(2026, 7, 13)))
+
+    def test_a_full_month_is_compared_with_the_whole_of_the_last(self):
+        from leads.performance_insights import previous_window
+        start, end = previous_window('this_month', date(2026, 8, 1), date(2026, 8, 31))
+        self.assertEqual((start, end), (date(2026, 7, 1), date(2026, 7, 31)))
+
+    def test_a_short_previous_month_is_not_overrun(self):
+        """31 March has no counterpart in February."""
+        from leads.performance_insights import previous_window
+        _, end = previous_window('this_month', date(2026, 3, 1), date(2026, 3, 31))
+        self.assertEqual(end, date(2026, 2, 28))
+
+    def test_a_year_is_compared_with_the_year_before(self):
+        from leads.performance_insights import previous_window
+        self.assertEqual(previous_window('this_fy', date(2026, 4, 1), date(2026, 8, 13)),
+                         (date(2025, 4, 1), date(2025, 8, 13)))
+
+    def test_a_leap_day_survives_the_shift(self):
+        from leads.performance_insights import previous_window
+        start, end = previous_window('this_year', date(2024, 1, 1), date(2024, 2, 29))
+        self.assertEqual(end, date(2023, 2, 28))
+
+    def test_a_custom_range_is_compared_with_the_stretch_before_it(self):
+        from leads.performance_insights import previous_window
+        self.assertEqual(previous_window('custom', date(2026, 6, 10), date(2026, 6, 19)),
+                         (date(2026, 5, 31), date(2026, 6, 9)))
+
+    def test_all_time_has_nothing_before_it(self):
+        from leads.performance_insights import previous_window
+        self.assertIsNone(previous_window('all', None, None))
+
+    def test_a_rise_is_reported_with_its_share(self):
+        from leads.performance_insights import build_comparison
+        c = build_comparison({'revenue': '150000'}, {'revenue': '100000'},
+                             (date(2026, 7, 1), date(2026, 7, 13)))
+        revenue = next(m for m in c['metrics'] if m['key'] == 'revenue')
+        self.assertEqual(revenue['direction'], 'up')
+        self.assertEqual(revenue['change_pct'], 50.0)
+
+    def test_a_fall_is_reported_as_a_fall(self):
+        from leads.performance_insights import build_comparison
+        c = build_comparison({'revenue': '50000'}, {'revenue': '100000'},
+                             (date(2026, 7, 1), date(2026, 7, 13)))
+        revenue = next(m for m in c['metrics'] if m['key'] == 'revenue')
+        self.assertEqual((revenue['direction'], revenue['change_pct']), ('down', -50.0))
+
+    def test_growth_from_nothing_is_not_called_a_percentage(self):
+        """Going from zero to something is a start, not a rate."""
+        from leads.performance_insights import build_comparison
+        c = build_comparison({'revenue': '50000'}, {'revenue': '0'},
+                             (date(2026, 7, 1), date(2026, 7, 13)))
+        revenue = next(m for m in c['metrics'] if m['key'] == 'revenue')
+        self.assertIsNone(revenue['change_pct'])
+        self.assertTrue(revenue['from_nothing'])
+
+    def test_no_movement_reads_as_flat(self):
+        from leads.performance_insights import build_comparison
+        c = build_comparison({'leads': 5}, {'leads': 5},
+                             (date(2026, 7, 1), date(2026, 7, 13)))
+        leads = next(m for m in c['metrics'] if m['key'] == 'leads')
+        self.assertEqual(leads['direction'], 'flat')
+
+    def test_the_board_carries_a_comparison(self):
+        r = self.client.get('/api/company-performance/?period=this_month', **self.auth())
+        self.assertIsNotNone(r.json()['comparison'])
+
+    def test_all_time_carries_none(self):
+        r = self.client.get('/api/company-performance/?period=all', **self.auth())
+        self.assertIsNone(r.json()['comparison'])
+
+
+class GrowthPaceTests(TestCase):
+    """How fast the business is moving, month on month."""
+
+    def growth(self, revenues):
+        from leads.performance_insights import build_growth
+        return build_growth([{'name': f'M{i}', 'revenue': str(v), 'closed': 1}
+                             for i, v in enumerate(revenues)])
+
+    def test_a_steady_climb_reports_its_pace(self):
+        g = self.growth([100, 110, 121])
+        self.assertEqual(g['average_pace'], 10.0)
+        self.assertEqual(g['months_measured'], 2)
+
+    def test_a_fall_is_a_negative_pace(self):
+        self.assertEqual(self.growth([100, 50])['average_pace'], -50.0)
+
+    def test_a_month_with_nothing_before_it_is_left_out_of_the_average(self):
+        """Counting a leap from zero as a percentage would swamp the average."""
+        g = self.growth([0, 100, 110])
+        self.assertEqual(g['months_measured'], 1)
+        self.assertEqual(g['average_pace'], 10.0)
+
+    def test_one_month_is_not_a_pace(self):
+        self.assertIsNone(self.growth([100]))
+
+    def test_the_best_and_leanest_months_are_named(self):
+        g = self.growth([100, 500, 50])
+        self.assertEqual(g['best_month']['name'], 'M1')
+        self.assertEqual(g['worst_month']['name'], 'M2')
+
+    def test_the_direction_of_travel_compares_halves(self):
+        """One good month can hide a decline and one bad month can fake it."""
+        g = self.growth([100, 100, 200, 200])
+        self.assertEqual(g['trend'], 'up')
+        self.assertEqual(g['recent_vs_earlier_pct'], 100.0)
+
+    def test_a_flat_business_is_steady_not_growing(self):
+        self.assertEqual(self.growth([100, 100, 100, 100])['trend'], 'steady')
+
+    def test_growth_survives_a_period_with_one_month_in_it(self):
+        """It reads the trailing year, so picking This month must not blank it."""
+        boss = mk('gr_admin', 'admin')
+        r = self.client.get('/api/company-performance/?period=this_month',
+                            HTTP_AUTHORIZATION=token_for(boss))
+        self.assertIn('growth', r.json())
+
+
+class PerformanceFindingsTests(TestCase):
+    """Observations read off the figures, each one checkable against the page."""
+
+    def findings(self, payload):
+        from leads.performance_insights import build_findings
+        return build_findings(payload)
+
+    def base(self, **head):
+        figures = {'leads': 50, 'converted': 10, 'closed_deals': 10, 'lost': 0,
+                   'revenue': '1000000', 'outstanding': '0', 'close_rate': 20}
+        figures.update(head)
+        return {'headline': figures}
+
+    def test_money_left_uncollected_is_flagged(self):
+        texts = [f['text'] for f in self.findings(
+            self.base(revenue='1000000', outstanding='400000'))]
+        self.assertTrue(any('not been collected' in t for t in texts))
+
+    def test_a_small_outstanding_balance_is_not_worth_flagging(self):
+        texts = [f['text'] for f in self.findings(
+            self.base(revenue='1000000', outstanding='1000'))]
+        self.assertFalse(any('not been collected' in t for t in texts))
+
+    def test_a_slump_against_last_period_is_flagged(self):
+        payload = self.base()
+        payload['comparison'] = {'metrics': [
+            {'key': 'revenue', 'change_pct': -35.0, 'direction': 'down'}]}
+        texts = [f['text'] for f in self.findings(payload)]
+        self.assertTrue(any('below the same' in t for t in texts))
+
+    def test_a_falling_trend_is_flagged(self):
+        payload = self.base()
+        payload['growth'] = {'trend': 'down', 'recent_vs_earlier_pct': -40.0}
+        texts = [f['text'] for f in self.findings(payload)]
+        self.assertTrue(any('below' in t and 'earlier' in t for t in texts))
+
+    def test_a_thin_lead_book_is_not_judged_on_its_close_rate(self):
+        texts = [f['text'] for f in self.findings(
+            self.base(leads=2, converted=0, closed_deals=0, close_rate=0))]
+        self.assertFalse(any('closed' in t and '%' in t for t in texts))
+
+    def test_findings_carry_a_number_every_time(self):
+        """A finding without a figure is an opinion."""
+        payload = self.base(revenue='1000000', outstanding='400000', closed_deals=4)
+        payload['delivery'] = {'won': 5, 'not_started': 2}
+        for f in self.findings(payload):
+            self.assertTrue(any(ch.isdigit() for ch in f['text']), f['text'])
+
+    def test_nothing_is_invented_when_there_is_nothing_to_say(self):
+        self.assertEqual(self.findings({'headline': {'leads': 0}}), [])
+
+
+class AiSuggestionsTests(TestCase):
+    """Advice is optional; the figures are not."""
+
+    def payload(self):
+        return {'period_label': 'FY 26-27',
+                'headline': {'leads': 50, 'closed_deals': 10, 'revenue': '100000'}}
+
+    def test_no_key_means_no_suggestions_rather_than_a_placeholder(self):
+        from leads.performance_insights import ai_suggestions
+        with self.settings(GEMINI_API_KEY=''):
+            self.assertIsNone(ai_suggestions(self.payload(), [{'text': 'x'}], None))
+
+    def test_a_failed_call_does_not_take_the_board_down(self):
+        from leads.performance_insights import ai_suggestions
+        with self.settings(GEMINI_API_KEY='test-key'), \
+             patch('ai_manager.ai_meeting._call_gemini', side_effect=RuntimeError('no')):
+            self.assertIsNone(ai_suggestions(self.payload(), [{'text': 'x'}], None))
+
+    def test_the_model_is_given_the_findings_not_asked_for_the_numbers(self):
+        from leads.performance_insights import ai_suggestions
+        with self.settings(GEMINI_API_KEY='test-key'), \
+             patch('ai_manager.ai_meeting._call_gemini', return_value='1. Do the thing.') as call:
+            out = ai_suggestions(self.payload(),
+                                 [{'text': '4 deals have no money against them.'}], None)
+        self.assertEqual(out, '1. Do the thing.')
+        prompt = call.call_args[0][0]
+        self.assertIn('4 deals have no money against them.', prompt)
+        self.assertIn('Revenue', prompt)
+
+    def test_the_model_is_told_not_to_invent_figures(self):
+        from leads.performance_insights import AI_SYSTEM
+        self.assertIn('Never state a number that is not in the data', AI_SYSTEM)
+
+    def test_an_empty_reply_is_treated_as_no_advice(self):
+        from leads.performance_insights import ai_suggestions
+        with self.settings(GEMINI_API_KEY='test-key'), \
+             patch('ai_manager.ai_meeting._call_gemini', return_value='   '):
+            self.assertIsNone(ai_suggestions(self.payload(), [{'text': 'x'}], None))
+
+    def test_the_board_still_answers_when_the_model_is_unavailable(self):
+        boss = mk('ai_admin', 'admin')
+        with self.settings(GEMINI_API_KEY=''):
+            r = self.client.get('/api/company-performance/?period=this_fy',
+                                HTTP_AUTHORIZATION=token_for(boss))
+        self.assertEqual(r.status_code, 200)
+        self.assertIsNone(r.json()['ai_suggestions'])
+        self.assertIn('findings', r.json())

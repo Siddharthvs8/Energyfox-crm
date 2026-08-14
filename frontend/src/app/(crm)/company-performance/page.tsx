@@ -13,7 +13,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
-  Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
+  Bar, BarChart, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
   ComposedChart, Line, PieChart, Pie, Cell,
 } from "recharts";
 import { APP_SLUG } from "@/lib/config";
@@ -201,6 +201,296 @@ function DeliveryPanel({ d }: { d: any }) {
           <p className="font-bold text-slate-800 tabular-nums">{d.avg_days_to_complete}</p>
         </div>
       </div>
+    </Panel>
+  );
+}
+
+/** A movement, coloured by whether it is the direction you want.
+ *  `lower_is_better` matters for Lost: fewer is a win, and a red −40% there
+ *  would read as bad news when it is the opposite. */
+function Delta({ pct, direction, fromNothing, lowerIsBetter }: {
+  pct: number | null; direction: string; fromNothing?: boolean; lowerIsBetter?: boolean;
+}) {
+  // "new" is good news for revenue and bad news for losses, so it takes the
+  // same colouring rule as a percentage move rather than always reading green.
+  if (fromNothing) return (
+    <span className={`text-[11px] font-bold ${lowerIsBetter ? "text-rose-600" : "text-emerald-600"}`}>
+      new
+    </span>
+  );
+  if (pct === null || direction === "flat")
+    return <span className="text-[11px] text-slate-400">no change</span>;
+  const good = lowerIsBetter ? direction === "down" : direction === "up";
+  return (
+    <span className={`text-[11px] font-bold ${good ? "text-emerald-600" : "text-rose-600"}`}>
+      {direction === "up" ? "▲" : "▼"} {Math.abs(pct)}%
+    </span>
+  );
+}
+
+/** This period against the same stretch of the one before. */
+function ComparisonPanel({ c }: { c: any }) {
+  if (!c) return (
+    <Panel title="Against last period" subtitle="Pick a period with a date range to compare">
+      <p className="py-8 text-center text-sm text-slate-400">All time has nothing before it.</p>
+    </Panel>
+  );
+  const money = c.metrics.filter((m: any) => m.is_money);
+  const counts = c.metrics.filter((m: any) => !m.is_money);
+  const chart = counts.map((m: any) => ({
+    name: m.label, Now: Number(m.now), Before: Number(m.before),
+  }));
+
+  return (
+    <Panel title="Against last period" subtitle={`Same stretch of ${c.label}`}>
+      <div className="grid grid-cols-2 gap-3 mb-4">
+        {money.map((m: any) => (
+          <div key={m.key} className="rounded-xl border border-slate-100 bg-slate-50/60 px-4 py-3">
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{m.label}</p>
+            <p className="text-lg font-black text-slate-900 tabular-nums mt-0.5">
+              {formatCurrency(Number(m.now))}
+            </p>
+            <div className="flex items-center gap-2 mt-0.5">
+              <Delta pct={m.change_pct} direction={m.direction} fromNothing={m.from_nothing} />
+              <span className="text-[11px] text-slate-400">
+                was {formatCurrency(Number(m.before))}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="h-[170px]">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={chart} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+            <XAxis dataKey="name" axisLine={false} tickLine={false}
+              tick={{ fontSize: 10, fill: "#94a3b8", fontWeight: 500 }} dy={6} />
+            <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#94a3b8" }} />
+            <Tooltip cursor={{ fill: "#f8fafc" }}
+              contentStyle={{ borderRadius: 12, border: "1px solid #e2e8f0", fontSize: 12, fontWeight: 600 }} />
+            <Legend wrapperStyle={{ fontSize: 11, fontWeight: 600 }} />
+            <Bar dataKey="Before" fill="#cbd5e1" radius={[5, 5, 0, 0]} maxBarSize={22} />
+            <Bar dataKey="Now" fill="#6366f1" radius={[5, 5, 0, 0]} maxBarSize={22} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div className="mt-3 pt-3 border-t border-slate-50 space-y-1.5">
+        {counts.map((m: any) => (
+          <div key={m.key} className="flex items-center justify-between text-[12px]">
+            <span className="text-slate-600">{m.label}</span>
+            <span className="flex items-center gap-2">
+              <span className="tabular-nums text-slate-400">{m.before} →</span>
+              <span className="tabular-nums font-bold text-slate-800">{m.now}</span>
+              <Delta pct={m.change_pct} direction={m.direction} fromNothing={m.from_nothing}
+                lowerIsBetter={m.key === "lost"} />
+            </span>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+/** How fast the business is moving, month on month. */
+function GrowthPanel({ g }: { g: any }) {
+  if (!g) return (
+    <Panel title="Growth pace" subtitle="Month on month">
+      <p className="py-8 text-center text-sm text-slate-400">
+        Not enough months yet to measure a pace.
+      </p>
+    </Panel>
+  );
+  const chart = g.points
+    .filter((p: any) => p.growth_pct !== null)
+    .map((p: any) => ({ name: p.name, Growth: p.growth_pct }));
+  const TREND: Record<string, string> = {
+    up: "text-emerald-600", down: "text-rose-600", steady: "text-slate-600",
+  };
+
+  return (
+    <Panel title="Growth pace" subtitle="Month on month, over the last year"
+      right={g.trend && (
+        <span className={`text-[11px] font-bold uppercase tracking-wide ${TREND[g.trend]}`}>
+          {g.trend}
+        </span>
+      )}>
+      <div className="flex items-baseline gap-3 mb-3">
+        <span className={`text-2xl font-black tabular-nums ${
+          (g.average_pace ?? 0) >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+          {g.average_pace === null ? "—" : `${g.average_pace > 0 ? "+" : ""}${g.average_pace}%`}
+        </span>
+        <span className="text-[12px] text-slate-400">
+          average a month{g.months_measured ? ` · ${g.months_measured} measured` : ""}
+        </span>
+      </div>
+
+      {chart.length === 0 ? (
+        <p className="py-8 text-center text-sm text-slate-400">
+          No month yet has one before it to grow from.
+        </p>
+      ) : (
+        <div className="h-[150px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={chart} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+              <XAxis dataKey="name" axisLine={false} tickLine={false}
+                tick={{ fontSize: 10, fill: "#94a3b8", fontWeight: 500 }} dy={6} />
+              <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#94a3b8" }}
+                tickFormatter={(v: number) => `${v}%`} />
+              <Tooltip cursor={{ fill: "#f8fafc" }}
+                contentStyle={{ borderRadius: 12, border: "1px solid #e2e8f0", fontSize: 12, fontWeight: 600 }}
+                formatter={(v: any) => [`${v}%`, "Change on the month before"]} />
+              {/* A month that fell is red and a month that rose is green: the
+                  sign is the whole message, and one colour would bury it. */}
+              <Bar dataKey="Growth" radius={[5, 5, 0, 0]} maxBarSize={26}>
+                {chart.map((p: any) => (
+                  <Cell key={p.name} fill={p.Growth >= 0 ? "#10b981" : "#f43f5e"} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      <div className="mt-3 pt-3 border-t border-slate-50 grid grid-cols-2 gap-3 text-[12px]">
+        <div>
+          <p className="text-slate-400">Best month</p>
+          <p className="font-bold text-slate-800">
+            {g.best_month?.name || "—"}
+            {g.best_month && (
+              <span className="ml-1.5 font-normal text-slate-400 tabular-nums">
+                {formatCurrency(Number(g.best_month.revenue))}
+              </span>
+            )}
+          </p>
+        </div>
+        <div>
+          <p className="text-slate-400">Leanest month</p>
+          <p className="font-bold text-slate-800">
+            {g.worst_month?.name || "—"}
+            {g.worst_month && (
+              <span className="ml-1.5 font-normal text-slate-400 tabular-nums">
+                {formatCurrency(Number(g.worst_month.revenue))}
+              </span>
+            )}
+          </p>
+        </div>
+      </div>
+      {g.recent_vs_earlier_pct !== null && g.recent_vs_earlier_pct !== undefined && (
+        <p className="mt-3 text-[11px] text-slate-400">
+          The recent half of this stretch is {Math.abs(g.recent_vs_earlier_pct)}%{" "}
+          {g.recent_vs_earlier_pct >= 0 ? "above" : "below"} the earlier half — the direction
+          of travel, which one good month can hide.
+        </p>
+      )}
+    </Panel>
+  );
+}
+
+/** Where the period lands if the rest of it goes like the part already run. */
+function ProjectionPanel({ p }: { p: any }) {
+  if (!p) return (
+    <Panel title="Projection" subtitle="Pick a period with an end date to see where it lands">
+      <p className="py-8 text-center text-sm text-slate-400">All time has no end to run to.</p>
+    </Panel>
+  );
+  const done = Number(p.revenue_so_far);
+  // A forecast to the paise reads as precision it does not have.
+  const target = Math.round(Number(p.projected_revenue));
+  const pace = target > 0 ? Math.min((done / target) * 100, 100) : 0;
+  return (
+    <Panel title="Projection"
+      subtitle={`Run rate to ${new Date(p.period_ends).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}`}
+      right={<span className="text-[11px] text-slate-400">{p.days_remaining} of {p.days_total} days left</span>}>
+
+      <div className="flex items-baseline gap-3 mb-1">
+        <span className="text-2xl font-black text-slate-900 tabular-nums">
+          {formatCurrency(target)}
+        </span>
+        <span className="text-[12px] text-slate-400">projected for the period</span>
+      </div>
+      <div className="h-2 bg-slate-100 rounded-full overflow-hidden mb-2">
+        <div className="h-full rounded-full bg-indigo-500 transition-all duration-700"
+          style={{ width: `${Math.max(2, pace)}%` }} />
+      </div>
+      <p className="text-[11px] text-slate-400 mb-4">
+        {formatCurrency(done)} in so far · {formatCurrency(Math.round(Number(p.revenue_per_day)))} a day
+      </p>
+
+      <div className="grid grid-cols-2 gap-3 text-[12px] pt-3 border-t border-slate-50">
+        <div>
+          <p className="text-slate-400">Deals at this rate</p>
+          <p className="font-bold text-slate-800 tabular-nums">{p.projected_closed_deals}</p>
+        </div>
+        <div>
+          <p className="text-slate-400">Leads at this rate</p>
+          <p className="font-bold text-slate-800 tabular-nums">{p.projected_leads}</p>
+        </div>
+        <div>
+          <p className="text-slate-400">Open pipeline</p>
+          <p className="font-bold text-slate-800 tabular-nums">
+            {formatCurrency(Number(p.open_pipeline_value))}
+            <span className="ml-1 font-normal text-slate-400">({p.open_leads} leads)</span>
+          </p>
+        </div>
+        <div>
+          <p className="text-slate-400">Weighted by close rate</p>
+          <p className="font-bold text-slate-800 tabular-nums">
+            {formatCurrency(Number(p.pipeline_weighted_value))}
+          </p>
+        </div>
+      </div>
+
+      {/* A forecast that does not say what it assumed is a number people argue
+          about later. */}
+      <p className="mt-4 text-[11px] text-slate-400 italic">{p.assumption}</p>
+    </Panel>
+  );
+}
+
+/** What the figures say, and — when a model is configured — what to do about it. */
+function InsightsPanel({ findings, ai }: { findings: any[]; ai: string | null }) {
+  const TONE: Record<string, string> = {
+    risk: "bg-rose-50 text-rose-700 border-rose-100",
+    opportunity: "bg-amber-50 text-amber-700 border-amber-100",
+    spread: "bg-sky-50 text-sky-700 border-sky-100",
+  };
+  return (
+    <Panel title="What stands out" subtitle="Read off the figures on this page">
+      {findings.length === 0 ? (
+        <p className="py-8 text-center text-sm text-slate-400">
+          Nothing worth flagging in this window.
+        </p>
+      ) : (
+        <ul className="space-y-2">
+          {findings.map((f, i) => (
+            <li key={i} className="flex items-start gap-2.5">
+              <span className={`mt-0.5 flex-shrink-0 px-1.5 py-0.5 rounded border text-[9px]
+                                font-black uppercase tracking-wide ${TONE[f.kind] || TONE.spread}`}>
+                {f.kind}
+              </span>
+              <span className="text-[13px] text-slate-600 leading-relaxed">{f.text}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {ai && (
+        <div className="mt-5 pt-4 border-t border-slate-100">
+          <p className="text-[10px] font-black text-indigo-600 uppercase tracking-widest mb-2">
+            Suggested next steps
+          </p>
+          {/* The model is given the figures above and asked to prioritise them;
+              it is never asked what the numbers are. Said plainly, because a
+              reader cannot otherwise tell advice from arithmetic. */}
+          <div className="text-[13px] text-slate-600 leading-relaxed whitespace-pre-line">{ai}</div>
+          <p className="mt-3 text-[10px] text-slate-400">
+            Written by AI from the figures on this page. Check it before acting on it.
+          </p>
+        </div>
+      )}
     </Panel>
   );
 }
@@ -499,6 +789,16 @@ export default function CompanyPerformancePage() {
               <Tile label="Collected" value={formatCurrency(Number(h.collected))} sub="money in" tone="emerald" />
               <Tile label="Outstanding" value={formatCurrency(Number(h.outstanding))} sub="still owed" tone="amber" />
               <Tile label="Projects done" value={String(h.completed_projects)} sub="all time" />
+            </div>
+
+            <div className="grid lg:grid-cols-2 gap-5 mb-5">
+              <ComparisonPanel c={d.comparison} />
+              <GrowthPanel g={d.growth} />
+            </div>
+
+            <div className="grid lg:grid-cols-2 gap-5 mb-5">
+              <ProjectionPanel p={d.projections} />
+              <InsightsPanel findings={d.findings || []} ai={d.ai_suggestions} />
             </div>
 
             <div className="grid lg:grid-cols-[1.6fr_1fr] gap-5 mb-5">

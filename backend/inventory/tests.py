@@ -2380,3 +2380,126 @@ class DispatchInvoiceRoundingTests(TestCase):
         row = self.rows()[0]
         self.assertEqual(row['balance'], '0.00')
         self.assertTrue(row['fully_paid'])
+
+
+class RoundingMustNotStrandAnInvoiceTests(TestCase):
+    """Either figure on the invoice clears it.
+
+    A customer paid the exact 95,794.65 their copy showed. The bill rounds up to
+    95,795, so the balance sat at 35 paise, the Dispatch button stayed dead and
+    the goods could not leave — nobody is going to transfer 35 paise. The
+    verification dialog meanwhile said the invoice was already settled, because
+    it compared against the exact total while the screen compared against the
+    rounded one. One rule now, in `settlement`.
+    """
+
+    def state(self, total, received):
+        from inventory.views import payment_state
+        return payment_state(Decimal(total), Decimal(received))
+
+    # ── The reported bug ──
+    def test_paying_the_exact_total_settles_an_invoice_that_rounded_up(self):
+        s = self.state('95794.65', '95794.65')
+        self.assertTrue(s['fully_paid'])
+        self.assertEqual(s['balance'], '0.00')
+
+    def test_paying_the_rounded_total_still_settles_it(self):
+        s = self.state('95794.65', '95795')
+        self.assertTrue(s['fully_paid'])
+        self.assertEqual(s['balance'], '0.00')
+
+    def test_the_invoice_is_still_billed_at_the_rounded_figure(self):
+        """Settling leniently must not quietly change what was charged."""
+        s = self.state('95794.65', '0')
+        self.assertEqual(s['invoice_total'], '95795.00')
+        self.assertEqual(s['balance'], '95795.00')
+
+    # ── The other direction ──
+    def test_paying_the_rounded_total_settles_an_invoice_that_rounded_down(self):
+        s = self.state('153430.20', '153430')
+        self.assertTrue(s['fully_paid'])
+
+    def test_paying_the_exact_total_settles_a_rounded_down_invoice_too(self):
+        self.assertTrue(self.state('153430.20', '153430.20')['fully_paid'])
+
+    # ── What must still be refused ──
+    def test_a_rupee_short_is_not_settled(self):
+        """The leniency is the rounding adjustment, not a general tolerance."""
+        s = self.state('95794.65', '95793.65')
+        self.assertFalse(s['fully_paid'])
+
+    def test_a_part_payment_is_still_a_part_payment(self):
+        s = self.state('95794.65', '50000')
+        self.assertFalse(s['fully_paid'])
+        self.assertEqual(s['balance'], '45795.00')
+
+    def test_an_invoice_of_nothing_is_not_settled_by_nothing(self):
+        self.assertFalse(self.state('0', '0')['fully_paid'])
+
+    # ── The dialog and the screen must agree ──
+    def test_the_intake_guard_agrees_that_it_is_settled(self):
+        """The dialog said 'already settled' while the screen showed money
+        owing; both now read the same figure."""
+        from inventory.views import check_payment, payment_state
+        kwargs, error = check_payment({'amount_received': '0.35', 'mode': 'cash'},
+                                       Decimal('95794.65'), Decimal('95794.65'))
+        self.assertIsNone(kwargs)
+        self.assertIn('already been settled', error['error'])
+        self.assertTrue(payment_state(Decimal('95794.65'), Decimal('95794.65'))['fully_paid'])
+
+    def test_a_genuine_balance_is_still_collectable(self):
+        from inventory.views import check_payment
+        kwargs, error = check_payment({'amount_received': '45795', 'mode': 'cash'},
+                                       Decimal('95794.65'), Decimal('50000'))
+        self.assertIsNone(error)
+        self.assertEqual(kwargs['amount_received'], Decimal('45795.00'))
+
+    def test_paying_more_than_is_owed_is_still_refused(self):
+        from inventory.views import check_payment
+        _kwargs, error = check_payment({'amount_received': '900000', 'mode': 'cash'},
+                                        Decimal('95794.65'), Decimal('0'))
+        self.assertIn('more than', error['error'])
+
+
+class SettledDeliveryReleasesTests(TestCase):
+    """A settled delivery can actually go out."""
+
+    def setUp(self):
+        from inventory.models import StockItem, StockDispatch
+        item = StockItem.objects.create(code='RND-3')
+        # 3 x 31931.55 = 95794.65, which rounds up to 95795.
+        for _ in range(3):
+            StockDispatch.objects.create(
+                invoice_no='REN2627-IN009', item=item, quantity=Decimal('1'),
+                rate=Decimal('31931.55'), tax_percent=Decimal('0'),
+                status=StockDispatch.PENDING, date=timezone.localdate())
+
+    def rows(self):
+        from inventory.models import StockDispatch
+        from inventory.serializers import StockDispatchSerializer
+        return StockDispatchSerializer(
+            StockDispatch.objects.filter(invoice_no='REN2627-IN009'), many=True).data
+
+    def pay(self, amount):
+        from inventory.models import DispatchPayment
+        DispatchPayment.objects.create(
+            invoice_no='REN2627-IN009', invoice_total=Decimal('95795'),
+            amount_received=Decimal(amount), mode='bank_transfer',
+            paid_on=timezone.localdate())
+
+    def test_the_exact_payment_marks_the_delivery_paid(self):
+        self.pay('95794.65')
+        row = self.rows()[0]
+        self.assertTrue(row['fully_paid'])
+        self.assertEqual(row['balance'], '0.00')
+
+    def test_an_unpaid_delivery_still_shows_its_balance(self):
+        row = self.rows()[0]
+        self.assertFalse(row['fully_paid'])
+        self.assertEqual(row['balance'], '95795.00')
+
+    def test_a_short_payment_leaves_it_owing(self):
+        self.pay('90000')
+        row = self.rows()[0]
+        self.assertFalse(row['fully_paid'])
+        self.assertEqual(row['balance'], '5795.00')

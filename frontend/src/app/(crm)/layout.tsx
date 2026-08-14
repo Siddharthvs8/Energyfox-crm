@@ -826,7 +826,10 @@ export default function DashboardLayout({
       return currentUser?.is_manager && !currentUser?.is_staff && !currentUser?.is_general_manager;
     }
     if (item.hideForManager) {
-      // Hidden for branch managers and admins (they use Team/Manager views instead).
+      // Hidden for branch managers and admins (they use Team/Manager views instead),
+      // and for anyone who has Company Performance: the top of the house answers
+      // for the whole company's numbers, not for a personal target of their own.
+      if (COMPANY_PERFORMANCE_ROLES.includes(currentUser?.role)) return false;
       return !((currentUser?.is_manager && !currentUser?.is_general_manager) || currentUser?.is_staff);
     }
     if (item.agentOnly) {

@@ -25,6 +25,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .access import can_access_company_performance
+from .performance_insights import (ai_suggestions, build_comparison, build_findings,
+                                   build_growth, build_projections, previous_window)
 from .models import Lead, PaymentVerification
 from .scopes import CLOSED_DEAL_FILTER, closed_deal_q, closed_deals, live_leads, net_value
 
@@ -114,7 +116,7 @@ class CompanyPerformanceView(APIView):
         won_qs = within(closed_deals(live_leads()), 'status_changed_at')
         everyone, bdes, tele_callers = self._employees(start, end)
 
-        return Response({
+        payload = {
             'period': period_key,
             'period_label': period_label,
             'period_from': start.isoformat() if start else None,
@@ -135,7 +137,41 @@ class CompanyPerformanceView(APIView):
             'employees': everyone,
             'bdes': bdes,
             'tele_callers': tele_callers,
-        })
+        }
+
+        # Everything below reads the finished figures rather than the querysets,
+        # so it cannot disagree with what the board shows.
+        head = payload['headline']
+        window = previous_window(period_key, start, end)
+        payload['comparison'] = build_comparison(head, self._window_figures(window), window)
+        # The trailing year, whatever period is selected: growth pace is a fact
+        # about the business, and picking "This month" should not make it
+        # vanish because one month has nothing before it to grow from.
+        payload['growth'] = build_growth(self._monthly(None, today, today))
+        payload['projections'] = build_projections(
+            start=start, end=end, period_key=period_key,
+            revenue=Decimal(head['revenue']), closed=head['closed_deals'],
+            leads=head['leads'], close_rate=head['close_rate'],
+            avg_deal=Decimal(head['avg_deal_value']))
+        payload['findings'] = build_findings(payload)
+        payload['ai_suggestions'] = ai_suggestions(
+            payload, payload['findings'], payload['projections'])
+        return Response(payload)
+
+    def _window_figures(self, window):
+        """The same headline figures over any stretch, for comparing against.
+
+        Built from `_headline` rather than its own arithmetic: a comparison that
+        counted revenue differently from the tile above it would be worse than
+        no comparison at all.
+        """
+        if window is None:
+            return None
+        start, end = window
+        leads_qs = live_leads().filter(created_at__date__gte=start, created_at__date__lte=end)
+        won_qs = closed_deals(live_leads()).filter(
+            status_changed_at__date__gte=start, status_changed_at__date__lte=end)
+        return self._headline(leads_qs, won_qs)
 
     # ── Headline ──
     def _headline(self, leads_qs, won_qs):

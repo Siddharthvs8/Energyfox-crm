@@ -329,16 +329,24 @@ class StockDispatchSerializer(_MovementSerializer):
         from .models import round_off_for
         return str(round_off_for(self._exact_total(obj))[1].quantize(Decimal('0.01')))
 
+    def _settles_at(self, obj):
+        """What clears this delivery: the rounded bill or the exact arithmetic,
+        whichever is lower. The same rule `payment_state` applies, so this list
+        and the verification dialog cannot disagree about whether it is paid."""
+        return min(self._invoice_total(obj), self._exact_total(obj))
+
     def get_amount_received(self, obj):
         return str(self._received(obj).quantize(Decimal('0.01')))
 
     def get_balance(self, obj):
+        if self.get_fully_paid(obj):
+            return '0.00'
         left = self._invoice_total(obj) - self._received(obj)
         return str((left if left > 0 else Decimal('0')).quantize(Decimal('0.01')))
 
     def get_fully_paid(self, obj):
         total = self._invoice_total(obj)
-        return bool(total > 0 and self._received(obj) >= total)
+        return bool(total > 0 and self._received(obj) >= self._settles_at(obj))
 
     class Meta:
         model = StockDispatch

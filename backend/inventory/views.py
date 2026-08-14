@@ -726,9 +726,14 @@ def check_payment(raw, invoice_total, already_received=Decimal('0'), paid_on_def
     complain about it.
     """
     raw = raw if isinstance(raw, dict) else {}
-    invoice_total = to_money(invoice_total) or Decimal('0')
+    # Billed on the rounded figure, cleared by either it or the exact one — the
+    # same rule `payment_state` reports, so this dialog cannot refuse a payment
+    # as unnecessary while the screen behind it still shows money owing.
+    invoice_total, exact_total, settles_at = settlement(invoice_total)
     already = to_money(already_received) or Decimal('0')
-    outstanding = invoice_total - already
+    outstanding = max(invoice_total - already, Decimal('0'))
+    if already >= settles_at:
+        outstanding = Decimal('0')
 
     if invoice_total <= 0:
         return None, {'error': 'This document has no value to collect against. '
@@ -751,7 +756,9 @@ def check_payment(raw, invoice_total, already_received=Decimal('0'), paid_on_def
         return None, {'error': 'Choose how the payment was received.',
                       'invoice_total': str(invoice_total), 'balance': str(outstanding)}
 
-    if received > outstanding:
+    # Capped on the higher figure, not the billed one: see `payment_ceiling`.
+    ceiling = max(payment_ceiling(exact_total) - already, Decimal('0'))
+    if received > ceiling:
         return None, {
             'error': (f'That is more than the ₹{outstanding} still owing on this '
                       f'invoice. Record what was actually received.'),
@@ -769,6 +776,38 @@ def check_payment(raw, invoice_total, already_received=Decimal('0'), paid_on_def
     }, None
 
 
+def settlement(total):
+    """What an invoice is billed at, and what clears it.
+
+    Three figures, because rounding makes them differ: `exact` is the arithmetic
+    of the lines, `grand` is the rounded figure printed on the invoice, and
+    `settles_at` is the lower of the two.
+
+    Either payment clears the invoice, and it has to. A customer sent the exact
+    95,794.65 their copy of the invoice showed; the rounded bill says 95,795, so
+    the balance sat at 35 paise and the goods would never release — nobody is
+    going to transfer 35 paise. The reverse case is just as real: an invoice
+    rounded *down* is settled by the rounded figure even though the arithmetic
+    is a few paise higher. Anything below a rupee here is an artefact of
+    rounding, not a debt.
+    """
+    exact = to_money(total) or Decimal('0')
+    grand, _adjustment = round_off_for(exact)
+    return grand, exact, min(grand, exact)
+
+
+def payment_ceiling(total):
+    """The most that can still be taken against an invoice.
+
+    The higher of the two figures, for the same reason `settles_at` is the
+    lower: a customer paying the exact 2,252.25 on a bill rounded down to 2,252
+    is not overpaying, they are paying what the arithmetic said. Refusing that
+    as an overpayment strands the invoice exactly as demanding 35 paise did.
+    """
+    grand, exact, _settles_at = settlement(total)
+    return max(grand, exact)
+
+
 def payment_state(total, received):
     """The money position on a document, as every screen reports it.
 
@@ -782,10 +821,11 @@ def payment_state(total, received):
     For a delivery of several lines the total handed in is already the sum of
     the group, so the rounding lands on the invoice, not on each line.
     """
-    exact = to_money(total) or Decimal('0')
-    grand, round_off = round_off_for(exact)
+    grand, exact, settles_at = settlement(total)
+    round_off = grand - exact
     received = to_money(received) or Decimal('0')
-    balance = grand - received
+    paid_up = grand > 0 and received >= settles_at
+    balance = Decimal('0') if paid_up else max(grand - received, Decimal('0'))
     # Every figure to paise, whole rupees included: a payload that mixed "95795"
     # with "45795.00" made the screens format the same money two ways.
     money2 = lambda v: str(v.quantize(PAISE))
@@ -794,8 +834,8 @@ def payment_state(total, received):
         'exact_total': money2(exact),
         'round_off': money2(round_off),
         'amount_received': money2(received),
-        'balance': money2(balance if balance > 0 else Decimal('0')),
-        'fully_paid': bool(grand > 0 and balance <= 0),
+        'balance': money2(balance),
+        'fully_paid': bool(paid_up),
     }
 
 
