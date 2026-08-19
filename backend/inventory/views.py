@@ -630,6 +630,98 @@ class StockItemViewSet(viewsets.ModelViewSet):
             qs = qs.filter(category=category)
         return qs.order_by('code')
 
+    @action(detail=True, methods=['get'])
+    def history(self, request, pk=None):
+        """Where this item's stock came from — every quantity ever added.
+
+        Goods receipts have no screen of their own anywhere in the CRM, so a
+        line of stock that appeared last March is otherwise unaccountable: the
+        Item Master shows a running total and nothing behind it. This is that
+        behind.
+
+        Additions only, which is what the button offers. The opening stock leads
+        the list as its own entry, because it is a quantity the item started
+        with rather than one that arrived, and leaving it out would make the
+        entries fail to add up to the total. `running_total` is the stock added
+        so far — deliberately not a stock balance, which would have to net off
+        dispatches and would be wrong on every line.
+        """
+        item = self.get_object()
+
+        # Multiplying two 2-dp figures gives a 4-dp one, so amounts are brought
+        # back to paise here rather than reaching the screen as 750.0000.
+        money = lambda v: str(Decimal(v or 0).quantize(PAISE))
+
+        rows = []
+        opening = item.opening_stock or Decimal('0')
+        if opening:
+            rows.append({
+                'id': None,
+                'kind': 'opening',
+                'label': 'Opening stock',
+                'date': None,
+                'quantity': str(opening),
+                'rate': money(item.unit_cost),
+                'amount': money(opening * (item.unit_cost or Decimal('0'))),
+                'reference': '',
+                'supplier': '',
+                'notes': 'The quantity this item was set up with.',
+                'added_by': None,
+                'created_at': None,
+            })
+
+        receipts = (item.receipts.select_related('supplier', 'created_by')
+                    .order_by('date', 'created_at', 'pk'))
+        for receipt in receipts:
+            who = receipt.created_by
+            rows.append({
+                'id': receipt.pk,
+                'kind': 'receipt',
+                'label': 'Stock added',
+                'date': receipt.date.isoformat() if receipt.date else None,
+                'quantity': str(receipt.quantity or Decimal('0')),
+                'rate': money(receipt.rate),
+                'amount': money(receipt.amount),
+                'reference': receipt.grn_no or '',
+                'supplier': receipt.supplier.name if receipt.supplier else '',
+                'notes': receipt.notes or '',
+                'added_by': ((f'{who.first_name} {who.last_name}'.strip() or who.username)
+                             if who else None),
+                'created_at': receipt.created_at.isoformat() if receipt.created_at else None,
+            })
+
+        running = Decimal('0')
+        for row in rows:
+            running += Decimal(row['quantity'])
+            row['running_total'] = str(running)
+
+        # Newest first for reading; the running total above was accumulated in
+        # the order the stock actually arrived.
+        rows.reverse()
+
+        received = sum((Decimal(r['quantity']) for r in rows if r['kind'] == 'receipt'),
+                       Decimal('0'))
+        return Response({
+            'item': {
+                'id': item.pk,
+                'code': item.code,
+                'name': f'{item.brand} {item.model_name}'.strip() or item.code,
+                'unit': item.unit,
+            },
+            'entries': rows,
+            'summary': {
+                'opening_stock': str(opening),
+                'total_added': str(received),
+                'total_in': str(opening + received),
+                # The rest of the item's position, so the modal agrees with the
+                # row it was opened from.
+                'dispatched': str(item.dispatched),
+                'reserved': str(item.reserved),
+                'physical_stock': str(item.physical_stock),
+                'closing_stock': str(item.closing_stock),
+            },
+        })
+
     def destroy(self, request, *args, **kwargs):
         """Items with movement history stay put — deleting one would erase the
         receipts and dispatches that explain the stock on hand.

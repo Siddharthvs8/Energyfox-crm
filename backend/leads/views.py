@@ -258,7 +258,8 @@ def auto_assign_project(lead):
 
 
 from .scopes import (live_leads, own_leads_q, closed_deals, closed_deal_q,  # noqa: E402
-                     net_value, CLOSED_DEAL_FILTER)
+                     net_value, CLOSED_DEAL_FILTER,
+                     maintenance_customers, maintenance_visits_due)
 
 
 def reporting_scope(user):
@@ -1847,13 +1848,11 @@ class LeadViewSet(viewsets.ModelViewSet):
         if can_access_liasoning(user):
             counts['liasoning'] = unseen(Lead.objects.filter(pushed_to_liasoning=True)
                                          .exclude(liasoning_service__is_complete=True), 'liasoning').count()
-            # Maintenance visits that are due / overdue and not yet filled in.
-            # Counted from the day *before* they fall due, so the badge and the
-            # new-work pop-up give the officer a day's notice to arrange the trip.
-            counts['periodic-maintenance'] = MaintenanceVisit.objects.filter(
-                is_complete=False,
-                due_date__lte=timezone.localdate() + timedelta(days=MaintenanceVisit.REMINDER_LEAD_DAYS),
-            ).count()
+            # Maintenance visits that are due / overdue and not yet filled in,
+            # scoped to the customers the module actually lists — see
+            # `maintenance_visits_due`. Counting the visits alone left the badge
+            # showing work behind a page that had nothing on it.
+            counts['periodic-maintenance'] = maintenance_visits_due().count()
             # Approvals the officer still has to chase at the KSEB section.
             cutoff = timezone.now() - timedelta(days=7)
             counts['discom-followup'] = unseen(
@@ -3938,7 +3937,7 @@ class LeadViewSet(viewsets.ModelViewSet):
         from .access import can_access_liasoning
         if not can_access_liasoning(request.user):
             return Response({'error': 'You do not have access to periodic maintenance.'}, status=status.HTTP_403_FORBIDDEN)
-        qs = (Lead.objects.filter(pushed_to_liasoning=True)
+        qs = (maintenance_customers()
               .select_related('periodic_maintenance')
               .prefetch_related('periodic_maintenance__visits')
               .order_by('-pushed_to_liasoning_at'))

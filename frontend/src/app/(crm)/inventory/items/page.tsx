@@ -10,16 +10,148 @@
 import React, { useState } from "react";
 import {
   CATS, FIELD, rupee, num, useStock, StockPage, AddButton, SearchBar,
-  DataTable, Modal, Fld, Row, RowActions, StatusPill,
+  DataTable, Modal, Fld, Row, RowActions, StatusPill, I,
 } from "../shared";
+import { APP_SLUG } from "@/lib/config";
+import { getApiBase } from "@/lib/mock-data";
 
 const blankItem = {
   code: "", category: CATS[0], brand: "", model_name: "", unit: "Nos", hsn: "",
   opening_stock: "", unit_cost: "", reorder_level: "", location: "", is_active: true,
 };
 
+
+/**
+ * Where an item's stock came from.
+ *
+ * Goods receipts have no screen of their own anywhere else, so an item's IN
+ * column is otherwise a total with nothing behind it. This is that behind:
+ * every quantity ever added, newest first, with the opening stock as its own
+ * entry so the lines add up to the total.
+ */
+function StockHistoryModal({ show, itemId, onClose }: {
+  show: boolean; itemId: number | null; onClose: () => void;
+}) {
+  const [data, setData] = React.useState<any>(null);
+  const [loading, setLoading] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!show || !itemId) { setData(null); return; }
+    let live = true;
+    setLoading(true);
+    (async () => {
+      try {
+        const token = localStorage.getItem(`${APP_SLUG}_access`);
+        const r = await fetch(`${getApiBase(APP_SLUG)}/api/stock-items/${itemId}/history/`,
+          { headers: { Authorization: `Bearer ${token}` } });
+        if (live && r.ok) setData(await r.json());
+      } catch { /* the empty state covers it */ }
+      finally { if (live) setLoading(false); }
+    })();
+    return () => { live = false; };
+  }, [show, itemId]);
+
+  if (!show) return null;
+  const entries: any[] = data?.entries || [];
+  const s = data?.summary;
+
+  return (
+    <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[92vh] overflow-y-auto">
+        <div className="px-6 py-4 border-b border-slate-100 flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-bold text-slate-900">Stock added</h2>
+            <p className="text-[12px] text-slate-500 mt-0.5">
+              {data ? `${data.item.code} · ${data.item.name}` : "Loading…"}
+            </p>
+          </div>
+          <button onClick={onClose} aria-label="Close"
+            className="text-slate-400 hover:text-slate-700 transition"><I.X /></button>
+        </div>
+
+        <div className="p-6 space-y-4">
+          {s && (
+            <div className="rounded-xl bg-slate-50 border border-slate-200 px-4 py-3">
+              <div className="grid grid-cols-3 gap-3 text-[12px]">
+                <div>
+                  <p className="text-slate-400">Opening</p>
+                  <p className="font-bold text-slate-800 tabular-nums">{num(s.opening_stock)}</p>
+                </div>
+                <div>
+                  <p className="text-slate-400">Added since</p>
+                  <p className="font-bold text-emerald-600 tabular-nums">+{num(s.total_added)}</p>
+                </div>
+                <div>
+                  <p className="text-slate-400">Total in</p>
+                  <p className="font-bold text-slate-800 tabular-nums">{num(s.total_in)}</p>
+                </div>
+              </div>
+              {/* The rest of the item's position, so this modal cannot appear to
+                  contradict the row it was opened from. */}
+              <p className="text-[11px] text-slate-400 mt-2.5 pt-2.5 border-t border-slate-200">
+                {num(s.dispatched)} dispatched · {num(s.reserved)} reserved on proforma invoices ·{" "}
+                <b className="text-slate-600">{num(s.closing_stock)} closing</b>
+              </p>
+            </div>
+          )}
+
+          {loading ? (
+            <p className="py-10 text-center text-sm text-slate-400">Loading…</p>
+          ) : entries.length === 0 ? (
+            <p className="py-10 text-center text-sm text-slate-400">
+              No stock has been added to this item yet.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {entries.map((e, i) => (
+                <div key={e.id ?? `opening-${i}`}
+                  className="flex items-start justify-between gap-4 rounded-xl border border-slate-100 px-4 py-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-bold text-slate-800 text-[13px]">
+                        {e.kind === "opening" ? "Opening stock" : `+${num(e.quantity)}`}
+                      </span>
+                      {e.reference && (
+                        <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
+                          {e.reference}
+                        </span>
+                      )}
+                      {e.supplier && <span className="text-[12px] text-slate-500">{e.supplier}</span>}
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      {[e.date, e.added_by, e.notes].filter(Boolean).join(" · ")}
+                    </p>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    <p className="font-bold text-slate-800 tabular-nums text-[13px]">
+                      {e.kind === "opening" ? num(e.quantity) : `+${num(e.quantity)}`}
+                    </p>
+                    {/* Stock added so far, not a stock balance: netting off
+                        dispatches here would be wrong on every line. */}
+                    <p className="text-[11px] text-slate-400 tabular-nums">
+                      {num(e.running_total)} in total
+                    </p>
+                    {/* Two figures side by side say nothing about which is
+                        which; "each" is the whole difference. */}
+                    {Number(e.rate) > 0 && (
+                      <p className="text-[11px] text-slate-400 tabular-nums">
+                        {rupee(e.rate)} each · {rupee(e.amount)}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function StockItemMasterPage() {
   const { items, loading, denied, readOnly, save, remove } = useStock(["items"], "items");
+  const [historyFor, setHistoryFor] = useState<number | null>(null);
   const list: any[] = items || [];
 
   const [form, setForm] = useState<any>(blankItem);
@@ -112,9 +244,16 @@ export default function StockItemMasterPage() {
           <span className="tabular-nums text-slate-400">{rupee(r.unit_cost)}</span>,
           <span className="tabular-nums font-semibold">{rupee(r.stock_value)}</span>,
           <span className="text-slate-500">{r.location || "—"}</span>,
-          readOnly ? <span className="text-xs text-slate-300">—</span>
-            : <RowActions onEdit={() => openEdit(r)} onDelete={() => remove("items", r.id, "item")} />,
+          // A spectator may read where the stock came from; only the edit and
+          // delete actions are withheld.
+          readOnly
+            ? <RowActions onHistory={() => setHistoryFor(r.id)} />
+            : <RowActions onHistory={() => setHistoryFor(r.id)} onEdit={() => openEdit(r)}
+                onDelete={() => remove("items", r.id, "item")} />,
         ])} />
+
+      <StockHistoryModal show={historyFor !== null} itemId={historyFor}
+        onClose={() => setHistoryFor(null)} />
 
       <Modal show={show} title={editing ? "Edit Item" : "Add Item"} onClose={() => setShow(false)}
         onSubmit={submit} saving={saving} submitLabel="Save Item">

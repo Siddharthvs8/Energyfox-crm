@@ -6938,3 +6938,129 @@ class AiSuggestionsTests(TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIsNone(r.json()['ai_suggestions'])
         self.assertIn('findings', r.json())
+
+
+class MaintenanceBadgeMatchesThePageTests(TestCase):
+    """The sidebar badge counts what the module can actually show.
+
+    It used to count MaintenanceVisit rows outright, with no join back to a
+    customer, so a visit went on being counted after its customer had been
+    trashed or taken off liasoning — a badge of 2 sitting over a page reading
+    "Nothing scheduled yet".
+    """
+
+    def setUp(self):
+        self.officer = mk('badge_officer', 'liasoning_officer')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': token_for(self.officer)}
+
+    def customer(self, name='Ramesh Kumar', phone='9895000300', completed='2023-03-15'):
+        r = self.client.post('/api/leads/maintenance-customers/',
+                             data={'name': name, 'phone': phone, 'completed_on': completed},
+                             content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        return Lead.objects.get(pk=r.json()['id'])
+
+    def badge(self):
+        r = self.client.get('/api/leads/module-counts/', **self.auth())
+        return r.json()['counts'].get('periodic-maintenance', 0)
+
+    def page(self):
+        r = self.client.get('/api/leads/periodic-maintenance/', **self.auth())
+        return r.json()
+
+    # ── The invariant the bug broke ──
+    def test_the_badge_equals_what_the_page_lists(self):
+        self.customer()
+        page = self.page()
+        due = [v for v in page['upcoming']
+               if v['due_date'] <= (timezone.localdate() + timedelta(days=1)).isoformat()]
+        self.assertEqual(self.badge(), len(due))
+
+    def test_a_trashed_customer_takes_its_visits_off_the_badge(self):
+        lead = self.customer()
+        self.assertGreater(self.badge(), 0)
+        Lead.objects.filter(pk=lead.pk).update(is_trashed=True)
+        self.assertEqual(self.badge(), 0)
+
+    def test_a_customer_taken_off_liasoning_takes_its_visits_too(self):
+        lead = self.customer()
+        Lead.objects.filter(pk=lead.pk).update(pushed_to_liasoning=False)
+        self.assertEqual(self.badge(), 0)
+
+    def test_the_page_does_not_list_a_trashed_customer(self):
+        """The Trash is out of every figure, here as everywhere."""
+        lead = self.customer()
+        Lead.objects.filter(pk=lead.pk).update(is_trashed=True)
+        page = self.page()
+        self.assertEqual(page['scheduled'], [])
+        self.assertEqual(page['upcoming'], [])
+
+    def test_the_badge_and_the_page_agree_once_the_customer_is_gone(self):
+        lead = self.customer()
+        Lead.objects.filter(pk=lead.pk).update(is_trashed=True)
+        self.assertEqual(self.badge(), 0)
+        self.assertEqual(self.page()['upcoming'], [])
+
+    # ── What still counts ──
+    def test_an_overdue_visit_counts(self):
+        self.customer(completed='2023-03-15')
+        self.assertGreater(self.badge(), 0)
+
+    def test_a_visit_falling_due_tomorrow_counts(self):
+        """A day's notice, so the officer can arrange the trip."""
+        from .models import MaintenanceVisit
+        lead = self.customer()
+        MaintenanceVisit.objects.filter(plan__lead=lead).update(
+            is_complete=True, due_date=timezone.localdate() + timedelta(days=365))
+        one = MaintenanceVisit.objects.filter(plan__lead=lead).first()
+        one.is_complete = False
+        one.due_date = timezone.localdate() + timedelta(days=1)
+        one.save(update_fields=['is_complete', 'due_date'])
+        self.assertEqual(self.badge(), 1)
+
+    def test_a_visit_further_out_does_not_count_yet(self):
+        from .models import MaintenanceVisit
+        lead = self.customer()
+        MaintenanceVisit.objects.filter(plan__lead=lead).update(
+            is_complete=False, due_date=timezone.localdate() + timedelta(days=30))
+        self.assertEqual(self.badge(), 0)
+
+    def test_a_visit_already_filled_in_does_not_count(self):
+        from .models import MaintenanceVisit
+        lead = self.customer()
+        MaintenanceVisit.objects.filter(plan__lead=lead).update(is_complete=True)
+        self.assertEqual(self.badge(), 0)
+
+    def test_two_customers_are_counted_together(self):
+        from .models import MaintenanceVisit
+        a = self.customer(phone='9895000301')
+        b = self.customer(name='Asha Devi', phone='9895000302')
+        for lead in (a, b):
+            MaintenanceVisit.objects.filter(plan__lead=lead).update(
+                is_complete=True, due_date=timezone.localdate() + timedelta(days=365))
+            one = MaintenanceVisit.objects.filter(plan__lead=lead).first()
+            one.is_complete = False
+            one.due_date = timezone.localdate()
+            one.save(update_fields=['is_complete', 'due_date'])
+        self.assertEqual(self.badge(), 2)
+
+    def test_trashing_one_of_two_leaves_the_other_counted(self):
+        from .models import MaintenanceVisit
+        a = self.customer(phone='9895000303')
+        b = self.customer(name='Asha Devi', phone='9895000304')
+        for lead in (a, b):
+            MaintenanceVisit.objects.filter(plan__lead=lead).update(
+                is_complete=True, due_date=timezone.localdate() + timedelta(days=365))
+            one = MaintenanceVisit.objects.filter(plan__lead=lead).first()
+            one.is_complete = False
+            one.due_date = timezone.localdate()
+            one.save(update_fields=['is_complete', 'due_date'])
+        Lead.objects.filter(pk=a.pk).update(is_trashed=True)
+        self.assertEqual(self.badge(), 1)
+
+    def test_a_customer_with_no_schedule_adds_nothing(self):
+        Lead.objects.create(first_name='Unscheduled', phone='9895000305',
+                            pushed_to_liasoning=True)
+        self.assertEqual(self.badge(), 0)

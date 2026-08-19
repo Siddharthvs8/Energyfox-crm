@@ -2503,3 +2503,128 @@ class SettledDeliveryReleasesTests(TestCase):
         row = self.rows()[0]
         self.assertFalse(row['fully_paid'])
         self.assertEqual(row['balance'], '5795.00')
+
+
+class StockItemHistoryTests(TestCase):
+    """Where an item's stock came from.
+
+    Goods receipts have no screen of their own, so the Item Master's IN column
+    is otherwise a total with nothing behind it.
+    """
+
+    def setUp(self):
+        from inventory.models import GoodsReceipt, StockItem, Vendor
+        self.GoodsReceipt = GoodsReceipt
+        # The Item Master is a B2B screen: the plain admin role has no access
+        # to it, so the history behind it follows the same gate.
+        self.boss = mk('hist_admin', 'superadmin')
+        self.item = StockItem.objects.create(code='HIST-1', opening_stock=Decimal('10'),
+                                             unit_cost=Decimal('100'), unit='Nos')
+        self.vendor = Vendor.objects.create(name='Acme Supplies')
+
+    def auth(self, user=None):
+        return {'HTTP_AUTHORIZATION': token_for(user or self.boss)}
+
+    def add(self, qty, **kw):
+        return self.GoodsReceipt.objects.create(
+            item=self.item, quantity=Decimal(qty), rate=kw.pop('rate', Decimal('100')),
+            date=kw.pop('date', date(2026, 8, 3)), **kw)
+
+    def history(self, user=None):
+        r = self.client.get(f'/api/stock-items/{self.item.id}/history/', **self.auth(user))
+        return r.status_code, (r.json() if r.status_code == 200 else {})
+
+    def test_opening_stock_leads_the_list(self):
+        """It is a quantity the item started with, and leaving it out would make
+        the entries fail to add up to the total."""
+        _, d = self.history()
+        self.assertEqual(d['entries'][-1]['kind'], 'opening')
+        self.assertEqual(d['entries'][-1]['quantity'], '10.00')
+
+    def test_an_item_with_no_opening_stock_has_no_opening_entry(self):
+        from inventory.models import StockItem
+        self.item = StockItem.objects.create(code='HIST-2', opening_stock=Decimal('0'))
+        self.add('5')
+        _, d = self.history()
+        self.assertEqual([e['kind'] for e in d['entries']], ['receipt'])
+
+    def test_every_addition_is_listed(self):
+        self.add('1')
+        self.add('2')
+        _, d = self.history()
+        self.assertEqual(len([e for e in d['entries'] if e['kind'] == 'receipt']), 2)
+
+    def test_the_newest_addition_comes_first(self):
+        self.add('1', date=date(2026, 8, 1))
+        self.add('7', date=date(2026, 8, 9))
+        _, d = self.history()
+        self.assertEqual(d['entries'][0]['quantity'], '7.00')
+
+    def test_the_running_total_accumulates_in_arrival_order(self):
+        """Newest first for reading, but the total was built oldest first."""
+        self.add('1', date=date(2026, 8, 1))
+        self.add('2', date=date(2026, 8, 2))
+        _, d = self.history()
+        self.assertEqual([e['running_total'] for e in d['entries']],
+                         ['13.00', '11.00', '10.00'])
+
+    def test_the_running_total_is_stock_added_not_stock_left(self):
+        """Netting off dispatches here would be wrong on every line."""
+        from inventory.models import StockDispatch
+        self.add('5')
+        StockDispatch.objects.create(item=self.item, quantity=Decimal('4'),
+                                     rate=Decimal('100'), date=date(2026, 8, 5))
+        _, d = self.history()
+        self.assertEqual(d['entries'][0]['running_total'], '15.00')
+
+    def test_the_supplier_and_reference_come_through(self):
+        self.add('3', supplier=self.vendor, grn_no='GRN-77')
+        _, d = self.history()
+        entry = d['entries'][0]
+        self.assertEqual(entry['supplier'], 'Acme Supplies')
+        self.assertEqual(entry['reference'], 'GRN-77')
+
+    def test_who_added_it_is_recorded_when_known(self):
+        self.add('3', created_by=self.boss)
+        _, d = self.history()
+        self.assertEqual(d['entries'][0]['added_by'], 'hist_admin')
+
+    def test_a_receipt_with_no_supplier_does_not_break_the_list(self):
+        self.add('3')
+        status_code, d = self.history()
+        self.assertEqual(status_code, 200)
+        self.assertEqual(d['entries'][0]['supplier'], '')
+
+    def test_the_amount_is_quantity_times_rate(self):
+        self.add('3', rate=Decimal('250'))
+        _, d = self.history()
+        self.assertEqual(d['entries'][0]['amount'], '750.00')
+
+    def test_the_summary_reconciles_with_the_item_row(self):
+        """The modal must not appear to contradict the row it opened from."""
+        from inventory.models import StockDispatch
+        self.add('3')
+        StockDispatch.objects.create(item=self.item, quantity=Decimal('4'),
+                                     rate=Decimal('100'), date=date(2026, 8, 5))
+        _, d = self.history()
+        s = d['summary']
+        self.assertEqual(s['opening_stock'], '10.00')
+        self.assertEqual(s['total_added'], '3.00')
+        self.assertEqual(s['total_in'], '13.00')
+        self.assertEqual(s['dispatched'], '4.00')
+        self.assertEqual(s['physical_stock'], '9.00')
+
+    def test_the_item_is_named_so_the_modal_can_title_itself(self):
+        _, d = self.history()
+        self.assertEqual(d['item']['code'], 'HIST-1')
+
+    def test_an_item_with_nothing_at_all_returns_an_empty_list(self):
+        from inventory.models import StockItem
+        self.item = StockItem.objects.create(code='HIST-3', opening_stock=Decimal('0'))
+        status_code, d = self.history()
+        self.assertEqual(status_code, 200)
+        self.assertEqual(d['entries'], [])
+
+    def test_a_stranger_cannot_read_it(self):
+        r = self.client.get(f'/api/stock-items/{self.item.id}/history/')
+        self.assertIn(r.status_code, (401, 403))

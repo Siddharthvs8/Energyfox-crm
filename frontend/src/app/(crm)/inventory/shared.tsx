@@ -28,6 +28,7 @@ export const I = {
   Mail: () => <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" /><polyline points="22,6 12,13 2,6" /></svg>,
   WhatsApp: () => <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M17.47 14.38c-.29-.15-1.71-.84-1.97-.94-.26-.1-.46-.15-.65.14-.19.29-.75.94-.92 1.13-.17.19-.34.21-.63.07-.29-.15-1.22-.45-2.33-1.44-.86-.77-1.44-1.72-1.61-2.01-.17-.29-.02-.44.13-.59.13-.13.29-.34.44-.51.15-.17.19-.29.29-.48.1-.19.05-.36-.02-.51-.07-.15-.65-1.57-.89-2.15-.24-.56-.48-.49-.65-.5-.17-.01-.36-.01-.56-.01-.19 0-.51.07-.78.36-.27.29-1.02 1-1.02 2.42 0 1.43 1.04 2.81 1.19 3 .15.19 2.05 3.13 4.97 4.39.69.3 1.23.48 1.65.61.69.22 1.32.19 1.82.12.56-.08 1.71-.7 1.95-1.37.24-.67.24-1.25.17-1.37-.07-.12-.26-.19-.55-.34z" /><path d="M20.52 3.44A11.86 11.86 0 0012.05 0C5.5 0 .18 5.31.17 11.85c0 2.09.55 4.13 1.59 5.93L0 24l6.38-1.67a11.87 11.87 0 005.67 1.44h.01c6.55 0 11.87-5.31 11.87-11.85 0-3.17-1.23-6.15-3.41-8.48zM12.06 21.2h-.01a9.86 9.86 0 01-5.02-1.37l-.36-.21-3.79.99 1.01-3.69-.23-.38a9.82 9.82 0 01-1.51-5.24c0-5.44 4.43-9.86 9.9-9.86 2.64 0 5.13 1.03 7 2.9a9.82 9.82 0 012.9 6.97c0 5.44-4.43 9.86-9.89 9.86z" /></svg>,
   Edit: () => <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z" /></svg>,
+  History: () => <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M3 3v5h5" /><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8" /><path d="M12 7v5l4 2" /></svg>,
   Truck: () => <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M14 18V6a2 2 0 0 0-2-2H3a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h2" /><path d="M14 9h4l4 4v4a1 1 0 0 1-1 1h-1" /><circle cx="7" cy="18" r="2" /><circle cx="17" cy="18" r="2" /></svg>,
 };
 
@@ -296,10 +297,16 @@ export function Row({ cols = 2, children }: { cols?: 2 | 3; children: React.Reac
 /** Edit / Delete text links, as the retail tables use. */
 /** Edit / delete on a list row. Icons, matching the document tables — the words
  *  cost a column's worth of width on the wider tables. */
-export function RowActions({ onEdit, onDelete }: { onEdit?: () => void; onDelete?: () => void }) {
+export function RowActions({ onEdit, onDelete, onHistory }: {
+  onEdit?: () => void; onDelete?: () => void; onHistory?: () => void;
+}) {
   const btn = "w-8 h-8 inline-flex items-center justify-center rounded-lg transition-colors";
   return (
     <span className="inline-flex items-center gap-1 whitespace-nowrap">
+      {onHistory && (
+        <button onClick={onHistory} title="Stock added — history" aria-label="Stock history"
+          className={`${btn} text-slate-500 hover:text-indigo-600 hover:bg-indigo-50`}><I.History /></button>
+      )}
       {onEdit && (
         <button onClick={onEdit} title="Edit" aria-label="Edit"
           className={`${btn} text-slate-500 hover:text-slate-900 hover:bg-slate-100`}><I.Edit /></button>

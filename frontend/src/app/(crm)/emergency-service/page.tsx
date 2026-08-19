@@ -72,9 +72,9 @@ const SERVICE_CONDITION = [
 
 /** Photo slots, matching EmergencyService.PHOTO_SLOTS. */
 const AC_READINGS = [
-  { text: "ac_ne_voltage", slot: "ac_ne", label: "N-E Voltage", ph: "N-E" },
   { text: "ac_pn_voltage", slot: "ac_pn", label: "P-N", ph: "P-N" },
   { text: "ac_pe_voltage", slot: "ac_pe", label: "P-E", ph: "P-E" },
+  { text: "ac_ne_voltage", slot: "ac_ne", label: "N-E", ph: "N-E" },
 ] as const;
 
 /** The readings above the AC block, which take photos too. */
@@ -450,7 +450,7 @@ export default function EmergencyServicePage() {
                   <th className="px-4 py-3">Service</th>
                   <th className="px-4 py-3">DC Voltage</th>
                   <th className="px-4 py-3">Error Codes</th>
-                  <th className="px-4 py-3">AC Voltage (N-E / P-N / P-E)</th>
+                  <th className="px-4 py-3">AC Voltage (P-N / P-E / N-E)</th>
                   <th className="px-4 py-3">Service Condition</th>
                   <th className="px-4 py-3">Monthly Production</th>
                   <th className="px-4 py-3">Remarks</th>

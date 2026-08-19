@@ -14,7 +14,11 @@ from decimal import Decimal
 from django.db.models import DecimalField, ExpressionWrapper, F, Q, Sum, Value
 from django.db.models.functions import Coalesce
 
-from .models import Lead
+from datetime import timedelta
+
+from django.utils import timezone
+
+from .models import Lead, MaintenanceVisit
 
 
 def own_leads_q(user):
@@ -36,6 +40,37 @@ def live_leads():
     Restoring it from the Trash brings it back; this is a filter, not a write-off.
     """
     return Lead.objects.filter(is_trashed=False)
+
+
+
+def maintenance_customers():
+    """The customers Periodic Maintenance is about.
+
+    A lead reaches the module by being pushed to liasoning, and leaves it the
+    moment it is trashed — the Trash is out of every figure, here as everywhere.
+    """
+    return live_leads().filter(pushed_to_liasoning=True)
+
+
+def maintenance_visits_due(on=None):
+    """Visits calling for attention: the one definition the badge and the page
+    both read.
+
+    The sidebar badge used to count `MaintenanceVisit` rows outright, with no
+    join back to a customer. A visit therefore went on being counted after its
+    customer had been trashed or taken off liasoning, and the sidebar sat on a
+    number the module itself could not show — a badge of 2 over a page reading
+    "Nothing scheduled yet", which is exactly the sort of figure disagreeing
+    with the rows behind it that this module exists to prevent.
+
+    Counted from the day *before* they fall due, so the badge gives the officer
+    a day's notice to arrange the trip.
+    """
+    day = (on or timezone.localdate()) + timedelta(days=MaintenanceVisit.REMINDER_LEAD_DAYS)
+    return MaintenanceVisit.objects.filter(
+        is_complete=False, due_date__lte=day,
+        plan__lead__in=maintenance_customers(),
+    )
 
 
 def my_leads(user):
