@@ -6,6 +6,7 @@ import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import CampaignFormModal from "./components/CampaignFormModal";
+import { isSpectator } from "@/lib/spectator";
 
 export default function CampaignsPage({ params: paramsPromise }: { params: Promise<{ domain: string }> }) {
   const params = React.use(paramsPromise);
@@ -26,7 +27,10 @@ export default function CampaignsPage({ params: paramsPromise }: { params: Promi
     }).then(r => r.json()).then(d => {
       setCurrentUser(d);
       setAuthChecked(true);
-      if (!d.is_staff && !d.is_general_manager && !d.is_manager && d.role !== "leads_manager") {
+      // A spectator reads every module; the API agrees (CampaignAccess admits
+      // `watches_everything`).
+      if (!isSpectator(d) && !d.is_staff && !d.is_general_manager && !d.is_manager
+          && d.role !== "leads_manager") {
         router.replace(`/`);
       }
     }).catch(() => setAuthChecked(true));

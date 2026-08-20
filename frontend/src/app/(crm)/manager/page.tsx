@@ -8,6 +8,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveCont
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import * as htmlToImage from "html-to-image";
+import { isSpectator } from "@/lib/spectator";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 interface User { id: number; username: string; first_name: string; last_name: string; email: string; is_staff: boolean; is_manager: boolean; is_general_manager: boolean; read_only?: boolean; team: number | null; }
@@ -194,7 +195,7 @@ export default function ManagerPage({ params: paramsPromise }: { params: Promise
     fetch(api("/api/users/me/"), { headers: { Authorization: `Bearer ${tk}` } })
       .then(r => { if (!r.ok) throw new Error("unauth"); return r.json(); })
       .then(d => {
-        if (!d.is_staff && !d.is_general_manager && !d.is_manager && !d.read_only) { router.push(`/`); return; }
+        if (!d.is_staff && !d.is_general_manager && !d.is_manager && !isSpectator(d)) { router.push(`/`); return; }
         setCurrentUser(d);
         setLoading(false);
       })
