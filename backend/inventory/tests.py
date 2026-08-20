@@ -2628,3 +2628,127 @@ class StockItemHistoryTests(TestCase):
     def test_a_stranger_cannot_read_it(self):
         r = self.client.get(f'/api/stock-items/{self.item.id}/history/')
         self.assertIn(r.status_code, (401, 403))
+
+
+class DeleteVerifiedPaymentTests(TestCase):
+    """Undoing a payment that should never have been recorded.
+
+    Super admin only: a verified payment decides whether an invoice is settled,
+    whether goods may leave, and what the revenue figures say.
+    """
+
+    def setUp(self):
+        from inventory.models import DispatchPayment, StockDispatch, StockItem
+        self.DispatchPayment, self.StockDispatch = DispatchPayment, StockDispatch
+        self.boss = mk('pay_super', 'superadmin')
+        self.item = StockItem.objects.create(code='PAYDEL-1')
+        self.dispatch = StockDispatch.objects.create(
+            invoice_no='REN2627-IN900', item=self.item, quantity=Decimal('1'),
+            rate=Decimal('1000'), tax_percent=Decimal('0'), date=date(2026, 8, 20),
+            status=StockDispatch.RELEASED)
+
+    def auth(self, user=None):
+        return {'HTTP_AUTHORIZATION': token_for(user or self.boss)}
+
+    def pay(self, amount='1000', mode='cash'):
+        return self.DispatchPayment.objects.create(
+            invoice_no='REN2627-IN900', invoice_total=Decimal('1000'),
+            amount_received=Decimal(amount), mode=mode, paid_on=date(2026, 8, 20))
+
+    def delete(self, payment, user=None):
+        return self.client.delete(f'/api/stock-payments/{payment.pk}/', **self.auth(user))
+
+    # ── Who may ──
+    def test_a_super_admin_may_delete_one(self):
+        p = self.pay()
+        r = self.delete(p)
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertFalse(self.DispatchPayment.objects.filter(pk=p.pk).exists())
+
+    def test_an_admin_may_not(self):
+        """It sits above the admin tier, not beside it."""
+        p = self.pay()
+        r = self.delete(p, user=mk('pay_admin', 'admin'))
+        self.assertEqual(r.status_code, 403)
+        self.assertTrue(self.DispatchPayment.objects.filter(pk=p.pk).exists())
+
+    def test_a_spectator_may_not(self):
+        p = self.pay()
+        self.assertIn(self.delete(p, user=mk('pay_spec', 'spectator')).status_code, (403,))
+        self.assertTrue(self.DispatchPayment.objects.filter(pk=p.pk).exists())
+
+    def test_a_stranger_may_not(self):
+        p = self.pay()
+        r = self.client.delete(f'/api/stock-payments/{p.pk}/')
+        self.assertIn(r.status_code, (401, 403))
+        self.assertTrue(self.DispatchPayment.objects.filter(pk=p.pk).exists())
+
+    # ── What it does to the money ──
+    def test_the_invoice_stops_being_settled(self):
+        p = self.pay('1000')
+        r = self.delete(p).json()
+        self.assertEqual(r['amount_received'], '0.00')
+        self.assertEqual(r['balance'], '1000.00')
+        self.assertFalse(r['fully_paid'])
+
+    def test_only_the_one_payment_goes(self):
+        keep, drop = self.pay('600'), self.pay('400')
+        r = self.delete(drop).json()
+        self.assertTrue(self.DispatchPayment.objects.filter(pk=keep.pk).exists())
+        self.assertEqual(r['amount_received'], '600.00')
+
+    def test_the_reply_names_the_document_and_the_amount(self):
+        r = self.delete(self.pay('250')).json()
+        self.assertEqual(r['document'], 'REN2627-IN900')
+        self.assertEqual(r['amount_removed'], '250.00')
+
+    # ── What it deliberately does not do ──
+    def test_a_released_delivery_is_not_pulled_back(self):
+        """The goods physically went out; reverting would put stock back on the
+        shelf that is not there."""
+        r = self.delete(self.pay()).json()
+        self.dispatch.refresh_from_db()
+        self.assertEqual(self.dispatch.status, self.StockDispatch.RELEASED)
+        self.assertTrue(r['still_released'])
+        self.assertIn('delivery stands', r['note'])
+
+    def test_a_pending_delivery_says_nothing_about_release(self):
+        self.StockDispatch.objects.filter(pk=self.dispatch.pk).update(
+            status=self.StockDispatch.PENDING)
+        r = self.delete(self.pay()).json()
+        self.assertFalse(r['still_released'])
+        self.assertIsNone(r['note'])
+
+    def test_the_stock_movement_itself_survives(self):
+        self.delete(self.pay())
+        self.assertTrue(self.StockDispatch.objects.filter(pk=self.dispatch.pk).exists())
+
+    # ── Edges ──
+    def test_deleting_the_same_payment_twice_is_not_found(self):
+        p = self.pay()
+        self.assertEqual(self.delete(p).status_code, 200)
+        self.assertEqual(self.delete(p).status_code, 404)
+
+    def test_a_proforma_payment_can_be_deleted_too(self):
+        from inventory.models import StockQuote, StockQuoteItem
+        quote = StockQuote.objects.create(quote_date=date(2026, 8, 20))
+        StockQuoteItem.objects.create(quote=quote, item=self.item,
+                                      quantity=Decimal('1'), unit_price=Decimal('500'))
+        p = self.DispatchPayment.objects.create(
+            quote=quote, invoice_total=Decimal('500'), amount_received=Decimal('500'),
+            mode='cash', paid_on=date(2026, 8, 20))
+        r = self.delete(p)
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertEqual(r.json()['document'], quote.number)
+        self.assertEqual(r.json()['amount_received'], '0.00')
+
+    def test_the_payments_module_drops_the_document_once_nothing_is_left(self):
+        """It lists documents money has been verified against."""
+        p = self.pay()
+        before = self.client.get('/api/stock-payments/', **self.auth()).json()
+        rows = [r['number'] for s in before['sections'].values() for r in s['rows']]
+        self.assertIn('REN2627-IN900', rows)
+        self.delete(p)
+        after = self.client.get('/api/stock-payments/', **self.auth()).json()
+        rows = [r['number'] for s in after['sections'].values() for r in s['rows']]
+        self.assertNotIn('REN2627-IN900', rows)

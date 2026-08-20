@@ -91,6 +91,9 @@ export function useStock(want: (keyof typeof SOURCES)[], module?: B2BModule, que
   const [denied, setDenied] = useState(false);
   // The server's own table, so the buttons shown match the requests accepted.
   const [access, setAccess] = useState<Record<string, string> | null>(null);
+  // A few controls sit above the admin tier — deleting a verified payment, for
+  // one. Taken from the same /users/me call rather than a second request.
+  const [isSuperadmin, setIsSuperadmin] = useState(false);
 
   const token = () => localStorage.getItem(`${domain}_access`);
   const key = want.join(",");
@@ -122,7 +125,11 @@ export function useStock(want: (keyof typeof SOURCES)[], module?: B2BModule, que
     if (!token()) return;
     fetch(`${api}/api/users/me/`, { headers: { Authorization: `Bearer ${token()}` } })
       .then(r => (r.ok ? r.json() : null))
-      .then(d => { if (d) setAccess(d.b2b_access || {}); })
+      .then(d => {
+        if (!d) return;
+        setAccess(d.b2b_access || {});
+        setIsSuperadmin(d.role === "superadmin");
+      })
       .catch(() => {});
   }, [api]);  // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -180,7 +187,8 @@ export function useStock(want: (keyof typeof SOURCES)[], module?: B2BModule, que
   const level = module && access ? access[module] : undefined;
   const readOnly = !!module && !!access && level !== "rw";
 
-  return { ...data, loading, denied, readOnly, access, save, remove, act, reload: load } as any;
+  return { ...data, loading, denied, readOnly, access, isSuperadmin,
+           save, remove, act, reload: load } as any;
 }
 
 /* ── Page frame ───────────────────────────────────────────────────────────── */

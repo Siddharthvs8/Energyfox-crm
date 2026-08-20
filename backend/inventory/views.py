@@ -1,4 +1,5 @@
 import base64
+import logging
 import mimetypes
 import re
 
@@ -12,6 +13,8 @@ from rest_framework.response import Response
 from . import b2b_access
 from .models import (Vendor, PurchaseOrder, Quote, SalesOrder, SalesOrderItem,
                      round_off_for)
+
+logger = logging.getLogger(__name__)
 from .serializers import (
     VendorSerializer, PurchaseOrderSerializer, QuoteSerializer, SalesOrderSerializer,
 )
@@ -1242,6 +1245,68 @@ class StockDispatchViewSet(_MovementViewSet):
             amount=amount, party=self._party(dispatch.customer), noun='Invoice',
             channel='b2b')
         return Response(payload, status=code)
+
+
+class StockPaymentView(APIView):
+    """One recorded payment — for undoing one that should never have been there.
+
+    Super admin only, and deliberately not grantable through a custom role. A
+    verified payment is the CRM's record that money arrived: it decides whether
+    an invoice is settled, whether goods may leave, and what the revenue figures
+    say. Correcting a mis-keyed one is a real need, but it sits above the admin
+    tier rather than beside it.
+
+    What this does *not* do is pull a delivery back. A dispatch released on the
+    strength of this payment stays released, because the goods physically went
+    out — reverting it would put stock back on the shelf that is not there. The
+    reply says so, and the caller is expected to show it.
+    """
+    permission_classes = [permissions.IsAuthenticated, StockModule('dispatch')]
+
+    def delete(self, request, pk):
+        if not getattr(request.user, 'is_superuser', False):
+            return Response({'error': 'Only a super admin can delete a verified payment.'},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        payment = DispatchPayment.objects.filter(pk=pk).select_related('quote').first()
+        if payment is None:
+            return Response({'error': 'That payment is no longer there.'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        quote, invoice_no = payment.quote, payment.invoice_no
+        amount, mode = payment.amount_received, payment.mode
+        number = quote.number if quote else invoice_no
+
+        # Read the delivery's state before the row goes, so the reply can say
+        # what the deletion did and did not change.
+        released = bool(invoice_no) and StockDispatch.objects.filter(
+            invoice_no=invoice_no, status=StockDispatch.RELEASED).exists()
+
+        payment.delete()
+
+        # No ActivityLog here: it hangs off a lead, and a wholesale payment has
+        # no lead behind it. The log line is the trail.
+        logger.warning(
+            'Payment of %s (%s) on %s deleted by %s', amount, mode, number,
+            getattr(request.user, 'username', 'unknown'))
+
+        if quote is not None:
+            total, received = quote.total, DispatchPayment.received_for(quote=quote)
+        else:
+            rows = StockDispatch.objects.filter(invoice_no=invoice_no)
+            total = sum((r.total or Decimal('0') for r in rows), Decimal('0'))
+            received = DispatchPayment.received_for(invoice_no=invoice_no)
+
+        return Response({
+            'deleted': pk,
+            'document': number,
+            'amount_removed': str(amount),
+            **payment_state(total, received),
+            # The goods are already gone; the money record is what was wrong.
+            'still_released': released,
+            'note': (f'{number} was already released, so the delivery stands — only the '
+                     f'payment record has gone.') if released else None,
+        })
 
 
 class StockPaymentsView(APIView):

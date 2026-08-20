@@ -18,6 +18,8 @@
 import React, { useState } from "react";
 import Link from "next/link";
 import { rupee, useStock, StockPage, Empty, I } from "../shared";
+import { APP_SLUG } from "@/lib/config";
+import { getApiBase } from "@/lib/mock-data";
 
 type PaymentRow = {
   id: number; amount_received: string; mode: string; mode_label: string;
@@ -57,12 +59,43 @@ const BLANK: Section = {
 };
 
 export default function StockPaymentsPage() {
-  const { payments, loading, denied } = useStock(["payments"], "dispatch");
+  const { payments, loading, denied, isSuperadmin, reload } = useStock(["payments"], "dispatch");
   const d = payments || null;
 
   const [tab, setTab] = useState<SectionKey>("fully_paid");
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<number | null>(null);
+
+  /** Undo a payment that should never have been recorded.
+   *
+   *  Says what it will and will not do before doing it: the money record goes,
+   *  a delivery already released stays gone, and the confirm has to name both
+   *  or a super admin is deleting on a guess. */
+  const removePayment = async (row: Row, p: PaymentRow) => {
+    const released = row.status === "released";
+    if (!confirm(
+      `Delete the ${rupee(p.amount_received)} ${p.mode_label} payment on ${row.number}?\n\n` +
+      `${row.number} will be short by that amount and may stop counting as settled.` +
+      (released ? "\n\nThe goods have already gone out — this does not bring them back." : "") +
+      `\n\nThis cannot be undone.`
+    )) return;
+
+    setRemoving(p.id);
+    try {
+      const token = localStorage.getItem(`${APP_SLUG}_access`);
+      const r = await fetch(`${getApiBase(APP_SLUG)}/api/stock-payments/${p.id}/`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(body.error || "That payment could not be deleted."); return; }
+      if (body.note) alert(body.note);
+      reload();
+    } catch {
+      alert("Network error — nothing was deleted.");
+    } finally { setRemoving(null); }
+  };
 
   const section = (key: SectionKey): Section => (d?.sections?.[key] as Section) || BLANK;
 
@@ -183,8 +216,22 @@ export default function StockPaymentsPage() {
                                         {p.paid_on || "—"}{p.verified_by ? ` · verified by ${p.verified_by}` : ""}
                                       </span>
                                     </div>
-                                    <span className="font-bold tabular-nums text-slate-800 flex-shrink-0">
-                                      {rupee(p.amount_received)}
+                                    <span className="flex items-center gap-2 flex-shrink-0">
+                                      <span className="font-bold tabular-nums text-slate-800">
+                                        {rupee(p.amount_received)}
+                                      </span>
+                                      {/* Undoing a verified payment sits above the
+                                          admin tier — see StockPaymentView. */}
+                                      {isSuperadmin && (
+                                        <button onClick={e => { e.stopPropagation(); removePayment(r, p); }}
+                                          disabled={removing === p.id}
+                                          title="Delete this payment" aria-label="Delete this payment"
+                                          className="w-7 h-7 inline-flex items-center justify-center rounded-lg
+                                                     text-rose-500 hover:text-rose-700 hover:bg-rose-50
+                                                     disabled:opacity-40 transition-colors">
+                                          <I.Trash />
+                                        </button>
+                                      )}
                                     </span>
                                   </div>
                                 ))}
