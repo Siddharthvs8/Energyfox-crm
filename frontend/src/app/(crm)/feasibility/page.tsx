@@ -6,6 +6,7 @@ import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCleanup";
+import { isSpectator } from "@/lib/spectator";
 type Receipt = { id: number; doc_type: string; file: string };
 type Feasibility = {
   // Set when the lead behind this row has been deleted; the row is then
@@ -48,7 +49,7 @@ export default function FeasibilityPage() {
     fetch(`${apiBase}/api/users/me/`, { headers: authHeader() })
       .then(r => r.json())
       .then(d => {
-        const ok = d.role === "bde" || d.is_staff || d.is_general_manager || d.is_manager;
+        const ok = isSpectator(d) || d.role === "bde" || d.is_staff || d.is_general_manager || d.is_manager;
         setAllowed(ok); setAuthChecked(true);
         if (!ok) router.replace("/");
       })

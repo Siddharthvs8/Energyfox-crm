@@ -65,7 +65,7 @@ def assign_lead(lead):
 def _round_robin_assign(agents):
     """Assign to the agent who received a lead least recently."""
     from leads.models import Lead
-    from leads.scopes import closed_deals, net_value
+    from leads.scopes import closed_deals, received_value
 
     agent_list = list(agents)
     # Find the agent who was last assigned a lead the longest time ago
@@ -83,7 +83,7 @@ def _round_robin_assign(agents):
 def _workload_balanced_assign(agents):
     """Assign to the agent with the fewest active (non-terminal) leads."""
     from leads.models import Lead
-    from leads.scopes import closed_deals, net_value
+    from leads.scopes import closed_deals, received_value
     from django.db.models import Count, Q
 
     terminal_statuses = ['converted', 'not_interested']
@@ -112,7 +112,7 @@ def generate_daily_targets(monthly_target):
     """
     from .models import DailyTarget, Holiday
     from leads.models import Lead
-    from leads.scopes import closed_deals, net_value
+    from leads.scopes import closed_deals, received_value
     from django.db.models import Sum, Count
     from django.db.models.functions import ExtractWeekDay
     from django.utils import timezone
@@ -150,7 +150,7 @@ def generate_daily_targets(monthly_target):
             status_changed_at__date__lte=yesterday,
         ))
         actual_leads_past = actual_past_qs.count()
-        actual_amount_past = actual_past_qs.aggregate(t=Sum(net_value()))['t'] or Decimal('0.00')
+        actual_amount_past = actual_past_qs.aggregate(t=Sum(received_value()))['t'] or Decimal('0.00')
 
         # 3. Get manual targets from today onwards
         manual_targets = list(DailyTarget.objects.filter(monthly_target=monthly_target, is_manual=True, date__gte=today))
@@ -380,7 +380,7 @@ def check_daily_progress(agent, check_date=None):
     """
     from .models import DailyTarget
     from leads.models import Lead
-    from leads.scopes import closed_deals, net_value
+    from leads.scopes import closed_deals, received_value
 
     if check_date is None:
         check_date = timezone.localdate()
@@ -404,7 +404,7 @@ def check_daily_progress(agent, check_date=None):
     revenue_today = closed_deals(Lead.objects.filter(
         assigned_to=agent,
         status_changed_at__date=check_date,
-    )).aggregate(total=Sum(net_value()))['total'] or 0
+    )).aggregate(total=Sum(received_value()))['total'] or 0
 
     leads_pct = (enrolled_today / daily_target.target_leads * 100) if daily_target.target_leads > 0 else 0
     amount_pct = (float(revenue_today) / float(daily_target.target_amount) * 100) if daily_target.target_amount > 0 else 0
@@ -436,7 +436,7 @@ def check_monthly_progress(agent, month=None, year=None):
     """Returns agent's progress towards their monthly target."""
     from .models import MonthlyTarget
     from leads.models import Lead
-    from leads.scopes import closed_deals, net_value
+    from leads.scopes import closed_deals, received_value
     from django.db.models import Sum
 
     now = timezone.now()
@@ -457,7 +457,7 @@ def check_monthly_progress(agent, month=None, year=None):
         status_changed_at__month=month,
     ))
     enrolled_count = enrolled.count()
-    enrolled_revenue = enrolled.aggregate(total=Sum(net_value()))['total'] or 0
+    enrolled_revenue = enrolled.aggregate(total=Sum(received_value()))['total'] or 0
 
     leads_pct = (enrolled_count / mt.target_leads * 100) if mt.target_leads > 0 else 0
     amount_pct = (float(enrolled_revenue) / float(mt.target_amount) * 100) if mt.target_amount > 0 else 0

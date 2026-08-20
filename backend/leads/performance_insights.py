@@ -77,6 +77,10 @@ def build_projections(*, start, end, period_key, revenue, closed, leads, close_r
 
     # Still in play: defined by what it is not, so a status added later counts
     # as open rather than quietly dropping out of the pipeline figure.
+    #
+    # Valued at what it would be billed, not at revenue: nothing has been paid
+    # on an open lead, so `received_value` would report the whole pipeline as
+    # worth nothing.
     open_leads = live_leads().filter(is_lost=False).exclude(
         status__in=['converted', 'not_interested'],
     ).aggregate(n=Count('id'), value=Coalesce(Sum(net_value()), Decimal('0')))
@@ -166,7 +170,7 @@ COMPARED_METRICS = (
     ('closed_deals', 'Closed deals', False),
     ('leads', 'Leads', False),
     ('converted', 'Converted', False),
-    ('collected', 'Collected', True),
+    ('billed', 'Billed', True),
     ('lost', 'Lost', False),
 )
 

@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCleanup";
+import { isSpectator } from "@/lib/spectator";
 type Stage2Lead = {
   // Set when the lead behind this row has been deleted; the row is then
   // unopenable, and an admin gets a control to clear it out.
@@ -65,7 +66,7 @@ export default function DocumentationStage2Page() {
     fetch(`${getApiBase(domain)}/api/users/me/`, { headers: { Authorization: `Bearer ${t}` } })
       .then(r => r.json())
       .then(d => {
-        const ok = ["documentation_staff", "documentation_manager"].includes(d.role) || d.is_staff || d.is_general_manager;
+        const ok = isSpectator(d) || ["documentation_staff", "documentation_manager"].includes(d.role) || d.is_staff || d.is_general_manager;
         setAllowed(ok);
         setAuthChecked(true);
         if (!ok) router.replace("/");

@@ -4,6 +4,7 @@ import { getApiBase } from "@/lib/mock-data";
 
 import React, { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { isSpectator } from "@/lib/spectator";
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 const I = {
@@ -37,11 +38,14 @@ type Integration = {
   connected: boolean;
 };
 
-type CurrentUser = { is_staff?: boolean; is_general_manager?: boolean; role?: string };
+type CurrentUser = { is_staff?: boolean; is_general_manager?: boolean; role?: string;
+                     read_only?: boolean };
 
 /** Mirrors MetaIntegrationAccess on the API: admins, plus the leads manager
- *  who owns where leads come from. */
-const canOpenMeta = (u?: CurrentUser | null) => !!(u?.is_staff || u?.role === "leads_manager");
+ *  who owns where leads come from — and the spectator, who reads everything.
+ *  The API already admits all three (`watches_everything` covers the last). */
+const canOpenMeta = (u?: CurrentUser | null) =>
+  !!(u?.is_staff || u?.role === "leads_manager" || isSpectator(u));
 
 const inputCls =
   "w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all font-mono";

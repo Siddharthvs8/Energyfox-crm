@@ -8,6 +8,7 @@ import Link from "next/link";
 
 import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCleanup";
 import { ReleaseDialog, asDate, deadlineNote, type DeadlineInfo } from "@/components/ProjectDeadline";
+import { isSpectator } from "@/lib/spectator";
 
 /**
  * Overdue Projects — installations that missed the 20-day deadline counted from
@@ -47,7 +48,7 @@ export default function OverdueProjectsPage() {
     fetch(`${getApiBase(domain)}/api/users/me/`, { headers: { Authorization: `Bearer ${t}` } })
       .then(r => r.json())
       .then(d => {
-        const ok = d.role === "project_manager" || d.is_staff || d.is_general_manager
+        const ok = isSpectator(d) || d.role === "project_manager" || d.is_staff || d.is_general_manager
           || (d.permissions || []).includes("project-overdue");
         setAllowed(ok);
         setAuthChecked(true);

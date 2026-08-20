@@ -50,6 +50,10 @@ type Board = {
   };
   tele_callers: Person[];
   bdes: Person[];
+  // The window the server applied, named — so the strip above the table says
+  // what it is describing rather than leaving the reader to infer it.
+  period: string;
+  period_label: string;
 };
 
 const PAYMENT_META: Record<string, { label: string; cls: string }> = {
@@ -64,6 +68,15 @@ const I = {
 };
 
 const SELECT = "w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all";
+// The same set Company Performance offers, in the same order.
+const PERIODS = [
+  { key: "this_fy", label: "This FY" },
+  { key: "this_month", label: "This month" },
+  { key: "this_year", label: "This year" },
+  { key: "all", label: "All time" },
+  { key: "custom", label: "Custom" },
+];
+
 const LABEL = "block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5";
 
 function Tile({ label, value, tone = "slate" }: { label: string; value: string; tone?: string }) {
@@ -90,6 +103,11 @@ export default function ClosedDealsPage() {
   const [teleCaller, setTeleCaller] = useState("");
   const [bde, setBde] = useState("");
   const [search, setSearch] = useState("");
+  // All time by default: this is a working list, and a deal closed last year
+  // should not go missing behind a filter nobody set. The server agrees.
+  const [period, setPeriod] = useState("all");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
   // Typing shouldn't fire a request per keystroke; the rest apply immediately.
   const [debounced, setDebounced] = useState("");
   useEffect(() => {
@@ -102,6 +120,13 @@ export default function ClosedDealsPage() {
     if (!token) return;
     setLoading(true);
     const q = new URLSearchParams();
+    q.append("period", period);
+    // A custom range with neither end set would filter nothing out, so it is
+    // sent as-is and the server treats a missing end as today.
+    if (period === "custom") {
+      if (from) q.append("from", from);
+      if (to) q.append("to", to);
+    }
     if (payment) q.append("payment", payment);
     if (teleCaller) q.append("tele_caller", teleCaller);
     if (bde) q.append("bde", bde);
@@ -113,7 +138,7 @@ export default function ClosedDealsPage() {
       if (r.ok) setBoard(await r.json());
     } catch { /* leave the last good board on screen */ }
     finally { setLoading(false); }
-  }, [api, domain, payment, teleCaller, bde, debounced]);
+  }, [api, domain, payment, teleCaller, bde, debounced, period, from, to]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -127,8 +152,12 @@ export default function ClosedDealsPage() {
     }
   }, [board, payment, teleCaller, bde, debounced]);
 
-  const activeFilters = [payment, teleCaller, bde, search.trim()].filter(Boolean).length;
-  const clearFilters = () => { setPayment(""); setTeleCaller(""); setBde(""); setSearch(""); };
+  const activeFilters = [payment, teleCaller, bde, search.trim(),
+                         period === "all" ? "" : period].filter(Boolean).length;
+  const clearFilters = () => {
+    setPayment(""); setTeleCaller(""); setBde(""); setSearch("");
+    setPeriod("all"); setFrom(""); setTo("");
+  };
 
   if (denied) {
     return (
@@ -169,6 +198,36 @@ export default function ClosedDealsPage() {
           <Tile label="Outstanding" value={s ? formatCurrency(Number(s.outstanding)) : "—"} tone="amber" />
         </div>
 
+        {/* When the deals closed. The same control Company Performance carries,
+            reading the same periods from the same helper, so "This FY" means one
+            thing wherever it is offered. Measured on the Closed date, which is
+            the one in the table. */}
+        <div className="bg-white border border-slate-200 rounded-2xl p-3 mb-4 flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap gap-1">
+            {PERIODS.map(p => (
+              <button key={p.key} onClick={() => setPeriod(p.key)}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                  period === p.key ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+                {p.label}
+              </button>
+            ))}
+          </div>
+          {period === "custom" && (
+            <div className="flex items-center gap-2">
+              <input type="date" value={from} max={to || undefined} aria-label="From"
+                onChange={e => setFrom(e.target.value)} className={SELECT} />
+              <span className="text-xs text-slate-400">to</span>
+              <input type="date" value={to} min={from || undefined} aria-label="To"
+                onChange={e => setTo(e.target.value)} className={SELECT} />
+            </div>
+          )}
+          {board?.period_label && (
+            <span className="ml-auto text-[11px] text-slate-400">
+              <b className="text-slate-600">{board.period_label}</b> · by the date the deal closed
+            </span>
+          )}
+        </div>
+
         {/* Filters — the same set the Converted Leads board carries. */}
         <div className="bg-white rounded-2xl border border-slate-100 shadow-[0_4px_20px_rgb(0,0,0,0.04)] p-4 mb-5 flex flex-wrap items-end gap-4">
           <div className="min-w-[200px] flex-1 max-w-xs">
@@ -189,16 +248,21 @@ export default function ClosedDealsPage() {
               <option value="fully_paid">Fully Paid{s ? ` (${s.fully_paid})` : ""}</option>
             </select>
           </div>
-          {pickers.tele_callers.length > 1 && (
+          {/* Shown whenever there is anyone to pick, not only when there are
+              several: hiding the control on a one-person board makes the page
+              look as though it cannot filter by owner at all. Labelled Owner to
+              match the column — it is the tele caller who worked the deal,
+              falling back to the current assignee. */}
+          {pickers.tele_callers.length > 0 && (
             <div className="min-w-[160px]">
-              <label className={LABEL}>Tele Caller</label>
+              <label className={LABEL}>Owner</label>
               <select value={teleCaller} onChange={e => setTeleCaller(e.target.value)} className={SELECT}>
-                <option value="">All tele callers</option>
+                <option value="">All owners</option>
                 {pickers.tele_callers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </div>
           )}
-          {pickers.bdes.length > 1 && (
+          {pickers.bdes.length > 0 && (
             <div className="min-w-[160px]">
               <label className={LABEL}>BDE</label>
               <select value={bde} onChange={e => setBde(e.target.value)} className={SELECT}>

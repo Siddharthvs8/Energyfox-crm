@@ -3,9 +3,9 @@
  * Company Performance — the whole business on one page.
  *
  * Every figure comes from the same definitions the rest of the CRM uses (won
- * means closed, revenue is net of discount, a BDE gets credit for what they
- * closed), so this board can be read against any other screen without having to
- * reconcile it first.
+ * means closed, revenue is money received rather than money invoiced, a BDE gets
+ * credit for what they closed), so this board can be read against any other
+ * screen without having to reconcile it first.
  *
  * Two windows are at work and the page says so where it matters: leads are
  * counted by when they arrived, money by when the deal was won.
@@ -156,8 +156,8 @@ function CollectionPanel({ c }: { c: any }) {
         </div>
       </div>
       <p className="mt-3 text-[11px] text-slate-400">
-        A deal counts as fully paid once what was received covers the value less its discount —
-        the same net figure the revenue tile uses.
+        A deal counts as fully paid once what was received covers the value less its discount.
+        What came in is the Revenue tile above; what was asked for is Billed.
       </p>
     </Panel>
   );
@@ -572,7 +572,7 @@ function RankedPanel({ title, subtitle, data, unit, one, note, bare }: {
                   <th className="py-2.5 px-3 text-right">Closed</th>
                   <th className="py-2.5 px-3 text-right">Close rate</th>
                   <th className="py-2.5 px-3 text-right">Revenue</th>
-                  <th className="py-2.5 px-3 text-right">Collected</th>
+                  <th className="py-2.5 px-3 text-right">Billed</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -593,7 +593,7 @@ function RankedPanel({ title, subtitle, data, unit, one, note, bare }: {
                       {formatCurrency(Number(r.revenue))}
                     </td>
                     <td className="py-2.5 px-3 text-right tabular-nums text-emerald-600">
-                      {formatCurrency(Number(r.collected))}
+                      {formatCurrency(Number(r.billed))}
                     </td>
                   </tr>
                 ))}
@@ -785,8 +785,8 @@ export default function CompanyPerformancePage() {
             <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 mb-5">
               <Tile label="Leads" value={String(h.leads)} sub={`${h.lost} lost`} />
               <Tile label="Closed deals" value={String(h.closed_deals)} sub={`${h.close_rate}% of leads`} tone="indigo" />
-              <Tile label="Revenue" value={formatCurrency(Number(h.revenue))} sub="net of discount" tone="emerald" />
-              <Tile label="Collected" value={formatCurrency(Number(h.collected))} sub="money in" tone="emerald" />
+              <Tile label="Revenue" value={formatCurrency(Number(h.revenue))} sub="money received" tone="emerald" />
+              <Tile label="Billed" value={formatCurrency(Number(h.billed))} sub="invoiced" />
               <Tile label="Outstanding" value={formatCurrency(Number(h.outstanding))} sub="still owed" tone="amber" />
               <Tile label="Projects done" value={String(h.completed_projects)} sub="all time" />
             </div>
@@ -964,7 +964,8 @@ export default function CompanyPerformancePage() {
 
             <p className="mt-5 text-[11px] text-slate-400">
               Won means closed — a deal counts once the money has reached accounts — and revenue is
-              the agreed value less any discount. The same rule the dashboard, the leaderboard and
+              what was actually received. What was invoiced is Billed, and the gap between the two
+              is still owed. The same rule the dashboard, the leaderboard and
               the <Link href="/closed-deals" className="font-semibold text-indigo-600 hover:text-indigo-800">Closed Deals</Link> board use.
             </p>
           </>

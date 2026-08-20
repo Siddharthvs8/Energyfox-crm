@@ -4,9 +4,11 @@ Every figure here is drawn from the same definitions the rest of the CRM uses,
 because a performance board that disagrees with the screens it summarises is
 worse than no board at all:
 
-  * won / revenue  — `leads.scopes.closed_deals` and `net_value`: a deal is won
-    when the money has landed, and it is worth the agreed value less whatever
-    discount accounts gave.
+  * won            — `leads.scopes.closed_deals`: a deal is won when the money
+    has landed, in accounts with a payment part or full received.
+  * revenue        — `leads.scopes.received_value`: money in, not money
+    promised. What was invoiced is `net_value`, reported separately as billed,
+    and the gap between the two is what is still outstanding.
   * a lead's people — `own_leads_q`: handing a lead to a BDE moves nothing, so
     credit reaches the owner, the BDE and the tele caller alike.
   * deleted leads   — `live_leads`: a lead in the Trash is out of every figure.
@@ -28,7 +30,8 @@ from .access import can_access_company_performance
 from .performance_insights import (ai_suggestions, build_comparison, build_findings,
                                    build_growth, build_projections, previous_window)
 from .models import Lead, PaymentVerification
-from .scopes import CLOSED_DEAL_FILTER, closed_deal_q, closed_deals, live_leads, net_value
+from .scopes import (CLOSED_DEAL_FILTER, closed_deal_q, closed_deals, live_leads,
+                     net_value, received_value)
 
 _MONEY = DecimalField(max_digits=16, decimal_places=2)
 _ZERO = Value(Decimal('0'))
@@ -43,15 +46,19 @@ def _to_date(value):
         return None
 
 
-def resolve_period(request):
-    """The window the report covers: (start, end, key, label).
+def resolve_period(request, default='this_fy'):
+    """The window a screen covers: (start, end, key, label).
 
-    `start` of None means all time. Defaults to this financial year, because a
-    company's performance is normally read against the year it is being judged
-    on rather than the calendar month.
+    `start` of None means all time. The performance board defaults to this
+    financial year, because a company's performance is read against the year it
+    is being judged on rather than the calendar month; a working list of deals
+    passes `default='all'` instead, so nothing a user already relies on seeing
+    disappears behind a filter they did not set.
+
+    Shared so "This FY" means the same date range wherever it is offered.
     """
     today = timezone.localdate()
-    key = (request.query_params.get('period') or 'this_fy').strip().lower()
+    key = (request.query_params.get('period') or default).strip().lower()
 
     if key == 'all':
         return None, None, 'all', 'All time'
@@ -178,16 +185,19 @@ class CompanyPerformanceView(APIView):
         leads = leads_qs.count()
         converted = leads_qs.filter(status='converted', is_lost=False).count()
         money = won_qs.aggregate(
-            revenue=Coalesce(Sum(net_value()), _ZERO, output_field=_MONEY),
-            collected=Coalesce(Sum('payment_verification__amount_received'), _ZERO, output_field=_MONEY),
+            # Revenue is money in. What was charged is `billed`, and it is what
+            # the outstanding figure is measured against — without it, "still
+            # owed" would have nothing to subtract from and would read zero on
+            # a book full of debts.
+            revenue=Coalesce(Sum(received_value()), _ZERO, output_field=_MONEY),
+            billed=Coalesce(Sum(net_value()), _ZERO, output_field=_MONEY),
             discounts=Coalesce(Sum('payment_verification__discount_value'), _ZERO, output_field=_MONEY),
         )
         closed = won_qs.count()
         revenue = money['revenue']
-        # What has actually been banked against what was charged. Outstanding is
-        # the gap, floored at zero: an overpayment is an accounts matter, not a
+        # The gap, floored at zero: an overpayment is an accounts matter, not a
         # negative debt on a performance board.
-        outstanding = max(revenue - money['collected'], Decimal('0'))
+        outstanding = max(money['billed'] - revenue, Decimal('0'))
 
         pace = won_qs.filter(status_changed_at__isnull=False).annotate(
             took=ExpressionWrapper(F('status_changed_at') - F('created_at'),
@@ -202,9 +212,15 @@ class CompanyPerformanceView(APIView):
             'conversion_rate': _rate(converted, leads),
             'close_rate': _rate(closed, leads),
             'revenue': _money(revenue),
-            'collected': _money(money['collected']),
+            # Kept under its old name so nothing reading `collected` breaks; it
+            # is the same figure as revenue now, and the tile that showed it was
+            # dropped rather than printing one number twice.
+            'collected': _money(revenue),
+            'billed': _money(money['billed']),
             'outstanding': _money(outstanding),
             'discounts': _money(money['discounts']),
+            # Of what came in, not of what was invoiced — the same money the
+            # revenue tile above reports.
             'avg_deal_value': _money(revenue / closed) if closed else '0.00',
             'avg_days_to_close': round(pace.total_seconds() / 86400, 1) if pace else 0.0,
             'completed_projects': Lead.objects.filter(project__is_complete=True).count(),
@@ -251,7 +267,7 @@ class CompanyPerformanceView(APIView):
                 'leads': live_leads().filter(created_at__date__gte=cursor,
                                              created_at__date__lt=stop).count(),
                 'closed': won.count(),
-                'revenue': _money(won.aggregate(t=Coalesce(Sum(net_value()), _ZERO,
+                'revenue': _money(won.aggregate(t=Coalesce(Sum(received_value()), _ZERO,
                                                            output_field=_MONEY))['t']),
             })
             cursor = nxt
@@ -269,7 +285,7 @@ class CompanyPerformanceView(APIView):
         leads = dict(leads_qs.values_list(field).annotate(n=Count('id')).values_list(field, 'n'))
         won = {k: (n, rev) for k, n, rev in
                won_qs.values_list(field).annotate(
-                   n=Count('id'), rev=Coalesce(Sum(net_value()), _ZERO, output_field=_MONEY)
+                   n=Count('id'), rev=Coalesce(Sum(received_value()), _ZERO, output_field=_MONEY)
                ).values_list(field, 'n', 'rev')}
         rows = []
         for key, count in leads.items():
@@ -410,7 +426,7 @@ class CompanyPerformanceView(APIView):
         the site visit, so deals that never had one show as not recorded."""
         def group(field, blank):
             out = {}
-            for key, net in won_qs.annotate(net=net_value()).values_list(field, 'net'):
+            for key, net in won_qs.annotate(net=received_value()).values_list(field, 'net'):
                 name = (str(key).strip().title() if key else '') or blank
                 hit = out.setdefault(name, {'name': name, 'count': 0, 'revenue': Decimal('0')})
                 hit['count'] += 1
@@ -445,9 +461,8 @@ class CompanyPerformanceView(APIView):
 
     def _group_figures(self, leads_qs, won_qs, extra=None):
         money = won_qs.aggregate(
-            revenue=Coalesce(Sum(net_value()), _ZERO, output_field=_MONEY),
-            collected=Coalesce(Sum('payment_verification__amount_received'), _ZERO,
-                               output_field=_MONEY))
+            revenue=Coalesce(Sum(received_value()), _ZERO, output_field=_MONEY),
+            billed=Coalesce(Sum(net_value()), _ZERO, output_field=_MONEY))
         leads = leads_qs.count()
         closed = won_qs.count()
         row = {
@@ -456,7 +471,7 @@ class CompanyPerformanceView(APIView):
             'closed_deals': closed,
             'completed_projects': won_qs.filter(project__is_complete=True).count(),
             'revenue': _money(money['revenue']),
-            'collected': _money(money['collected']),
+            'billed': _money(money['billed']),
             'close_rate': _rate(closed, leads),
         }
         row.update(extra or {})
@@ -498,7 +513,7 @@ class CompanyPerformanceView(APIView):
             Q(assigned_to__branch__isnull=True) & Q(bde__branch__isnull=True)
             & Q(tele_caller__branch__isnull=True), start, end)
         ranked['unattributed_revenue'] = _money(orphan_won.aggregate(
-            t=Coalesce(Sum(net_value()), _ZERO, output_field=_MONEY))['t'])
+            t=Coalesce(Sum(received_value()), _ZERO, output_field=_MONEY))['t'])
         ranked['unattributed_deals'] = orphan_won.count()
         return ranked
 

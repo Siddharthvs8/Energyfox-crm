@@ -4,6 +4,7 @@ import { getApiBase } from "@/lib/mock-data";
 
 import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { isSpectator } from "@/lib/spectator";
 
 type Member = { id: number; name: string; role: string; role_label: string };
 type Branch = {
@@ -79,7 +80,7 @@ export default function BranchesPage() {
     fetch(`${getApiBase(domain)}/api/users/me/`, { headers: { Authorization: `Bearer ${t}` } })
       .then(r => r.json())
       .then(d => {
-        const ok = !!d.is_staff || !!d.is_superuser;
+        const ok = isSpectator(d) || !!d.is_staff || !!d.is_superuser;
         setAllowed(ok); setAuthChecked(true);
         if (!ok) router.replace("/");
       })

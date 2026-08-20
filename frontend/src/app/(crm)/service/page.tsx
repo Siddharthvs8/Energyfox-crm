@@ -4,6 +4,7 @@ import { getApiBase } from "@/lib/mock-data";
 
 import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { isSpectator } from "@/lib/spectator";
 
 type Service = {
   id: number;
@@ -36,7 +37,7 @@ export default function ServicePage() {
     fetch(`${getApiBase(domain)}/api/users/me/`, { headers: { Authorization: `Bearer ${t}` } })
       .then(r => r.json())
       .then(d => {
-        const ok = d.role === "project_manager" || d.is_staff || d.is_general_manager;
+        const ok = isSpectator(d) || d.role === "project_manager" || d.is_staff || d.is_general_manager;
         setAllowed(ok); setAuthChecked(true);
         if (!ok) router.replace("/");
       })

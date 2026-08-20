@@ -8,6 +8,7 @@ import Link from "next/link";
 
 import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCleanup";
 import { asDate, deadlineNote, type DeadlineInfo } from "@/components/ProjectDeadline";
+import { isSpectator } from "@/lib/spectator";
 
 // The row carries the whole deadline block, so the shared banner and dialog can
 // read it without a second fetch.
@@ -47,7 +48,7 @@ export default function ProjectPage() {
     fetch(`${getApiBase(domain)}/api/users/me/`, { headers: { Authorization: `Bearer ${t}` } })
       .then(r => r.json())
       .then(d => {
-        const ok = d.role === "project_manager" || d.is_staff || d.is_general_manager;
+        const ok = isSpectator(d) || d.role === "project_manager" || d.is_staff || d.is_general_manager;
         setAllowed(ok);
         setAuthChecked(true);
         if (!ok) router.replace("/");

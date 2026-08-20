@@ -645,6 +645,10 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   };
   const [showTrash, setShowTrash] = useState(false);
   const [trashRows, setTrashRows] = useState<TrashRow[]>([]);
+  // Rows ticked for a bulk restore. Cleared whenever the list reloads, so a
+  // stale tick can never send an id that is no longer in the Trash.
+  const [trashPicked, setTrashPicked] = useState<number[]>([]);
+  const [restoringMany, setRestoringMany] = useState(false);
   const [trashLoading, setTrashLoading] = useState(false);
 
   const loadArchiveStats = async () => {
@@ -681,11 +685,38 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
       const r = await fetch(`${getApiBase(domain)}/api/leads/trash/`, { headers: { Authorization: `Bearer ${token}` } });
       const d = await r.json().catch(() => ({}));
       setTrashRows(Array.isArray(d.leads) ? d.leads : []);
+      setTrashPicked([]);
     } catch { /* keep old rows */ }
     finally { setTrashLoading(false); }
   };
 
   const openTrash = () => { setShowTrash(true); loadTrash(); };
+
+  /** Restore every ticked lead in one request.
+   *
+   *  Scoped on the server exactly as restoring one at a time is, so ticking a
+   *  box cannot reach a lead this user could not already restore alone. */
+  const restorePicked = async () => {
+    if (!trashPicked.length || restoringMany) return;
+    setRestoringMany(true);
+    try {
+      const token = localStorage.getItem(`${domain}_access`);
+      const r = await fetch(`${getApiBase(domain)}/api/leads/bulk-restore-trash/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ ids: trashPicked }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(d.error || "Those leads could not be restored."); return; }
+      // Say what happened when it was not simply all of them.
+      if (d.skipped?.length) alert(d.message);
+      setTrashPicked([]);
+      loadTrash();
+      fetchLeads();
+    } catch {
+      alert("Network error — nothing was restored.");
+    } finally { setRestoringMany(false); }
+  };
 
   const restoreFromTrash = async (id: number) => {
     const token = localStorage.getItem(`${domain}_access`);
@@ -1726,6 +1757,13 @@ This cannot be undone.`)) return;
                 <p className="text-[11px] text-slate-400 mt-0.5">Trashed leads are kept for 7 days, then deleted forever automatically.</p>
               </div>
               <div className="flex items-center gap-2">
+                {!isSpectator && trashPicked.length > 0 && (
+                  <button onClick={restorePicked} disabled={restoringMany}
+                    className="px-3 py-1.5 rounded-xl bg-indigo-600 text-white text-xs font-bold
+                               hover:bg-indigo-700 transition disabled:opacity-40">
+                    {restoringMany ? "Restoring…" : `Restore ${trashPicked.length} selected`}
+                  </button>
+                )}
                 {canEmptyTrash && trashRows.length > 0 && (
                   <button onClick={emptyTrash} disabled={emptying}
                     title="Permanently delete every lead in the Trash"
@@ -1745,6 +1783,18 @@ This cannot be undone.`)) return;
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-left text-[10px] font-bold text-slate-400 uppercase tracking-wide border-b border-slate-100 bg-slate-50/60">
+                      {!isSpectator && (
+                        <th className="pl-5 pr-2 py-3 w-8">
+                          <input type="checkbox" aria-label="Select every lead in the Trash"
+                            checked={trashPicked.length > 0 && trashPicked.length === trashRows.length}
+                            // Ticked-but-not-all reads as a third state, not as "none".
+                            ref={el => { if (el) el.indeterminate =
+                              trashPicked.length > 0 && trashPicked.length < trashRows.length; }}
+                            onChange={e => setTrashPicked(
+                              e.target.checked ? trashRows.map(r => r.id) : [])}
+                            className="w-4 h-4 accent-indigo-600 cursor-pointer" />
+                        </th>
+                      )}
                       <th className="px-5 py-3">Lead</th>
                       <th className="px-5 py-3">Trashed</th>
                       <th className="px-5 py-3">Disappears In</th>
@@ -1753,7 +1803,17 @@ This cannot be undone.`)) return;
                   </thead>
                   <tbody>
                     {trashRows.map(t => (
-                      <tr key={t.id} className="border-b border-slate-50 hover:bg-slate-50/60">
+                      <tr key={t.id} className={`border-b border-slate-50 hover:bg-slate-50/60 ${
+                        trashPicked.includes(t.id) ? "bg-indigo-50/40" : ""}`}>
+                        {!isSpectator && (
+                          <td className="pl-5 pr-2 py-3">
+                            <input type="checkbox" aria-label={`Select ${t.first_name} ${t.last_name}`}
+                              checked={trashPicked.includes(t.id)}
+                              onChange={e => setTrashPicked(prev =>
+                                e.target.checked ? [...prev, t.id] : prev.filter(id => id !== t.id))}
+                              className="w-4 h-4 accent-indigo-600 cursor-pointer" />
+                          </td>
+                        )}
                         <td className="px-5 py-3">
                           <p className="font-semibold text-slate-800">{t.first_name} {t.last_name}</p>
                           <p className="text-[11px] text-slate-400">{t.phone || "—"}{t.email ? ` · ${t.email}` : ""}</p>

@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCleanup";
+import { isSpectator } from "@/lib/spectator";
 type AccountLead = {
   // Set when the lead behind this row has been deleted; the row is then
   // unopenable, and an admin gets a control to clear it out.
@@ -40,7 +41,7 @@ export default function AccountsPage() {
     fetch(`${getApiBase(domain)}/api/users/me/`, { headers: { Authorization: `Bearer ${t}` } })
       .then(r => r.json())
       .then(d => {
-        const ok = d.role === "accounts_staff" || d.role === "accounts_manager" || d.role === "purchase_staff" || d.is_staff || d.is_general_manager;
+        const ok = isSpectator(d) || d.role === "accounts_staff" || d.role === "accounts_manager" || d.role === "purchase_staff" || d.is_staff || d.is_general_manager;
         setAllowed(ok);
         setAuthChecked(true);
         if (!ok) router.replace("/");

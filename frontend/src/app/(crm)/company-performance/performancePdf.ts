@@ -194,8 +194,8 @@ export async function exportCompanyPerformancePdf(d: Row, chartSvg: SVGElement |
   const h = d.headline || {};
   heading("Headline");
   table(["", "", "", ""], [
-    ["Leads", String(h.leads ?? 0), "Revenue (net of discount)", inr(h.revenue)],
-    ["Converted", String(h.converted ?? 0), "Collected", inr(h.collected)],
+    ["Leads", String(h.leads ?? 0), "Revenue (received)", inr(h.revenue)],
+    ["Converted", String(h.converted ?? 0), "Billed (invoiced)", inr(h.billed)],
     ["Closed deals", String(h.closed_deals ?? 0), "Outstanding", inr(h.outstanding)],
     ["Lost", String(h.lost ?? 0), "Discounts given", inr(h.discounts)],
     ["Close rate", pct(h.close_rate), "Average deal", inr(h.avg_deal_value)],
@@ -391,10 +391,10 @@ export async function exportCompanyPerformancePdf(d: Row, chartSvg: SVGElement |
     }
     y += 6;
 
-    table(["Name", "Leads", "Closed", "Close rate", "Revenue", "Collected"],
+    table(["Name", "Leads", "Closed", "Close rate", "Revenue", "Billed"],
       g.rows.map(r => [
         r.name + (r.role ? ` (${r.role})` : r.manager_name ? ` (${r.manager_name})` : ""),
-        r.leads, r.closed_deals, pct(r.close_rate), inr(r.revenue), inr(r.collected),
+        r.leads, r.closed_deals, pct(r.close_rate), inr(r.revenue), inr(r.billed),
       ]),
       { columnStyles: MONEY_COLS });
 
@@ -450,8 +450,8 @@ export async function exportCompanyPerformancePdf(d: Row, chartSvg: SVGElement |
     doc.setFontSize(7);
     doc.setTextColor(140);
     doc.text(
-      "Won means closed - a deal counts once the money has reached accounts - and revenue is the " +
-      "agreed value less any discount.", L, PAGE_H - 10);
+      "Won means closed - a deal counts once the money has reached accounts - and revenue is " +
+      "what was actually received, not what was invoiced.", L, PAGE_H - 10);
     doc.text(`Page ${i} of ${pages}`, L + W, PAGE_H - 10, { align: "right" });
     doc.setTextColor(0);
   }

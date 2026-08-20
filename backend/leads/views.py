@@ -260,7 +260,7 @@ def auto_assign_project(lead):
 
 
 from .scopes import (live_leads, own_leads_q, closed_deals, closed_deal_q,  # noqa: E402
-                     net_value, CLOSED_DEAL_FILTER,
+                     received_value, CLOSED_DEAL_FILTER,
                      maintenance_customers, maintenance_visits_due)
 
 
@@ -5203,6 +5203,42 @@ class LeadViewSet(viewsets.ModelViewSet):
         lead.save(update_fields=['is_trashed', 'trashed_at', 'trashed_by'])
         return Response({'message': 'Lead restored.'})
 
+    @action(detail=False, methods=['post'], url_path='bulk-restore-trash')
+    def bulk_restore_trash(self, request):
+        """Bring several leads back from the Trash at once.
+
+        Scoped through `_trash_scope` exactly as restoring one at a time is, so
+        selecting a row cannot reach a lead the caller could not already restore
+        on its own — a bulk action is a shortcut, never a wider door.
+
+        Ids that are not in the caller's Trash are reported rather than silently
+        dropped: half a restore that says nothing looks like a bug to whoever
+        ticked the boxes.
+        """
+        ids = request.data.get('ids') or []
+        if not isinstance(ids, list) or not ids:
+            return Response({'error': 'Choose at least one lead to restore.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        wanted = {int(i) for i in ids if str(i).isdigit()}
+        leads = list(self._trash_scope().filter(pk__in=wanted))
+        found = {lead.pk for lead in leads}
+
+        for lead in leads:
+            lead.is_trashed = False
+            lead.trashed_at = None
+            lead.trashed_by = None
+        Lead.objects.bulk_update(leads, ['is_trashed', 'trashed_at', 'trashed_by'])
+
+        missed = sorted(wanted - found)
+        return Response({
+            'restored': len(leads),
+            'ids': sorted(found),
+            'skipped': missed,
+            'message': (f"{len(leads)} lead(s) restored."
+                        + (f" {len(missed)} were no longer in your Trash." if missed else "")),
+        })
+
     @action(detail=True, methods=['delete'], url_path='purge')
     def purge_trash(self, request, pk=None):
         """Permanently delete one trashed lead right now (skips the 7-day wait)."""
@@ -5427,6 +5463,21 @@ class LeadViewSet(viewsets.ModelViewSet):
 
         # Filtering happens here rather than in the client so what is counted in
         # the summary is exactly what is listed under it.
+        #
+        # The window is measured on the date the deal closed — the one in the
+        # Closed column — so the filter selects what the reader can see rather
+        # than some other date behind it. `resolve_period` is the same helper
+        # Company Performance uses, so "This FY" means one thing across the CRM;
+        # it defaults to all time here because this is a working list of deals,
+        # and a BDE looking for something they closed last year should not find
+        # it missing behind a filter they never set.
+        from .performance import resolve_period
+        start, end, period_key, period_label = resolve_period(request, default='all')
+        if start or end:
+            first = start.isoformat() if start else ''
+            last = end.isoformat() if end else '9999-12-31'
+            board = [d for d in board if first <= d['closed_on'][:10] <= last]
+
         payment = (request.query_params.get('payment') or '').strip()
         if payment in ('fully_paid', 'partially_paid'):
             board = [d for d in board if d['payment_status'] == payment]
@@ -5457,6 +5508,8 @@ class LeadViewSet(viewsets.ModelViewSet):
                 'fully_paid': sum(1 for d in board if d['payment_status'] == 'fully_paid'),
                 'partially_paid': sum(1 for d in board if d['payment_status'] == 'partially_paid'),
             },
+            'period': period_key,
+            'period_label': period_label,
             **pickers,
         })
 
@@ -5700,7 +5753,7 @@ class DashboardStatsView(APIView):
         # overstates the business. Feeds the six-month Revenue series below too,
         # so the tile and the chart cannot disagree.
         won_qs = closed_deals(base_qs)
-        total_revenue = won_qs.aggregate(total=Sum(net_value()))['total'] or 0
+        total_revenue = won_qs.aggregate(total=Sum(received_value()))['total'] or 0
         
         # Team/Member Performance (Only for Admin/Manager)
         performance_stats = []
@@ -5724,7 +5777,7 @@ class DashboardStatsView(APIView):
                 calc_leads_count=Count('assigned_leads'),
                 calc_pipeline_value=Sum('assigned_leads__value'),
                 calc_won_count=Count('assigned_leads', filter=closed_deal_q('assigned_leads__')),
-                calc_won_value=Sum(net_value('assigned_leads__'), filter=closed_deal_q('assigned_leads__'))
+                calc_won_value=Sum(received_value('assigned_leads__'), filter=closed_deal_q('assigned_leads__'))
             )
             for u in users_with_stats:
                 performance_stats.append({
@@ -5742,7 +5795,7 @@ class DashboardStatsView(APIView):
                 calc_leads_count=Count('members__assigned_leads'),
                 calc_pipeline_value=Sum('members__assigned_leads__value'),
                 calc_won_count=Count('members__assigned_leads', filter=closed_deal_q('members__assigned_leads__')),
-                calc_won_value=Sum(net_value('members__assigned_leads__'), filter=closed_deal_q('members__assigned_leads__'))
+                calc_won_value=Sum(received_value('members__assigned_leads__'), filter=closed_deal_q('members__assigned_leads__'))
             )
             for t in teams_with_stats:
                 team_stats.append({
@@ -5799,7 +5852,7 @@ class DashboardStatsView(APIView):
             m_rev = won_qs.filter(
                 Q(status_changed_at__gte=start_dt, status_changed_at__lt=end_dt) |
                 (Q(status_changed_at__isnull=True) & Q(created_at__gte=start_dt, created_at__lt=end_dt))
-            ).aggregate(total=Sum(net_value()))['total'] or 0
+            ).aggregate(total=Sum(received_value()))['total'] or 0
             
             six_months_revenue.append({"name": month_label, "Revenue": float(m_rev)})
 
@@ -5856,7 +5909,7 @@ class LeaderboardView(APIView):
         from users.models import ROLE_BDE
         users = WorkspaceUser.objects.filter(is_active=True, role=ROLE_BDE).annotate(
             closed_sales=Count('bde_leads', filter=won_filter),
-            revenue=Coalesce(Sum(net_value('bde_leads__'), filter=won_filter), Decimal('0'))
+            revenue=Coalesce(Sum(received_value('bde_leads__'), filter=won_filter), Decimal('0'))
         ).order_by('-revenue', '-closed_sales', 'first_name', 'last_name')
 
         leaderboard = []
@@ -5910,7 +5963,7 @@ class ConvertedAnalyticsView(APIView):
         sources_data = won_qs.values('source').annotate(count=Count('id')).order_by('-count')
         sources = [{"source": item['source'] or 'manual', "count": item['count']} for item in sources_data]
 
-        closed = closed_deals(base_qs).aggregate(count=Count('id'), revenue=Sum(net_value()))
+        closed = closed_deals(base_qs).aggregate(count=Count('id'), revenue=Sum(received_value()))
         return Response({
             "total_conversions": agg['total_conversions'] or 0,
             # Won revenue is the money on the deals that actually closed, with the

@@ -118,7 +118,12 @@ _MONEY = DecimalField(max_digits=16, decimal_places=2)
 
 
 def net_value(prefix=''):
-    """A deal's worth after every discount, as an expression to sum.
+    """What a deal was *billed*: its worth after every discount.
+
+    This is not revenue — see `received_value`. It is what the customer was
+    asked for, which is the right figure for what is outstanding, for the value
+    of an open pipeline, and for a deal-value column. Money still owed is in
+    here; money in the bank is not.
 
     `prefix` reaches the lead across a relation — `net_value('bde_leads__')` for
     a Sum over a BDE's leads, say.
@@ -130,7 +135,26 @@ def net_value(prefix=''):
     )
 
 
+def received_value(prefix=''):
+    """What was actually paid — the CRM's one definition of revenue.
+
+    Revenue is money in, not money promised: a deal billed for a lakh with forty
+    thousand received is forty thousand of revenue, and the rest is a debt. That
+    is what every screen showing "revenue", "won value" or "converted revenue"
+    reports, so a figure on one page cannot be a different kind of number from
+    the same word on another.
+
+    The billed figure has not gone away — it is `net_value`, and it is what
+    outstanding is measured against.
+    """
+    return Coalesce(
+        F(f'{prefix}payment_verification__amount_received'),
+        Value(Decimal('0')),
+        output_field=_MONEY,
+    )
+
+
 def closed_deal_revenue(qs=None):
-    """Revenue from the won deals in a queryset — net of discount."""
+    """Revenue from the won deals in a queryset — what was actually received."""
     return closed_deals(qs).aggregate(
-        t=Coalesce(Sum(net_value()), Value(Decimal('0')), output_field=_MONEY))['t']
+        t=Coalesce(Sum(received_value()), Value(Decimal('0')), output_field=_MONEY))['t']

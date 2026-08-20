@@ -5,6 +5,7 @@ import { getApiBase } from "@/lib/mock-data";
 import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { isSpectator } from "@/lib/spectator";
 
 type Row = {
   id: number;
@@ -40,7 +41,7 @@ export default function DiscomFollowupPage() {
     fetch(`${getApiBase(domain)}/api/users/me/`, { headers: { Authorization: `Bearer ${t}` } })
       .then(r => r.json())
       .then(d => {
-        const ok = d.role === "liasoning_officer" || d.is_staff || d.is_general_manager;
+        const ok = isSpectator(d) || d.role === "liasoning_officer" || d.is_staff || d.is_general_manager;
         setAllowed(ok);
         setCanOpenStage2(["documentation_staff", "documentation_manager"].includes(d.role) || d.is_staff || d.is_general_manager);
         setAuthChecked(true);

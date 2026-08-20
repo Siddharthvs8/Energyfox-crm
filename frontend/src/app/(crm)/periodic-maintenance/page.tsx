@@ -5,6 +5,7 @@ import { getApiBase } from "@/lib/mock-data";
 import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { isSpectator } from "@/lib/spectator";
 
 type ScheduledRow = {
   id: number; first_name: string; last_name: string | null; phone: string | null; location: string | null;
@@ -68,7 +69,7 @@ export default function PeriodicMaintenancePage() {
     fetch(`${getApiBase(domain)}/api/users/me/`, { headers: { Authorization: `Bearer ${t}` } })
       .then(r => r.json())
       .then(d => {
-        const ok = d.role === "liasoning_officer" || d.is_staff || d.is_general_manager;
+        const ok = isSpectator(d) || d.role === "liasoning_officer" || d.is_staff || d.is_general_manager;
         setAllowed(ok); setAuthChecked(true);
         if (!ok) router.replace("/");
       })

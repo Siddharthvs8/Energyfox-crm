@@ -4,6 +4,7 @@ import { getApiBase } from "@/lib/mock-data";
 
 import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { isSpectator } from "@/lib/spectator";
 
 type TeamData = { team_lead: string; this_month: number; series: { label: string; count: number }[] };
 type Stats = { structure: TeamData; electrical: TeamData; can_edit: boolean };
@@ -28,7 +29,7 @@ export default function TeamStatsPage() {
     fetch(`${getApiBase(domain)}/api/users/me/`, { headers: { Authorization: `Bearer ${t}` } })
       .then(r => r.json())
       .then(d => {
-        const ok = d.role === "project_manager" || d.is_staff || d.is_general_manager;
+        const ok = isSpectator(d) || d.role === "project_manager" || d.is_staff || d.is_general_manager;
         setAllowed(ok); setAuthChecked(true);
         if (!ok) router.replace("/");
       })

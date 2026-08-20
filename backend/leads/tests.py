@@ -4579,10 +4579,11 @@ class DashboardRevenueIsClosedDealsTests(TestCase):
         PaymentVerification.objects.create(lead=lead, amount_received=Decimal('0'))
         self.assertEqual(self.revenue(), Decimal('0'))
 
-    def test_a_part_payment_makes_the_whole_deal_revenue(self):
-        """The deal is closed; its value is the deal's, not the instalment's."""
+    def test_a_part_payment_is_revenue_only_for_what_arrived(self):
+        """The deal is closed either way, but revenue is the instalment that
+        landed — the rest of the deal is a debt, not income."""
         self.close(self.lead('d', '100000'), '25000')
-        self.assertEqual(self.revenue(), Decimal('100000'))
+        self.assertEqual(self.revenue(), Decimal('25000'))
 
     def test_a_fully_paid_deal_is_revenue(self):
         self.close(self.lead('e', '250000'), '250000')
@@ -4592,7 +4593,7 @@ class DashboardRevenueIsClosedDealsTests(TestCase):
         self.close(self.lead('f', '100000'), '50000')
         self.close(self.lead('g', '250000'), '250000')
         self.lead('h', '900000')                       # converted, unpaid
-        self.assertEqual(self.revenue(), Decimal('350000'))
+        self.assertEqual(self.revenue(), Decimal('300000'))   # 50000 + 250000
 
     def test_a_lost_deal_is_not_revenue(self):
         lead = self.close(self.lead('i', '100000'), '100000')
@@ -5587,22 +5588,30 @@ class WonMeansClosedEverywhereTests(TestCase):
         d = self.get(f'/api/users/{self.agent.id}/performance/')['summary']
         self.assertEqual(d['won_count'], 1)
 
-    # ── Revenue is what was actually charged ──
-    def test_revenue_is_net_of_the_discount_accounts_gave(self):
-        """Lead.value is already price minus the BDE's discount, but accounts can
-        give another when the money is taken, and that never reaches the lead.
-        Summing value alone reports revenue nobody was charged."""
+    # ── Revenue is what was actually received ──
+    def test_a_discount_moves_what_was_billed_not_what_came_in(self):
+        """Revenue is money in. A discount changes what the customer was asked
+        for — the billed figure — and cannot change what already arrived."""
         pv = self.closed.payment_verification
         pv.discount_value = Decimal('20000')
         pv.save(update_fields=['discount_value'])
         self.assertEqual(Decimal(str(self.get('/api/dashboard-stats/')['total_revenue'])),
-                         Decimal('180000'))                       # 200000 - 20000
+                         Decimal('200000'))                       # what was received
 
-    def test_every_revenue_figure_nets_the_same_discount(self):
+    def test_the_discount_still_shows_up_in_what_was_billed(self):
+        """It has not gone missing: billed is what outstanding measures against."""
         pv = self.closed.payment_verification
         pv.discount_value = Decimal('20000')
         pv.save(update_fields=['discount_value'])
-        expected = Decimal('180000')
+        head = self.get('/api/company-performance/?period=all')['headline']
+        self.assertEqual(head['billed'], '180000.00')             # 200000 - 20000
+        self.assertEqual(head['revenue'], '200000.00')
+
+    def test_every_revenue_figure_reports_the_same_received_amount(self):
+        pv = self.closed.payment_verification
+        pv.discount_value = Decimal('20000')
+        pv.save(update_fields=['discount_value'])
+        expected = Decimal('200000')
         self.assertEqual(Decimal(str(self.get('/api/dashboard-stats/')['total_revenue'])), expected)
         self.assertEqual(Decimal(str(self.get('/api/converted-analytics/')['total_revenue'])), expected)
         rows = self.get('/api/leaderboard/?period=all_time')['leaderboard']
@@ -5615,7 +5624,7 @@ class WonMeansClosedEverywhereTests(TestCase):
         self.assertEqual(Decimal(str(self.get('/api/dashboard-stats/')['total_revenue'])),
                          Decimal('200000'))
 
-    def test_a_target_counts_the_discounted_amount(self):
+    def test_a_target_counts_the_money_received(self):
         from ai_manager.engine import check_monthly_progress
         from ai_manager.models import MonthlyTarget
         pv = self.closed.payment_verification
@@ -5625,14 +5634,17 @@ class WonMeansClosedEverywhereTests(TestCase):
         MonthlyTarget.objects.create(agent=self.agent, month=today.month, year=today.year,
                                      target_leads=5, target_amount=Decimal('500000'))
         progress = check_monthly_progress(self.agent, today.month, today.year)
-        self.assertEqual(Decimal(str(progress['actual_amount'])), Decimal('180000'))
+        # Progress against a target is revenue, so it is the money that landed.
+        self.assertEqual(Decimal(str(progress['actual_amount'])), Decimal('200000'))
 
     def test_paying_the_promised_deal_moves_every_figure_together(self):
         self.promised.pushed_to_accounts = True
         self.promised.save(update_fields=['pushed_to_accounts'])
         PaymentVerification.objects.create(lead=self.promised, amount_received=Decimal('10'))
+        # It counts as a closed deal at once, and brings its ten rupees of
+        # revenue with it — not the nine lakh it is still expected to pay.
         self.assertEqual(Decimal(str(self.get('/api/dashboard-stats/')['total_revenue'])),
-                         Decimal('1100000'))
+                         Decimal('200010'))
         self.assertEqual(self.get('/api/leads/closed-deals/')['summary']['count'], 2)
 
 
@@ -5855,7 +5867,7 @@ class CompanyPerformanceTests(TestCase):
         self.assertEqual(self.client.get('/api/company-performance/').status_code, 401)
 
     # -- What counts as won --
-    def test_revenue_is_the_value_after_discount(self):
+    def test_revenue_is_what_the_customer_actually_paid(self):
         self.won(100000, discount=10000)
         head = self.get(period='all').json()['headline']
         self.assertEqual(head['revenue'], '90000.00')
@@ -5880,14 +5892,16 @@ class CompanyPerformanceTests(TestCase):
         head = self.get(period='all').json()['headline']
         self.assertEqual((head['leads'], head['closed_deals'], head['revenue']), (0, 0, '0.00'))
 
-    def test_outstanding_is_what_is_still_owed(self):
+    def test_outstanding_is_the_gap_between_billed_and_received(self):
         self.won(100000, discount=0)
         lead = self.won(200000)
         lead.payment_verification.amount_received = Decimal(50000)
         lead.payment_verification.save()
         head = self.get(period='all').json()['headline']
-        self.assertEqual(head['revenue'], '300000.00')
-        self.assertEqual(head['collected'], '150000.00')
+        # Revenue is the money in; billed is what was asked for; the difference
+        # is the debt. Three different figures, not one repeated.
+        self.assertEqual(head['revenue'], '150000.00')     # 100000 + 50000
+        self.assertEqual(head['billed'], '300000.00')
         self.assertEqual(head['outstanding'], '150000.00')
 
     def test_an_overpayment_is_not_a_negative_debt(self):
@@ -7208,3 +7222,351 @@ class EarthingSlotMergeMigrationTests(TestCase):
             self.SiteVisitDocument.objects.filter(doc_type='photo_earthing_1').count(), 2)
         self.assertEqual(
             self.SiteVisitDocument.objects.filter(doc_type='photo_earthing').count(), 0)
+
+
+class ClosedDealsPeriodFilterTests(TestCase):
+    """The Closed Deals board, filtered by when the deals closed.
+
+    Measured on the Closed date — the one in the table — so the filter selects
+    what the reader can see rather than some other date behind it.
+    """
+
+    def setUp(self):
+        self.boss = mk('cdp_admin', 'admin')
+
+    def auth(self, user=None):
+        return {'HTTP_AUTHORIZATION': token_for(user or self.boss)}
+
+    def won(self, value, closed_on):
+        from .models import PaymentVerification
+        lead = Lead.objects.create(
+            first_name='Deal', last_name=str(value), phone=f'94{value:08d}',
+            status='converted', is_lost=False, pushed_to_accounts=True,
+            value=Decimal(value))
+        PaymentVerification.objects.create(lead=lead, amount_received=Decimal(value))
+        Lead.objects.filter(pk=lead.pk).update(status_changed_at=closed_on)
+        return lead
+
+    def board(self, **params):
+        qs = '&'.join(f'{k}={v}' for k, v in params.items())
+        r = self.client.get(f'/api/leads/closed-deals/?{qs}', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        return r.json()
+
+    # ── The default ──
+    def test_the_board_shows_everything_by_default(self):
+        """A working list: a deal closed last year must not go missing behind a
+        filter nobody set."""
+        self.won(50000, timezone.now() - timedelta(days=800))
+        self.won(60000, timezone.now())
+        d = self.board()
+        self.assertEqual(d['summary']['count'], 2)
+        self.assertEqual(d['period'], 'all')
+        self.assertEqual(d['period_label'], 'All time')
+
+    # ── The windows ──
+    def test_this_month_keeps_only_this_month(self):
+        self.won(50000, timezone.now() - timedelta(days=400))
+        self.won(60000, timezone.now())
+        self.assertEqual(self.board(period='this_month')['summary']['count'], 1)
+
+    def test_this_year_keeps_only_this_year(self):
+        self.won(50000, timezone.now() - timedelta(days=800))
+        self.won(60000, timezone.now())
+        self.assertEqual(self.board(period='this_year')['summary']['count'], 1)
+
+    def test_all_time_keeps_everything(self):
+        self.won(50000, timezone.now() - timedelta(days=800))
+        self.won(60000, timezone.now())
+        self.assertEqual(self.board(period='all')['summary']['count'], 2)
+
+    def test_a_custom_range_is_honoured(self):
+        self.won(50000, timezone.now() - timedelta(days=100))
+        self.won(60000, timezone.now())
+        far = (timezone.localdate() - timedelta(days=120)).isoformat()
+        near = (timezone.localdate() - timedelta(days=80)).isoformat()
+        d = self.board(period='custom', **{'from': far, 'to': near})
+        self.assertEqual(d['summary']['count'], 1)
+        self.assertEqual(d['summary']['deal_value'], '50000.00')
+
+    # ── The totals follow the filter ──
+    def test_the_summary_describes_exactly_the_rows_listed(self):
+        """The point of filtering on the server rather than in the client."""
+        self.won(50000, timezone.now() - timedelta(days=400))
+        self.won(60000, timezone.now())
+        d = self.board(period='this_month')
+        self.assertEqual(len(d['deals']), d['summary']['count'])
+        self.assertEqual(Decimal(d['summary']['deal_value']),
+                         sum(Decimal(x['value']) for x in d['deals']))
+
+    def test_the_window_is_named_back(self):
+        d = self.board(period='this_month')
+        self.assertIn('This month', d['period_label'])
+
+    # ── It works with the other filters ──
+    def test_the_window_and_the_owner_filter_together(self):
+        caller = mk('cdp_caller', 'tele_caller')
+        mine = self.won(70000, timezone.now())
+        Lead.objects.filter(pk=mine.pk).update(tele_caller=caller)
+        self.won(80000, timezone.now())
+        d = self.board(period='this_month', tele_caller=caller.pk)
+        self.assertEqual(d['summary']['count'], 1)
+        self.assertEqual(d['summary']['deal_value'], '70000.00')
+
+    def test_the_window_and_the_bde_filter_together(self):
+        bde = mk('cdp_bde', 'bde')
+        mine = self.won(90000, timezone.now())
+        Lead.objects.filter(pk=mine.pk).update(bde=bde)
+        self.won(30000, timezone.now())
+        d = self.board(period='this_month', bde=bde.pk)
+        self.assertEqual(d['summary']['count'], 1)
+
+    # ── The pickers ──
+    def test_the_pickers_offer_the_people_on_the_board(self):
+        bde = mk('cdp_bde2', 'bde')
+        lead = self.won(40000, timezone.now())
+        Lead.objects.filter(pk=lead.pk).update(bde=bde)
+        d = self.board()
+        self.assertEqual([p['id'] for p in d['bdes']], [bde.pk])
+
+    def test_one_person_still_gets_a_picker_entry(self):
+        """The page shows the control whenever there is anyone to pick — a board
+        with a single owner must not look as though it cannot filter at all."""
+        caller = mk('cdp_caller2', 'tele_caller')
+        lead = self.won(45000, timezone.now())
+        Lead.objects.filter(pk=lead.pk).update(tele_caller=caller)
+        self.assertEqual(len(self.board()['tele_callers']), 1)
+
+
+class RevenueIsMoneyReceivedTests(TestCase):
+    """Revenue is what was paid, not what was invoiced.
+
+    A deal billed for a lakh with forty thousand received is forty thousand of
+    revenue; the rest is a debt. Every screen that says "revenue", "won value"
+    or "converted revenue" reports the same thing, so one page cannot mean a
+    different kind of number from another.
+    """
+
+    def setUp(self):
+        self.boss = mk('rev_admin', 'admin')
+        self.bde = mk('rev_bde', 'bde')
+
+    def auth(self, user=None):
+        return {'HTTP_AUTHORIZATION': token_for(user or self.boss)}
+
+    def deal(self, value, received, discount=0, who=None):
+        """A closed deal billed `value`, of which `received` has come in."""
+        from .models import PaymentVerification
+        who = who or self.bde
+        lead = Lead.objects.create(
+            first_name='Deal', last_name=str(value), phone=f'93{value:08d}',
+            status='converted', is_lost=False, pushed_to_accounts=True,
+            value=Decimal(value), bde=who, assigned_to=who, tele_caller=who)
+        PaymentVerification.objects.create(
+            lead=lead, amount_received=Decimal(received),
+            discount_value=Decimal(discount))
+        Lead.objects.filter(pk=lead.pk).update(status_changed_at=timezone.now())
+        return lead
+
+    # ── The definition itself ──
+    def test_the_helper_sums_what_was_received(self):
+        from .scopes import closed_deal_revenue
+        self.deal(320000, 204000)
+        self.assertEqual(closed_deal_revenue(), Decimal('204000.00'))
+
+    def test_a_part_paid_deal_contributes_only_what_was_paid(self):
+        from .scopes import closed_deal_revenue
+        self.deal(100000, 40000)
+        self.assertEqual(closed_deal_revenue(), Decimal('40000.00'))
+
+    def test_billed_is_still_available_and_still_net_of_discount(self):
+        """It has not gone away — it is what outstanding is measured against."""
+        from django.db.models import Sum
+        from .scopes import closed_deals, net_value
+        self.deal(100000, 40000, discount=10000)
+        billed = closed_deals().aggregate(t=Sum(net_value()))['t']
+        self.assertEqual(billed, Decimal('90000.00'))
+
+    # ── The screens ──
+    def test_the_dashboard_revenue_tile_is_the_paid_amount(self):
+        self.deal(320000, 204000)
+        r = self.client.get('/api/dashboard-stats/', **self.auth())
+        self.assertEqual(float(r.json()['total_revenue']), 204000.0)
+
+    def test_company_performance_revenue_is_the_paid_amount(self):
+        self.deal(320000, 204000)
+        h = self.client.get('/api/company-performance/?period=all',
+                            **self.auth()).json()['headline']
+        self.assertEqual(h['revenue'], '204000.00')
+
+    def test_company_performance_still_reports_what_was_billed(self):
+        self.deal(320000, 204000)
+        h = self.client.get('/api/company-performance/?period=all',
+                            **self.auth()).json()['headline']
+        self.assertEqual(h['billed'], '320000.00')
+
+    def test_outstanding_is_the_gap_between_billed_and_received(self):
+        """The figure that would have collapsed to zero if revenue and collected
+        were the same number."""
+        self.deal(320000, 204000)
+        h = self.client.get('/api/company-performance/?period=all',
+                            **self.auth()).json()['headline']
+        self.assertEqual(h['outstanding'], '116000.00')
+
+    def test_the_leaderboard_ranks_on_money_received(self):
+        self.deal(320000, 204000)
+        rows = self.client.get('/api/leaderboard/', **self.auth()).json()['leaderboard']
+        mine = [r for r in rows if r.get('id') == self.bde.id]
+        self.assertTrue(mine)
+        self.assertEqual(float(mine[0]['revenue']), 204000.0)
+
+    def test_my_performance_won_value_is_money_received(self):
+        """It is shown to users as Converted Revenue."""
+        self.deal(320000, 204000, who=self.bde)
+        r = self.client.get(f'/api/users/{self.bde.id}/performance/', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertEqual(float(r.json()['summary']['won_value']), 204000.0)
+
+    # ── What must not change ──
+    def test_the_open_pipeline_is_still_valued_at_what_it_would_bill(self):
+        """Nothing has been paid on an open lead, so valuing it at revenue would
+        report the whole pipeline as worth nothing."""
+        Lead.objects.create(first_name='Open', phone='9300000001', status='new',
+                            value=Decimal('500000'))
+        p = self.client.get('/api/company-performance/?period=this_fy',
+                            **self.auth()).json()['projections']
+        self.assertEqual(p['open_pipeline_value'], '500000.00')
+
+    def test_the_closed_deals_board_still_shows_the_deal_value(self):
+        """That board reports deal value, received and balance as three separate
+        columns — it never called any of them revenue."""
+        self.deal(320000, 204000)
+        s = self.client.get('/api/leads/closed-deals/?period=all',
+                            **self.auth()).json()['summary']
+        self.assertEqual(s['deal_value'], '320000.00')
+        self.assertEqual(s['received'], '204000.00')
+        self.assertEqual(s['outstanding'], '116000.00')
+
+    def test_a_deal_with_nothing_received_is_not_revenue(self):
+        """It cannot be a closed deal at all without a payment, but a zero-value
+        receipt must not sneak in as revenue either."""
+        from .scopes import closed_deal_revenue
+        self.deal(100000, 0)
+        self.assertEqual(closed_deal_revenue(), Decimal('0.00'))
+
+
+class BulkRestoreFromTrashTests(TestCase):
+    """Restoring several leads at once.
+
+    A bulk action is a shortcut, never a wider door: it is scoped exactly as
+    restoring one at a time is, so ticking a box cannot reach a lead the caller
+    could not already restore alone.
+    """
+
+    def setUp(self):
+        self.admin = mk('br_admin', 'admin')
+        self.caller = mk('br_caller', 'tele_caller')
+        self.other = mk('br_other', 'tele_caller')
+
+    def auth(self, user=None):
+        return {'HTTP_AUTHORIZATION': token_for(user or self.admin)}
+
+    def trashed(self, name, owner=None):
+        lead = Lead.objects.create(first_name=name, phone=f'9895{abs(hash(name)) % 1000000:06d}',
+                                   assigned_to=owner)
+        Lead.objects.filter(pk=lead.pk).update(is_trashed=True, trashed_at=timezone.now())
+        lead.refresh_from_db()
+        return lead
+
+    def restore(self, ids, user=None):
+        return self.client.post('/api/leads/bulk-restore-trash/',
+                                data={'ids': ids}, content_type='application/json',
+                                **self.auth(user))
+
+    def live(self, lead):
+        lead.refresh_from_db()
+        return not lead.is_trashed
+
+    # ── The happy path ──
+    def test_several_leads_come_back_together(self):
+        a, b, c = self.trashed('A'), self.trashed('B'), self.trashed('C')
+        r = self.restore([a.pk, b.pk, c.pk])
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(r.json()['restored'], 3)
+        self.assertTrue(all(self.live(x) for x in (a, b, c)))
+
+    def test_the_ones_not_chosen_stay_in_the_trash(self):
+        a, b = self.trashed('A'), self.trashed('B')
+        self.restore([a.pk])
+        self.assertTrue(self.live(a))
+        self.assertFalse(self.live(b))
+
+    def test_restoring_clears_the_trash_stamps(self):
+        """Otherwise the lead comes back still carrying who binned it and when."""
+        a = self.trashed('A')
+        self.restore([a.pk])
+        a.refresh_from_db()
+        self.assertIsNone(a.trashed_at)
+        self.assertIsNone(a.trashed_by)
+
+    def test_the_reply_names_what_it_restored(self):
+        a, b = self.trashed('A'), self.trashed('B')
+        d = self.restore([a.pk, b.pk]).json()
+        self.assertEqual(sorted(d['ids']), sorted([a.pk, b.pk]))
+
+    # ── Scoping: no wider than restoring one at a time ──
+    def test_a_caller_cannot_restore_someone_elses_lead(self):
+        mine, theirs = self.trashed('Mine', owner=self.caller), self.trashed('Theirs', owner=self.other)
+        d = self.restore([mine.pk, theirs.pk], user=self.caller).json()
+        self.assertEqual(d['restored'], 1)
+        self.assertTrue(self.live(mine))
+        self.assertFalse(self.live(theirs))
+
+    def test_what_could_not_be_restored_is_reported_not_hidden(self):
+        """Half a restore that says nothing looks like a bug to whoever ticked
+        the boxes."""
+        mine, theirs = self.trashed('Mine', owner=self.caller), self.trashed('Theirs', owner=self.other)
+        d = self.restore([mine.pk, theirs.pk], user=self.caller).json()
+        self.assertEqual(d['skipped'], [theirs.pk])
+        self.assertIn('no longer in your Trash', d['message'])
+
+    def test_an_admin_reaches_the_whole_trash(self):
+        a, b = self.trashed('A', owner=self.caller), self.trashed('B', owner=self.other)
+        self.assertEqual(self.restore([a.pk, b.pk]).json()['restored'], 2)
+
+    # ── Edges ──
+    def test_an_empty_list_is_refused(self):
+        self.assertEqual(self.restore([]).status_code, 400)
+
+    def test_a_lead_that_is_not_in_the_trash_is_skipped(self):
+        alive = Lead.objects.create(first_name='Alive', phone='9895111222')
+        d = self.restore([alive.pk]).json()
+        self.assertEqual(d['restored'], 0)
+        self.assertEqual(d['skipped'], [alive.pk])
+
+    def test_an_unknown_id_does_not_break_the_batch(self):
+        a = self.trashed('A')
+        d = self.restore([a.pk, 99999999]).json()
+        self.assertEqual(d['restored'], 1)
+        self.assertTrue(self.live(a))
+
+    def test_rubbish_ids_are_ignored_rather_than_crashing(self):
+        a = self.trashed('A')
+        r = self.restore([a.pk, 'abc', None])
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertEqual(r.json()['restored'], 1)
+
+    def test_a_stranger_cannot_restore_anything(self):
+        a = self.trashed('A')
+        r = self.client.post('/api/leads/bulk-restore-trash/',
+                             data={'ids': [a.pk]}, content_type='application/json')
+        self.assertIn(r.status_code, (401, 403))
+        self.assertFalse(self.live(a))
+
+    def test_a_restored_lead_is_back_on_the_leads_list(self):
+        a = self.trashed('A')
+        self.restore([a.pk])
+        r = self.client.get('/api/leads/', **self.auth())
+        rows = r.json()
+        rows = rows.get('results', rows) if isinstance(rows, dict) else rows
+        self.assertIn(a.pk, [x['id'] for x in rows])
