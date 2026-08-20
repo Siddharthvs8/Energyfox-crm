@@ -7064,3 +7064,147 @@ class MaintenanceBadgeMatchesThePageTests(TestCase):
         Lead.objects.create(first_name='Unscheduled', phone='9895000305',
                             pushed_to_liasoning=True)
         self.assertEqual(self.badge(), 0)
+
+
+class SiteVisitPhotoSlotTests(TestCase):
+    """Site Visit Photos: a Site Photos slot, and one Earthing slot in place of
+    the numbered three.
+
+    Every slot already holds as many files as the BDE wants to attach, so the
+    trio only forced a choice about which photo went where.
+    """
+
+    def setUp(self):
+        # Filling in a site visit belongs to the BDE, not the tele caller.
+        self.officer = mk('slot_bde', 'bde')
+        self.lead = Lead.objects.create(first_name='Sitevisit', phone='9895000400',
+                                        bde=self.officer, assigned_to=self.officer)
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': token_for(self.officer)}
+
+    def upload(self, doc_type, name='shot.jpg'):
+        return self.client.post(
+            f'/api/leads/{self.lead.id}/site-visit/documents/',
+            data={'doc_type': doc_type,
+                  'file': SimpleUploadedFile(name, b'\xff\xd8\xff', content_type='image/jpeg')},
+            **self.auth())
+
+    def slots(self):
+        from .views import SITE_VISIT_ATTACHMENTS
+        return dict(SITE_VISIT_ATTACHMENTS)
+
+    # ── The new slots ──
+    def test_site_photos_is_a_slot(self):
+        self.assertEqual(self.slots().get('photo_site'), 'Site Photos')
+
+    def test_earthing_is_a_slot(self):
+        self.assertEqual(self.slots().get('photo_earthing'), 'Earthing')
+
+    def test_a_site_photo_can_be_uploaded(self):
+        r = self.upload('photo_site')
+        self.assertEqual(r.status_code, 201, r.content[:200])
+
+    def test_an_earthing_photo_can_be_uploaded(self):
+        r = self.upload('photo_earthing')
+        self.assertEqual(r.status_code, 201, r.content[:200])
+
+    def test_the_one_earthing_slot_takes_several_photos(self):
+        """Which is what made three numbered slots pointless."""
+        from .models import SiteVisitDocument
+        for i in range(3):
+            self.assertEqual(self.upload('photo_earthing', f'e{i}.jpg').status_code, 201)
+        self.assertEqual(
+            SiteVisitDocument.objects.filter(site_visit__lead=self.lead,
+                                             doc_type='photo_earthing').count(), 3)
+
+    # ── The old slots ──
+    def test_the_numbered_earthing_slots_are_gone(self):
+        for old in ('photo_earthing_1', 'photo_earthing_2', 'photo_earthing_3'):
+            self.assertNotIn(old, self.slots(), old)
+
+    def test_uploading_to_a_numbered_slot_is_refused(self):
+        for old in ('photo_earthing_1', 'photo_earthing_2', 'photo_earthing_3'):
+            self.assertEqual(self.upload(old).status_code, 400, old)
+
+    # ── The rest of the section is untouched ──
+    def test_the_other_photo_slots_still_exist(self):
+        slots = self.slots()
+        for key in ('photo_meterbox', 'photo_directional', 'photo_hand_sketch',
+                    'photo_feasibility_report'):
+            self.assertIn(key, slots, key)
+
+    def test_an_earthing_photo_is_labelled_earthing_not_a_raw_key(self):
+        """The document bundle labels each file from this same map."""
+        self.upload('photo_earthing')
+        self.assertEqual(self.slots()['photo_earthing'], 'Earthing')
+
+
+class EarthingSlotMergeMigrationTests(TestCase):
+    """The photos already filed under Earthing 1/2/3 move to the new slot.
+
+    Left behind they would still be on disk and still bundled, but labelled with
+    a raw key and invisible in the form — which for whoever opens the lead next
+    is indistinguishable from the photos being lost.
+    """
+
+    def setUp(self):
+        from .models import SiteVisit, SiteVisitDocument
+        self.SiteVisitDocument = SiteVisitDocument
+        lead = Lead.objects.create(first_name='Old', phone='9895000401')
+        self.sv = SiteVisit.objects.create(lead=lead)
+
+    def add(self, doc_type):
+        return self.SiteVisitDocument.objects.create(
+            site_visit=self.sv, doc_type=doc_type,
+            file=SimpleUploadedFile(f'{doc_type}.jpg', b'\xff\xd8\xff',
+                                    content_type='image/jpeg'))
+
+    def run_merge(self):
+        """Run the migration's own function, so the test covers what ships."""
+        from importlib import import_module
+        from django.apps import apps
+        module = import_module('leads.migrations.0070_merge_earthing_photo_slots')
+        module.merge(apps, None)
+        return module
+
+    def test_every_numbered_photo_moves_across(self):
+        for slot in ('photo_earthing_1', 'photo_earthing_2', 'photo_earthing_3'):
+            self.add(slot)
+        self.run_merge()
+        self.assertEqual(
+            self.SiteVisitDocument.objects.filter(doc_type='photo_earthing').count(), 3)
+
+    def test_nothing_is_left_under_the_old_slots(self):
+        self.add('photo_earthing_1')
+        self.add('photo_earthing_2')
+        self.run_merge()
+        self.assertEqual(
+            self.SiteVisitDocument.objects.filter(doc_type__startswith='photo_earthing_').count(), 0)
+
+    def test_no_photo_is_lost(self):
+        for slot in ('photo_earthing_1', 'photo_earthing_2', 'photo_meterbox'):
+            self.add(slot)
+        before = self.SiteVisitDocument.objects.count()
+        self.run_merge()
+        self.assertEqual(self.SiteVisitDocument.objects.count(), before)
+
+    def test_other_slots_are_left_alone(self):
+        self.add('photo_meterbox')
+        self.add('photo_directional')
+        self.run_merge()
+        self.assertEqual(self.SiteVisitDocument.objects.filter(doc_type='photo_meterbox').count(), 1)
+        self.assertEqual(self.SiteVisitDocument.objects.filter(doc_type='photo_directional').count(), 1)
+
+    def test_reversing_keeps_the_photos_visible(self):
+        """Which of the three a photo came from is not recorded once merged, so
+        the reverse puts them all somewhere they can still be seen."""
+        self.add('photo_earthing_1')
+        self.add('photo_earthing_2')
+        module = self.run_merge()
+        from django.apps import apps
+        module.unmerge(apps, None)
+        self.assertEqual(
+            self.SiteVisitDocument.objects.filter(doc_type='photo_earthing_1').count(), 2)
+        self.assertEqual(
+            self.SiteVisitDocument.objects.filter(doc_type='photo_earthing').count(), 0)

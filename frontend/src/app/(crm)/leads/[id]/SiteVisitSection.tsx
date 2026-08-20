@@ -38,10 +38,11 @@ const RCC_SUBTYPES = [
 // multiple uploaded files. (Customer-document slots are rendered explicitly below,
 // some of them gated by the Name Change / Loan yes-no flags.)
 const PHOTO_FIELDS = [
+  { key: "photo_site", label: "Site Photos" },
   { key: "photo_meterbox", label: "Meter Box" },
-  { key: "photo_earthing_1", label: "Earthing 1" },
-  { key: "photo_earthing_2", label: "Earthing 2" },
-  { key: "photo_earthing_3", label: "Earthing 3" },
+  // One earthing slot rather than three: each slot already takes as many files
+  // as the BDE wants to attach.
+  { key: "photo_earthing", label: "Earthing" },
   { key: "photo_directional", label: "Directional" },
   { key: "photo_hand_sketch", label: "Hand Sketch" },
   { key: "photo_feasibility_report", label: "Site Feasibility Report" },

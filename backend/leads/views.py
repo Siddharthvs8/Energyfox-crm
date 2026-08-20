@@ -48,10 +48,12 @@ SITE_VISIT_ATTACHMENTS = [
     ('itr_report', 'ITR Report'),
     ('purchase_order', 'Purchase Order'),
     ('kseb_feasibility_receipt', 'KSEB Feasibility Receipt'),
+    ('photo_site', 'Site Photos'),
     ('photo_meterbox', 'Meter Box'),
-    ('photo_earthing_1', 'Earthing 1'),
-    ('photo_earthing_2', 'Earthing 2'),
-    ('photo_earthing_3', 'Earthing 3'),
+    # One earthing slot, not three. Every slot here holds as many files as you
+    # like, so the numbered trio only ever forced a choice about which photo
+    # went where; leads/migrations move the old ones across.
+    ('photo_earthing', 'Earthing'),
     ('photo_directional', 'Directional Photo'),
     ('photo_hand_sketch', 'Hand Sketch'),
     ('photo_feasibility_report', 'Feasibility Report'),
