@@ -94,7 +94,8 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
   const [currentUser, setCurrentUser] = useState<any>(null);
   // ── Filters (combinable)
   const [stageFilter,      setStageFilter]      = useState("");  // '', 'converted', 'closed_deal', 'partially_paid', 'fully_paid'
-  const [telecallerFilter, setTelecallerFilter] = useState("");  // assigned_to id
+  const [telecallerFilter, setTelecallerFilter] = useState("");  // a tele caller's user id
+  const [telecallers, setTelecallers] = useState<{ id: number; name: string }[]>([]);
   const [bdeFilter,        setBdeFilter]        = useState("");  // bde id
 
   // ── Drawer state
@@ -121,15 +122,22 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
     const token = localStorage.getItem(`${domain}_access`);
     if (!token) return;
     try {
-      const [mRes, lRes, uRes] = await Promise.all([
+      const [mRes, lRes, uRes, staffRes] = await Promise.all([
         fetch(`${getApiBase(domain)}/api/converted-analytics/`, { headers: { Authorization: `Bearer ${token}` } }),
         fetch(`${getApiBase(domain)}/api/leads/?status=converted`, { headers: { Authorization: `Bearer ${token}` } }),
         fetch(`${getApiBase(domain)}/api/users/me/`, { headers: { Authorization: `Bearer ${token}` } }),
+        // The roster, so the Tele Caller picker lists the people who hold that
+        // role rather than whoever happens to own a converted lead.
+        fetch(`${getApiBase(domain)}/api/users/assignable/`, { headers: { Authorization: `Bearer ${token}` } }),
       ]);
       if (mRes.ok) setMetrics(await mRes.json());
       else setMetrics({ total_conversions: 0, total_revenue: 0, closed_deal_count: 0, avg_conversion_days: 0, top_sources: [] });
       if (lRes.ok) { const d = await lRes.json(); setLeads(Array.isArray(d) ? d : d.results || []); }
       if (uRes.ok) setCurrentUser(await uRes.json());
+      if (staffRes.ok) {
+        const staff = await staffRes.json();
+        setTelecallers((Array.isArray(staff) ? staff : []).filter((u: any) => u.role === "tele_caller"));
+      }
     } catch (e) { console.error(e); }
     finally { setLoading(false); }
   };
@@ -196,13 +204,12 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
 
   // Assignee filter options, derived from the converted leads actually present.
   const uniqueBy = (items: [string, string][]) => Array.from(new Map(items).entries());
-  // Owners whose role is actually tele caller. The rows are matched on
-  // `assigned_to`, which is simply whoever owns the lead — an admin or a BDE can
-  // own one — so listing every owner put superadmins and BDEs in a picker
-  // labelled "Tele Caller". The role rides along on `assigned_to_details`.
-  const telecallerOptions = uniqueBy(
-    leads.filter(l => l.assigned_to && l.assigned_to_details?.role === "tele_caller")
-         .map(l => [String(l.assigned_to), l.assigned_to_name || `#${l.assigned_to}`] as [string, string]));
+  // Everyone who holds the Tele Caller role, from the roster — not derived from
+  // whoever owns a converted lead. Deriving it listed admins and BDEs (they can
+  // own leads too), and filtering that down by the owner's role then emptied the
+  // picker whenever the embedded role was missing. The roster is the thing being
+  // asked about, so it is the thing to read.
+  const telecallerOptions = telecallers.map(u => [String(u.id), u.name] as [string, string]);
   const bdeOptions        = uniqueBy(leads.filter(l => l.bde).map(l => [String(l.bde), l.bde_name || `#${l.bde}`] as [string, string]));
 
   const stageMatch = (l: any) => {
@@ -214,7 +221,11 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
   const filtered = leads.filter(l =>
     (!search || `${l.first_name} ${l.last_name} ${l.email} ${l.phone} ${l.company}`.toLowerCase().includes(search.toLowerCase()))
     && stageMatch(l)
-    && (!telecallerFilter || String(l.assigned_to) === telecallerFilter)
+    // A tele caller sits in `tele_caller` once stamped, and in `assigned_to`
+    // while they still own the lead — a deal counts for them either way.
+    && (!telecallerFilter
+        || String(l.tele_caller) === telecallerFilter
+        || String(l.assigned_to) === telecallerFilter)
     && (!bdeFilter || String(l.bde) === bdeFilter)
   );
 
