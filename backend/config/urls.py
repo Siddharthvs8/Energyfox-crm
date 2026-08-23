@@ -10,6 +10,7 @@ from rest_framework_simplejwt.views import (
 )
 from leads.views import LeadViewSet
 from leads.performance import CompanyPerformanceView
+from leads.tracking import TrackingLinkView
 from leads.webhooks import meta_leads_webhook
 from tasks.views import TaskViewSet
 from users.views import (UserViewSet, SubscriptionStatusView, WorkspaceTeamViewSet,
@@ -63,6 +64,9 @@ urlpatterns = [
     path('api/converted-analytics/', ConvertedAnalyticsView.as_view(), name='converted-analytics'),
     path('api/company-performance/', CompanyPerformanceView.as_view(),
          name='company-performance'),
+    # The customer's own tracking page. Open on purpose — the token in the URL
+    # is the credential; see leads/tracking.py.
+    path('api/track/<str:token>/', TrackingLinkView.as_view(), name='public-tracking'),
     path('api/campaigns/', include('campaigns.urls')),
     path('api/automations/', include('automations.urls')),
     path('api/whatsapp/', include('messaging.urls')),

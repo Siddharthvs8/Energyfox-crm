@@ -375,11 +375,11 @@ class ProjectSerializer(serializers.ModelSerializer):
 
 class ServiceEntrySerializer(serializers.ModelSerializer):
     created_by_name = serializers.SerializerMethodField()
-
     class Meta:
         model = ServiceEntry
         fields = '__all__'
         read_only_fields = ['created_by', 'created_at', 'updated_at']
+
 
     def get_created_by_name(self, obj):
         if obj.created_by:
@@ -441,6 +441,7 @@ class EmergencyServiceSerializer(serializers.ModelSerializer):
         model = EmergencyService
         fields = '__all__'
         read_only_fields = ['created_by', 'created_at', 'updated_at']
+
 
     def get_created_by_name(self, obj):
         if obj.created_by:

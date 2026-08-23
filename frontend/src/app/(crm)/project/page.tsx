@@ -9,10 +9,13 @@ import Link from "next/link";
 import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCleanup";
 import { asDate, deadlineNote, type DeadlineInfo } from "@/components/ProjectDeadline";
 import { isSpectator } from "@/lib/spectator";
+import BdeTag from "@/components/BdeTag";
 
 // The row carries the whole deadline block, so the shared banner and dialog can
 // read it without a second fetch.
 type ProjectLead = DeadlineInfo & {
+  /** Who did the site visit — shown as a tag on the row. */
+  bde_name?: string | null;
   // Set when the lead behind this row has been deleted; the row is then
   // unopenable, and an admin gets a control to clear it out.
   lead_deleted?: boolean;
@@ -158,6 +161,7 @@ export default function ProjectPage() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-bold text-slate-900 truncate">{l.first_name} {l.last_name}</p>
+                    <BdeTag name={l.bde_name} />
                     {l.lead_deleted && <DeletedLeadBadge />}
                     {/* Nothing overdue reaches this list — it has moved to the
                         Overdue Projects module by then. */}

@@ -226,6 +226,7 @@ export default function DocumentationDetailPage({ params: paramsPromise }: { par
         canEdit={data.can_edit_stage1}
         canReopen={data.can_reopen_stage1}
         siteVisit={data.site_visit}
+        customerEmail={data.email}
         onChanged={load}
       />
     </div>

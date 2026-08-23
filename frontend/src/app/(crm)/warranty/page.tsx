@@ -8,7 +8,10 @@ import Link from "next/link";
 
 import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCleanup";
 import { isSpectator } from "@/lib/spectator";
+import BdeTag from "@/components/BdeTag";
 type WarrantyLead = {
+  /** Who did the site visit — shown as a tag on the row. */
+  bde_name?: string | null;
   // Set when the lead behind this row has been deleted; the row is then
   // unopenable, and an admin gets a control to clear it out.
   lead_deleted?: boolean;
@@ -104,6 +107,7 @@ export default function WarrantyPage() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-bold text-slate-900 truncate">{l.first_name} {l.last_name}</p>
+                    <BdeTag name={l.bde_name} />
                     {l.lead_deleted && <DeletedLeadBadge />}
                     <span className={`text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${l.is_complete ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
                       {l.is_complete ? "Sent" : "Pending"}

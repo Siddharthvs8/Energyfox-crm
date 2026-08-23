@@ -6,8 +6,11 @@ import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { isSpectator } from "@/lib/spectator";
+import BdeTag from "@/components/BdeTag";
 
 type PaymentLead = {
+  /** Who did the site visit — shown as a tag on the row. */
+  bde_name?: string | null;
   id: number;
   first_name: string;
   last_name: string | null;
@@ -104,6 +107,7 @@ export default function PartiallyPaidPage() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-bold text-slate-900 truncate">{l.first_name} {l.last_name}</p>
+                    <BdeTag name={l.bde_name} />
                     <span className="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">Partially Paid</span>
                   </div>
                   <p className="text-xs text-slate-500 mt-0.5 truncate">{l.phone || "—"} · {l.location || "No location"}{l.product_name ? ` · ${l.product_name}` : ""}</p>

@@ -459,6 +459,10 @@ class LeadViewSet(viewsets.ModelViewSet):
             'phone': lead.phone,
             'location': lead.company,
             'product_name': lead.product.name if lead.product else None,
+            # Who did the site visit. Every stage after the BDE shows it, so
+            # whoever picks the customer up knows who to ask about them.
+            'bde_name': (f"{lead.bde.first_name} {lead.bde.last_name}".strip()
+                         or lead.bde.username) if lead.bde else None,
             'pushed_at': lead.pushed_to_documentation_at,
             'po_signed_date': d(sv.po_signed_date) if sv else None,
             'kseb_feasibility_taken': sv.kseb_feasibility_taken if sv else '',
@@ -1745,12 +1749,178 @@ class LeadViewSet(viewsets.ModelViewSet):
             'location': lead.company,
             'product_name': lead.product.name if lead.product else None,
             'value': lead.value,
+            'bde_name': name(lead.bde),
             'accounts_staff_name': name(lead.accounts_staff),
             'amount_received': pv.amount_received if pv else None,
             'balance_amount': balance,
             'fully_paid': bool(balance is not None and balance <= 0),
             'verified_at': pv.completed_at if pv else None,
         }
+
+    def _tracking_url(self, request, link):
+        """The address the customer opens.
+
+        Built from the site the request arrived on, so a link made on the live
+        site points at the live site and one made locally points locally —
+        hard-coding a domain here is how a customer ends up with a link to
+        someone's laptop.
+        """
+        from django.conf import settings
+        base = (getattr(settings, 'PUBLIC_SITE_URL', '') or '').rstrip('/')
+        if not base:
+            origin = request.META.get('HTTP_ORIGIN') or ''
+            base = origin.rstrip('/') or request.build_absolute_uri('/').rstrip('/')
+        return f'{base}/track/{link.token}'
+
+    @action(detail=True, methods=['get', 'post'], url_path='tracking-link')
+    def tracking_link(self, request, pk=None):
+        """Create (or read) the customer's tracking link.
+
+        Offered once documentation has cleared, because that is the point the
+        job is really under way and the stages start meaning something — a link
+        handed out earlier shows a customer five empty rows.
+
+        POSTing twice returns the same link rather than minting a second: the
+        one already sent to the customer must keep working.
+        """
+        from .access import can_access_documentation, is_view_only
+        from .models import TrackingLink
+
+        lead = self.get_object()
+        if not can_access_documentation(request.user):
+            return Response({'error': 'You do not have access to documentation.'},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        link = getattr(lead, 'tracking_link', None)
+
+        if request.method == 'GET':
+            if link is None:
+                return Response({'exists': False})
+            return Response(self._tracking_link_payload(request, link))
+
+        if is_view_only(request.user):
+            return Response({'error': 'Read-only access cannot create a tracking link.'},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        s1 = getattr(lead, 'documentation_stage1', None)
+        if link is None and not (s1 and s1.is_complete):
+            return Response(
+                {'error': 'Finish Documentation Stage 1 first — until then the '
+                          'customer would open an empty tracker.'},
+                status=status.HTTP_400_BAD_REQUEST)
+
+        if link is None:
+            link = TrackingLink.objects.create(lead=lead, created_by=request.user)
+            ActivityLog.objects.create(
+                activity_type='note_added', lead=lead, actor=request.user,
+                description='Customer tracking link generated.',
+                extra={'auto_generated': True})
+
+        return Response(self._tracking_link_payload(request, link))
+
+    def _tracking_link_payload(self, request, link):
+        return {
+            'exists': True,
+            'url': self._tracking_url(request, link),
+            'token': link.token,
+            'created_at': link.created_at,
+            'revoked': link.revoked,
+            'is_live': link.is_live,
+            'expires_at': link.expires_at,
+            # Whether the customer ever opened it — the only evidence the
+            # address was right and the mail arrived.
+            'view_count': link.view_count,
+            'last_viewed_at': link.last_viewed_at,
+            'last_sent_at': link.last_sent_at,
+        }
+
+    @action(detail=True, methods=['post'], url_path='tracking-link/send')
+    def tracking_link_send(self, request, pk=None):
+        """Email the tracking link to the customer."""
+        from .access import can_access_documentation, is_view_only
+        from messaging import email as mailer
+
+        lead = self.get_object()
+        if not can_access_documentation(request.user) or is_view_only(request.user):
+            return Response({'error': 'You cannot send this.'},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        link = getattr(lead, 'tracking_link', None)
+        if link is None:
+            return Response({'error': 'Generate the tracking link first.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        to = (request.data.get('email') or lead.email or '').strip()
+        if not to:
+            return Response({'error': 'This customer has no email address on file.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        url = self._tracking_url(request, link)
+        name = (lead.first_name or '').strip() or 'there'
+        body = (
+            f"Hello {name},\n\n"
+            "Your solar installation is under way. You can follow its progress here:\n\n"
+            f"{url}\n\n"
+            "The page updates itself as each stage is completed — there is nothing "
+            "to log in to, so keep this link somewhere you can find it.\n\n"
+            "Thank you for choosing EnergyFox."
+        )
+        html = (
+            f"<p>Hello {name},</p>"
+            "<p>Your solar installation is under way. You can follow its progress here:</p>"
+            f'<p><a href="{url}" style="background:#4f46e5;color:#fff;padding:10px 18px;'
+            'border-radius:8px;text-decoration:none;font-weight:600;display:inline-block">'
+            'Track my installation</a></p>'
+            f'<p style="color:#64748b;font-size:13px">Or paste this into your browser:<br>{url}</p>'
+            "<p>The page updates itself as each stage is completed — there is nothing to "
+            "log in to, so keep this link somewhere you can find it.</p>"
+            "<p>Thank you for choosing EnergyFox.</p>"
+        )
+
+        log = mailer.send_and_log(
+            to=to, subject='Track your solar installation', body=body, html_body=html,
+            lead=lead, kind='tracking_link', created_by=request.user)
+
+        sent = getattr(log, 'status', '') == 'sent'
+        if sent:
+            link.last_sent_at = timezone.now()
+            link.save(update_fields=['last_sent_at'])
+            ActivityLog.objects.create(
+                activity_type='note_added', lead=lead, actor=request.user,
+                description=f'Tracking link emailed to {to}.',
+                extra={'auto_generated': True})
+
+        return Response({
+            'sent': sent,
+            'to': to,
+            # The outbox keeps the reason, so the screen can say what went wrong
+            # rather than only that it did.
+            'error': None if sent else (getattr(log, 'error', '') or 'The email could not be sent.'),
+            **self._tracking_link_payload(request, link),
+        }, status=status.HTTP_200_OK if sent else status.HTTP_502_BAD_GATEWAY)
+
+    @action(detail=True, methods=['post'], url_path='tracking-link/revoke')
+    def tracking_link_revoke(self, request, pk=None):
+        """Switch a link off — for one that has gone somewhere it should not."""
+        from .access import can_access_documentation, is_view_only
+
+        lead = self.get_object()
+        if not can_access_documentation(request.user) or is_view_only(request.user):
+            return Response({'error': 'You cannot do that.'}, status=status.HTTP_403_FORBIDDEN)
+
+        link = getattr(lead, 'tracking_link', None)
+        if link is None:
+            return Response({'error': 'There is no tracking link to revoke.'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        link.revoked = not link.revoked
+        link.save(update_fields=['revoked'])
+        ActivityLog.objects.create(
+            activity_type='note_added', lead=lead, actor=request.user,
+            description=('Customer tracking link revoked.' if link.revoked
+                         else 'Customer tracking link restored.'),
+            extra={'auto_generated': True})
+        return Response(self._tracking_link_payload(request, link))
 
     @action(detail=False, methods=['get'], url_path='module-counts')
     def module_counts(self, request):
@@ -3154,6 +3324,8 @@ class LeadViewSet(viewsets.ModelViewSet):
                 'phone': lead.phone,
                 'location': lead.company,
                 'installation_location': lead.installation_location,
+                'bde_name': (f"{lead.bde.first_name} {lead.bde.last_name}".strip()
+                             or lead.bde.username) if lead.bde else None,
                 'discom_approval': rec.discom_approval if rec else 'pending',
                 'sent_to_liasoning': bool(rec and rec.sent_to_liasoning),
                 'is_complete': bool(rec and rec.is_complete),
@@ -3951,7 +4123,9 @@ class LeadViewSet(viewsets.ModelViewSet):
         for lead in qs:
             plan = getattr(lead, 'periodic_maintenance', None)
             base = {'id': lead.id, 'first_name': lead.first_name, 'last_name': lead.last_name,
-                    'phone': lead.phone, 'location': lead.company}
+                    'phone': lead.phone, 'location': lead.company,
+                    'bde_name': (f"{lead.bde.first_name} {lead.bde.last_name}".strip()
+                                 or lead.bde.username) if lead.bde else None}
             if plan:
                 visits = list(plan.visits.all())
                 done = sum(1 for v in visits if v.is_complete)
@@ -3972,6 +4146,8 @@ class LeadViewSet(viewsets.ModelViewSet):
                         'last_name': lead.last_name,
                         'phone': lead.phone,
                         'location': lead.company,
+                        'bde_name': (f"{lead.bde.first_name} {lead.bde.last_name}".strip()
+                                     or lead.bde.username) if lead.bde else None,
                         'sequence': v.sequence,
                         'due_date': v.due_date,
                         'days_to_due': (v.due_date - today).days,

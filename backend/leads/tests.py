@@ -7570,3 +7570,285 @@ class BulkRestoreFromTrashTests(TestCase):
         rows = r.json()
         rows = rows.get('results', rows) if isinstance(rows, dict) else rows
         self.assertIn(a.pk, [x['id'] for x in rows])
+
+
+class DistrictIsAlwaysOneWeConfiguredTests(TestCase):
+    """A lead's district is one from Settings, or none at all.
+
+    Both importers already matched against the configured list, but every other
+    way in could file any text — and a Meta lead arrived reading
+    "Payyanur.kannur", a place and a district run together, naming no district
+    anybody set up. The rule is enforced on the model now, so it holds however
+    the lead is written.
+    """
+
+    def setUp(self):
+        from .models import District
+        self.District = District
+        District.objects.get_or_create(name='Kannur', defaults={'is_active': True})
+        District.objects.get_or_create(name='Ernakulam', defaults={'is_active': True})
+        self.caller = mk('dist_caller', 'tele_caller')
+
+    def make(self, district):
+        lead = Lead.objects.create(first_name='D', phone='9895900001', district=district)
+        lead.refresh_from_db()
+        return lead.district
+
+    # ── Writing ──
+    def test_an_unconfigured_district_is_dropped(self):
+        self.assertEqual(self.make('Payyanur.kannur'), '')
+
+    def test_a_configured_district_is_kept(self):
+        self.assertEqual(self.make('Ernakulam'), 'Ernakulam')
+
+    def test_capitalisation_settles_on_the_configured_spelling(self):
+        self.assertEqual(self.make('kAnNuR'), 'Kannur')
+
+    def test_surrounding_space_does_not_defeat_the_match(self):
+        self.assertEqual(self.make('  kannur '), 'Kannur')
+
+    def test_blank_stays_blank(self):
+        self.assertEqual(self.make(''), '')
+
+    def test_editing_to_an_unconfigured_district_clears_it(self):
+        lead = Lead.objects.create(first_name='D', phone='9895900002', district='Kannur')
+        lead.district = 'Payyanur.kannur'
+        lead.save()
+        lead.refresh_from_db()
+        self.assertEqual(lead.district, '')
+
+    def test_a_retired_district_is_no_longer_accepted(self):
+        """Inactive districts stop being offered, so they stop being filed."""
+        self.District.objects.filter(name='Kannur').update(is_active=False)
+        self.assertEqual(self.make('Kannur'), '')
+
+    def test_saving_an_untouched_lead_leaves_its_district_alone(self):
+        """A lead already filed under a district that was later retired keeps it
+        — the model only re-checks a district that is being written."""
+        lead = Lead.objects.create(first_name='D', phone='9895900003', district='Kannur')
+        self.District.objects.filter(name='Kannur').update(is_active=False)
+        lead.first_name = 'Renamed'
+        lead.save()
+        lead.refresh_from_db()
+        self.assertEqual(lead.district, 'Kannur')
+
+    # ── Through the API, which is the path that had no guard ──
+    def test_the_api_cannot_file_an_unconfigured_district(self):
+        r = self.client.post('/api/leads/',
+                             data={'first_name': 'ApiLead', 'phone': '9895900004',
+                                   'district': 'Payyanur.kannur'},
+                             content_type='application/json',
+                             HTTP_AUTHORIZATION=token_for(self.caller))
+        self.assertEqual(r.status_code, 201, r.content[:200])
+        self.assertEqual(Lead.objects.get(pk=r.json()['id']).district, '')
+
+    def test_the_api_keeps_a_configured_district(self):
+        r = self.client.post('/api/leads/',
+                             data={'first_name': 'ApiLead2', 'phone': '9895900005',
+                                   'district': 'ernakulam'},
+                             content_type='application/json',
+                             HTTP_AUTHORIZATION=token_for(self.caller))
+        self.assertEqual(Lead.objects.get(pk=r.json()['id']).district, 'Ernakulam')
+
+    # ── Through Meta, which is where the reported lead came from ──
+    def test_a_meta_lead_with_a_stray_district_is_filed_without_one(self):
+        from .meta_integration import match_district
+        self.assertEqual(match_district('Payyanur.kannur'), '')
+        self.assertEqual(match_district('kannur'), 'Kannur')
+
+
+class CustomerTrackingLinkTests(TestCase):
+    """The link documentation hands the customer, and the page it opens.
+
+    The token in the URL is the whole of the security, so these tests care about
+    two things above all: that the page opens with no login, and that nothing
+    internal travels with it.
+    """
+
+    def setUp(self):
+        from .models import DocumentationStage1, TrackingLink
+        self.TrackingLink = TrackingLink
+        self.docstaff = mk('trk_doc', 'documentation_staff')
+        self.bde = mk('trk_bde', 'bde')
+        self.lead = Lead.objects.create(first_name='Meera', last_name='Nair',
+                                        phone='9895700001', email='meera@example.com',
+                                        value=Decimal('320000'), bde=self.bde)
+        self.s1 = DocumentationStage1.objects.create(
+            lead=self.lead, is_complete=True, completed_at=timezone.now())
+
+    def auth(self, user=None):
+        return {'HTTP_AUTHORIZATION': token_for(user or self.docstaff)}
+
+    def generate(self, user=None):
+        return self.client.post(f'/api/leads/{self.lead.id}/tracking-link/',
+                                data={}, content_type='application/json',
+                                **self.auth(user))
+
+    def track(self, token):
+        """Fetched with no credentials at all — the customer has none."""
+        return self.client.get(f'/api/track/{token}/')
+
+    # ── Generating ──
+    def test_documentation_can_generate_a_link(self):
+        r = self.generate()
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertTrue(r.json()['token'])
+
+    def test_the_token_is_long_and_random(self):
+        """It is the only thing protecting the page, so it must not be guessable."""
+        a = self.generate().json()['token']
+        self.TrackingLink.objects.all().delete()
+        b = self.generate().json()['token']
+        self.assertGreaterEqual(len(a), 32)
+        self.assertNotEqual(a, b)
+
+    def test_the_url_contains_the_token(self):
+        d = self.generate().json()
+        self.assertIn(d['token'], d['url'])
+        self.assertIn('/track/', d['url'])
+
+    def test_generating_twice_keeps_the_same_link(self):
+        """The one already sitting in the customer's inbox has to keep working."""
+        first = self.generate().json()['token']
+        self.assertEqual(self.generate().json()['token'], first)
+
+    def test_a_link_cannot_be_made_before_documentation_is_done(self):
+        """Otherwise the customer opens a tracker with nothing on it."""
+        self.s1.is_complete = False
+        self.s1.save(update_fields=['is_complete'])
+        r = self.generate()
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('Documentation Stage 1', r.json()['error'])
+
+    def test_a_bde_cannot_generate_one(self):
+        self.assertEqual(self.generate(user=self.bde).status_code, 403)
+
+    def test_a_spectator_cannot_generate_one(self):
+        spectator = mk('trk_spec', 'spectator')
+        self.assertEqual(self.generate(user=spectator).status_code, 403)
+
+    def test_reading_it_says_so_when_there_is_none(self):
+        r = self.client.get(f'/api/leads/{self.lead.id}/tracking-link/', **self.auth())
+        self.assertFalse(r.json()['exists'])
+
+    # ── The customer's page: open to anyone holding the link ──
+    def test_the_page_opens_with_no_login(self):
+        token = self.generate().json()['token']
+        r = self.track(token)
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertEqual(r.json()['customer'], 'Meera')
+
+    def test_nothing_internal_travels_with_it(self):
+        """Anyone holding the link sees this, so it must carry only what the
+        customer would be told on the phone."""
+        token = self.generate().json()['token']
+        body = self.track(token).content.decode().lower()
+        for secret in ('320000', 'trk_doc', 'trk_bde', '9895700001',
+                       'meera@example.com', 'revenue', 'lead_id'):
+            self.assertNotIn(secret.lower(), body, secret)
+
+    def test_only_the_first_name_is_shown(self):
+        token = self.generate().json()['token']
+        self.assertNotIn('Nair', self.track(token).content.decode())
+
+    def test_the_stages_are_named_for_the_customer(self):
+        token = self.generate().json()['token']
+        titles = [s['title'] for s in self.track(token).json()['stages']]
+        self.assertEqual(titles[0], 'Documents verified')
+        self.assertEqual(titles[-1], 'Installation complete')
+
+    def test_the_first_unfinished_stage_is_the_current_one(self):
+        token = self.generate().json()['token']
+        stages = self.track(token).json()['stages']
+        current = [s for s in stages if s['current']]
+        self.assertEqual(len(current), 1)
+        self.assertEqual(current[0]['key'], 'feasibility')
+
+    def test_the_journey_only_runs_forwards(self):
+        """A job installed while its approval record is still open must not show
+        the customer a finished step above an unfinished one."""
+        from .models import Project
+        Project.objects.create(lead=self.lead, is_complete=True,
+                               completed_at=timezone.now())
+        token = self.generate().json()['token']
+        stages = self.track(token).json()['stages']
+        self.assertTrue(all(s['done'] for s in stages))
+        approvals = next(s for s in stages if s['key'] == 'approvals')
+        self.assertTrue(approvals['inferred'])
+        # An inferred step must not borrow a date it was never given.
+        self.assertIsNone(approvals['on'])
+
+    def test_opening_the_page_is_counted(self):
+        """The only evidence the address was right and the mail arrived."""
+        token = self.generate().json()['token']
+        self.track(token)
+        self.track(token)
+        self.assertEqual(self.TrackingLink.objects.get(token=token).view_count, 2)
+
+    # ── When it should not open ──
+    def test_an_unknown_token_is_not_found(self):
+        self.assertEqual(self.track('nothing-like-a-real-token').status_code, 404)
+
+    def test_a_revoked_link_stops_working(self):
+        token = self.generate().json()['token']
+        self.TrackingLink.objects.filter(token=token).update(revoked=True)
+        self.assertEqual(self.track(token).status_code, 404)
+
+    def test_a_trashed_lead_takes_its_link_with_it(self):
+        token = self.generate().json()['token']
+        Lead.objects.filter(pk=self.lead.pk).update(is_trashed=True)
+        self.assertEqual(self.track(token).status_code, 404)
+
+    def test_a_link_expires_after_the_job_is_finished(self):
+        """And says so, rather than 404-ing, because the customer can act on it."""
+        from .models import Project, TrackingLink
+        Project.objects.create(
+            lead=self.lead, is_complete=True,
+            completed_at=timezone.now() - timedelta(
+                days=TrackingLink.LIVES_FOR_DAYS_AFTER_COMPLETION + 1))
+        token = self.generate().json()['token']
+        r = self.track(token)
+        self.assertEqual(r.status_code, 410)
+        self.assertEqual(r.json()['error'], 'expired')
+
+    def test_a_link_does_not_expire_while_the_job_is_running(self):
+        """A job taking eight months must not go dark halfway through."""
+        token = self.generate().json()['token']
+        link = self.TrackingLink.objects.get(token=token)
+        self.assertIsNone(link.expires_at)
+        self.assertTrue(link.is_live)
+
+    # ── Revoking ──
+    def test_a_link_can_be_switched_off_and_back_on(self):
+        self.generate()
+        off = self.client.post(f'/api/leads/{self.lead.id}/tracking-link/revoke/',
+                               data={}, content_type='application/json', **self.auth())
+        self.assertTrue(off.json()['revoked'])
+        on = self.client.post(f'/api/leads/{self.lead.id}/tracking-link/revoke/',
+                              data={}, content_type='application/json', **self.auth())
+        self.assertFalse(on.json()['revoked'])
+
+    # ── Emailing ──
+    def test_the_link_is_emailed_to_the_customer(self):
+        from django.core import mail
+        self.generate()
+        r = self.client.post(f'/api/leads/{self.lead.id}/tracking-link/send/',
+                             data={}, content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertTrue(r.json()['sent'])
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn('/track/', mail.outbox[0].body)
+        self.assertEqual(mail.outbox[0].to, ['meera@example.com'])
+
+    def test_sending_without_an_address_is_refused_clearly(self):
+        Lead.objects.filter(pk=self.lead.pk).update(email='')
+        self.generate()
+        r = self.client.post(f'/api/leads/{self.lead.id}/tracking-link/send/',
+                             data={}, content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('no email address', r.json()['error'])
+
+    def test_sending_before_generating_is_refused(self):
+        r = self.client.post(f'/api/leads/{self.lead.id}/tracking-link/send/',
+                             data={}, content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 400)

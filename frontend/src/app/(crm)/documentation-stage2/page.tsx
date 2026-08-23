@@ -8,7 +8,10 @@ import Link from "next/link";
 
 import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCleanup";
 import { isSpectator } from "@/lib/spectator";
+import BdeTag from "@/components/BdeTag";
 type Stage2Lead = {
+  /** Who did the site visit — shown as a tag on the row. */
+  bde_name?: string | null;
   // Set when the lead behind this row has been deleted; the row is then
   // unopenable, and an admin gets a control to clear it out.
   lead_deleted?: boolean;
@@ -154,6 +157,7 @@ export default function DocumentationStage2Page() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-bold text-slate-900 truncate">{l.first_name} {l.last_name}</p>
+                    <BdeTag name={l.bde_name} />
                     {l.lead_deleted && <DeletedLeadBadge />}
                     {(() => {
                       const b = bucketOf(l);

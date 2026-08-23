@@ -196,7 +196,13 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
 
   // Assignee filter options, derived from the converted leads actually present.
   const uniqueBy = (items: [string, string][]) => Array.from(new Map(items).entries());
-  const telecallerOptions = uniqueBy(leads.filter(l => l.assigned_to).map(l => [String(l.assigned_to), l.assigned_to_name || `#${l.assigned_to}`] as [string, string]));
+  // Owners whose role is actually tele caller. The rows are matched on
+  // `assigned_to`, which is simply whoever owns the lead — an admin or a BDE can
+  // own one — so listing every owner put superadmins and BDEs in a picker
+  // labelled "Tele Caller". The role rides along on `assigned_to_details`.
+  const telecallerOptions = uniqueBy(
+    leads.filter(l => l.assigned_to && l.assigned_to_details?.role === "tele_caller")
+         .map(l => [String(l.assigned_to), l.assigned_to_name || `#${l.assigned_to}`] as [string, string]));
   const bdeOptions        = uniqueBy(leads.filter(l => l.bde).map(l => [String(l.bde), l.bde_name || `#${l.bde}`] as [string, string]));
 
   const stageMatch = (l: any) => {
@@ -323,7 +329,7 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
             // the two would otherwise read as one figure.
             { label: "Won Revenue",     value: formatCurrency(data.total_revenue), icon: <I.TrendUp />, color: "from-emerald-400 to-teal-400", badge: `${data.closed_deal_count ?? 0} closed deals`, badgeColor: "bg-emerald-50 text-emerald-600" },
             { label: "Total Converts",  value: `${data.total_conversions}`, sub: "deals", icon: <I.Trophy />, color: "from-indigo-400 to-violet-400", badge: "Active Lifecycle", badgeColor: "bg-indigo-50 text-indigo-600" },
-            { label: "Avg Time to Close", value: `${data.avg_conversion_days}`, sub: "days", icon: <I.Clock />, color: "from-amber-400 to-orange-400", badge: "From Creation", badgeColor: "bg-amber-50 text-amber-600" },
+            { label: "Avg Time to Convert", value: `${data.avg_conversion_days}`, sub: "days", icon: <I.Clock />, color: "from-amber-400 to-orange-400", badge: "From Creation", badgeColor: "bg-amber-50 text-amber-600" },
             { label: "Top Source", value: data.top_sources[0]?.source ? getSourceLabel(data.top_sources[0].source) : "—", icon: <I.Target />, color: "from-fuchsia-400 to-pink-400", badge: data.top_sources[0]?.count ? `${data.top_sources[0].count} leads` : "No data", badgeColor: "bg-fuchsia-50 text-fuchsia-600" },
           ].map((c, i) => (
             <div key={i} className="bg-white rounded-2xl p-5 border border-slate-100 shadow-[0_4px_20px_rgb(0,0,0,0.04)] relative overflow-hidden group hover:shadow-[0_8px_30px_rgb(0,0,0,0.08)] transition-shadow">

@@ -6,8 +6,11 @@ import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { isSpectator } from "@/lib/spectator";
+import BdeTag from "@/components/BdeTag";
 
 type Row = {
+  /** Who did the site visit — shown as a tag on the row. */
+  bde_name?: string | null;
   id: number;
   first_name: string;
   last_name: string | null;
@@ -129,6 +132,7 @@ export default function DiscomFollowupPage() {
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <p className="text-sm font-bold text-slate-900 truncate">{l.first_name} {l.last_name}</p>
+                      <BdeTag name={l.bde_name} />
                       <span className={`text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${notApproved ? "bg-rose-50 text-rose-600" : "bg-amber-50 text-amber-700"}`}>
                         {notApproved ? "Not Approved" : `Pending${l.days_pending != null ? ` · ${l.days_pending}d` : ""}`}
                       </span>

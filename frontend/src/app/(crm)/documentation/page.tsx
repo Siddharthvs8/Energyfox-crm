@@ -8,7 +8,10 @@ import Link from "next/link";
 
 import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCleanup";
 import { isSpectator } from "@/lib/spectator";
+import BdeTag from "@/components/BdeTag";
 type DocLead = {
+  /** Who did the site visit — shown as a tag on the row. */
+  bde_name?: string | null;
   // Set when the lead behind this row has been deleted; the row is then
   // unopenable, and an admin gets a control to clear it out.
   lead_deleted?: boolean;
@@ -103,6 +106,7 @@ export default function DocumentationPage() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-bold text-slate-900 truncate">{l.first_name} {l.last_name}</p>
+                    <BdeTag name={l.bde_name} />
                     {l.lead_deleted && <DeletedLeadBadge />}
                     <span className="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">{l.attachments.length} file{l.attachments.length === 1 ? "" : "s"}</span>
                   </div>

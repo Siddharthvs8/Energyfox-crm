@@ -4,6 +4,7 @@ import { getApiBase } from "@/lib/mock-data";
 import { kindForSlot } from "@/lib/docKinds";
 import PdfDropField from "@/components/PdfDropField";
 import React, { useCallback, useContext, useEffect, useRef, useState, createContext } from "react";
+import TrackingLinkPanel from "@/components/TrackingLinkPanel";
 
 /* ── Slot definitions (key = DocumentationStage1Document.doc_type) ── */
 const NC_FILES = [
@@ -193,8 +194,10 @@ function KsebButton() {
 /* ── Main component ── */
 type SiteVisit = Record<string, any> | null;
 
-export default function DocumentationStage1Section({ leadId, canEdit, canReopen, siteVisit, onChanged }: {
+export default function DocumentationStage1Section({ leadId, canEdit, canReopen, siteVisit, onChanged, customerEmail }: {
   leadId: number | string; canEdit: boolean; canReopen?: boolean; siteVisit: SiteVisit; onChanged?: () => void;
+  /** Shown on the tracking panel so staff can see where the link would go. */
+  customerEmail?: string | null;
 }) {
   const apiBase = getApiBase(APP_SLUG);
   const url = `${apiBase}/api/leads/${leadId}/documentation-stage1/`;
@@ -566,6 +569,10 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
 
       {/* KSEB feasibility — mirrored read-only from the BDE's own section, since
           the hand-off to accounts depends on it. */}
+      {isComplete && (
+        <TrackingLinkPanel leadId={Number(leadId)} customerEmail={customerEmail} />
+      )}
+
       {canEdit && !isComplete && (
         <div className="mt-6 mb-4 bg-white border border-slate-200 rounded-2xl px-5 py-4">
           <div className="flex flex-wrap items-center justify-between gap-3">

@@ -6,18 +6,22 @@ import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { isSpectator } from "@/lib/spectator";
+import BdeTag from "@/components/BdeTag";
 
 type ScheduledRow = {
   id: number; first_name: string; last_name: string | null; phone: string | null; location: string | null;
+  bde_name?: string | null;
   start_date: string; done_count: number; total_visits: number;
   next_due: string | null; next_sequence: number | null;
 };
-type EligibleRow = { id: number; first_name: string; last_name: string | null; phone: string | null; location: string | null };
+type EligibleRow = { id: number; first_name: string; last_name: string | null; phone: string | null;
+                     location: string | null; bde_name?: string | null };
 
 /** Every visit still to be done, across all customers, soonest first. */
 type UpcomingRow = {
   lead_id: number; visit_id: number;
   first_name: string; last_name: string | null; phone: string | null; location: string | null;
+  bde_name?: string | null;
   sequence: number; due_date: string; days_to_due: number;
   is_overdue: boolean; is_due: boolean;
   is_rescheduled: boolean; original_due_date: string | null; reschedule_reason: string;
@@ -354,7 +358,10 @@ export default function PeriodicMaintenancePage() {
                     <tr key={r.visit_id}
                       className={`border-b border-slate-50 hover:bg-slate-50/60 ${r.is_overdue ? "bg-rose-50/40" : r.is_due ? "bg-amber-50/40" : ""}`}>
                       <td className="px-5 py-3">
-                        <p className="font-semibold text-slate-800">{r.first_name} {r.last_name}</p>
+                        <span className="flex items-center gap-2 flex-wrap">
+                          <p className="font-semibold text-slate-800">{r.first_name} {r.last_name}</p>
+                          <BdeTag name={r.bde_name} />
+                        </span>
                         <p className="text-[11px] text-slate-400">{r.phone || "—"}{r.location ? ` · ${r.location}` : ""}</p>
                       </td>
                       <td className="px-5 py-3 text-slate-600 whitespace-nowrap">#{r.sequence}</td>
@@ -417,7 +424,10 @@ export default function PeriodicMaintenancePage() {
                     {fScheduled.map(r => (
                       <tr key={r.id} className="border-b border-slate-50 hover:bg-slate-50/60">
                         <td className="px-5 py-3">
-                          <p className="font-semibold text-slate-800">{r.first_name} {r.last_name}</p>
+                          <span className="flex items-center gap-2 flex-wrap">
+                            <p className="font-semibold text-slate-800">{r.first_name} {r.last_name}</p>
+                            <BdeTag name={r.bde_name} />
+                          </span>
                           <p className="text-[11px] text-slate-400">{r.phone || "—"}{r.location ? ` · ${r.location}` : ""}</p>
                         </td>
                         <td className="px-5 py-3 text-slate-600">{new Date(r.start_date).toLocaleDateString("en-IN")}</td>
@@ -461,7 +471,10 @@ export default function PeriodicMaintenancePage() {
                   {fEligible.map(r => (
                     <tr key={r.id} className="border-b border-slate-50 hover:bg-slate-50/60">
                       <td className="px-5 py-3">
-                        <p className="font-semibold text-slate-800">{r.first_name} {r.last_name}</p>
+                        <span className="flex items-center gap-2 flex-wrap">
+                          <p className="font-semibold text-slate-800">{r.first_name} {r.last_name}</p>
+                          <BdeTag name={r.bde_name} />
+                        </span>
                         <p className="text-[11px] text-slate-400">{r.phone || "—"}{r.location ? ` · ${r.location}` : ""}</p>
                       </td>
                       <td className="px-5 py-3">

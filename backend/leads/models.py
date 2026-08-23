@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from django.core.validators import RegexValidator
 from django.db import models
 from django.db.models.functions import Lower
@@ -297,11 +299,15 @@ class Lead(models.Model):
     # Owner as it was when this row was loaded, so save() can tell a hand-off
     # from any other edit. None on a row built in memory.
     _loaded_assigned_to_id = None
+    # Same for the district, so the check below runs on a change rather than on
+    # every save of every lead.
+    _loaded_district = None
 
     @classmethod
     def from_db(cls, db, field_names, values):
         obj = super().from_db(db, field_names, values)
         obj._loaded_assigned_to_id = obj.assigned_to_id
+        obj._loaded_district = obj.district
         return obj
 
     def save(self, *args, **kwargs):
@@ -326,7 +332,20 @@ class Lead(models.Model):
 
         Bulk paths use queryset.update() and skip save(), so they stamp these
         themselves — see LeadViewSet._stamp_owner_role.
+
+        The district is settled here too. Both importers already matched it
+        against the configured list, but every other way in — the API, the
+        admin, a shell, whatever gets written next — could file any text at all,
+        and a lead arrived from Meta reading "Payyanur.kannur", which is a place
+        and a district run together and names no district anybody set up.
+        Doing it here makes the rule true however the lead is written rather
+        than true wherever someone remembered to call the helper.
         """
+        if self.district and (self._state.adding or self.district != self._loaded_district):
+            # Settles on the configured spelling, and empties anything that is
+            # not one of ours — see District.canonical.
+            self.district = District.canonical(self.district)
+
         owner = self.assigned_to if self.assigned_to_id else None
         role = getattr(owner, 'role', '') if owner else ''
         owner_changed = self._state.adding or self.assigned_to_id != self._loaded_assigned_to_id
@@ -343,6 +362,7 @@ class Lead(models.Model):
                 kwargs['update_fields'] = list(update_fields) + stamped
         super().save(*args, **kwargs)
         self._loaded_assigned_to_id = self.assigned_to_id
+        self._loaded_district = self.district
 
     def __str__(self):
         return f"{self.first_name} {self.last_name}"
@@ -1522,3 +1542,76 @@ class ModuleSeen(models.Model):
 
     def __str__(self):
         return f"{self.user_id} saw lead {self.lead_id} in {self.module}"
+
+
+class TrackingLink(models.Model):
+    """A customer's own view of where their installation has got to.
+
+    Handed out once documentation clears, as a link with an unguessable token in
+    it — the customer opens it and sees the stages, the way a parcel is tracked.
+    There is no login: asking a homeowner to hold an account for one job would
+    mean nobody ever looks, and the link is the credential.
+
+    That makes the token the whole of the security, so it is long and random
+    (`secrets.token_urlsafe`, 32 bytes) rather than anything derived from the
+    lead — a sequential id in the URL would let anyone walk the customer list.
+    What the page shows is deliberately thin: stage names and dates, never
+    money, staff names or internal notes. See `TrackingLinkView`.
+    """
+    # Long enough that guessing is hopeless, short enough to paste into WhatsApp.
+    TOKEN_BYTES = 32
+    # How long the link keeps working after the project is finished. The customer
+    # may well come back to it for a while — a warranty question, their own
+    # records — but a link that lives for ever in an old email is a customer's
+    # details reachable for ever.
+    LIVES_FOR_DAYS_AFTER_COMPLETION = 90
+
+    lead = models.OneToOneField(Lead, on_delete=models.CASCADE, related_name='tracking_link')
+    token = models.CharField(max_length=64, unique=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey('users.User', on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='+')
+    # Switched off by hand when a link has gone somewhere it should not have.
+    revoked = models.BooleanField(default=False)
+    # Whether the customer ever opened it, which is the only way to know the
+    # address was right and the mail arrived.
+    view_count = models.PositiveIntegerField(default=0)
+    last_viewed_at = models.DateTimeField(null=True, blank=True)
+    last_sent_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = 'tracking link'
+
+    def __str__(self):
+        return f'Tracking for lead #{self.lead_id}'
+
+    @staticmethod
+    def new_token():
+        import secrets
+        return secrets.token_urlsafe(TrackingLink.TOKEN_BYTES)
+
+    def save(self, *args, **kwargs):
+        if not self.token:
+            self.token = self.new_token()
+        super().save(*args, **kwargs)
+
+    @property
+    def expires_at(self):
+        """When the link stops working, or None while the job is still running.
+
+        Measured from the project being finished rather than from the day the
+        link was made: a job that takes eight months should not go dark halfway
+        through, which is exactly when the customer is most likely to look.
+        """
+        project = getattr(self.lead, 'project', None)
+        done_at = getattr(project, 'completed_at', None) if project else None
+        if not done_at:
+            return None
+        return done_at + timedelta(days=self.LIVES_FOR_DAYS_AFTER_COMPLETION)
+
+    @property
+    def is_live(self):
+        if self.revoked:
+            return False
+        expires = self.expires_at
+        return expires is None or timezone.now() < expires

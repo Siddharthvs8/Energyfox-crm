@@ -9,6 +9,7 @@ import Link from "next/link";
 import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCleanup";
 import { ReleaseDialog, asDate, deadlineNote, type DeadlineInfo } from "@/components/ProjectDeadline";
 import { isSpectator } from "@/lib/spectator";
+import BdeTag from "@/components/BdeTag";
 
 /**
  * Overdue Projects — installations that missed the 20-day deadline counted from
@@ -18,6 +19,8 @@ import { isSpectator } from "@/lib/spectator";
  * super admin can edit one until it is released back with a fresh deadline.
  */
 type OverdueLead = DeadlineInfo & {
+  /** Who did the site visit — shown as a tag on the row. */
+  bde_name?: string | null;
   lead_deleted?: boolean;
   can_cleanup?: boolean;
   id: number;
@@ -122,6 +125,7 @@ export default function OverdueProjectsPage() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-bold text-slate-900 truncate">{l.first_name} {l.last_name}</p>
+                    <BdeTag name={l.bde_name} />
                     {l.lead_deleted && <DeletedLeadBadge />}
                     <span className="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-rose-50 text-rose-700">
                       Overdue
