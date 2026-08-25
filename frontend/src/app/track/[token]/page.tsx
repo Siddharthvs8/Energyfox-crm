@@ -162,6 +162,12 @@ export default function TrackPage({ params }: { params: Promise<{ token: string 
   }
 
   const pct = Math.round((data.steps_done / Math.max(data.steps_total, 1)) * 100);
+  // Which step is being worked on now, by position rather than by count. The
+  // last two stages — the subsidy claim and the warranty — run side by side, so
+  // the finished ones are no longer a run from the top and counting them would
+  // name the wrong step ("step 7 of 7" while step 6 is still open).
+  const currentIndex = data.stages.findIndex(s => s.current);
+  const stepNumber = currentIndex === -1 ? data.steps_total : currentIndex + 1;
 
   return (
     <Shell>
@@ -177,7 +183,7 @@ export default function TrackPage({ params }: { params: Promise<{ token: string 
         <div className="mt-4">
           <div className="flex items-baseline justify-between text-[12px] mb-1.5">
             <span className="font-bold text-slate-600">
-              Step {Math.min(data.steps_done + (data.complete ? 0 : 1), data.steps_total)} of {data.steps_total}
+              Step {stepNumber} of {data.steps_total}
             </span>
             <span className="text-slate-400">{pct}% complete</span>
           </div>

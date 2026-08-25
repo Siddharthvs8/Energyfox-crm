@@ -499,8 +499,12 @@ export default function DocumentationStage2Section({ leadId, canEdit, onChanged 
 
   const saveScalars = async (): Promise<any | null> => {
     // Stage 2 owns discom_approval; the server writes it through to Liasoning.
-    // Once signed off it is the only field still accepted, so send it alone.
-    const payload = isComplete ? { discom_approval: f.discom_approval } : f;
+    // Once signed off, it and the subsidy claim that follows it are the only
+    // fields still accepted — KSEB answers late, and the claim can only be filed
+    // after it does — so those two go alone.
+    const payload = isComplete
+      ? { discom_approval: f.discom_approval, subsidy_requested: f.subsidy_requested }
+      : f;
     const r = await fetch(url, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...authHeader() },
@@ -727,7 +731,16 @@ export default function DocumentationStage2Section({ leadId, canEdit, onChanged 
 
         {f.discom_approval === "yes" && (
           <div className="mt-4 bg-emerald-50/60 border border-emerald-100 rounded-xl p-3">
-            <Check checked={f.subsidy_requested} disabled={readOnly} onChange={v => set("subsidy_requested", v)} label="Subsidy requested" />
+            {/* Like the approval above it, this survives the sign-off: the claim
+                can only go in once KSEB has answered, which is often after Stage
+                2 is closed. The customer's tracking link shows this step. */}
+            <Check checked={f.subsidy_requested} disabled={!canEdit} onChange={v => set("subsidy_requested", v)} label="Subsidy requested" />
+            {canEdit && isComplete && (
+              <button onClick={save} disabled={saving}
+                className="mt-2 px-4 py-2 bg-slate-800 text-white rounded-xl text-xs font-semibold hover:bg-slate-900 disabled:opacity-50 transition">
+                {saving ? "Saving…" : saved ? "Saved ✓" : "Save subsidy status"}
+              </button>
+            )}
           </div>
         )}
         {f.discom_approval !== "yes" && (

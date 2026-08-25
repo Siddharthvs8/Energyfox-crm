@@ -168,6 +168,47 @@ function SectionCompleteBar({ label, done, doneAt, busy, readOnly, onToggle }: {
   );
 }
 
+/* The bank's decision on the customer's loan.
+
+   Kept live even after Stage 1 is signed off and locked, because that is when it
+   normally arrives: the paperwork goes to the bank, the stage closes, and the
+   sanction letter turns up days later. It writes through its own endpoint for
+   that reason, not through the stage's Save. */
+function LoanSanctionBar({ sanctioned, at, busy, readOnly, onToggle }: {
+  sanctioned: boolean; at: string | null; busy: boolean; readOnly: boolean;
+  onToggle: (v: boolean) => void;
+}) {
+  return (
+    <div className="sm:col-span-2 lg:col-span-3 mt-1 pt-4 border-t border-slate-100">
+      <div className="flex flex-wrap items-center gap-3">
+        {sanctioned ? (
+          <>
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-lg text-xs font-semibold">
+              ✓ Loan sanctioned{at ? ` · ${new Date(at).toLocaleDateString("en-IN")}` : ""}
+            </span>
+            {!readOnly && (
+              <button type="button" onClick={() => onToggle(false)} disabled={busy}
+                className="text-[12px] font-semibold text-slate-500 hover:text-slate-700 disabled:opacity-50">
+                {busy ? "Saving…" : "Undo"}
+              </button>
+            )}
+          </>
+        ) : (
+          <>
+            <button type="button" onClick={() => onToggle(true)} disabled={busy || readOnly}
+              className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-semibold hover:bg-emerald-700 disabled:opacity-50 transition">
+              {busy ? "Saving…" : "Mark loan sanctioned"}
+            </button>
+            <span className="text-[11px] text-slate-400">
+              Awaiting the bank. The customer sees this step on their tracking link.
+            </span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* KYC (Know Your Customer) = Aadhaar + PAN + Passbook, grouped under one label. */
 function KycGroup({ fields }: { fields: readonly (readonly [string, string])[] }) {
   return (
@@ -214,6 +255,11 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
   const [documents, setDocuments] = useState<DS1Doc[]>([]);
   const [uploadingType, setUploadingType] = useState<string | null>(null);
   const [isComplete, setIsComplete] = useState(false);
+  // The loan decision is held apart from `bools`: it is written by its own
+  // endpoint, so it must never ride along in the stage PATCH.
+  const [loanSanctioned, setLoanSanctioned] = useState(false);
+  const [loanSanctionedAt, setLoanSanctionedAt] = useState<string | null>(null);
+  const [loanBusy, setLoanBusy] = useState(false);
   const [completedByName, setCompletedByName] = useState<string | null>(null);
   const [completedAt, setCompletedAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -236,6 +282,8 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
       name_change_completed_at: d.name_change_completed_at ?? null,
       load_enhancement_completed_at: d.load_enhancement_completed_at ?? null,
     });
+    setLoanSanctioned(!!d.loan_sanctioned);
+    setLoanSanctionedAt(d.loan_sanctioned_at ?? null);
     setDocuments(Array.isArray(d.documents) ? d.documents : []);
     setIsComplete(!!d.is_complete);
     setCompletedByName(d.completed_by_name ?? null);
@@ -309,6 +357,25 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
       if (r.ok || r.status === 204) await refetchDocs();
       else { const e = await r.json().catch(() => ({})); alert(e.error || "Could not delete the file."); }
     } catch { alert("Network error while deleting."); }
+  };
+
+  // The bank's decision, written straight through rather than via Save: it has
+  // to keep working after Stage 1 is locked, which is when it usually arrives.
+  const toggleLoanSanctioned = async (v: boolean) => {
+    setLoanBusy(true);
+    try {
+      const r = await fetch(`${apiBase}/api/leads/${leadId}/loan-sanctioned/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeader() },
+        body: JSON.stringify({ sanctioned: v }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(d.error || "Could not record the loan decision."); return; }
+      setLoanSanctioned(!!d.loan_sanctioned);
+      setLoanSanctionedAt(d.loan_sanctioned_at ?? null);
+      onChanged?.();
+    } catch { alert("Network error — nothing changed."); }
+    finally { setLoanBusy(false); }
   };
 
   // Persist the non-file inputs (checkboxes + plant capacity).
@@ -563,6 +630,9 @@ export default function DocumentationStage1Section({ leadId, canEdit, canReopen,
             </div>
             {loanAboveItrThreshold && <MultiFileField docType={LOAN_ITR[0]} label={LOAN_ITR[1]} />}
             <PdfMultiField docType={LOAN_PDF[0]} label={LOAN_PDF[1]} />
+            {/* Stays usable after the stage is locked — `canEdit`, not `readOnly`. */}
+            <LoanSanctionBar sanctioned={loanSanctioned} at={loanSanctionedAt}
+              busy={loanBusy} readOnly={!canEdit} onToggle={toggleLoanSanctioned} />
           </div>
         </div>
       )}

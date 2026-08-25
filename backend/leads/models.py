@@ -296,18 +296,32 @@ class Lead(models.Model):
             return 'site_visit'
         return 'tele_caller'
 
+    # A value that was never read back, told apart from one that was read back
+    # as empty: `assigned_to_id` is legitimately None on an unassigned lead, so
+    # None cannot also mean "we don't know".
+    _UNREAD = object()
+
     # Owner as it was when this row was loaded, so save() can tell a hand-off
-    # from any other edit. None on a row built in memory.
-    _loaded_assigned_to_id = None
+    # from any other edit. Unread on a row built in memory.
+    _loaded_assigned_to_id = _UNREAD
     # Same for the district, so the check below runs on a change rather than on
     # every save of every lead.
-    _loaded_district = None
+    _loaded_district = _UNREAD
 
     @classmethod
     def from_db(cls, db, field_names, values):
         obj = super().from_db(db, field_names, values)
-        obj._loaded_assigned_to_id = obj.assigned_to_id
-        obj._loaded_district = obj.district
+        # Taken out of the row that was actually fetched, never off the
+        # instance. Reading a deferred attribute here sends Django back to the
+        # database for it, which builds another Lead, which lands back in this
+        # method — a recursion with no bottom. It took out every query that
+        # narrows its columns: the whole of Company Performance answered 500,
+        # and the fix elsewhere was to stop using .only(), which treated the
+        # symptom. `field_names` is exactly the columns that came back, so a
+        # narrowed query simply leaves these unread.
+        loaded = dict(zip(field_names, values))
+        obj._loaded_assigned_to_id = loaded.get('assigned_to_id', cls._UNREAD)
+        obj._loaded_district = loaded.get('district', cls._UNREAD)
         return obj
 
     def save(self, *args, **kwargs):
@@ -341,14 +355,20 @@ class Lead(models.Model):
         Doing it here makes the rule true however the lead is written rather
         than true wherever someone remembered to call the helper.
         """
-        if self.district and (self._state.adding or self.district != self._loaded_district):
+        # An unread value means this row came back without the column, so there
+        # is nothing to compare against and nothing to correct.
+        district_changed = (self._loaded_district is not self._UNREAD
+                            and self.district != self._loaded_district)
+        if self.district and (self._state.adding or district_changed):
             # Settles on the configured spelling, and empties anything that is
             # not one of ours — see District.canonical.
             self.district = District.canonical(self.district)
 
         owner = self.assigned_to if self.assigned_to_id else None
         role = getattr(owner, 'role', '') if owner else ''
-        owner_changed = self._state.adding or self.assigned_to_id != self._loaded_assigned_to_id
+        owner_changed = self._state.adding or (
+            self._loaded_assigned_to_id is not self._UNREAD
+            and self.assigned_to_id != self._loaded_assigned_to_id)
         stamped = []
         if role == 'tele_caller' and not self.tele_caller_id:
             self.tele_caller_id = owner.id
@@ -693,6 +713,12 @@ class DocumentationStage1(models.Model):
 
     # ── For Loan ──
     loan_above_2_lakh = models.BooleanField(default=False)
+    # The bank's answer, which lands well after the paperwork goes in — usually
+    # after this stage has been signed off and locked. It is therefore written
+    # by its own action (`loan-sanctioned`) rather than by the stage form, and
+    # is the only thing on a locked Stage 1 that can still change.
+    loan_sanctioned = models.BooleanField(default=False)
+    loan_sanctioned_at = models.DateTimeField(null=True, blank=True)
 
     # ── Completion tracking ──
     is_complete = models.BooleanField(default=False, db_index=True)
@@ -1082,6 +1108,9 @@ class DocumentationStage2(models.Model):
     # ── 2. MNRE Stage 2 (discom approval) ──
     discom_approval = models.CharField(max_length=10, choices=DISCOM_CHOICES, blank=True, default='pending')
     subsidy_requested = models.BooleanField(default=False)   # when discom approved
+    # Stamped when the claim is filed, so the customer's tracking page can show
+    # the date rather than a bare tick.
+    subsidy_requested_at = models.DateTimeField(null=True, blank=True)
     sent_to_liasoning = models.BooleanField(default=False)   # when not approved → concerned section
     mnre_remark = models.CharField(max_length=255, blank=True, default='')
 
@@ -1560,7 +1589,7 @@ class TrackingLink(models.Model):
     """
     # Long enough that guessing is hopeless, short enough to paste into WhatsApp.
     TOKEN_BYTES = 32
-    # How long the link keeps working after the project is finished. The customer
+    # How long the link keeps working after the journey is finished. The customer
     # may well come back to it for a while — a warranty question, their own
     # records — but a link that lives for ever in an old email is a customer's
     # details reachable for ever.
@@ -1599,15 +1628,25 @@ class TrackingLink(models.Model):
     def expires_at(self):
         """When the link stops working, or None while the job is still running.
 
-        Measured from the project being finished rather than from the day the
-        link was made: a job that takes eight months should not go dark halfway
+        Measured from the job being finished rather than from the day the link
+        was made: a job that takes eight months should not go dark halfway
         through, which is exactly when the customer is most likely to look.
+
+        "Finished" is the *last* stage the customer is shown, not the
+        installation. Their page runs on past it to the subsidy claim and the
+        warranty, and a link timed from the installation date could close while
+        those were still outstanding — leaving the customer with no way to see
+        the two things they most want a record of.
         """
-        project = getattr(self.lead, 'project', None)
-        done_at = getattr(project, 'completed_at', None) if project else None
-        if not done_at:
+        stamps = [getattr(getattr(self.lead, attr, None), 'completed_at', None)
+                  for attr in ('project', 'documentation_stage2', 'warranty')]
+        stamps = [s for s in stamps if s]
+        # The installation is the gate: nothing after it can finish first, and
+        # while it is open the job is plainly still running.
+        project_done = getattr(getattr(self.lead, 'project', None), 'completed_at', None)
+        if not project_done:
             return None
-        return done_at + timedelta(days=self.LIVES_FOR_DAYS_AFTER_COMPLETION)
+        return max(stamps) + timedelta(days=self.LIVES_FOR_DAYS_AFTER_COMPLETION)
 
     @property
     def is_live(self):

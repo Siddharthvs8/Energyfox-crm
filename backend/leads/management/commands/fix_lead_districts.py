@@ -32,10 +32,7 @@ class Command(BaseCommand):
 
         # Matched the same way the model does: case-insensitively, ignoring
         # surrounding space. Anything that still misses is not one of ours.
-        # No .only() here: combined with exclude() on this model it sends Django's
-        # query builder into a recursion that blows the stack, and the saving was
-        # never worth it for a command that runs by hand.
-        stray = [lead for lead in Lead.objects.exclude(district='')
+        stray = [lead for lead in Lead.objects.only('id', 'district').exclude(district='')
                  if lead.district.strip().lower() not in configured]
 
         if not stray:

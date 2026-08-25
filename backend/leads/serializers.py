@@ -175,8 +175,11 @@ class DocumentationStage1Serializer(serializers.ModelSerializer):
         fields = '__all__'
         # Completion is driven only by the dedicated complete-* action, never a plain PATCH.
         # The section sign-off timestamps are stamped here, not sent by the client.
+        # The loan decision has its own action too: it arrives after this stage is
+        # locked, so a PATCH could never carry it.
         read_only_fields = ['lead', 'created_at', 'updated_at', 'is_complete', 'completed_at', 'completed_by',
-                            'name_change_completed_at', 'load_enhancement_completed_at']
+                            'name_change_completed_at', 'load_enhancement_completed_at',
+                            'loan_sanctioned', 'loan_sanctioned_at']
 
     def update(self, instance, validated_data):
         """Stamp the section sign-off time whenever its flag flips."""
@@ -259,7 +262,21 @@ class DocumentationStage2Serializer(serializers.ModelSerializer):
     class Meta:
         model = DocumentationStage2
         fields = '__all__'
-        read_only_fields = ['lead', 'created_at', 'updated_at', 'is_complete', 'completed_at', 'completed_by']
+        # The subsidy stamp is written here, not sent by the client.
+        read_only_fields = ['lead', 'created_at', 'updated_at', 'is_complete', 'completed_at',
+                            'completed_by', 'subsidy_requested_at']
+
+    def update(self, instance, validated_data):
+        """Stamp the date the subsidy claim was filed, whenever the flag flips.
+
+        The customer's tracking page shows this date, so it has to be the day the
+        claim actually went in rather than the day the stage was signed off.
+        """
+        if ('subsidy_requested' in validated_data
+                and validated_data['subsidy_requested'] != instance.subsidy_requested):
+            validated_data['subsidy_requested_at'] = (
+                timezone.now() if validated_data['subsidy_requested'] else None)
+        return super().update(instance, validated_data)
 
     def get_completed_by_name(self, obj):
         if obj.completed_by:

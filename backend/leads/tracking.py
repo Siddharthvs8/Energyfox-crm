@@ -34,14 +34,25 @@ def stages_for(lead):
     Each step is read off the department's own completion flag. A step is
     'current' when it is the first one not yet done — which is what gives the
     page its single highlighted row, as a parcel has one.
+
+    Two of the steps are conditional, because showing them to everyone would be
+    telling most customers about something that will never happen to them:
+
+      * **Loan sanctioned** appears only when the site visit recorded a loan.
+      * **Subsidy claimed** appears only once the discom has approved, which is
+        the moment a subsidy stops being a maybe. A customer the discom turned
+        down never sees it, and nobody is shown a subsidy row that later has to
+        disappear.
     """
     sv = getattr(lead, 'site_visit', None)
     s1 = getattr(lead, 'documentation_stage1', None)
     s2 = getattr(lead, 'documentation_stage2', None)
     pl = getattr(lead, 'purchase_logistics', None)
     pr = getattr(lead, 'project', None)
+    wr = getattr(lead, 'warranty', None)
 
-    steps = [
+    # ── The spine: one thing after another, in this order, always ──
+    spine = [
         {
             'key': 'documentation',
             'title': 'Documents verified',
@@ -56,12 +67,17 @@ def stages_for(lead):
             'on': (sv.kseb_feasibility_date.isoformat()
                    if sv and sv.kseb_feasibility_date else None),
         },
-        {
-            'key': 'approvals',
-            'title': 'Approvals cleared',
-            'blurb': 'Sanction received, and your installation is scheduled.',
-            **_done(s2 and s2.is_complete, getattr(s2, 'completed_at', None)),
-        },
+    ]
+
+    if sv and sv.loan == 'yes':
+        spine.append({
+            'key': 'loan',
+            'title': 'Loan sanctioned',
+            'blurb': 'Your bank approved the finance for this installation.',
+            **_done(s1 and s1.loan_sanctioned, getattr(s1, 'loan_sanctioned_at', None)),
+        })
+
+    spine += [
         {
             'key': 'materials',
             'title': 'Materials dispatched',
@@ -76,23 +92,54 @@ def stages_for(lead):
         },
     ]
 
-    # The journey only runs forwards. Departments mark their own stage complete
-    # and they do not always do it in order — a job can be installed while the
-    # approval record is still open — which left the customer looking at
-    # "installed" above "approval in progress" and a tracker that appears
-    # broken. Anything before a finished stage is therefore shown as reached.
+    # ── After the installation: two jobs that run side by side ──
+    # The warranty can be issued before the subsidy is filed or long after it,
+    # so neither is evidence of the other. They are kept out of the spine for
+    # exactly that reason — see the forwards-only rule below.
+    after = []
+    if s2 and s2.discom_approval == 'yes':
+        after.append({
+            'key': 'subsidy',
+            'title': 'Subsidy claimed',
+            # Written so it reads true whether the step is done or still to
+            # come — a pending row saying the claim "has been filed" is a
+            # statement about the customer's money that is not yet true. It also
+            # never says the subsidy has been *paid*: claiming and receiving are
+            # months apart, and this page must not blur them.
+            'blurb': 'We claim your national subsidy from MNRE on your behalf.',
+            **_done(s2.subsidy_requested, s2.subsidy_requested_at),
+        })
+    after.append({
+        'key': 'warranty',
+        'title': 'Warranty issued',
+        'blurb': 'Your warranty certificate has been issued and sent to you.',
+        **_done(wr and wr.is_complete, getattr(wr, 'completed_at', None)),
+    })
+
+    # The journey only runs forwards — but only along the spine. Departments
+    # mark their own stage complete and they do not always do it in order: a job
+    # can be installed while the approval record is still open, which left the
+    # customer looking at "installed" above "in progress" and a tracker that
+    # appears broken. Anything before a finished spine step is shown as reached.
     #
     # This is not a fiction: the work genuinely cannot be installed before it is
     # approved, so a later completion is proof the earlier step happened and the
     # record is merely lagging. The earlier step keeps whatever date it has and
     # shows none if it has not been stamped, rather than borrowing one.
+    #
+    # The rule stops at the installation. The subsidy and the warranty are
+    # parallel tasks with no order between them, so an issued warranty is no
+    # evidence at all that the subsidy was claimed — inferring it would tell a
+    # customer their claim was filed when it was not.
     reached = False
-    for step in reversed(steps):
+    for step in reversed(spine):
         if step['done']:
             reached = True
         elif reached:
             step['done'] = True
             step['inferred'] = True
+
+    steps = spine + after
 
     # Exactly one step is 'current': the first that is not done. When every step
     # is done there is no current one, and the page shows the job as finished.
@@ -139,7 +186,7 @@ class TrackingLinkView(APIView):
         link = (TrackingLink.objects
                 .select_related('lead', 'lead__site_visit', 'lead__documentation_stage1',
                                 'lead__documentation_stage2', 'lead__purchase_logistics',
-                                'lead__project')
+                                'lead__project', 'lead__warranty')
                 .filter(token=token).first())
 
         if link is None or link.revoked or link.lead.is_trashed:

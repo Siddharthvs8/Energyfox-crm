@@ -1213,6 +1213,41 @@ class LeadViewSet(viewsets.ModelViewSet):
         serializer.save()
         return Response(serializer.data)
 
+    @action(detail=True, methods=['post'], url_path='loan-sanctioned')
+    def loan_sanctioned(self, request, pk=None):
+        """Record the bank's decision on a customer's loan.
+
+        Its own action rather than a field on the Stage 1 form, because of when
+        it happens: the paperwork goes to the bank, Stage 1 is signed off and
+        locked, and the sanction letter arrives days or weeks later. A plain
+        PATCH would be refused by that lock, so the one thing the desk still
+        needs to record would be the one thing it could not.
+
+        Only leads whose site visit recorded a loan can have this set — there is
+        no such thing as a sanction on a job nobody borrowed for, and the
+        customer's tracking page hides the step for everyone else.
+        """
+        from .access import can_edit_documentation_stage1
+        lead = self.get_object()
+        if not can_edit_documentation_stage1(request.user, lead):
+            return Response({'error': 'You do not have permission to edit this documentation.'},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        site_visit = getattr(lead, 'site_visit', None)
+        if not (site_visit and site_visit.loan == 'yes'):
+            return Response({'error': 'This customer is not taking a loan.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        stage1, _ = DocumentationStage1.objects.get_or_create(lead=lead)
+        sanctioned = bool(request.data.get('sanctioned', True))
+        stage1.loan_sanctioned = sanctioned
+        # Undoing clears the date rather than keeping a stale one: the customer's
+        # page shows this date, and a wrong date is worse than none.
+        stage1.loan_sanctioned_at = timezone.now() if sanctioned else None
+        stage1.save(update_fields=['loan_sanctioned', 'loan_sanctioned_at', 'updated_at'])
+        return Response({'loan_sanctioned': stage1.loan_sanctioned,
+                         'loan_sanctioned_at': stage1.loan_sanctioned_at})
+
     @action(detail=True, methods=['post'], url_path='complete-documentation-stage1')
     def complete_documentation_stage1(self, request, pk=None):
         """Mark Documentation Stage 1 complete and write a process-overview note."""
@@ -3221,9 +3256,12 @@ class LeadViewSet(viewsets.ModelViewSet):
             data['can_reopen'] = can_reopen_documentation(request.user)
             return Response(data)
         # The discom approval arrives from KSEB on its own schedule, often after
-        # the rest of Stage 2 has been signed off — so it is the one field that
-        # survives the lock. Everything else still stops here.
-        if rec.is_complete and set(request.data.keys()) - {'discom_approval'}:
+        # the rest of Stage 2 has been signed off — so it survives the lock. The
+        # subsidy claim goes with it: it can only be filed once the approval is
+        # in, so a late approval that could not be followed by its own claim
+        # would leave the customer's subsidy showing as never filed. Everything
+        # else still stops here.
+        if rec.is_complete and set(request.data.keys()) - {'discom_approval', 'subsidy_requested'}:
             return Response({'error': 'Documentation Stage 2 is already completed and locked.'}, status=status.HTTP_400_BAD_REQUEST)
         old_discom = rec.discom_approval
         serializer = DocumentationStage2Serializer(rec, data=request.data, partial=True, context={'request': request})

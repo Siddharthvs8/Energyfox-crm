@@ -7755,7 +7755,8 @@ class CustomerTrackingLinkTests(TestCase):
         token = self.generate().json()['token']
         titles = [s['title'] for s in self.track(token).json()['stages']]
         self.assertEqual(titles[0], 'Documents verified')
-        self.assertEqual(titles[-1], 'Installation complete')
+        self.assertEqual(titles[-1], 'Warranty issued')
+        self.assertIn('Installation complete', titles)
 
     def test_the_first_unfinished_stage_is_the_current_one(self):
         token = self.generate().json()['token']
@@ -7765,18 +7766,19 @@ class CustomerTrackingLinkTests(TestCase):
         self.assertEqual(current[0]['key'], 'feasibility')
 
     def test_the_journey_only_runs_forwards(self):
-        """A job installed while its approval record is still open must not show
+        """A job installed while an earlier record is still open must not show
         the customer a finished step above an unfinished one."""
         from .models import Project
         Project.objects.create(lead=self.lead, is_complete=True,
                                completed_at=timezone.now())
         token = self.generate().json()['token']
         stages = self.track(token).json()['stages']
-        self.assertTrue(all(s['done'] for s in stages))
-        approvals = next(s for s in stages if s['key'] == 'approvals')
-        self.assertTrue(approvals['inferred'])
+        spine = stages[:stages.index(next(s for s in stages if s['key'] == 'installation')) + 1]
+        self.assertTrue(all(s['done'] for s in spine))
+        materials = next(s for s in stages if s['key'] == 'materials')
+        self.assertTrue(materials['inferred'])
         # An inferred step must not borrow a date it was never given.
-        self.assertIsNone(approvals['on'])
+        self.assertIsNone(materials['on'])
 
     def test_opening_the_page_is_counted(self):
         """The only evidence the address was right and the mail arrived."""
@@ -7852,3 +7854,231 @@ class CustomerTrackingLinkTests(TestCase):
         r = self.client.post(f'/api/leads/{self.lead.id}/tracking-link/send/',
                              data={}, content_type='application/json', **self.auth())
         self.assertEqual(r.status_code, 400)
+
+
+
+class TrackingStagesTests(TestCase):
+    """Which steps the customer is shown, and when each one lights up.
+
+    Two of them are conditional, and getting that wrong is not cosmetic: a
+    subsidy row shown to a customer who will never get one, or a loan row on a
+    job nobody borrowed for, is the company promising something in writing.
+    """
+
+    def setUp(self):
+        from .models import DocumentationStage1, SiteVisit
+        self.docstaff = mk('stg_doc', 'documentation_staff')
+        self.bde = mk('stg_bde', 'bde')
+        self.lead = Lead.objects.create(
+            first_name='Anil', last_name='Kumar', phone='9895700002',
+            email='anil@example.com', value=Decimal('280000'), bde=self.bde,
+            pushed_to_documentation=True, documentation_staff=self.docstaff)
+        self.sv = SiteVisit.objects.create(lead=self.lead, loan='no')
+        self.s1 = DocumentationStage1.objects.create(
+            lead=self.lead, is_complete=True, completed_at=timezone.now())
+
+    # ── helpers ──
+    def auth(self, user=None):
+        return {'HTTP_AUTHORIZATION': token_for(user or self.docstaff)}
+
+    def stages(self):
+        r = self.client.post(f'/api/leads/{self.lead.id}/tracking-link/',
+                             data={}, content_type='application/json', **self.auth())
+        token = r.json()['token']
+        return self.client.get(f'/api/track/{token}/').json()['stages']
+
+    def keys(self):
+        return [s['key'] for s in self.stages()]
+
+    def step(self, key):
+        return next((s for s in self.stages() if s['key'] == key), None)
+
+    def with_loan(self):
+        self.sv.loan = 'yes'
+        self.sv.save(update_fields=['loan'])
+
+    def sanction(self, user=None, sanctioned=True):
+        return self.client.post(f'/api/leads/{self.lead.id}/loan-sanctioned/',
+                                data={'sanctioned': sanctioned},
+                                content_type='application/json', **self.auth(user))
+
+    def stage2(self, **kw):
+        """Put the lead into Stage 2, which is what makes its record writable."""
+        from .models import DocumentationStage2
+        Lead.objects.filter(pk=self.lead.pk).update(
+            pushed_to_doc_stage2=True, doc_stage2_staff=self.docstaff)
+        self.lead.refresh_from_db()
+        return DocumentationStage2.objects.create(lead=self.lead, **kw)
+
+    def claim_subsidy(self, requested=True):
+        return self.client.patch(
+            f'/api/leads/{self.lead.id}/documentation-stage2-record/',
+            data={'subsidy_requested': requested},
+            content_type='application/json', **self.auth())
+
+    # ── What replaced the approvals step ──
+    def test_the_approvals_step_is_gone(self):
+        self.assertNotIn('approvals', self.keys())
+
+    def test_a_customer_without_a_loan_is_not_shown_a_loan_step(self):
+        self.assertNotIn('loan', self.keys())
+
+    def test_a_customer_with_a_loan_is_shown_one(self):
+        self.with_loan()
+        self.assertIn('loan', self.keys())
+
+    def test_the_loan_step_sits_between_feasibility_and_materials(self):
+        """Because the money has to be there before anything is bought."""
+        self.with_loan()
+        keys = self.keys()
+        self.assertLess(keys.index('feasibility'), keys.index('loan'))
+        self.assertLess(keys.index('loan'), keys.index('materials'))
+
+    def test_the_loan_step_lights_up_when_the_bank_says_yes(self):
+        self.with_loan()
+        self.assertFalse(self.step('loan')['done'])
+        self.sanction()
+        step = self.step('loan')
+        self.assertTrue(step['done'])
+        self.assertEqual(step['on'], timezone.localdate().isoformat())
+
+    # ── Recording the bank's decision ──
+    def test_the_decision_can_be_recorded_after_stage_1_is_locked(self):
+        """The whole reason it has its own endpoint: the sanction letter arrives
+        after documentation has signed off, and a PATCH would be refused."""
+        self.with_loan()
+        self.assertTrue(self.s1.is_complete)
+        locked = self.client.patch(
+            f'/api/leads/{self.lead.id}/documentation-stage1/',
+            data={'loan_sanctioned': True}, content_type='application/json', **self.auth())
+        self.assertEqual(locked.status_code, 400)             # the stage is shut
+        self.assertEqual(self.sanction().status_code, 200)    # this still works
+        self.s1.refresh_from_db()
+        self.assertTrue(self.s1.loan_sanctioned)
+
+    def test_it_can_be_undone_and_takes_its_date_with_it(self):
+        """A wrong date on the customer's page is worse than no date."""
+        self.with_loan()
+        self.sanction()
+        self.sanction(sanctioned=False)
+        self.s1.refresh_from_db()
+        self.assertFalse(self.s1.loan_sanctioned)
+        self.assertIsNone(self.s1.loan_sanctioned_at)
+
+    def test_a_job_with_no_loan_cannot_be_marked_sanctioned(self):
+        r = self.sanction()
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('not taking a loan', r.json()['error'])
+
+    def test_a_bde_cannot_record_the_bank_decision(self):
+        self.with_loan()
+        self.assertEqual(self.sanction(user=self.bde).status_code, 403)
+
+    def test_a_spectator_cannot_record_it(self):
+        self.with_loan()
+        self.assertEqual(self.sanction(user=mk('stg_spec', 'spectator')).status_code, 403)
+
+    # ── Subsidy ──
+    def test_no_subsidy_step_before_the_discom_has_decided(self):
+        """A maybe is not shown: a step that later vanishes reads as a promise
+        withdrawn."""
+        self.stage2(discom_approval='pending')
+        self.assertNotIn('subsidy', self.keys())
+
+    def test_no_subsidy_step_when_the_discom_said_no(self):
+        self.stage2(discom_approval='no')
+        self.assertNotIn('subsidy', self.keys())
+
+    def test_the_subsidy_step_appears_once_the_discom_approves(self):
+        self.stage2(discom_approval='yes')
+        step = self.step('subsidy')
+        self.assertIsNotNone(step)
+        self.assertFalse(step['done'])
+
+    def test_the_subsidy_step_lights_up_when_the_claim_is_filed(self):
+        s2 = self.stage2(discom_approval='yes')
+        r = self.claim_subsidy()
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        s2.refresh_from_db()
+        self.assertIsNotNone(s2.subsidy_requested_at)
+        step = self.step('subsidy')
+        self.assertTrue(step['done'])
+        self.assertEqual(step['on'], timezone.localdate().isoformat())
+
+    def test_a_late_claim_can_still_be_filed_on_a_signed_off_stage_2(self):
+        """KSEB approves on its own schedule, often after Stage 2 is locked. The
+        claim that follows has to get through too, or the customer's subsidy step
+        could never light up."""
+        s2 = self.stage2(discom_approval='yes', is_complete=True,
+                         completed_at=timezone.now())
+        self.assertEqual(self.claim_subsidy().status_code, 200)
+        s2.refresh_from_db()
+        self.assertTrue(s2.subsidy_requested)
+        self.assertTrue(self.step('subsidy')['done'])
+
+    def test_the_lock_still_holds_for_everything_else(self):
+        self.stage2(discom_approval='yes', is_complete=True, completed_at=timezone.now())
+        r = self.client.patch(
+            f'/api/leads/{self.lead.id}/documentation-stage2-record/',
+            data={'mnre_remark': 'slipped in'}, content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 400)
+
+    def test_the_subsidy_step_never_reads_as_money_received(self):
+        """Claiming a subsidy and being paid one are months apart. The row must
+        not blur them, and must read true while it is still pending."""
+        self.stage2(discom_approval='yes')
+        pending = self.step('subsidy')
+        self.assertFalse(pending['done'])
+        blurb = pending['blurb'].lower()
+        self.assertIn('subsidy', blurb)
+        # Nothing in the past tense on a step that has not happened, and no
+        # suggestion the money itself has arrived.
+        for wrong in ('has been', 'credited', 'paid', 'received', '₹'):
+            self.assertNotIn(wrong, blurb)
+
+    # ── Warranty ──
+    def test_the_warranty_is_the_last_step_and_is_always_shown(self):
+        self.assertEqual(self.keys()[-1], 'warranty')
+
+    def test_the_warranty_step_lights_up_when_it_is_issued(self):
+        from .models import Warranty
+        self.assertFalse(self.step('warranty')['done'])
+        Warranty.objects.create(lead=self.lead, is_complete=True,
+                                completed_at=timezone.now())
+        self.assertTrue(self.step('warranty')['done'])
+
+    def test_a_warranty_does_not_imply_the_subsidy_was_claimed(self):
+        """The two run side by side, so neither is evidence of the other. The
+        forwards-only rule must not tell a customer their claim went in."""
+        from .models import Project, Warranty
+        self.stage2(discom_approval='yes', subsidy_requested=False)
+        Project.objects.create(lead=self.lead, is_complete=True, completed_at=timezone.now())
+        Warranty.objects.create(lead=self.lead, is_complete=True, completed_at=timezone.now())
+        subsidy = self.step('subsidy')
+        self.assertFalse(subsidy['done'])
+        self.assertFalse(subsidy['inferred'])
+        self.assertTrue(self.step('warranty')['done'])
+
+    def test_the_job_is_only_finished_when_every_step_is(self):
+        from .models import Project, Warranty
+        Project.objects.create(lead=self.lead, is_complete=True, completed_at=timezone.now())
+        r = self.client.post(f'/api/leads/{self.lead.id}/tracking-link/',
+                             data={}, content_type='application/json', **self.auth())
+        token = r.json()['token']
+        self.assertFalse(self.client.get(f'/api/track/{token}/').json()['complete'])
+        Warranty.objects.create(lead=self.lead, is_complete=True, completed_at=timezone.now())
+        self.assertTrue(self.client.get(f'/api/track/{token}/').json()['complete'])
+
+    # ── The link has to outlive the steps that come after the installation ──
+    def test_the_link_stays_open_until_the_last_step_is_done(self):
+        """Timed from the installation it could shut while the warranty was still
+        outstanding, losing the customer the record they most want."""
+        from .models import Project, TrackingLink, Warranty
+        days = TrackingLink.LIVES_FOR_DAYS_AFTER_COMPLETION
+        Project.objects.create(lead=self.lead, is_complete=True,
+                               completed_at=timezone.now() - timedelta(days=days + 5))
+        Warranty.objects.create(lead=self.lead, is_complete=True,
+                                completed_at=timezone.now() - timedelta(days=2))
+        self.client.post(f'/api/leads/{self.lead.id}/tracking-link/',
+                         data={}, content_type='application/json', **self.auth())
+        self.assertTrue(TrackingLink.objects.get(lead=self.lead).is_live)
