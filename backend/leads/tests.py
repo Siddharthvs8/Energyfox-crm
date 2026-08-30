@@ -7831,16 +7831,63 @@ class CustomerTrackingLinkTests(TestCase):
         self.assertFalse(on.json()['revoked'])
 
     # ── Emailing ──
-    def test_the_link_is_emailed_to_the_customer(self):
+    def test_generating_the_link_emails_it(self):
+        """The point of making one is that the customer gets it. A link that
+        only ever sat in the CRM helped nobody."""
+        from django.core import mail
+        r = self.generate()
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertTrue(r.json()['sent'])
+        self.assertEqual(r.json()['sent_to'], 'meera@example.com')
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn('/track/', mail.outbox[0].body)
+        self.assertEqual(mail.outbox[0].to, ['meera@example.com'])
+
+    def test_generating_twice_does_not_email_twice(self):
+        """The endpoint is idempotent, so a repeat call must not put a second
+        copy in the customer's inbox."""
+        from django.core import mail
+        self.generate()
+        again = self.generate()
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertFalse(again.json()['sent'])
+
+    def test_a_customer_with_no_address_still_gets_a_working_link(self):
+        """The link is what was asked for; the email is how it travels. A
+        missing address must not cost the desk the link itself."""
+        from django.core import mail
+        Lead.objects.filter(pk=self.lead.pk).update(email='')
+        r = self.generate()
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertTrue(r.json()['token'])
+        self.assertFalse(r.json()['sent'])
+        self.assertIn('no email address', r.json()['send_error'])
+        self.assertEqual(len(mail.outbox), 0)
+        # And it opens, which is the part that matters.
+        self.assertEqual(self.track(r.json()['token']).status_code, 200)
+
+    def test_a_mail_server_failure_does_not_cost_the_link(self):
+        from unittest import mock
+        from django.core import mail
+        with mock.patch('messaging.email.send_and_log') as send:
+            send.return_value = mock.Mock(status='failed', error='SMTP refused')
+            r = self.generate()
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertTrue(r.json()['token'])
+        self.assertFalse(r.json()['sent'])
+        self.assertIn('SMTP refused', r.json()['send_error'])
+        self.assertEqual(self.track(r.json()['token']).status_code, 200)
+
+    def test_the_link_can_be_re_sent_by_hand(self):
+        """For a corrected address, or a customer who lost the message."""
         from django.core import mail
         self.generate()
         r = self.client.post(f'/api/leads/{self.lead.id}/tracking-link/send/',
                              data={}, content_type='application/json', **self.auth())
         self.assertEqual(r.status_code, 200, r.content[:300])
         self.assertTrue(r.json()['sent'])
-        self.assertEqual(len(mail.outbox), 1)
-        self.assertIn('/track/', mail.outbox[0].body)
-        self.assertEqual(mail.outbox[0].to, ['meera@example.com'])
+        self.assertEqual(len(mail.outbox), 2)      # the automatic one, then this
+        self.assertEqual(mail.outbox[1].to, ['meera@example.com'])
 
     def test_sending_without_an_address_is_refused_clearly(self):
         Lead.objects.filter(pk=self.lead.pk).update(email='')

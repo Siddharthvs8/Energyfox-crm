@@ -1817,6 +1817,11 @@ class LeadViewSet(viewsets.ModelViewSet):
 
         POSTing twice returns the same link rather than minting a second: the
         one already sent to the customer must keep working.
+
+        Generating it also emails it, because that is the whole point of making
+        one — a link sitting in the CRM that nobody sent helps no customer. Only
+        on the first creation, though: this endpoint is idempotent and a repeat
+        call must not put a second copy in the customer's inbox.
         """
         from .access import can_access_documentation, is_view_only
         from .models import TrackingLink
@@ -1844,6 +1849,7 @@ class LeadViewSet(viewsets.ModelViewSet):
                           'customer would open an empty tracker.'},
                 status=status.HTTP_400_BAD_REQUEST)
 
+        sent, send_error, sent_to = False, None, ''
         if link is None:
             link = TrackingLink.objects.create(lead=lead, created_by=request.user)
             ActivityLog.objects.create(
@@ -1851,7 +1857,20 @@ class LeadViewSet(viewsets.ModelViewSet):
                 description='Customer tracking link generated.',
                 extra={'auto_generated': True})
 
-        return Response(self._tracking_link_payload(request, link))
+            # The link is the thing that was asked for; the email is how it gets
+            # there. So a customer with no address on file, or a mail server
+            # having a bad morning, still leaves the desk holding a working link
+            # to copy — it is reported as unsent, never as a failed generation.
+            sent_to = (lead.email or '').strip()
+            if sent_to:
+                sent, send_error = self._mail_tracking_link(request, lead, link, sent_to)
+            else:
+                send_error = 'This customer has no email address on file.'
+
+        return Response({
+            'sent': sent, 'sent_to': sent_to, 'send_error': send_error,
+            **self._tracking_link_payload(request, link),
+        })
 
     def _tracking_link_payload(self, request, link):
         return {
@@ -1869,26 +1888,15 @@ class LeadViewSet(viewsets.ModelViewSet):
             'last_sent_at': link.last_sent_at,
         }
 
-    @action(detail=True, methods=['post'], url_path='tracking-link/send')
-    def tracking_link_send(self, request, pk=None):
-        """Email the tracking link to the customer."""
-        from .access import can_access_documentation, is_view_only
+    def _mail_tracking_link(self, request, lead, link, to):
+        """Send the customer their link. Returns (sent, error).
+
+        One definition, used by the automatic send when the link is generated
+        and by the Email button afterwards — so the customer gets the same
+        message either way, and a change to the wording cannot reach one and
+        miss the other.
+        """
         from messaging import email as mailer
-
-        lead = self.get_object()
-        if not can_access_documentation(request.user) or is_view_only(request.user):
-            return Response({'error': 'You cannot send this.'},
-                            status=status.HTTP_403_FORBIDDEN)
-
-        link = getattr(lead, 'tracking_link', None)
-        if link is None:
-            return Response({'error': 'Generate the tracking link first.'},
-                            status=status.HTTP_400_BAD_REQUEST)
-
-        to = (request.data.get('email') or lead.email or '').strip()
-        if not to:
-            return Response({'error': 'This customer has no email address on file.'},
-                            status=status.HTTP_400_BAD_REQUEST)
 
         url = self._tracking_url(request, link)
         name = (lead.first_name or '').strip() or 'there'
@@ -1924,13 +1932,38 @@ class LeadViewSet(viewsets.ModelViewSet):
                 activity_type='note_added', lead=lead, actor=request.user,
                 description=f'Tracking link emailed to {to}.',
                 extra={'auto_generated': True})
+        # The outbox keeps the reason, so the screen can say what went wrong
+        # rather than only that it did.
+        return sent, None if sent else (getattr(log, 'error', '')
+                                        or 'The email could not be sent.')
 
+    @action(detail=True, methods=['post'], url_path='tracking-link/send')
+    def tracking_link_send(self, request, pk=None):
+        """Email the tracking link to the customer, by hand.
+
+        Generating one already sends it. This is the re-send: a wrong address
+        corrected, a mail server that was down, a customer who lost the message.
+        """
+        from .access import can_access_documentation, is_view_only
+
+        lead = self.get_object()
+        if not can_access_documentation(request.user) or is_view_only(request.user):
+            return Response({'error': 'You cannot send this.'},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        link = getattr(lead, 'tracking_link', None)
+        if link is None:
+            return Response({'error': 'Generate the tracking link first.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        to = (request.data.get('email') or lead.email or '').strip()
+        if not to:
+            return Response({'error': 'This customer has no email address on file.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        sent, error = self._mail_tracking_link(request, lead, link, to)
         return Response({
-            'sent': sent,
-            'to': to,
-            # The outbox keeps the reason, so the screen can say what went wrong
-            # rather than only that it did.
-            'error': None if sent else (getattr(log, 'error', '') or 'The email could not be sent.'),
+            'sent': sent, 'to': to, 'error': error,
             **self._tracking_link_payload(request, link),
         }, status=status.HTTP_200_OK if sent else status.HTTP_502_BAD_GATEWAY)
 

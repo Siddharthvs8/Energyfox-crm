@@ -19,6 +19,8 @@ type Link = {
   exists: boolean; url?: string; token?: string; revoked?: boolean; is_live?: boolean;
   expires_at?: string | null; view_count?: number; last_viewed_at?: string | null;
   last_sent_at?: string | null;
+  // Only on the reply to generating: whether it also reached the customer.
+  sent?: boolean; sent_to?: string; send_error?: string | null;
 };
 
 const when = (iso?: string | null) =>
@@ -62,6 +64,17 @@ export default function TrackingLinkPanel({ leadId, customerEmail }: {
           ? { ok: true, text: `Sent to ${d.to}.` }
           : { ok: false, text: d.error || "The email could not be sent." });
       }
+      // Generating emails the link on its own. Say either way: an unsent link
+      // is still a working link, but only if somebody knows to send it.
+      if (kind === "make") {
+        setNote(d.sent
+          ? { ok: true, text: `Link generated and emailed to ${d.sent_to}.` }
+          // The reason is a sentence from the server or the mail host, which may
+          // or may not already end in a full stop — trimmed so it never doubles.
+          : { ok: false, text: `Link generated, but not emailed — ${
+              (d.send_error || "the email could not be sent").replace(/\.\s*$/, "")
+            }. Copy it below and send it yourself.` });
+      }
     } catch {
       setNote({ ok: false, text: "Network error — nothing changed." });
     } finally { setBusy(""); }
@@ -87,13 +100,14 @@ export default function TrackingLinkPanel({ leadId, customerEmail }: {
           </h3>
           <p className="text-[11px] text-slate-400 mt-0.5">
             A page the customer can open to follow their installation — no login needed.
+            Generating it emails it to them.
           </p>
         </div>
         {!link?.exists && (
           <button onClick={() => call("/", "make")} disabled={busy === "make"}
             className="px-4 py-2 rounded-xl bg-indigo-600 text-white text-xs font-bold
                        hover:bg-indigo-700 disabled:opacity-50 transition">
-            {busy === "make" ? "Generating…" : "Generate tracking link"}
+            {busy === "make" ? "Generating & sending…" : "Generate & send tracking link"}
           </button>
         )}
       </div>
@@ -119,7 +133,7 @@ export default function TrackingLinkPanel({ leadId, customerEmail }: {
               title={customerEmail ? `Email ${customerEmail}` : "This customer has no email on file"}
               className="px-3 py-2 rounded-lg bg-slate-800 text-white text-xs font-bold
                          hover:bg-slate-900 disabled:opacity-50 transition">
-              {busy === "send" ? "Sending…" : "Email to customer"}
+              {busy === "send" ? "Sending…" : "Re-send email"}
             </button>
           </div>
 
