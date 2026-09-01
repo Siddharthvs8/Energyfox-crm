@@ -11,6 +11,12 @@ const I = {
       <circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="6" /><circle cx="12" cy="12" r="2" />
     </svg>
   ),
+  Doc: () => (
+    <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+      <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" />
+      <polyline points="9 15 11 17 15 13" />
+    </svg>
+  ),
   TrendUp: () => (
     <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24">
       <polyline points="22 7 13.5 15.5 8.5 10.5 2 17" /><polyline points="16 7 22 7 22 13" />
@@ -340,7 +346,7 @@ export default function MyPerformancePage({ params: paramsPromise }: { params: P
       )}
 
       {/* ── Stats Row ── */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
+      <div className="grid grid-cols-2 lg:grid-cols-6 gap-4 mb-8">
         <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm">
           <div className="flex items-center gap-2 mb-3">
             <div className="w-8 h-8 rounded-xl bg-blue-50 flex items-center justify-center text-blue-600"><I.Users /></div>
@@ -356,6 +362,14 @@ export default function MyPerformancePage({ params: paramsPromise }: { params: P
           </div>
           <p className="text-2xl font-bold text-slate-900">{ls.enrolled_this_month || 0}</p>
           <p className="text-[10px] text-slate-400 mt-0.5">₹{(ls.revenue_this_month || 0).toLocaleString("en-IN")}</p>
+        </div>
+        <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm">
+          <div className="flex items-center gap-2 mb-3">
+            <div className="w-8 h-8 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600"><I.Doc /></div>
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Purchase Orders</span>
+          </div>
+          <p className="text-2xl font-bold text-slate-900">{ls.po_signed_this_month || 0}</p>
+          <p className="text-[10px] text-slate-400 mt-0.5">{ls.po_signed_total || 0} all time</p>
         </div>
         <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm">
           <div className="flex items-center gap-2 mb-3">

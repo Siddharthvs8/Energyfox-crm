@@ -304,9 +304,10 @@ export default function ManagerPage({ params: paramsPromise }: { params: Promise
 
         autoTable(doc, {
           startY: currentY,
-          head: [['Pipeline Value', 'Won Value', 'Close Rate']],
+          head: [['Pipeline Value', 'Purchase Orders', 'Won Value', 'Close Rate']],
           body: [[
             `Rs. ${(newReport.summary.pipeline_value || 0).toLocaleString('en-IN')}`,
+            `${newReport.summary.po_signed_count || 0}`,
             `Rs. ${(newReport.summary.won_value || 0).toLocaleString('en-IN')}`,
             `${newReport.summary.win_rate || 0}%`
           ]],
@@ -1123,10 +1124,16 @@ export default function ManagerPage({ params: paramsPromise }: { params: Promise
 
                       {/* Status Breakdown */}
                       {agentReport.summary && (
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
                           <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
                             <p className="text-xs font-medium text-slate-400 mb-2">Pipeline Value</p>
                             <p className="text-2xl font-black text-slate-800">₹{(agentReport.summary.pipeline_value || 0).toLocaleString('en-IN')}</p>
+                          </div>
+                          <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
+                            {/* Counted by the date the order was signed, so it
+                                reads as work done in the period shown above. */}
+                            <p className="text-xs font-medium text-slate-400 mb-2">Purchase Orders</p>
+                            <p className="text-2xl font-black text-slate-800">{agentReport.summary.po_signed_count || 0}</p>
                           </div>
                           <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
                             <p className="text-xs font-medium text-slate-400 mb-2">Won Value</p>
@@ -1487,7 +1494,7 @@ export default function ManagerPage({ params: paramsPromise }: { params: Promise
             </div>
             <div className="p-6 space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">Target Leads (Conversions)</label>
+                <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">Target Leads (Closed deals)</label>
                 <input type="number" min="0" value={targetForm.target_leads} onChange={e => setTargetForm(f => ({ ...f, target_leads: e.target.value }))} placeholder="e.g. 20" className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-300" />
                 <p className="text-xs text-slate-400 mt-1">Daily targets will be auto-calculated from this</p>
                 {targetForm.target_leads && parseInt(targetForm.target_leads) > 0 && (

@@ -6392,6 +6392,10 @@ class DistrictViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_400_BAD_REQUEST)
         return super().destroy(request, *args, **kwargs)
 
+# The retail Item Master is part of the inventory module, so it answers to the
+# same gate as the rest of it.
+from inventory.views import RetailInventoryAccess  # noqa: E402
+
 
 class ProductViewSet(viewsets.ModelViewSet):
     """
@@ -6399,4 +6403,4 @@ class ProductViewSet(viewsets.ModelViewSet):
     """
     queryset = Product.objects.all().order_by('-created_at')
     serializer_class = ProductSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, RetailInventoryAccess]

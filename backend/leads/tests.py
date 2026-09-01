@@ -8129,3 +8129,101 @@ class TrackingStagesTests(TestCase):
         self.client.post(f'/api/leads/{self.lead.id}/tracking-link/',
                          data={}, content_type='application/json', **self.auth())
         self.assertTrue(TrackingLink.objects.get(lead=self.lead).is_live)
+
+
+class MetaImportDeduplicationTests(TestCase):
+    """A customer who submits the form twice is one lead, not two.
+
+    Meta issues a fresh lead id for every submission, so matching on that alone
+    only catches the same *submission* arriving twice. Someone who fills the
+    form on Monday and again on Thursday is two ids and one person, and that is
+    where the lead book filled up with copies.
+
+    The lead already on the books is the one kept: it carries the calls, the
+    notes and the owner it was assigned to, and the arriving copy carries none
+    of that.
+    """
+
+    def payload(self, meta_id, phone_number='', email='', name='Anil Kumar'):
+        """A Meta payload shaped the way Meta sends one.
+
+        The contact details live in `field_data`, not at the top level — a
+        top-level `phone_number` is never read, so a payload built that way
+        would test nothing.
+        """
+        fields = [{'name': 'full_name', 'values': [name]}]
+        if phone_number:
+            fields.append({'name': 'phone_number', 'values': [phone_number]})
+        if email:
+            fields.append({'name': 'email', 'values': [email]})
+        return {'id': meta_id, 'created_time': '2026-09-01T10:00:00+0000',
+                'field_data': fields}
+
+    def test_the_same_customer_twice_is_filed_once(self):
+        first, dup = create_lead_from_meta_payload(
+            self.payload('1001', phone_number='+919895700001'))
+        self.assertFalse(dup)
+        second, dup = create_lead_from_meta_payload(
+            self.payload('1002', phone_number='+919895700001'))
+        self.assertIsNone(second)
+        self.assertTrue(dup)
+        self.assertEqual(Lead.objects.filter(phone__contains='9895700001').count(), 1)
+
+    def test_the_lead_that_was_there_first_is_the_one_kept(self):
+        """It holds the work; the copy holds nothing."""
+        first, _ = create_lead_from_meta_payload(
+            self.payload('2001', phone_number='9895700002'))
+        first.notes = 'Called; wants a site visit on Friday.'
+        first.save(update_fields=['notes'])
+
+        create_lead_from_meta_payload(self.payload('2002', phone_number='9895700002'))
+        first.refresh_from_db()
+        self.assertEqual(Lead.objects.filter(phone__contains='9895700002').count(), 1)
+        self.assertIn('site visit', first.notes)
+        self.assertEqual(first.meta_lead_id, '2001')       # still the first one
+
+    def test_a_different_way_of_writing_the_number_is_still_the_same_customer(self):
+        """+91 on one and not the other is how the copies got in."""
+        create_lead_from_meta_payload(self.payload('3001', phone_number='+917902817610'))
+        lead, dup = create_lead_from_meta_payload(
+            self.payload('3002', phone_number='7902817610'))
+        self.assertIsNone(lead)
+        self.assertTrue(dup)
+
+    def test_the_email_catches_it_when_the_number_differs(self):
+        create_lead_from_meta_payload(
+            self.payload('4001', phone_number='9895700003', email='same@example.com'))
+        lead, dup = create_lead_from_meta_payload(
+            self.payload('4002', phone_number='9895700004', email='SAME@example.com'))
+        self.assertIsNone(lead)
+        self.assertTrue(dup)
+
+    def test_a_different_customer_still_gets_in(self):
+        """The rule must not swallow real leads."""
+        create_lead_from_meta_payload(self.payload('5001', phone_number='9895700005'))
+        lead, dup = create_lead_from_meta_payload(
+            self.payload('5002', phone_number='9895700006'))
+        self.assertFalse(dup)
+        self.assertIsNotNone(lead)
+
+    def test_the_skip_is_written_on_the_lead_that_was_kept(self):
+        """So the desk can see the customer asked twice, which is worth knowing."""
+        first, _ = create_lead_from_meta_payload(
+            self.payload('6001', phone_number='9895700007'))
+        create_lead_from_meta_payload(self.payload('6002', phone_number='9895700007'))
+        from .models import ActivityLog
+        note = ActivityLog.objects.filter(
+            lead=first, extra__duplicate_skipped=True).first()
+        self.assertIsNotNone(note)
+        self.assertIn('again', note.description)
+
+    def test_a_trashed_lead_does_not_block_the_customer_coming_back(self):
+        """`live_leads` is what is matched against, so a customer whose old lead
+        was thrown away can be filed afresh."""
+        first, _ = create_lead_from_meta_payload(
+            self.payload('7001', phone_number='9895700008'))
+        Lead.objects.filter(pk=first.pk).update(is_trashed=True)
+        lead, dup = create_lead_from_meta_payload(
+            self.payload('7002', phone_number='9895700008'))
+        self.assertFalse(dup)
+        self.assertIsNotNone(lead)

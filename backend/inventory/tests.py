@@ -2752,3 +2752,869 @@ class DeleteVerifiedPaymentTests(TestCase):
         after = self.client.get('/api/stock-payments/', **self.auth()).json()
         rows = [r['number'] for s in after['sections'].values() for r in s['rows']]
         self.assertNotIn('REN2627-IN900', rows)
+
+
+class ProjectTests(TestCase):
+    """Projects — the retail side's bundles of products.
+
+    A project is a specification, not a price list, and the point of the whole
+    design is that a proforma gets its *own copy* of one. Most of what is worth
+    testing here is that the copy stays a copy.
+    """
+
+    def setUp(self):
+        self.admin = mk('proj_admin', 'admin')
+        self.admin.is_staff = True
+        self.admin.is_superuser = True
+        self.admin.save()
+
+    def auth(self, user=None):
+        return {'HTTP_AUTHORIZATION': token_for(user or self.admin)}
+
+    def post(self, url, body, user=None):
+        return self.client.post(url, data=body, content_type='application/json',
+                                **self.auth(user))
+
+    def patch(self, url, body, user=None):
+        return self.client.patch(url, data=body, content_type='application/json',
+                                 **self.auth(user))
+
+    LINES = [
+        {'section': 'panels', 'item_name': 'Topcon Module 545W',
+         'brand': 'Adani / Premier / Waaree', 'quantity': '10 Nos', 'position': 0},
+        {'section': 'inverter', 'item_name': '5kVA Single Phase',
+         'brand': 'FOX ESS', 'quantity': '1 Nos', 'position': 0},
+        {'section': 'structure', 'item_name': 'GI Structure 16G',
+         'brand': '', 'quantity': '1 Set', 'position': 0},
+        {'section': 'bos', 'item_name': 'DC Cable',
+         'brand': 'POLYCAB, LAPP', 'quantity': '36 M', 'position': 0},
+        {'section': 'bos', 'item_name': 'Earthing',
+         'brand': 'EXCEL', 'quantity': '10 SWG DC Earthing, 10 SWG AC Earthing', 'position': 1},
+    ]
+
+    def make_project(self, name='5kW Single Phase On-Grid', lines=None):
+        r = self.post('/api/projects/', {'name': name, 'capacity': '5kVA Single Phase',
+                                         'lines': self.LINES if lines is None else lines})
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        return r.json()
+
+    def make_quote(self, project_id=None, **extra):
+        body = {'quote_date': '2026-08-31', **extra}
+        if project_id is not None:
+            body['project'] = project_id
+        r = self.post('/api/quotes/', body)
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        return r.json()
+
+    def line(self, doc, item_name):
+        key = 'lines' if 'lines' in doc else 'spec_lines'
+        return next((l for l in doc[key] if l['item_name'] == item_name), None)
+
+    # ── The project itself ──
+    def test_a_project_holds_its_lines(self):
+        project = self.make_project()
+        self.assertEqual(project['line_count'], 5)
+        self.assertEqual(self.line(project, 'DC Cable')['brand'], 'POLYCAB, LAPP')
+
+    def test_the_four_sections_are_all_usable(self):
+        project = self.make_project()
+        sections = {l['section'] for l in project['lines']}
+        self.assertEqual(sections, {'panels', 'inverter', 'structure', 'bos'})
+
+    def test_quantity_keeps_whatever_the_sheet_says(self):
+        """A real specification says "1 Each", "36 M" and a sentence about
+        earthing in neighbouring rows; a number could not hold the third."""
+        project = self.make_project()
+        self.assertEqual(self.line(project, 'Earthing')['quantity'],
+                         '10 SWG DC Earthing, 10 SWG AC Earthing')
+
+    def test_lines_come_back_in_the_order_they_were_arranged(self):
+        project = self.make_project()
+        bos = [l['item_name'] for l in project['lines'] if l['section'] == 'bos']
+        self.assertEqual(bos, ['DC Cable', 'Earthing'])
+
+    def test_editing_a_project_replaces_its_sheet(self):
+        project = self.make_project()
+        r = self.patch(f"/api/projects/{project['id']}/",
+                       {'lines': [{'section': 'panels', 'item_name': 'Mono PERC 440W',
+                                   'brand': 'Waaree', 'quantity': '12 Nos', 'position': 0}]})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(r.json()['line_count'], 1)
+
+    def test_saving_a_project_without_lines_leaves_them_alone(self):
+        """Renaming a project must not empty it."""
+        project = self.make_project()
+        r = self.patch(f"/api/projects/{project['id']}/", {'name': 'Renamed'})
+        self.assertEqual(r.json()['line_count'], 5)
+
+    def test_a_project_can_be_duplicated_with_its_lines(self):
+        """Packages differ by one cable length far more often than they differ
+        wholly, and retyping thirty lines is how a specification picks up
+        mistakes."""
+        project = self.make_project()
+        r = self.post(f"/api/projects/{project['id']}/duplicate/", {})
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        self.assertEqual(r.json()['line_count'], 5)
+        self.assertIn('copy', r.json()['name'])
+        self.assertNotEqual(r.json()['id'], project['id'])
+
+    def test_retired_projects_are_not_offered(self):
+        project = self.make_project()
+        self.patch(f"/api/projects/{project['id']}/", {'is_active': False})
+        listed = self.client.get('/api/projects/', **self.auth()).json()
+        rows = listed if isinstance(listed, list) else listed['results']
+        self.assertEqual([p for p in rows if p['id'] == project['id']], [])
+        # Still reachable when the whole list is asked for, so it can be revived.
+        everything = self.client.get('/api/projects/?all=true', **self.auth()).json()
+        rows = everything if isinstance(everything, list) else everything['results']
+        self.assertTrue(any(p['id'] == project['id'] for p in rows))
+
+    # ── Panels, inverter and structure are named, not tabulated ──
+    def test_the_named_sections_take_a_name_and_nothing_else(self):
+        """The sheet says "Topcon-Adani, Premier, Waaree" against Panels and
+        stops there. A brand and a quantity sent for one of those three are not
+        stored, wherever they came from."""
+        project = self.post('/api/projects/', {'name': 'Named only', 'lines': [
+            {'section': 'panels', 'item_name': 'Topcon-Adani, Premier, Waaree',
+             'brand': 'should not stick', 'quantity': '10 Nos', 'position': 0},
+            {'section': 'inverter', 'item_name': '5kVA Single Phase',
+             'brand': 'should not stick', 'quantity': '1 Nos', 'position': 0},
+            {'section': 'structure', 'item_name': '16G GI Structure',
+             'brand': 'should not stick', 'quantity': '1 Set', 'position': 0},
+        ]}).json()
+        for name in ('Topcon-Adani, Premier, Waaree', '5kVA Single Phase', '16G GI Structure'):
+            line = self.line(project, name)
+            self.assertEqual(line['brand'], '', name)
+            self.assertEqual(line['quantity'], '', name)
+
+    def test_the_balance_of_system_keeps_all_three_columns(self):
+        project = self.make_project()
+        line = self.line(project, 'DC Cable')
+        self.assertEqual(line['brand'], 'POLYCAB, LAPP')
+        self.assertEqual(line['quantity'], '36 M')
+
+    def test_the_rule_survives_a_copy_onto_a_quote(self):
+        """bulk_create skips save(), so the copy path has to apply it itself."""
+        project = self.post('/api/projects/', {'name': 'Copy me', 'lines': [
+            {'section': 'panels', 'item_name': 'Adani', 'brand': 'x', 'quantity': 'y', 'position': 0},
+            {'section': 'bos', 'item_name': 'DC Cable', 'brand': 'POLYCAB', 'quantity': '36 M', 'position': 0},
+        ]}).json()
+        quote = self.make_quote(project['id'])
+        self.assertEqual(self.line(quote, 'Adani')['brand'], '')
+        self.assertEqual(self.line(quote, 'DC Cable')['brand'], 'POLYCAB')
+
+    def test_the_rule_survives_a_duplicate(self):
+        project = self.post('/api/projects/', {'name': 'Dup me', 'lines': [
+            {'section': 'structure', 'item_name': '16G', 'brand': 'x', 'quantity': 'y', 'position': 0},
+        ]}).json()
+        copy = self.post(f"/api/projects/{project['id']}/duplicate/", {}).json()
+        self.assertEqual(self.line(copy, '16G')['brand'], '')
+
+    def test_the_rule_survives_an_edit_made_on_the_quote(self):
+        project = self.make_project()
+        quote = self.make_quote(project['id'])
+        edited = [dict(l) for l in quote['spec_lines']]
+        for l in edited:
+            if l['section'] == 'panels':
+                l['brand'], l['quantity'] = 'sneaked in', '99 Nos'
+        r = self.patch(f"/api/quotes/{quote['id']}/", {'spec_lines': edited})
+        panels = next(l for l in r.json()['spec_lines'] if l['section'] == 'panels')
+        self.assertEqual(panels['brand'], '')
+        self.assertEqual(panels['quantity'], '')
+
+    # ── Picking one on a proforma ──
+    def test_choosing_a_project_copies_its_sheet_onto_the_quote(self):
+        project = self.make_project()
+        quote = self.make_quote(project['id'])
+        self.assertEqual(len(quote['spec_lines']), 5)
+        self.assertEqual(quote['project_name'], project['name'])
+
+    def test_a_quote_with_no_project_has_no_sheet(self):
+        self.assertEqual(self.make_quote()['spec_lines'], [])
+
+    def test_editing_the_quotes_sheet_does_not_touch_the_project(self):
+        """The whole reason the quote keeps a copy. Tuning one customer's
+        specification must not rewrite every other quote built from the same
+        project — including ones already sent."""
+        project = self.make_project()
+        quote = self.make_quote(project['id'])
+        edited = [dict(l, quantity='48 M') if l['item_name'] == 'DC Cable' else dict(l)
+                  for l in quote['spec_lines']]
+        r = self.patch(f"/api/quotes/{quote['id']}/", {'spec_lines': edited})
+        self.assertEqual(self.line(r.json(), 'DC Cable')['quantity'], '48 M')
+
+        back = self.client.get(f"/api/projects/{project['id']}/", **self.auth()).json()
+        self.assertEqual(self.line(back, 'DC Cable')['quantity'], '36 M')
+
+    def test_re_saving_a_quote_keeps_the_edits_made_to_its_sheet(self):
+        """Changing the status must not silently restore the project's version."""
+        project = self.make_project()
+        quote = self.make_quote(project['id'])
+        edited = [dict(l, quantity='48 M') if l['item_name'] == 'DC Cable' else dict(l)
+                  for l in quote['spec_lines']]
+        self.patch(f"/api/quotes/{quote['id']}/", {'spec_lines': edited})
+        again = self.patch(f"/api/quotes/{quote['id']}/", {'status': 'sent'})
+        self.assertEqual(self.line(again.json(), 'DC Cable')['quantity'], '48 M')
+
+    def test_re_saving_with_the_same_project_keeps_the_edits(self):
+        """The form sends `project` on every save; only a *change* re-copies."""
+        project = self.make_project()
+        quote = self.make_quote(project['id'])
+        edited = [dict(l, quantity='48 M') if l['item_name'] == 'DC Cable' else dict(l)
+                  for l in quote['spec_lines']]
+        self.patch(f"/api/quotes/{quote['id']}/", {'spec_lines': edited})
+        again = self.patch(f"/api/quotes/{quote['id']}/", {'project': project['id']})
+        self.assertEqual(self.line(again.json(), 'DC Cable')['quantity'], '48 M')
+
+    def test_switching_to_another_project_brings_that_sheet_across(self):
+        first = self.make_project()
+        second = self.make_project(name='3kW On-Grid', lines=[
+            {'section': 'panels', 'item_name': 'Mono PERC 440W', 'brand': 'Waaree',
+             'quantity': '7 Nos', 'position': 0}])
+        quote = self.make_quote(first['id'])
+        r = self.patch(f"/api/quotes/{quote['id']}/", {'project': second['id']})
+        self.assertEqual(len(r.json()['spec_lines']), 1)
+        self.assertIsNotNone(self.line(r.json(), 'Mono PERC 440W'))
+
+    def test_changing_a_project_does_not_reach_into_quotes_already_built(self):
+        """A document a customer is holding must not change under them."""
+        project = self.make_project()
+        quote = self.make_quote(project['id'])
+        self.patch(f"/api/projects/{project['id']}/",
+                   {'lines': [{'section': 'panels', 'item_name': 'Something else',
+                               'brand': '', 'quantity': '1', 'position': 0}]})
+        back = self.client.get(f"/api/quotes/{quote['id']}/", **self.auth()).json()
+        self.assertEqual(len(back['spec_lines']), 5)
+        self.assertIsNotNone(self.line(back, 'DC Cable'))
+
+    def test_deleting_a_project_leaves_the_issued_sheet_standing(self):
+        project = self.make_project()
+        quote = self.make_quote(project['id'])
+        self.client.delete(f"/api/projects/{project['id']}/", **self.auth())
+        back = self.client.get(f"/api/quotes/{quote['id']}/", **self.auth()).json()
+        self.assertIsNone(back['project'])              # the link is gone
+        self.assertEqual(len(back['spec_lines']), 5)    # what was quoted is not
+
+    def test_a_project_counts_the_quotes_built_from_it(self):
+        project = self.make_project()
+        self.make_quote(project['id'])
+        self.make_quote(project['id'])
+        back = self.client.get(f"/api/projects/{project['id']}/", **self.auth()).json()
+        self.assertEqual(back['quoted_count'], 2)
+
+    # ── Price and tax ──
+    def priced(self, price, tax, inclusive, non_dcr=None):
+        r = self.post('/api/projects/', {
+            'name': f'P {price}/{tax}/{inclusive}',
+            'price_dcr': price, 'price_non_dcr': non_dcr if non_dcr is not None else price,
+            'tax_percent': tax, 'price_includes_tax': inclusive})
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        return r.json()
+
+    def figures(self, project, variant='dcr'):
+        return project['pricing'][variant]
+
+    def test_a_tax_exclusive_price_has_tax_added_to_it(self):
+        f = self.figures(self.priced('180000', '18', False))
+        self.assertEqual(f['base_amount'], '180000.00')
+        self.assertEqual(f['tax_amount'], '32400.00')
+        self.assertEqual(f['total'], '212400.00')
+
+    def test_a_tax_inclusive_price_has_the_tax_taken_out_of_it(self):
+        """With the box ticked, the price is what the customer was quoted and
+        must come back exactly."""
+        f = self.figures(self.priced('180000', '18', True))
+        self.assertEqual(f['total'], '180000.00')
+        self.assertEqual(f['base_amount'], '152542.37')
+        self.assertEqual(f['tax_amount'], '27457.63')
+
+    def test_the_parts_always_add_up_to_the_total(self):
+        """A proforma that misses by a paisa is the sort of thing a customer
+        notices first, so tax is the difference rather than its own rounding."""
+        from decimal import Decimal
+        for price in ('180000', '99999.99', '1', '123456.78', '7777.77'):
+            for tax in ('18', '5', '12.5', '0'):
+                for inclusive in (True, False):
+                    p = self.priced(price, tax, inclusive)
+                    for variant in ('dcr', 'non_dcr'):
+                        f = self.figures(p, variant)
+                        self.assertEqual(
+                            Decimal(f['base_amount']) + Decimal(f['tax_amount']),
+                            Decimal(f['total']),
+                            f'{price} @ {tax}% inclusive={inclusive} {variant}')
+
+    def test_no_tax_rate_means_the_price_is_the_total_either_way(self):
+        for inclusive in (True, False):
+            f = self.figures(self.priced('180000', '0', inclusive))
+            self.assertEqual(f['total'], '180000.00')
+            self.assertEqual(f['tax_amount'], '0.00')
+
+    # ── Picking one prices the invoice ──
+    def test_choosing_a_project_prices_the_invoice(self):
+        project = self.priced('180000', '18', False)
+        quote = self.make_quote(project['id'])
+        self.assertEqual(len(quote['items']), 1)
+        self.assertEqual(quote['tax_percent'], '18.00')
+        self.assertEqual(quote['total'], '212400.00')
+
+    def test_a_tax_inclusive_project_lands_on_the_same_total(self):
+        """The line is priced at the base with the rate on the document, so the
+        invoice's own arithmetic reaches the figure the project quotes rather
+        than taxing a tax-inclusive price a second time."""
+        project = self.priced('180000', '18', True)
+        quote = self.make_quote(project['id'])
+        # grand_total, not total: `total` is the exact arithmetic of the lines,
+        # and a tax-inclusive price rarely divides into a 2dp base that taxes
+        # back to it exactly. The stray paisa lands in `round_off`, which is
+        # what that field is for — see RoundedTotalMixin.
+        self.assertEqual(quote['grand_total'], self.figures(project)['total'])
+
+    def test_the_invoice_line_is_named_for_the_project(self):
+        project = self.post('/api/projects/', {
+            'name': '5kW On-Grid', 'capacity': '5kVA Single Phase',
+            'price_dcr': '180000', 'tax_percent': '18'}).json()
+        quote = self.make_quote(project['id'])
+        self.assertIn('5kW On-Grid', quote['items'][0]['description'])
+        self.assertIn('5kVA Single Phase', quote['items'][0]['description'])
+
+    def test_a_project_with_no_price_leaves_the_invoice_alone(self):
+        """It is a specification that happens to have no package price, not an
+        instruction to zero an invoice someone priced by hand."""
+        project = self.make_project()                     # no price set
+        quote = self.make_quote(project['id'], items=[
+            {'description': 'Priced by hand', 'quantity': '1', 'unit_price': '99000'}])
+        self.assertEqual(len(quote['items']), 1)
+        self.assertEqual(quote['items'][0]['description'], 'Priced by hand')
+
+    def test_switching_project_reprices_the_invoice(self):
+        first = self.priced('180000', '18', False)
+        second = self.priced('90000', '18', False)
+        quote = self.make_quote(first['id'])
+        r = self.patch(f"/api/quotes/{quote['id']}/", {'project': second['id']})
+        self.assertEqual(r.json()['total'], '106200.00')
+
+    def test_re_saving_does_not_reprice_the_invoice(self):
+        """Someone who adjusted the invoice by hand keeps that adjustment."""
+        project = self.priced('180000', '18', False)
+        quote = self.make_quote(project['id'])
+        self.patch(f"/api/quotes/{quote['id']}/", {'items': [
+            {'description': 'Agreed price', 'quantity': '1', 'unit_price': '170000'}]})
+        again = self.patch(f"/api/quotes/{quote['id']}/", {'status': 'sent'})
+        self.assertEqual(again.json()['items'][0]['unit_price'], '170000.00')
+
+    # ── DCR and non-DCR ──
+    def two_priced(self):
+        """The same system, differently sourced modules, different money."""
+        return self.post('/api/projects/', {
+            'name': '5kW On-Grid', 'capacity': '5kVA Single Phase',
+            'price_dcr': '200000', 'price_non_dcr': '180000',
+            'tax_percent': '18', 'price_includes_tax': True,
+            'lines': self.LINES}).json()
+
+    def test_a_project_quotes_both_prices(self):
+        p = self.two_priced()
+        self.assertEqual(self.figures(p, 'dcr')['total'], '200000.00')
+        self.assertEqual(self.figures(p, 'non_dcr')['total'], '180000.00')
+
+    def test_each_price_gets_its_own_tax_split(self):
+        p = self.two_priced()
+        self.assertEqual(self.figures(p, 'dcr')['base_amount'], '169491.53')
+        self.assertEqual(self.figures(p, 'non_dcr')['base_amount'], '152542.37')
+
+    def test_both_splits_reconcile(self):
+        from decimal import Decimal
+        p = self.two_priced()
+        for variant in ('dcr', 'non_dcr'):
+            f = self.figures(p, variant)
+            self.assertEqual(Decimal(f['base_amount']) + Decimal(f['tax_amount']),
+                             Decimal(f['total']), variant)
+
+    def test_an_invoice_is_written_for_one_of_them(self):
+        project = self.two_priced()
+        quote = self.make_quote(project['id'], price_variant='non_dcr')
+        self.assertEqual(quote['price_variant'], 'non_dcr')
+        self.assertEqual(quote['grand_total'], '180000.00')
+
+    def test_dcr_is_the_default(self):
+        project = self.two_priced()
+        quote = self.make_quote(project['id'])
+        self.assertEqual(quote['price_variant'], 'dcr')
+        self.assertEqual(quote['grand_total'], '200000.00')
+
+    def test_switching_between_them_reprices_the_invoice(self):
+        """The point of having two: choosing at quotation time."""
+        project = self.two_priced()
+        quote = self.make_quote(project['id'])
+        self.assertEqual(quote['grand_total'], '200000.00')
+        r = self.patch(f"/api/quotes/{quote['id']}/", {'price_variant': 'non_dcr'})
+        self.assertEqual(r.json()['grand_total'], '180000.00')
+        back = self.patch(f"/api/quotes/{quote['id']}/", {'price_variant': 'dcr'})
+        self.assertEqual(back.json()['grand_total'], '200000.00')
+
+    def test_switching_price_does_not_disturb_the_specification(self):
+        """It is the same system either way, so re-copying the sheet would throw
+        away edits for no reason."""
+        project = self.two_priced()
+        quote = self.make_quote(project['id'])
+        edited = [dict(l, quantity='48 M') if l['item_name'] == 'DC Cable' else dict(l)
+                  for l in quote['spec_lines']]
+        self.patch(f"/api/quotes/{quote['id']}/", {'spec_lines': edited})
+        r = self.patch(f"/api/quotes/{quote['id']}/", {'price_variant': 'non_dcr'})
+        self.assertEqual(self.line(r.json(), 'DC Cable')['quantity'], '48 M')
+
+    def test_re_saving_the_same_variant_does_not_reprice(self):
+        project = self.two_priced()
+        quote = self.make_quote(project['id'])
+        self.patch(f"/api/quotes/{quote['id']}/", {'items': [
+            {'description': 'Agreed price', 'quantity': '1', 'unit_price': '170000'}]})
+        again = self.patch(f"/api/quotes/{quote['id']}/", {'price_variant': 'dcr'})
+        self.assertEqual(again.json()['items'][0]['unit_price'], '170000.00')
+
+    def test_the_stray_paisa_is_shown_as_round_off_not_lost(self):
+        """A tax-inclusive price rarely divides into a 2-decimal base that taxes
+        back to it exactly. The invoice keeps its exact arithmetic and carries
+        the difference on its own visible line, so the customer is billed the
+        figure they were quoted and the document still adds up."""
+        from decimal import Decimal
+        project = self.two_priced()
+        quote = self.make_quote(project['id'])
+        self.assertEqual(quote['grand_total'], '200000.00')
+        self.assertEqual(
+            Decimal(quote['total']) + Decimal(quote['round_off']),
+            Decimal(quote['grand_total']))
+
+    def test_the_invoice_line_says_which_it_is(self):
+        """"Why is this quote 20,000 more than that one" has one answer, and it
+        should be on the paper."""
+        project = self.two_priced()
+        dcr = self.make_quote(project['id'])
+        non = self.make_quote(project['id'], price_variant='non_dcr')
+        self.assertIn('DCR', dcr['items'][0]['description'])
+        self.assertIn('Non-DCR', non['items'][0]['description'])
+
+    def test_a_variant_priced_at_nothing_leaves_the_invoice_alone(self):
+        """Only one of the two priced is a real case — an importer who does not
+        offer DCR at all."""
+        project = self.post('/api/projects/', {
+            'name': 'Non-DCR only', 'price_dcr': '0', 'price_non_dcr': '180000',
+            'tax_percent': '18'}).json()
+        quote = self.make_quote(project['id'], price_variant='dcr', items=[
+            {'description': 'Priced by hand', 'quantity': '1', 'unit_price': '99000'}])
+        self.assertEqual(quote['items'][0]['description'], 'Priced by hand')
+
+    # ── The wholesale side is a different business ──
+    def test_projects_are_retail_only(self):
+        """B2B has its own item master and stock register; the two do not meet."""
+        from .models import StockQuote
+        self.assertFalse(hasattr(StockQuote, 'spec_lines'))
+        self.assertNotIn('project', [f.name for f in StockQuote._meta.get_fields()])
+
+    def test_a_login_is_required(self):
+        self.assertEqual(self.client.get('/api/projects/').status_code, 401)
+
+
+class QuotationTests(TestCase):
+    """What the customer is offered, and how it becomes an invoice.
+
+    A quotation is where the price stops being a list price: items are edited, a
+    discount is given, extras are added. Every one of those adjustments has to
+    be explained on the document, because the question comes months later from
+    someone who was not in the room.
+    """
+
+    def setUp(self):
+        self.admin = mk('qn_admin', 'admin')
+        self.admin.is_staff = True
+        self.admin.is_superuser = True
+        self.admin.save()
+
+    def auth(self, user=None):
+        return {'HTTP_AUTHORIZATION': token_for(user or self.admin)}
+
+    def post(self, url, body, user=None):
+        return self.client.post(url, data=body, content_type='application/json',
+                                **self.auth(user))
+
+    def patch(self, url, body):
+        return self.client.patch(url, data=body, content_type='application/json',
+                                 **self.auth())
+
+    def get(self, url):
+        return self.client.get(url, **self.auth()).json()
+
+    def make_project(self, dcr='200000', non_dcr='180000', tax='18', inclusive=True):
+        r = self.post('/api/projects/', {
+            'name': '5kW On-Grid', 'capacity': '5kVA Single Phase',
+            'price_dcr': dcr, 'price_non_dcr': non_dcr,
+            'tax_percent': tax, 'price_includes_tax': inclusive,
+            'lines': [
+                {'section': 'panels', 'item_name': 'Topcon-Adani', 'brand': '', 'quantity': '', 'position': 0},
+                {'section': 'bos', 'item_name': 'DC Cable', 'brand': 'POLYCAB', 'quantity': '36 M', 'position': 0},
+            ]})
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        return r.json()
+
+    def make_quotation(self, project_id=None, **extra):
+        body = {'quotation_date': '2026-09-01', **extra}
+        if project_id is not None:
+            body['project'] = project_id
+        r = self.post('/api/quotations/', body)
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        return r.json()
+
+    # ── Built from a project ──
+    def test_a_quotation_takes_its_specification_and_price_from_the_project(self):
+        project = self.make_project()
+        q = self.make_quotation(project['id'])
+        self.assertEqual(len(q['spec_lines']), 2)
+        self.assertEqual(q['package_amount'], '200000.00')
+        self.assertEqual(q['total'], '200000.00')
+
+    def test_it_is_numbered_in_its_own_series(self):
+        """A quotation and the invoice it becomes may be in the customer's hands
+        at once; the same number on both would make them impossible to tell
+        apart in a conversation."""
+        q = self.make_quotation()
+        self.assertIn('/QT', q['number'])
+        self.assertNotIn('/PI', q['number'])
+
+    def test_the_numbers_run_on(self):
+        first = self.make_quotation()['number']
+        second = self.make_quotation()['number']
+        self.assertNotEqual(first, second)
+
+    def test_choosing_the_other_price_refills_it(self):
+        project = self.make_project()
+        q = self.make_quotation(project['id'])
+        r = self.patch(f"/api/quotations/{q['id']}/", {'price_variant': 'non_dcr'})
+        self.assertEqual(r.json()['package_amount'], '180000.00')
+
+    def test_a_negotiated_price_survives_a_re_save(self):
+        """Re-saving with the same project must not restore the list price over
+        a figure two people agreed."""
+        project = self.make_project()
+        q = self.make_quotation(project['id'])
+        self.patch(f"/api/quotations/{q['id']}/", {'package_amount': '190000'})
+        again = self.patch(f"/api/quotations/{q['id']}/", {'status': 'sent'})
+        self.assertEqual(again.json()['package_amount'], '190000.00')
+
+    def test_the_items_can_be_edited_without_touching_the_project(self):
+        project = self.make_project()
+        q = self.make_quotation(project['id'])
+        edited = [dict(l, quantity='48 M') if l['item_name'] == 'DC Cable' else dict(l)
+                  for l in q['spec_lines']]
+        r = self.patch(f"/api/quotations/{q['id']}/", {'spec_lines': edited})
+        cable = next(l for l in r.json()['spec_lines'] if l['item_name'] == 'DC Cable')
+        self.assertEqual(cable['quantity'], '48 M')
+
+        back = self.get(f"/api/projects/{project['id']}/")
+        self.assertEqual(
+            next(l['quantity'] for l in back['lines'] if l['item_name'] == 'DC Cable'),
+            '36 M')
+
+    # ── Discount ──
+    def test_a_discount_comes_off_the_price(self):
+        project = self.make_project()
+        q = self.make_quotation(project['id'])
+        r = self.patch(f"/api/quotations/{q['id']}/", {
+            'discount_amount': '15000', 'discount_remark': 'Repeat customer'})
+        self.assertEqual(r.json()['net_amount'], '185000.00')
+        self.assertEqual(r.json()['total'], '185000.00')
+
+    def test_the_discount_keeps_its_reason(self):
+        """Asked months later by someone who was not in the room."""
+        q = self.make_quotation(self.make_project()['id'])
+        r = self.patch(f"/api/quotations/{q['id']}/", {
+            'discount_amount': '15000', 'discount_remark': 'Repeat customer'})
+        self.assertEqual(r.json()['discount_remark'], 'Repeat customer')
+
+    # ── Additional costs ──
+    def test_extras_are_added_with_their_reasons(self):
+        q = self.make_quotation(self.make_project()['id'])
+        r = self.patch(f"/api/quotations/{q['id']}/", {'costs': [
+            {'remark': 'Crane hire for 3rd floor', 'amount': '12000', 'position': 0},
+            {'remark': 'Extra DC cable, 12 m over standard', 'amount': '1980', 'position': 1},
+        ]})
+        d = r.json()
+        self.assertEqual(d['extras_total'], '13980.00')
+        self.assertEqual(d['subtotal'], '213980.00')
+        self.assertEqual([c['remark'] for c in d['costs']],
+                         ['Crane hire for 3rd floor', 'Extra DC cable, 12 m over standard'])
+
+    def test_each_extra_stands_on_its_own(self):
+        """A crane, a cable run and a scaffold are three conversations; one lump
+        labelled "extra charges" is the one a customer argues with."""
+        q = self.make_quotation(self.make_project()['id'])
+        r = self.patch(f"/api/quotations/{q['id']}/", {'costs': [
+            {'remark': 'Crane', 'amount': '12000', 'position': 0},
+            {'remark': 'Scaffold', 'amount': '4500', 'position': 1},
+        ]})
+        self.assertEqual(len(r.json()['costs']), 2)
+
+    def test_extras_keep_the_order_they_were_entered(self):
+        q = self.make_quotation(self.make_project()['id'])
+        r = self.patch(f"/api/quotations/{q['id']}/", {'costs': [
+            {'remark': 'First', 'amount': '1', 'position': 0},
+            {'remark': 'Second', 'amount': '2', 'position': 1},
+            {'remark': 'Third', 'amount': '3', 'position': 2},
+        ]})
+        self.assertEqual([c['remark'] for c in r.json()['costs']], ['First', 'Second', 'Third'])
+
+    # ── What it comes to ──
+    def test_the_whole_statement_adds_up(self):
+        from decimal import Decimal
+        project = self.make_project()
+        q = self.make_quotation(project['id'])
+        r = self.patch(f"/api/quotations/{q['id']}/", {
+            'costs': [{'remark': 'Crane', 'amount': '12000', 'position': 0},
+                      {'remark': 'Cable', 'amount': '1980', 'position': 1}],
+            'discount_amount': '15000', 'discount_remark': 'Repeat customer'})
+        d = r.json()
+        self.assertEqual(Decimal(d['package_amount']) + Decimal(d['extras_total']),
+                         Decimal(d['subtotal']))
+        self.assertEqual(Decimal(d['subtotal']) - Decimal(d['discount_amount']),
+                         Decimal(d['net_amount']))
+        self.assertEqual(d['net_amount'], '198980.00')
+        self.assertEqual(d['total'], '198980.00')
+        self.assertEqual(Decimal(d['base_amount']) + Decimal(d['tax_amount']),
+                         Decimal(d['total']))
+
+    def test_extras_sit_on_the_same_side_of_the_tax_as_the_price(self):
+        """A tax-exclusive project makes a tax-exclusive quotation, so the extras
+        are taxed too. Mixing the two sides on one document is how a quotation
+        ends up thousands away from what anybody agreed."""
+        project = self.make_project(dcr='200000', tax='18', inclusive=False)
+        q = self.make_quotation(project['id'])
+        r = self.patch(f"/api/quotations/{q['id']}/", {
+            'costs': [{'remark': 'Crane', 'amount': '10000', 'position': 0}]})
+        d = r.json()
+        self.assertEqual(d['net_amount'], '210000.00')
+        self.assertEqual(d['tax_amount'], '37800.00')
+        self.assertEqual(d['total'], '247800.00')
+
+    # ── Anything that moves the price says why ──
+    def test_a_discount_without_a_reason_is_refused(self):
+        """An unexplained ₹15,000 off is exactly the number that becomes an
+        argument months later."""
+        q = self.make_quotation(self.make_project()['id'])
+        r = self.patch(f"/api/quotations/{q['id']}/", {'discount_amount': '15000'})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('discount_remark', r.json())
+
+    def test_whitespace_is_not_a_reason(self):
+        q = self.make_quotation(self.make_project()['id'])
+        r = self.patch(f"/api/quotations/{q['id']}/",
+                       {'discount_amount': '15000', 'discount_remark': '   '})
+        self.assertEqual(r.status_code, 400)
+
+    def test_a_discount_with_a_reason_is_accepted(self):
+        q = self.make_quotation(self.make_project()['id'])
+        r = self.patch(f"/api/quotations/{q['id']}/",
+                       {'discount_amount': '15000', 'discount_remark': 'Repeat customer'})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+
+    def test_no_discount_needs_no_reason(self):
+        """The rule is conditional: a quotation without a discount is not asked
+        to explain one."""
+        r = self.post('/api/quotations/', {'quotation_date': '2026-09-01'})
+        self.assertEqual(r.status_code, 201, r.content[:300])
+
+    def test_clearing_the_reason_while_a_discount_stands_is_refused(self):
+        """The check reads the state after the write, not just what was sent."""
+        q = self.make_quotation(self.make_project()['id'])
+        self.patch(f"/api/quotations/{q['id']}/",
+                   {'discount_amount': '15000', 'discount_remark': 'Repeat customer'})
+        r = self.patch(f"/api/quotations/{q['id']}/", {'discount_remark': ''})
+        self.assertEqual(r.status_code, 400)
+
+    def test_an_additional_cost_without_a_reason_is_refused(self):
+        q = self.make_quotation(self.make_project()['id'])
+        r = self.patch(f"/api/quotations/{q['id']}/", {'costs': [
+            {'remark': '', 'amount': '12000', 'position': 0}]})
+        self.assertEqual(r.status_code, 400)
+
+    def test_the_refusal_says_what_is_wanted(self):
+        """"This field may not be blank" is true and useless."""
+        q = self.make_quotation(self.make_project()['id'])
+        r = self.patch(f"/api/quotations/{q['id']}/", {'costs': [
+            {'remark': '', 'amount': '12000', 'position': 0}]})
+        self.assertIn('what this cost is for', str(r.json()))
+
+    def test_a_cost_with_a_reason_is_accepted(self):
+        q = self.make_quotation(self.make_project()['id'])
+        r = self.patch(f"/api/quotations/{q['id']}/", {'costs': [
+            {'remark': 'Crane hire for 3rd floor', 'amount': '12000', 'position': 0}]})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+
+    # ── Becoming an invoice ──
+    def test_it_converts_to_a_proforma_for_the_agreed_figure(self):
+        project = self.make_project()
+        q = self.make_quotation(project['id'])
+        q = self.patch(f"/api/quotations/{q['id']}/", {
+            'costs': [{'remark': 'Crane', 'amount': '12000', 'position': 0}],
+            'discount_amount': '15000', 'discount_remark': 'Repeat customer'}).json()
+
+        r = self.post(f"/api/quotations/{q['id']}/convert/", {})
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        invoice = r.json()
+        self.assertIn('/PI', invoice['number'])
+        # What was agreed is what is invoiced.
+        self.assertEqual(invoice['grand_total'], q['total'])
+
+    def test_the_specification_travels_onto_the_invoice(self):
+        """The invoice should say what the customer was offered, not send them
+        back to the quotation for it."""
+        q = self.make_quotation(self.make_project()['id'])
+        invoice = self.post(f"/api/quotations/{q['id']}/convert/", {}).json()
+        self.assertEqual(len(invoice['spec_lines']), 2)
+
+    def test_converting_marks_the_quotation_converted(self):
+        q = self.make_quotation(self.make_project()['id'])
+        self.post(f"/api/quotations/{q['id']}/convert/", {})
+        back = self.get(f"/api/quotations/{q['id']}/")
+        self.assertEqual(back['status'], 'converted')
+        self.assertIsNotNone(back['converted_quote'])
+
+    def test_converting_twice_does_not_raise_a_second_invoice(self):
+        """A customer must never receive two invoices for one job."""
+        q = self.make_quotation(self.make_project()['id'])
+        first = self.post(f"/api/quotations/{q['id']}/convert/", {}).json()
+        again = self.post(f"/api/quotations/{q['id']}/convert/", {})
+        self.assertEqual(again.status_code, 400)
+        self.assertEqual(again.json()['quote']['number'], first['number'])
+
+    def test_a_login_is_required(self):
+        self.assertEqual(self.client.get('/api/quotations/').status_code, 401)
+
+
+class RetailInventoryAccessTests(TestCase):
+    """Who may reach the retail inventory endpoints, role by role.
+
+    Before this the endpoints answered any authenticated account, so a module
+    hidden from someone's sidebar was still one they could fetch — supplier
+    costs and purchase orders included. The gate now matches the nav, and this
+    enumerates every role so a change to either is visible here rather than in
+    production.
+    """
+
+    # Every endpoint this gate governs, so none is left open by being forgotten.
+    # `/api/vendors/` is deliberately absent: the suppliers list is shared with
+    # the wholesale side and answers to SuppliersAccess instead, because people
+    # who never see this group still order from those vendors. See
+    # test_suppliers_keeps_its_own_rule below.
+    ENDPOINTS = ['/api/products/', '/api/quotes/',
+                 '/api/sales-orders/', '/api/purchase-orders/',
+                 '/api/projects/', '/api/quotations/']
+
+    # The roles the sidebar shows the group to: the admin tier (is_staff), the
+    # three that carry is_general_manager, the spectator — and now the BDE.
+    ALLOWED = ['superadmin', 'admin', 'coo', 'sales_manager', 'documentation_manager',
+               'spectator', 'bde']
+    # Everyone else works a different desk and never had a link to it.
+    BLOCKED = ['leads_manager', 'documentation_staff', 'accounts_manager',
+               'accounts_staff', 'purchase_staff', 'project_manager',
+               'liasoning_officer', 'branch_manager', 'tele_caller']
+    # The wholesale roles reach the shared lists from their own side; what they
+    # may do there is SuppliersAccess's business, not this gate's.
+    B2B_ONLY = ['store_manager', 'store_keeper', 'accounts_b2b']
+
+    def setUp(self):
+        self._users = {}
+
+    def user(self, role):
+        """One account per role, kept — every endpoint is checked for each."""
+        if role not in self._users:
+            self._users[role] = mk(f'inv_{role}', role)
+        return self._users[role]
+
+    def reach(self, role, url):
+        return self.client.get(url, HTTP_AUTHORIZATION=token_for(self.user(role))).status_code
+
+    def test_the_roles_the_sidebar_shows_it_to_can_reach_it(self):
+        for role in self.ALLOWED:
+            for url in self.ENDPOINTS:
+                self.assertEqual(self.reach(role, url), 200, f'{role} -> {url}')
+
+    def test_a_bde_can_reach_it(self):
+        """The reason for this change: a BDE quotes, so a BDE needs the module."""
+        for url in self.ENDPOINTS:
+            self.assertEqual(self.reach('bde', url), 200, url)
+
+    def test_every_other_role_is_turned_away(self):
+        for role in self.BLOCKED:
+            for url in self.ENDPOINTS:
+                self.assertEqual(self.reach(role, url), 403, f'{role} -> {url}')
+
+    def test_purchase_orders_are_no_longer_open_to_the_whole_company(self):
+        """The gap this closes, stated on its own so it cannot quietly reopen."""
+        self.assertEqual(self.reach('tele_caller', '/api/purchase-orders/'), 403)
+        self.assertEqual(self.reach('tele_caller', '/api/products/'), 403)
+
+    def test_suppliers_keeps_its_own_rule(self):
+        """The shared list is not this gate's business.
+
+        Purchase staff never see the retail inventory group and still order from
+        these vendors; gating suppliers on the group took that away. The access
+        is theirs by the job they do, not by the menu they are shown — which is
+        what SuppliersAccess already said before this gate existed.
+        """
+        self.assertEqual(self.reach('purchase_staff', '/api/vendors/'), 200)
+        self.assertEqual(self.reach('bde', '/api/vendors/'), 200)
+
+    def test_a_spectator_reads_but_does_not_write(self):
+        """It keeps its bargain: the whole company, and nothing changed."""
+        spectator = self.user('spectator')
+        self.assertEqual(
+            self.client.get('/api/projects/',
+                            HTTP_AUTHORIZATION=token_for(spectator)).status_code, 200)
+        r = self.client.post('/api/projects/', data={'name': 'Nope'},
+                             content_type='application/json',
+                             HTTP_AUTHORIZATION=token_for(spectator))
+        self.assertEqual(r.status_code, 403)
+
+    def test_a_bde_can_actually_raise_a_quotation(self):
+        """Read access alone would be a module a BDE could look at and not use."""
+        bde = self.user('bde')
+        project = self.client.post(
+            '/api/projects/', data={'name': '5kW', 'price_dcr': '200000', 'tax_percent': '18'},
+            content_type='application/json', HTTP_AUTHORIZATION=token_for(bde))
+        self.assertEqual(project.status_code, 201, project.content[:200])
+        r = self.client.post(
+            '/api/quotations/',
+            data={'quotation_date': '2026-09-01', 'project': project.json()['id']},
+            content_type='application/json', HTTP_AUTHORIZATION=token_for(bde))
+        self.assertEqual(r.status_code, 201, r.content[:300])
+
+    def test_every_role_is_accounted_for(self):
+        """A role added later must be classified here before it ships.
+
+        Without this the safe-looking default — a new role simply not appearing
+        in either list — is the one where nobody notices it was never decided.
+        """
+        from users.models import ROLE_CHOICES, ROLE_CUSTOM
+        known = set(self.ALLOWED) | set(self.BLOCKED) | set(self.B2B_ONLY)
+        # A custom role carries its own permission list, tested separately.
+        declared = {r for r, _ in ROLE_CHOICES} - {ROLE_CUSTOM}
+        self.assertEqual(declared - known, set(), 'unclassified role(s)')
+
+    def test_a_custom_role_decides_for_itself(self):
+        from users.models import CustomRole, User
+        role = CustomRole.objects.create(name='Quoting desk', permissions=['inventory'])
+        user = mk('inv_custom_yes', 'custom')
+        user.custom_role = role
+        user.save()
+        self.assertEqual(
+            self.client.get('/api/projects/',
+                            HTTP_AUTHORIZATION=token_for(user)).status_code, 200)
+
+        bare = CustomRole.objects.create(name='No inventory', permissions=['leads'])
+        other = mk('inv_custom_no', 'custom')
+        other.custom_role = bare
+        other.save()
+        self.assertEqual(
+            self.client.get('/api/projects/',
+                            HTTP_AUTHORIZATION=token_for(other)).status_code, 403)
+
+    def test_signed_out_is_still_signed_out(self):
+        for url in self.ENDPOINTS:
+            self.assertEqual(self.client.get(url).status_code, 401, url)

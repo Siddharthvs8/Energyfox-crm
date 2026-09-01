@@ -12,12 +12,57 @@ from rest_framework.response import Response
 
 from . import b2b_access
 from .models import (Vendor, PurchaseOrder, Quote, SalesOrder, SalesOrderItem,
-                     round_off_for)
+                     ProjectSpec, ProjectSpecLine, Quotation, QuoteItem,
+                     QuoteSpecLine, PRICE_VARIANTS, split_tax, round_off_for)
 
 logger = logging.getLogger(__name__)
 from .serializers import (
     VendorSerializer, PurchaseOrderSerializer, QuoteSerializer, SalesOrderSerializer,
+    ProjectSpecSerializer, QuotationSerializer,
 )
+
+
+def can_access_retail_inventory(user):
+    """Who the retail inventory module is for.
+
+    The one definition, mirroring the sidebar exactly — see `canSeeInventory` in
+    the CRM layout. Keeping the two in step is the whole point: a module a user
+    cannot see should also be one they cannot call.
+
+    BDEs are here because they quote: a project and a quotation are how they put
+    a price in front of a customer.
+    """
+    from users.models import ROLE_BDE
+    if not user or not user.is_authenticated:
+        return False
+    # Wholesale staff work some of these same shared lists from their own side;
+    # SuppliersAccess does the scoping for them.
+    if getattr(user, 'is_b2b_only', False):
+        return True
+    granted = user.can('inventory')      # a custom role decides for itself
+    if granted is not None:
+        return granted
+    return user.sees_everything or user.role == ROLE_BDE
+
+
+class RetailInventoryAccess(permissions.BasePermission):
+    """Gate for the retail inventory endpoints.
+
+    Until now these were open to any authenticated account, so a module hidden
+    from someone's sidebar was still one they could fetch — supplier costs and
+    purchase orders included. This closes that, and closes it the same way the
+    nav decides, so the two cannot drift.
+
+    The spectator keeps its bargain: it reads everything and writes nothing.
+    """
+    def has_permission(self, request, view):
+        from leads.access import is_view_only
+        user = request.user
+        if not can_access_retail_inventory(user):
+            return False
+        if request.method not in permissions.SAFE_METHODS and is_view_only(user):
+            return False
+        return True
 
 
 class SuppliersAccess(permissions.BasePermission):
@@ -43,8 +88,233 @@ class SuppliersAccess(permissions.BasePermission):
         return level == b2b_access.WRITE
 
 
+class ProjectViewSet(viewsets.ModelViewSet):
+    """Projects — the retail side's bundles of products.
+
+    Named ProjectSpec in the models to stay out of the way of leads.Project (the
+    installation stage); it is "Project" everywhere a user can see.
+
+    Retail only. The wholesale stock register is a separate module with its own
+    item master, and nothing here reaches into it.
+    """
+    serializer_class = ProjectSpecSerializer
+    permission_classes = [permissions.IsAuthenticated, RetailInventoryAccess]
+    queryset = ProjectSpec.objects.all()
+
+    def get_queryset(self):
+        qs = (ProjectSpec.objects.all()
+              .prefetch_related('lines')
+              .order_by('name'))
+        search = self.request.query_params.get('search')
+        if search:
+            qs = qs.filter(Q(name__icontains=search) | Q(capacity__icontains=search))
+        # Retired projects stay out of the way unless asked for, so the picker on
+        # a new quote offers only what is still sold.
+        if self.request.query_params.get('all') not in ('1', 'true', 'yes'):
+            qs = qs.filter(is_active=True)
+        return qs
+
+    @action(detail=True, methods=['post'])
+    def duplicate(self, request, pk=None):
+        """Copy a project, lines and all.
+
+        Packages differ by one panel make or one cable length far more often
+        than they differ wholly, and retyping thirty lines to change one is how
+        a specification picks up mistakes.
+        """
+        source = self.get_object()
+        copy = ProjectSpec.objects.create(
+            name=f'{source.name} (copy)', capacity=source.capacity,
+            notes=source.notes, created_by=request.user)
+        ProjectSpecLine.objects.bulk_create([
+            ProjectSpecLine(project=copy, section=l.section, item_name=l.item_name,
+                            brand=l.brand, quantity=l.quantity, position=l.position).tidy()
+            for l in source.lines.all()
+        ])
+        return Response(ProjectSpecSerializer(copy, context={'request': request}).data,
+                        status=status.HTTP_201_CREATED)
+
+
+class QuotationViewSet(viewsets.ModelViewSet):
+    """Quotations — what the customer is offered, before an invoice is raised."""
+    serializer_class = QuotationSerializer
+    permission_classes = [permissions.IsAuthenticated, RetailInventoryAccess]
+    queryset = Quotation.objects.all()
+
+    def get_queryset(self):
+        qs = (Quotation.objects.all()
+              .select_related('lead', 'project')
+              .prefetch_related('spec_lines', 'costs')
+              .order_by('-created_at'))
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        # The panel on a lead's own page asks for just that lead's quotations.
+        lead = self.request.query_params.get('lead')
+        if lead:
+            qs = qs.filter(lead_id=lead)
+        search = self.request.query_params.get('search')
+        if search:
+            qs = qs.filter(Q(number__icontains=search)
+                           | Q(lead__first_name__icontains=search)
+                           | Q(lead__last_name__icontains=search)
+                           | Q(project__name__icontains=search))
+        return qs
+
+    def quotation_party(self, quotation):
+        """Who the quotation is addressed to — the lead behind it."""
+        lead = quotation.lead
+        if not lead:
+            return dict(BLANK_PARTY)
+        name = f"{lead.first_name or ''} {lead.last_name or ''}".strip()
+        return {
+            'name': name or (lead.email or ''),
+            'gstin': '',
+            'contact_person': name,
+            'contact_number': lead.phone or '',
+            'address': lead.installation_location or lead.company or '',
+            'state': '',
+            'email': lead.email or '',
+        }
+
+    @action(detail=True, methods=['get'])
+    def document(self, request, pk=None):
+        """Everything the printed quotation needs.
+
+        Emitted in the same shape the proforma invoice uses, so the two print
+        through one template and carry the same letterhead, signature and seal.
+        A quotation that looked like a different company's document would be the
+        one thing a customer noticed about it.
+
+        The negotiation is the document's whole job, so it becomes the lines:
+        the package, then each thing added to it under its own remark, with the
+        discount and its reason in the totals block. Assembled here rather than
+        in the client so the printed figures and the stored ones cannot disagree.
+        """
+        q = self.get_object()
+        rate = q.tax_percent or Decimal('0')
+        inclusive = q.price_includes_tax
+
+        def base_of(amount):
+            return split_tax(amount, rate, inclusive)['base_amount']
+
+        package_label = q.project.name if q.project else 'Solar installation'
+        if q.project and q.project.capacity:
+            package_label = f'{package_label} — {q.project.capacity}'
+        package_label += f' ({dict(PRICE_VARIANTS).get(q.price_variant, "")})'
+
+        components = [(package_label, base_of(q.package_amount))]
+        components += [(c.remark, base_of(c.amount)) for c in q.costs.all()]
+
+        lines, hsn_summary = summarise_lines([
+            {'particulars': label, 'hsn': '', 'unit': '', 'qty': 1,
+             'taxable': amount, 'gst_rate': rate}
+            for label, amount in components
+        ])
+
+        taxable = sum((amount for _, amount in components), Decimal('0'))
+        discount = base_of(q.discount_amount)
+        # Derived by subtraction so the printed block reconciles exactly: the
+        # component bases are each rounded, and recomputing tax from the rate
+        # would leave the document a paisa short of its own total.
+        tax = q.total - (taxable - discount)
+
+        return Response({
+            **document_chrome(request, 'b2c'),
+            'title': 'QUOTATION',
+            'label': 'Quotation',
+            'invoice': {
+                'number': q.number,
+                'date': q.quotation_date.isoformat() if q.quotation_date else None,
+                'efc_ref_no': '',
+                'status': q.status,
+            },
+            'customer': self.quotation_party(q),
+            'ship_to': {**self.quotation_party(q), 'address': q.site or ''},
+            'lines': lines,
+            'hsn_summary': hsn_summary,
+            'totals': totals_block(taxable, discount, tax, q.total),
+            'terms': ([f'Discount: {q.discount_remark}'] if q.discount_remark else [])
+                     + ['This quotation is valid for 15 days from the date above.'],
+            # Extra, for the screen: the specification and the statement as
+            # entered. Ignored by the PDF template, which takes the lines above.
+            'spec': [{'section': l.section, 'section_label': l.get_section_display(),
+                      'item_name': l.item_name, 'brand': l.brand, 'quantity': l.quantity}
+                     for l in q.spec_lines.all()],
+        })
+
+    @action(detail=True, methods=['post'], parser_classes=[parsers.MultiPartParser, parsers.FormParser])
+    def send(self, request, pk=None):
+        """Store the rendered PDF against this quotation and send it out.
+
+        The same delivery path the proforma uses, so a quotation reaches the
+        customer the same way an invoice does and lands on the lead's timeline.
+        """
+        q = self.get_object()
+        payload, code = deliver_document(
+            request, holder=q, number=q.number, amount=q.total,
+            party=self.quotation_party(q), noun='Quotation', lead=q.lead)
+        if code == status.HTTP_200_OK and q.status == 'draft' and payload.get('sent'):
+            q.status = 'sent'
+            q.save(update_fields=['status', 'updated_at'])
+        return Response(payload, status=code)
+
+    @action(detail=True, methods=['post'])
+    def convert(self, request, pk=None):
+        """Raise the proforma invoice this quotation was accepted as.
+
+        The invoice is billed from the quotation's *net* figure — the package
+        plus its extras, less the discount — so what was agreed is what is
+        invoiced. The line is priced pre-tax with the rate on the document, so
+        the proforma's own arithmetic reaches the same total rather than taxing
+        an already-taxed figure a second time.
+
+        Converting twice returns the invoice already raised instead of minting a
+        second one: a customer must never receive two invoices for one job.
+        """
+        quotation = self.get_object()
+        if quotation.converted_quote_id:
+            return Response(
+                {'error': 'This quotation has already been invoiced.',
+                 'quote': QuoteSerializer(quotation.converted_quote,
+                                          context={'request': request}).data},
+                status=status.HTTP_400_BAD_REQUEST)
+
+        figures = quotation.figures
+        quote = Quote.objects.create(
+            lead=quotation.lead, project=quotation.project,
+            price_variant=quotation.price_variant,
+            quote_date=timezone.localdate(), site=quotation.site,
+            tax_percent=quotation.tax_percent, notes=quotation.notes,
+            status='draft',
+            created_by=request.user if request.user.is_authenticated else None)
+
+        QuoteItem.objects.create(
+            quote=quote,
+            description=quotation.project.name if quotation.project else 'Solar installation',
+            quantity=Decimal('1'), unit_price=figures['base_amount'])
+
+        # The specification travels with it: the invoice should say what the
+        # customer was offered, not send them back to the quotation for it.
+        for line in quotation.spec_lines.all():
+            QuoteSpecLine.objects.create(
+                quote=quote, section=line.section, item_name=line.item_name,
+                brand=line.brand, quantity=line.quantity, position=line.position)
+
+        quotation.converted_quote = quote
+        quotation.status = 'converted'
+        quotation.save(update_fields=['converted_quote', 'status', 'updated_at'])
+        return Response(QuoteSerializer(quote, context={'request': request}).data,
+                        status=status.HTTP_201_CREATED)
+
+
 class VendorViewSet(viewsets.ModelViewSet):
     serializer_class = VendorSerializer
+    # Suppliers keeps SuppliersAccess as its only gate, deliberately. The list
+    # is shared with the wholesale side and is read by people who never see the
+    # retail inventory group — purchase staff order from these vendors — so
+    # putting the group's gate on it would take away access that is theirs by
+    # the job they do rather than by the menu they are shown.
     permission_classes = [permissions.IsAuthenticated, SuppliersAccess]
     queryset = Vendor.objects.all()
 
@@ -60,7 +330,7 @@ class VendorViewSet(viewsets.ModelViewSet):
 
 class PurchaseOrderViewSet(viewsets.ModelViewSet):
     serializer_class = PurchaseOrderSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, RetailInventoryAccess]
     queryset = PurchaseOrder.objects.all()
 
     def get_queryset(self):
@@ -431,7 +701,7 @@ class ProformaDocumentMixin:
 
 class QuoteViewSet(ProformaDocumentMixin, viewsets.ModelViewSet):
     serializer_class = QuoteSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, RetailInventoryAccess]
     queryset = Quote.objects.all()
 
     def proforma_party(self, quote):
@@ -490,7 +760,7 @@ class QuoteViewSet(ProformaDocumentMixin, viewsets.ModelViewSet):
 
 class SalesOrderViewSet(viewsets.ModelViewSet):
     serializer_class = SalesOrderSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, RetailInventoryAccess]
     queryset = SalesOrder.objects.all()
 
     def get_queryset(self):

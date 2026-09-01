@@ -567,6 +567,21 @@ class MyPerformanceView(APIView):
         ).count()
         win_rate = (enrolled_count / total_decided * 100) if total_decided > 0 else 0
 
+        # ── Purchase orders signed ──
+        # The BDE's own milestone: the customer has signed, which is the point a
+        # lead stops being a maybe. Counted off `po_signed_date` rather than the
+        # lead's own dates, so it lands in the month the order was actually
+        # signed however long the lead had been open before that.
+        #
+        # Scoped through `my_leads` like everything else on this page, so it
+        # agrees with the lead counts above rather than quietly counting orders
+        # on somebody else's leads.
+        po_signed_this_month = my_leads.filter(
+            site_visit__po_signed_date__year=year,
+            site_visit__po_signed_date__month=month,
+        ).count()
+        po_signed_total = my_leads.filter(site_visit__po_signed_date__isnull=False).count()
+
         # ── Recent activity ──
         recent_leads = my_leads.order_by('-created_at')[:5]
         recent_data = [{
@@ -608,6 +623,8 @@ class MyPerformanceView(APIView):
                 'active_leads': active_leads,
                 'enrolled_this_month': enrolled_count,
                 'revenue_this_month': float(enrolled_revenue),
+                'po_signed_this_month': po_signed_this_month,
+                'po_signed_total': po_signed_total,
                 'win_rate': round(win_rate, 1),
                 'status_breakdown': status_breakdown,
             },

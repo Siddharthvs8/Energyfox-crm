@@ -30,13 +30,14 @@ const prettyDate = (iso: string | null) =>
 function Logo() {
   return (
     <div className="flex items-center gap-2.5">
-      <div className="w-9 h-9 rounded-full bg-amber-400 flex items-center justify-center shadow-sm">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1e293b"
-          strokeWidth="2.5" strokeLinecap="round">
-          <circle cx="12" cy="12" r="4.5" />
-          <path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4" />
-        </svg>
-      </div>
+      {/* The real company mark, the same file the sidebar and the login screen
+          use, served from this app's own origin — this page is opened by a
+          stranger with no session, so it must not depend on a media host or an
+          authenticated call to know what the company looks like. The square
+          mark rather than the wide lockup: it sits beside the name here exactly
+          as it does in the sidebar. */}
+      <img src="/energyfox-mark.png" alt="Energyfox"
+        className="w-9 h-9 object-contain flex-shrink-0" />
       <div className="leading-tight">
         <p className="font-black text-slate-900 text-[15px]">EnergyFox</p>
         <p className="text-[11px] text-slate-400">Installation tracking</p>

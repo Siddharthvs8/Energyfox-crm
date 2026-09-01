@@ -9,6 +9,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
 import { getSourceLabel, formatCurrency } from "@/lib/mock-data";
 import SiteVisitSection from "./SiteVisitSection";
+import LeadQuotationsPanel from "@/components/LeadQuotationsPanel";
 
 export default function LeadDetailPage({
   params: paramsPromise,
@@ -1178,6 +1179,9 @@ export default function LeadDetailPage({
               </div>
             </div>
           </div>
+
+          {/* Quotations — raised here, listed in the Quotation module too. */}
+          <LeadQuotationsPanel leadId={params.id} customerEmail={lead?.email} />
 
           {/* Attachments UI Card */}
           <div className="bg-white rounded-2xl border border-slate-100 p-6 animate-fade-in-up delay-[150ms]">

@@ -531,8 +531,19 @@ class UserViewSet(viewsets.ModelViewSet):
         
         date_from = request.query_params.get('date_from')
         date_to = request.query_params.get('date_to')
+        # Purchase orders are counted by the date the order was *signed*, not by
+        # when the lead was created — an order signed in September belongs to
+        # September however long the lead had been open before it. So the whole
+        # book is kept here, before the created_at filter narrows it below.
+        all_user_leads = user_leads
         if date_from and date_to:
             user_leads = user_leads.filter(created_at__date__gte=date_from, created_at__date__lte=date_to)
+
+        po_signed = all_user_leads.filter(site_visit__po_signed_date__isnull=False)
+        if date_from and date_to:
+            po_signed = po_signed.filter(site_visit__po_signed_date__gte=date_from,
+                                         site_visit__po_signed_date__lte=date_to)
+        po_signed_count = po_signed.count()
 
         from leads.scopes import closed_deals, received_value
         won_leads = closed_deals(user_leads)
@@ -568,7 +579,8 @@ class UserViewSet(viewsets.ModelViewSet):
                 "won_count": enrolled_count,
                 "total_leads": total_count,
                 "pipeline_value": float(user_leads.aggregate(total=Sum('value'))['total'] or 0),
-                "win_rate": round(win_rate, 1)
+                "win_rate": round(win_rate, 1),
+                "po_signed_count": po_signed_count,
             },
             "status_distribution": status_distribution,
             "recent_leads": recent_data

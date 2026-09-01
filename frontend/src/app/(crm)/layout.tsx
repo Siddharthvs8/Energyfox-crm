@@ -720,12 +720,16 @@ export default function DashboardLayout({
     item.perm || (item.href === `/` ? "dashboard" : String(item.href || "").replace(/^\//, ""));
 
   // B2B is the stock register, so its staff always have the group. On the retail
-  // side it's the admin/GM module it always was.
+  // side it is the admin/GM module it always was, plus BDEs — a project and a
+  // quotation are how a BDE puts a price in front of a customer.
+  //
+  // The server enforces the same rule (RetailInventoryAccess); if this changes,
+  // change that too, or a module hidden here stays open to a direct call.
   const canSeeInventory = isB2BOnly || bizMode === "b2b"
     ? true
     : onCustomRole
       ? grantedPerms.includes("inventory")
-      : seesAllModules;
+      : seesAllModules || currentUser?.role === "bde";
 
   // Manager features visible to manager, general manager, and admin
   const navItems = allNavItems.filter(item => {
@@ -850,10 +854,12 @@ export default function DashboardLayout({
   // The retail CRM's Inventory module — the original sales-document set.
   const b2cInventoryItems = [
     { href: `/inventory-dashboard`, label: "Dashboard",   Icon: Nav.Dashboard },
-    { href: `/products`,        label: "Item Master",     Icon: Nav.Products },
+    // Retail sells packages, not loose parts, so this slot is the bundle: the
+    // product catalogue behind it still exists and still prices the proforma.
+    { href: `/projects`,        label: "Project",         Icon: Nav.Products },
     { href: `/vendors`,         label: "Suppliers",       Icon: Nav.Vendor },
     { href: `/customers`,       label: "Customers",       Icon: Nav.Team },
-    { href: `/quotes`,          label: "Proforma Invoice", Icon: Nav.Quote },
+    { href: `/quotations`,      label: "Quotation",       Icon: Nav.Quote },
     { href: `/sales-orders`,    label: "Sales / Dispatches", Icon: Nav.StockOut },
     { href: `/purchase-orders`, label: "Purchases",       Icon: Nav.StockIn },
   ];

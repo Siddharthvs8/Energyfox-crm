@@ -6,6 +6,8 @@ from .models import (
     PurchaseOrder, PurchaseOrderItem,
     Quote, QuoteItem,
     SalesOrder, SalesOrderItem,
+    ProjectSpec, ProjectSpecLine, QuoteSpecLine, PRICE_VARIANTS,
+    Quotation, QuotationSpecLine, QuotationCost,
 )
 
 
@@ -149,10 +151,235 @@ class _TaxedDocSerializer(_DocSerializer):
         return None
 
 
+# ─── Projects (B2C product bundles) ─────────────────────────────────────────
+class _SpecLineSerializer(serializers.ModelSerializer):
+    """A specification line — the same three columns wherever it appears."""
+
+    class Meta:
+        fields = ['id', 'section', 'item_name', 'brand', 'quantity', 'position']
+        read_only_fields = ['id']
+
+
+class ProjectSpecLineSerializer(_SpecLineSerializer):
+    class Meta(_SpecLineSerializer.Meta):
+        model = ProjectSpecLine
+
+
+class QuoteSpecLineSerializer(_SpecLineSerializer):
+    class Meta(_SpecLineSerializer.Meta):
+        model = QuoteSpecLine
+
+
+class ProjectSpecSerializer(serializers.ModelSerializer):
+    lines = ProjectSpecLineSerializer(many=True, required=False)
+    line_count = serializers.SerializerMethodField()
+    # So the list can show "5kVA Single Phase · 12 items" without fetching each.
+    quoted_count = serializers.SerializerMethodField()
+
+    # Derived on the server so the screen and the invoice cannot disagree about
+    # what a package costs. One block per price, keyed by variant.
+    pricing = serializers.SerializerMethodField()
+
+    def get_pricing(self, obj):
+        return {variant: {k: str(v) for k, v in obj.figures_for(variant).items()}
+                for variant, _ in PRICE_VARIANTS}
+
+    class Meta:
+        model = ProjectSpec
+        fields = ['id', 'name', 'capacity',
+                  'price_dcr', 'price_non_dcr', 'tax_percent', 'price_includes_tax',
+                  'pricing',
+                  'notes', 'is_active', 'lines',
+                  'line_count', 'quoted_count', 'created_at', 'updated_at']
+        read_only_fields = ['created_at', 'updated_at']
+
+    def get_line_count(self, obj):
+        return obj.lines.count()
+
+    def get_quoted_count(self, obj):
+        return obj.quotes.count()
+
+    def _replace_lines(self, project, lines):
+        """The whole sheet is sent each time, so it is written the same way.
+
+        Rewriting rather than reconciling keeps the order the user arranged: a
+        line moved to the top is simply a sheet whose lines now read in that
+        order, and there is no id to chase.
+        """
+        project.lines.all().delete()
+        ProjectSpecLine.objects.bulk_create(
+            [ProjectSpecLine(project=project, **line).tidy() for line in lines])
+
+    def create(self, validated_data):
+        lines = validated_data.pop('lines', [])
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            validated_data['created_by'] = request.user
+        project = ProjectSpec.objects.create(**validated_data)
+        self._replace_lines(project, lines)
+        return project
+
+    def update(self, instance, validated_data):
+        lines = validated_data.pop('lines', None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        if lines is not None:
+            self._replace_lines(instance, lines)
+        return instance
+
+
+# ─── Quotations ─────────────────────────────────────────────────────────────
+class QuotationSpecLineSerializer(_SpecLineSerializer):
+    class Meta(_SpecLineSerializer.Meta):
+        model = QuotationSpecLine
+
+
+class QuotationCostSerializer(serializers.ModelSerializer):
+    # Spelled out rather than left to the model's blank=False, whose message is
+    # "This field may not be blank" — true, but it does not say what the field
+    # is for or why anyone should care.
+    remark = serializers.CharField(max_length=255, error_messages={
+        'blank': 'Say what this cost is for.',
+        'required': 'Say what this cost is for.',
+    })
+
+    class Meta:
+        model = QuotationCost
+        fields = ['id', 'remark', 'amount', 'position']
+        read_only_fields = ['id']
+
+
+class QuotationSerializer(serializers.ModelSerializer):
+    spec_lines = QuotationSpecLineSerializer(many=True, required=False)
+    costs = QuotationCostSerializer(many=True, required=False)
+    lead_name = serializers.SerializerMethodField()
+    project_name = serializers.CharField(source='project.name', read_only=True)
+    # Every figure derived on the server, so the screen and the document cannot
+    # disagree about what was offered.
+    extras_total = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    subtotal = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    net_amount = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    base_amount = serializers.SerializerMethodField()
+    tax_amount = serializers.SerializerMethodField()
+    total = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    grand_total = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    round_off = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = Quotation
+        fields = [
+            'id', 'number', 'lead', 'lead_name', 'project', 'project_name',
+            'price_variant', 'status', 'quotation_date', 'expiry_date', 'site',
+            'package_amount', 'tax_percent', 'price_includes_tax',
+            'discount_amount', 'discount_remark',
+            'spec_lines', 'costs',
+            'extras_total', 'subtotal', 'net_amount', 'base_amount', 'tax_amount',
+            'total', 'grand_total', 'round_off',
+            'converted_quote', 'pdf', 'notes', 'created_by', 'created_at',
+        ]
+        read_only_fields = ['number', 'created_by', 'converted_quote', 'pdf']
+
+    def get_lead_name(self, obj):
+        if obj.lead:
+            return f"{obj.lead.first_name} {obj.lead.last_name or ''}".strip()
+        return None
+
+    def validate(self, attrs):
+        """Anything that moves the price has to say why.
+
+        A discount and an extra charge are the two figures on this document that
+        were not read off a price list — someone decided them — and the person
+        who has to answer for them months later is rarely the person who set
+        them. An unexplained ₹15,000 off is exactly the number that becomes an
+        argument, so the reason is part of the figure rather than a note beside
+        it.
+
+        Written as a validator rather than a required field because it is
+        conditional: a quotation with no discount needs no reason for one.
+        """
+        def settled(field):
+            """The value after this write — sent, or what is already stored."""
+            if field in attrs:
+                return attrs[field]
+            return getattr(self.instance, field, None)
+
+        if Decimal(settled('discount_amount') or 0) and not str(settled('discount_remark') or '').strip():
+            raise serializers.ValidationError(
+                {'discount_remark': 'Say why this discount was given.'})
+
+        # Costs arrive whole, so they are checked whole. The per-line blank rule
+        # is on QuotationCostSerializer; this catches a line that carries an
+        # amount with only whitespace for a reason.
+        for cost in (attrs.get('costs') or []):
+            if Decimal(cost.get('amount') or 0) and not str(cost.get('remark') or '').strip():
+                raise serializers.ValidationError(
+                    {'costs': 'Say what each additional cost is for.'})
+        return attrs
+
+    def get_base_amount(self, obj):
+        return str(obj.figures['base_amount'])
+
+    def get_tax_amount(self, obj):
+        return str(obj.figures['tax_amount'])
+
+    # ── Writing ──
+    def _write_children(self, quotation, spec_lines, costs):
+        """The whole of each list is sent, so it is written whole.
+
+        Rewriting rather than reconciling keeps the order the user arranged and
+        spares the client from tracking ids for rows it may have just deleted.
+        """
+        if spec_lines is not None:
+            quotation.spec_lines.all().delete()
+            QuotationSpecLine.objects.bulk_create(
+                [QuotationSpecLine(quotation=quotation, **l).tidy() for l in spec_lines])
+        if costs is not None:
+            quotation.costs.all().delete()
+            QuotationCost.objects.bulk_create(
+                [QuotationCost(quotation=quotation, **c) for c in costs])
+
+    def create(self, validated_data):
+        spec_lines = validated_data.pop('spec_lines', None)
+        costs = validated_data.pop('costs', None)
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            validated_data['created_by'] = request.user
+        quotation = Quotation.objects.create(**validated_data)
+        # A project fills the specification and the price; anything the client
+        # sent explicitly then overwrites that, because it is what the user has
+        # just typed on screen.
+        if quotation.project_id:
+            quotation.fill_from_project()
+        self._write_children(quotation, spec_lines, costs)
+        return quotation
+
+    def update(self, instance, validated_data):
+        spec_lines = validated_data.pop('spec_lines', None)
+        costs = validated_data.pop('costs', None)
+        # Only a *change* re-fills from the project. Re-saving with the same
+        # project and the same variant must not throw away a negotiated price or
+        # an edited specification.
+        refill = (
+            ('project' in validated_data and validated_data['project'] != instance.project)
+            or ('price_variant' in validated_data
+                and validated_data['price_variant'] != instance.price_variant)
+        )
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        if refill and instance.project_id:
+            instance.fill_from_project()
+        self._write_children(instance, spec_lines, costs)
+        return instance
+
+
 class QuoteSerializer(_TaxedDocSerializer):
     item_model = QuoteItem
     parent_fk = 'quote'
     items = QuoteItemSerializer(many=True, required=False)
+    spec_lines = QuoteSpecLineSerializer(many=True, required=False)
+    project_name = serializers.CharField(source='project.name', read_only=True)
 
     class Meta:
         model = Quote
@@ -161,9 +388,53 @@ class QuoteSerializer(_TaxedDocSerializer):
             'site', 'ship_to_state', 'ship_to_gstin',
             'efc_ref_no', 'discount_percent', 'tax_percent', 'notes', 'pdf',
             'created_by', 'created_at',
+            'project', 'project_name', 'price_variant', 'spec_lines',
             'items', 'subtotal', 'discount_amount', 'taxable_amount', 'tax_amount', 'total', 'grand_total', 'round_off',
         ]
         read_only_fields = ['number', 'created_by', 'pdf']
+
+    def _write_spec(self, quote, spec_lines, project_sent, variant_sent=False):
+        """Settle the specification and the price on this proforma.
+
+        Lines sent by the client win: they are what the user has just edited on
+        screen. Otherwise, naming a project copies that project's sheet and
+        price across — which is what picking one from the dropdown is meant to
+        do. A quote whose project is unchanged keeps whatever sheet it already
+        had, edits included.
+
+        Switching between DCR and non-DCR on the same project reprices only:
+        the specification is the same system either way, so re-copying the sheet
+        would throw away edits for no reason.
+        """
+        if spec_lines is not None:
+            quote.spec_lines.all().delete()
+            QuoteSpecLine.objects.bulk_create(
+                [QuoteSpecLine(quote=quote, **line).tidy() for line in spec_lines])
+        elif project_sent and quote.project_id:
+            quote.project.copy_onto(quote)
+            return
+        if variant_sent and not project_sent and quote.project_id:
+            quote.project.price_onto(quote)
+
+    def create(self, validated_data):
+        spec_lines = validated_data.pop('spec_lines', None)
+        project_sent = 'project' in validated_data
+        quote = super().create(validated_data)
+        self._write_spec(quote, spec_lines, project_sent)
+        return quote
+
+    def update(self, instance, validated_data):
+        spec_lines = validated_data.pop('spec_lines', None)
+        # Only a *changed* project re-copies the sheet, and only a *changed*
+        # variant reprices. Re-saving a quote with the same values must not
+        # throw away edits made to its copy or a price agreed by hand.
+        project_sent = ('project' in validated_data
+                        and validated_data['project'] != instance.project)
+        variant_sent = ('price_variant' in validated_data
+                        and validated_data['price_variant'] != instance.price_variant)
+        quote = super().update(instance, validated_data)
+        self._write_spec(quote, spec_lines, project_sent, variant_sent)
+        return quote
 
 
 class SalesOrderSerializer(_TaxedDocSerializer):

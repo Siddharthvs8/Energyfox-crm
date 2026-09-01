@@ -19,6 +19,24 @@ const STATUS: Record<string, { label: string; cls: string }> = {
   converted: { label: "Converted", cls: "bg-violet-50 text-violet-600" },
 };
 
+// The specification's four sections, in the order the sheet reads. Mirrors the
+// server's SectionedSpecLine.SECTION_ORDER.
+// Only the balance of system is a table; the other three are simply named.
+// Mirrors SectionedSpecLine.NAMED_ONLY on the server.
+const SPEC_NAMED_ONLY = new Set(["panels", "inverter", "structure"]);
+
+// The same system, built with Indian-made modules or imported ones — a
+// different price, not a different product. The invoice records which it is
+// written for, so "why is this one ₹20,000 more" has an answer on the paper.
+const PRICE_VARIANTS: [string, string][] = [["dcr", "DCR"], ["non_dcr", "Non-DCR"]];
+
+const SPEC_SECTIONS: [string, string][] = [
+  ["panels", "Panels"],
+  ["inverter", "Inverter"],
+  ["structure", "Structure"],
+  ["bos", "Balance of System"],
+];
+
 export default function QuotesPage({ params: paramsPromise }: { params: Promise<{ domain: string }> }) {
   const params = React.use(paramsPromise);
   const domain = APP_SLUG;
@@ -27,12 +45,18 @@ export default function QuotesPage({ params: paramsPromise }: { params: Promise<
   const [quotes, setQuotes] = useState<any[]>([]);
   const [leads, setLeads] = useState<any[]>([]);
   const [products, setProducts] = useState<any[]>([]);
+  const [projects, setProjects] = useState<any[]>([]);
+  // The specification on THIS proforma — a copy of the chosen project's sheet,
+  // editable here without touching the project every other quote is built from.
+  const [specLines, setSpecLines] = useState<any[]>([]);
+  const [specOpen, setSpecOpen] = useState(false);
+  const [specTouched, setSpecTouched] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [saving, setSaving] = useState(false);
   const [editQuote, setEditQuote] = useState<any>(null);
   const [busy, setBusy] = useState<number | null>(null);
-  const [form, setForm] = useState({ lead: "", status: "draft", quote_date: "", expiry_date: "", site: "", ship_to_state: HOME_STATE, ship_to_gstin: "", efc_ref_no: "", discount_percent: "0", tax_percent: "0", notes: "" });
+  const [form, setForm] = useState({ lead: "", project: "", price_variant: "dcr", status: "draft", quote_date: "", expiry_date: "", site: "", ship_to_state: HOME_STATE, ship_to_gstin: "", efc_ref_no: "", discount_percent: "0", tax_percent: "0", notes: "" });
   const [items, setItems] = useState<Item[]>([{ ...blankItem }]);
 
   const token = () => localStorage.getItem(`${domain}_access`);
@@ -45,26 +69,31 @@ export default function QuotesPage({ params: paramsPromise }: { params: Promise<
 
   const fetchAll = async () => {
     try {
-      const [q, l, p] = await Promise.all([
+      const [q, l, p, pr] = await Promise.all([
         fetch(`${getApiBase(domain)}/api/quotes/`, { headers: headers() }),
         fetch(`${getApiBase(domain)}/api/leads/?all=true`, { headers: headers() }),
         fetch(`${getApiBase(domain)}/api/products/`, { headers: headers() }),
+        fetch(`${getApiBase(domain)}/api/projects/`, { headers: headers() }),
       ]);
       const qd = await q.json(); setQuotes(Array.isArray(qd) ? qd : qd.results || []);
       const ld = await l.json(); setLeads(Array.isArray(ld) ? ld : ld.results || []);
       const pd = await p.json(); setProducts(Array.isArray(pd) ? pd : pd.results || []);
+      const prd = await pr.json(); setProjects(Array.isArray(prd) ? prd : prd.results || []);
     } catch {} finally { setLoading(false); }
   };
 
   const openCreate = () => {
     setEditQuote(null);
-    setForm({ lead: "", status: "draft", quote_date: new Date().toISOString().slice(0, 10), expiry_date: "", site: "", ship_to_state: HOME_STATE, ship_to_gstin: "", efc_ref_no: "", discount_percent: "0", tax_percent: "0", notes: "" });
+    setSpecLines([]); setSpecTouched(false); setSpecOpen(false);
+    setForm({ lead: "", project: "", price_variant: "dcr", status: "draft", quote_date: new Date().toISOString().slice(0, 10), expiry_date: "", site: "", ship_to_state: HOME_STATE, ship_to_gstin: "", efc_ref_no: "", discount_percent: "0", tax_percent: "0", notes: "" });
     setItems([{ ...blankItem }]);
     setShowModal(true);
   };
   const openEdit = (q: any) => {
     setEditQuote(q);
-    setForm({ lead: q.lead || "", status: q.status, quote_date: q.quote_date || "", expiry_date: q.expiry_date || "", site: q.site || "", ship_to_state: q.ship_to_state || HOME_STATE, ship_to_gstin: q.ship_to_gstin || "", efc_ref_no: q.efc_ref_no || "", discount_percent: String(q.discount_percent ?? 0), tax_percent: String(q.tax_percent ?? 0), notes: q.notes || "" });
+    setSpecLines((q.spec_lines || []).map((l: any) => ({ ...l })));
+    setSpecTouched(false); setSpecOpen(false);
+    setForm({ lead: q.lead || "", project: q.project ? String(q.project) : "", price_variant: q.price_variant || "dcr", status: q.status, quote_date: q.quote_date || "", expiry_date: q.expiry_date || "", site: q.site || "", ship_to_state: q.ship_to_state || HOME_STATE, ship_to_gstin: q.ship_to_gstin || "", efc_ref_no: q.efc_ref_no || "", discount_percent: String(q.discount_percent ?? 0), tax_percent: String(q.tax_percent ?? 0), notes: q.notes || "" });
     const its = (q.items || []).map((it: any) => ({ product: String(it.product || ""), quantity: String(it.quantity), unit_price: String(it.unit_price) }));
     setItems(its.length ? its : [{ ...blankItem }]);
     setShowModal(true);
@@ -88,11 +117,17 @@ export default function QuotesPage({ params: paramsPromise }: { params: Promise<
     e.preventDefault();
     setSaving(true);
     const payload = {
-      lead: form.lead || null, status: form.status, quote_date: form.quote_date || null, expiry_date: form.expiry_date || null,
+      lead: form.lead || null, project: form.project ? parseInt(form.project) : null,
+      price_variant: form.price_variant,
+      status: form.status, quote_date: form.quote_date || null, expiry_date: form.expiry_date || null,
       site: form.site, ship_to_state: form.ship_to_state, ship_to_gstin: form.ship_to_gstin,
       efc_ref_no: form.efc_ref_no,
       discount_percent: form.discount_percent || 0, tax_percent: form.tax_percent || 0, notes: form.notes,
       items: items.filter(it => it.product).map(it => ({ product: parseInt(it.product), quantity: it.quantity || 0, unit_price: it.unit_price || 0 })),
+      // Sent only when the sheet has been opened and edited. Left out, the
+      // server copies the chosen project's sheet across — which is what picking
+      // one from the dropdown is for.
+      ...(specTouched ? { spec_lines: specLines.filter(l => (l.item_name || "").trim()) } : {}),
     };
     const url = editQuote ? `${getApiBase(domain)}/api/quotes/${editQuote.id}/` : `${getApiBase(domain)}/api/quotes/`;
     try {
@@ -253,6 +288,130 @@ export default function QuotesPage({ params: paramsPromise }: { params: Promise<
                   </select>
                 </div>
                 <div><label className="block text-sm font-semibold text-slate-700 mb-1.5">GST No. (shipped to)</label><input value={form.ship_to_gstin} onChange={e => setForm({ ...form, ship_to_gstin: e.target.value })} className={field} placeholder="e.g. 32AAWFD1840P1ZZ" /></div>
+              </div>
+
+              {/* ── The project: what the customer is getting ── */}
+              <div className="mb-6 border border-slate-200 rounded-xl overflow-hidden">
+                <div className="flex flex-wrap items-end gap-3 px-4 py-3 bg-slate-50 border-b border-slate-200">
+                  <div className="flex-1 min-w-[220px]">
+                    <label className="block text-sm font-semibold text-slate-700 mb-1.5">Project</label>
+                    <select value={form.project}
+                      onChange={e => {
+                        // Choosing a project replaces the sheet with that
+                        // project's, which is what the dropdown is for — so the
+                        // local copy is cleared and the server does the copying.
+                        setForm({ ...form, project: e.target.value });
+                        setSpecLines([]); setSpecTouched(false); setSpecOpen(false);
+                      }} className={field}>
+                      <option value="">No project</option>
+                      {projects.map(p => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}{p.capacity ? ` · ${p.capacity}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {form.project && (
+                    <div>
+                      <label className="block text-sm font-semibold text-slate-700 mb-1.5">Price</label>
+                      {/* Switching reprices the invoice; the specification is
+                          the same system either way and is left alone. */}
+                      <div className="flex rounded-xl border border-slate-200 overflow-hidden bg-white">
+                        {PRICE_VARIANTS.map(([key, label]) => {
+                          const chosen = form.price_variant === key;
+                          const p = projects.find(pr => String(pr.id) === form.project);
+                          const amount = p?.pricing?.[key]?.total;
+                          return (
+                            <button key={key} type="button"
+                              onClick={() => setForm({ ...form, price_variant: key })}
+                              className={`px-4 py-2 text-xs font-bold transition ${
+                                chosen ? "bg-indigo-600 text-white" : "text-slate-500 hover:bg-slate-50"}`}>
+                              {label}
+                              {Number(amount) > 0 && (
+                                <span className={`block text-[10px] font-semibold ${
+                                  chosen ? "text-indigo-100" : "text-slate-400"}`}>
+                                  ₹{Number(amount).toLocaleString("en-IN")}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                  {form.project && (
+                    <button type="button" onClick={() => setSpecOpen(!specOpen)}
+                      className="px-4 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-600 hover:bg-slate-50 transition">
+                      {specOpen ? "Done editing" : "Edit products"}
+                    </button>
+                  )}
+                </div>
+
+                {!form.project ? (
+                  <p className="px-4 py-3 text-[12px] text-slate-400">
+                    Pick a project and its specification and price are put on this invoice,
+                    replacing the line items below — editable here without changing the project.
+                  </p>
+                ) : !specOpen ? (
+                  <p className="px-4 py-3 text-[12px] text-slate-500">
+                    {specLines.length > 0
+                      ? `${specLines.length} item${specLines.length === 1 ? "" : "s"} on this invoice${specTouched ? " · edited" : ""}.`
+                      : "Its specification is copied across when you save."}
+                  </p>
+                ) : (
+                  <div className="px-4 py-3 space-y-3">
+                    {specLines.length === 0 && (
+                      <p className="text-[12px] text-slate-400">
+                        Save first — the project&rsquo;s items are copied across, then they can be edited here.
+                      </p>
+                    )}
+                    {SPEC_SECTIONS.map(([key, label]) => {
+                      const rows = specLines.filter(l => l.section === key);
+                      if (!rows.length) return null;
+                      return (
+                        <div key={key}>
+                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">{label}</p>
+                          <div className="space-y-1.5">
+                            {rows.map((row) => {
+                              const idx = specLines.indexOf(row);
+                              const set = (patch: any) => {
+                                setSpecTouched(true);
+                                setSpecLines(specLines.map((l, n) => (n === idx ? { ...l, ...patch } : l)));
+                              };
+                              const namedOnly = SPEC_NAMED_ONLY.has(key);
+                              return (
+                                <div key={idx} className={`grid gap-2 items-center ${
+                                  namedOnly ? "grid-cols-[1fr_28px]" : "sm:grid-cols-[1fr_1fr_140px_28px]"}`}>
+                                  <input value={row.item_name} onChange={e => set({ item_name: e.target.value })}
+                                    placeholder={namedOnly ? label : "Item"} className={field} />
+                                  {!namedOnly && (
+                                    <>
+                                      <input value={row.brand || ""} onChange={e => set({ brand: e.target.value })}
+                                        placeholder="Brand" className={field} />
+                                      <input value={row.quantity || ""} onChange={e => set({ quantity: e.target.value })}
+                                        placeholder="Qty" className={field} />
+                                    </>
+                                  )}
+                                  <button type="button" title="Remove this line"
+                                    onClick={() => { setSpecTouched(true); setSpecLines(specLines.filter((_, n) => n !== idx)); }}
+                                    className="justify-self-center text-slate-300 hover:text-rose-500 transition">
+                                    <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2"
+                                      strokeLinecap="round" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" /></svg>
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {specLines.length > 0 && (
+                      <p className="text-[11px] text-slate-400">
+                        Edits stay on this invoice. The project itself is unchanged.
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
 
               <label className="block text-sm font-semibold text-slate-700 mb-2">Items</label>

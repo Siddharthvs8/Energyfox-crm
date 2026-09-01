@@ -12,6 +12,7 @@ from django.db.models import Count, Max, Q
 from django.utils import timezone
 
 from campaigns.models import Campaign
+from leads.duplicates import existing_duplicate_of
 from leads.models import ActivityLog, IntegrationSettings, Lead
 
 logger = logging.getLogger(__name__)
@@ -271,6 +272,30 @@ def create_lead_from_meta_payload(
             meta_lead_id, person_name,
         )
         names["first_name"], names["last_name"] = "Meta Lead", ""
+
+    # The same customer, arriving again. Meta hands out a fresh lead id for every
+    # submission, so the `meta_lead_id` check above only catches the *same
+    # submission* twice — someone who fills the form on Monday and again on
+    # Thursday is two ids and one person. Matching the phone or the email is
+    # what recognises them.
+    #
+    # The lead already on the books is the one kept: it carries everything that
+    # has happened since — the calls, the notes, the owner it was assigned to —
+    # and the arriving copy carries none of that. Keeping the newer one instead
+    # would throw that work away.
+    existing = existing_duplicate_of(names["phone"], names["email"])
+    if existing is not None:
+        logger.info(
+            "Meta lead %s is lead #%s again — not filed a second time.",
+            meta_lead_id, existing.pk,
+        )
+        ActivityLog.objects.create(
+            activity_type="meta_import",
+            description="Meta sent this customer again; the duplicate was not filed.",
+            actor=actor, lead=existing,
+            extra={"meta_lead_id": meta_lead_id, "duplicate_skipped": True},
+        )
+        return None, True
 
     with transaction.atomic():
         lead = Lead.objects.create(

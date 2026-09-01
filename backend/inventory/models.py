@@ -25,6 +25,41 @@ class Vendor(models.Model):
         return self.name
 
 
+# Domestic Content Requirement: the same system built with Indian-made modules
+# rather than imported ones. It is a different price, not a different product,
+# which is why a project quotes both and the invoice records which was chosen.
+DCR, NON_DCR = 'dcr', 'non_dcr'
+PRICE_VARIANTS = [(DCR, 'DCR'), (NON_DCR, 'Non-DCR')]
+
+
+def split_tax(amount, rate, inclusive):
+    """Base, tax and total for an amount, told which side of the tax it sits on.
+
+    The one place this arithmetic lives: a project quotes a price this way and a
+    quotation totals itself the same way, and two copies of a tax calculation is
+    how a document ends up disagreeing with the one it was made from.
+
+    The tax is always the *difference* between total and base rather than its
+    own rounded figure. Computed separately the two miss the total by a paisa on
+    some numbers, and a document that does not add up is the first thing a
+    customer notices.
+    """
+    amount = Decimal(amount or 0)
+    rate = Decimal(rate or 0)
+    if inclusive:
+        # Taken out of the total rather than added to a base: the amount is the
+        # number the customer was quoted and has to come back exactly.
+        total = amount
+        base = (amount / (Decimal('1') + rate / Decimal('100'))).quantize(
+            Decimal('0.01'), rounding=ROUND_HALF_UP)
+    else:
+        base = amount
+        total = (amount + amount * rate / Decimal('100')).quantize(
+            Decimal('0.01'), rounding=ROUND_HALF_UP)
+    return {'amount': amount, 'base_amount': base,
+            'tax_amount': total - base, 'total': total}
+
+
 class _NumberedDoc(models.Model):
     """Shared header behaviour: auto document number + money math."""
     NUMBER_PREFIX = 'DOC'
@@ -361,6 +396,15 @@ class Quote(_ProformaDoc):
     quote_date = models.DateField(null=True, blank=True)
     expiry_date = models.DateField(null=True, blank=True)
     site = models.CharField(max_length=255, blank=True, default='')
+    # Which project this proforma was built from. Kept for the record; the
+    # specification actually quoted lives in `spec_lines`, which may since have
+    # been edited away from it.
+    project = models.ForeignKey('ProjectSpec', on_delete=models.SET_NULL, null=True,
+                                blank=True, related_name='quotes')
+    # Which of the project's two prices this invoice was written for. Recorded
+    # on the document because "why is this quote ₹20,000 more than that one"
+    # has exactly one answer and it should be on the paper.
+    price_variant = models.CharField(max_length=8, choices=PRICE_VARIANTS, default=DCR)
 
 
 class QuoteItem(models.Model):
@@ -373,6 +417,366 @@ class QuoteItem(models.Model):
     @property
     def line_total(self):
         return (self.quantity or Decimal('0')) * (self.unit_price or Decimal('0'))
+
+
+# ─── Projects (B2C product bundles) ─────────────────────────────────────────
+
+class SectionedSpecLine(models.Model):
+    """One line of a system specification: what it is, whose make, how many.
+
+    Abstract because the same four-section shape is kept twice — once on the
+    project itself, and once copied onto every proforma that quotes it. See
+    ``QuoteSpecLine`` for why the copy exists.
+
+    ``quantity`` is free text on purpose. The column in a real specification
+    carries "1 Each", "36 M" and "50 Sqmm AL Conductor, Earth Pit, SS
+    Mono-Spike" in neighbouring rows; a decimal and a unit could not hold the
+    third. Nothing here is totalled or costed — this is a specification, not a
+    price list — so there is nothing for a number to buy.
+    """
+    PANELS, INVERTER, STRUCTURE, BOS = 'panels', 'inverter', 'structure', 'bos'
+    SECTIONS = [
+        (PANELS, 'Panels'),
+        (INVERTER, 'Inverter'),
+        (STRUCTURE, 'Structure'),
+        (BOS, 'Balance of System'),
+    ]
+    # The order the sheet reads in, so an empty section still knows its place.
+    SECTION_ORDER = [PANELS, INVERTER, STRUCTURE, BOS]
+    # Only the balance of system is a table. The panels, the inverter and the
+    # structure are each simply named — "Topcon-Adani, Premier, Waaree" is the
+    # whole of what the sheet says about the panels — so those three carry a
+    # name and nothing else.
+    NAMED_ONLY = frozenset({PANELS, INVERTER, STRUCTURE})
+
+    section = models.CharField(max_length=12, choices=SECTIONS, db_index=True)
+    item_name = models.CharField(max_length=200)
+    brand = models.CharField(max_length=200, blank=True, default='')
+    quantity = models.CharField(max_length=120, blank=True, default='')
+    # Sent by the client, so moving one line does not renumber the whole sheet.
+    position = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        abstract = True
+        ordering = ['position', 'id']
+
+    def tidy(self):
+        """Drop what this section does not carry, and return self.
+
+        The single place the named-only rule is applied. Every writer goes
+        through here — the form, a copy onto a quote, a duplicated project — so
+        a brand cannot survive on a panels line by arriving down a path that
+        forgot to check.
+        """
+        if self.section in self.NAMED_ONLY:
+            self.brand = ''
+            self.quantity = ''
+        return self
+
+    def save(self, *args, **kwargs):
+        self.tidy()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f'{self.get_section_display()} — {self.item_name}'
+
+
+class ProjectSpec(models.Model):
+    """A named bundle of products — what the office calls a Project.
+
+    Deliberately *not* named Project: ``leads.Project`` is already the
+    installation stage a job passes through, and in code the two would be
+    indistinguishable. This one is the specification a customer is sold — the
+    panels, the inverter, the structure and the balance of system that make up
+    one package — and it is what the B2C sidebar calls Project.
+
+    It carries no prices. A proforma is still priced from its own line items;
+    this is the sheet that says what the customer is getting.
+    """
+    name = models.CharField(max_length=200)
+    capacity = models.CharField(max_length=60, blank=True, default='',
+                                help_text='e.g. 5kVA Single Phase')
+    # What the package sells for. One figure per module type for the whole
+    # project: the sheet below it is a specification, not a costed bill of
+    # materials, and pricing each line would invite two totals for the same job.
+    #
+    # DCR and non-DCR are the same system built with differently sourced
+    # modules, and they do not cost the same — so both are quoted here and the
+    # invoice says which one it was written for.
+    price_dcr = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    price_non_dcr = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    # One rate and one inclusive/exclusive rule across both: it is the same sale
+    # under the same tax, only the modules differ.
+    tax_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    # Whether `price` is the final figure with tax already inside it, or the
+    # base that tax is added to. Solar is quoted both ways and the difference is
+    # the tax itself, so it is recorded rather than assumed.
+    price_includes_tax = models.BooleanField(default=False)
+    notes = models.TextField(blank=True, default='')
+    # Retired rather than deleted: a proforma issued last year still names the
+    # project it was built from, and that record should not go blank.
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_by = models.ForeignKey('users.User', on_delete=models.SET_NULL, null=True,
+                                   blank=True, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name']
+        verbose_name = 'project'
+        verbose_name_plural = 'projects'
+
+    def __str__(self):
+        return self.name
+
+    # ── What the customer pays ──
+    # Derived, never stored: two copies of a total go out of step, and the one
+    # on the screen is not always the one that was recalculated.
+    def price_for(self, variant):
+        return Decimal(
+            (self.price_dcr if variant == DCR else self.price_non_dcr) or 0)
+
+    def figures_for(self, variant):
+        """Base, tax and total for one of the two prices."""
+        figures = split_tax(self.price_for(variant), self.tax_percent,
+                            self.price_includes_tax)
+        return {'price': figures['amount'], **figures}
+
+    def copy_onto(self, quote):
+        """Stamp this project onto a proforma, replacing what was there.
+
+        The one definition of what picking a project means: its specification
+        and its price both come across. The copy is taken at this moment and
+        belongs to the quote from here on — later changes to the project do not
+        reach back into proformas already built from it, and editing a
+        proforma does not reach forward into the project.
+        """
+        self.copy_spec_to(quote, QuoteSpecLine, 'quote')
+        self.price_onto(quote)
+    def copy_spec_to(self, doc, line_model, field):
+        """Copy the specification onto any document that keeps one.
+
+        Two documents now do — the quotation and the proforma — and they each
+        get their own copy for the same reason: what was quoted must not change
+        because the project was edited afterwards.
+        """
+        line_model.objects.filter(**{field: doc}).delete()
+        # bulk_create does not call save(), so tidy() is applied by hand.
+        line_model.objects.bulk_create([
+            line_model(**{field: doc}, section=line.section, item_name=line.item_name,
+                       brand=line.brand, quantity=line.quantity,
+                       position=line.position).tidy()
+            for line in self.lines.all()
+        ])
+
+    def price_onto(self, quote):
+        """Put the package on the invoice as its one priced line.
+
+        Priced from whichever of the two the invoice is written for. The line
+        carries `base_amount` with the project's rate on the document, so the
+        proforma's own arithmetic — subtotal, discount, tax — lands on exactly
+        the figure the project quotes; carrying a tax-inclusive price down as a
+        line total instead would tax it twice.
+
+        A project with no price for the chosen variant leaves the invoice alone:
+        it is a specification that happens not to be priced that way, not an
+        instruction to zero an invoice someone priced by hand.
+        """
+        from .models import QuoteItem      # defined below; imported at call time
+        figures = self.figures_for(quote.price_variant)
+        if not figures['price']:
+            return
+        label = dict(PRICE_VARIANTS)[quote.price_variant]
+        quote.items.all().delete()
+        QuoteItem.objects.create(
+            quote=quote,
+            description=f'{self.name}'
+                        f'{f" — {self.capacity}" if self.capacity else ""} ({label})',
+            quantity=Decimal('1'), unit_price=figures['base_amount'])
+        quote.tax_percent = self.tax_percent
+        quote.save(update_fields=['tax_percent'])
+
+
+class ProjectSpecLine(SectionedSpecLine):
+    project = models.ForeignKey(ProjectSpec, on_delete=models.CASCADE, related_name='lines')
+
+
+class QuoteSpecLine(SectionedSpecLine):
+    """The specification as it stands on one proforma.
+
+    A copy, not a pointer into the project. Choosing a project fills these in;
+    editing them afterwards changes this proforma and nothing else. One shared
+    set of lines would mean tuning the specification for one customer silently
+    rewrote every other quote built from the same project — including ones
+    already sent — and a document a customer is holding must not change under
+    them.
+    """
+    quote = models.ForeignKey('Quote', on_delete=models.CASCADE, related_name='spec_lines')
+
+
+# ─── Quotations (B2C) ───────────────────────────────────────────────────────
+def next_quotation_number(on=None):
+    """The next number in the EF/<FY>/QT<seq> series, e.g. EF/26-27/QT009.
+
+    Its own series, separate from the PI one the proforma invoices share: a
+    quotation and the invoice it becomes are two documents the customer may hold
+    at once, and giving them the same number would make them impossible to tell
+    apart in a conversation.
+
+    Numbers are probed rather than counted, for the same reason as the proforma
+    series: deleting one mid-year would otherwise hand its successor's number
+    out twice.
+    """
+    prefix = f"EF/{financial_year(on)}/QT"
+    taken = set(Quotation.objects.filter(number__startswith=prefix)
+                .values_list('number', flat=True))
+    n = len(taken) + 1
+    while f"{prefix}{n:03d}" in taken:
+        n += 1
+    return f"{prefix}{n:03d}"
+
+
+class Quotation(RoundedTotalMixin, _NumberedDoc):
+    """What the customer is offered, before any invoice is raised.
+
+    Built from a project: the specification is copied across and the package
+    price comes from whichever of the two prices the quotation is written for.
+    From there it is negotiated — items edited, a discount given, extra costs
+    added — and every one of those adjustments carries a remark, because "why is
+    this ₹12,000 more than the list price" is asked months later by someone who
+    was not in the room.
+
+    The price fields are copied from the project rather than read through it, so
+    a quotation already sent cannot change because someone edited the project
+    afterwards.
+    """
+    NUMBER_PREFIX = 'QT'
+    STATUS_CHOICES = [
+        ('draft', 'Draft'),
+        ('sent', 'Sent'),
+        ('accepted', 'Accepted'),
+        ('declined', 'Declined'),
+        ('converted', 'Converted'),
+    ]
+
+    lead = models.ForeignKey('leads.Lead', on_delete=models.SET_NULL, null=True,
+                             blank=True, related_name='quotations')
+    project = models.ForeignKey('ProjectSpec', on_delete=models.SET_NULL, null=True,
+                                blank=True, related_name='quotations')
+    price_variant = models.CharField(max_length=8, choices=PRICE_VARIANTS, default=DCR)
+
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft',
+                              db_index=True)
+    quotation_date = models.DateField(null=True, blank=True)
+    expiry_date = models.DateField(null=True, blank=True)
+    site = models.CharField(max_length=255, blank=True, default='')
+
+    # Copied from the project when one is chosen, then the desk's to change.
+    package_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    tax_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    price_includes_tax = models.BooleanField(default=False)
+
+    # A flat amount off, never a percentage: a discount is agreed in rupees
+    # across a table, and reverse-engineering the percentage that produced it
+    # only introduces a rounding error into a number two people shook on.
+    discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    discount_remark = models.CharField(max_length=255, blank=True, default='')
+
+    # The proforma this became, if it was accepted.
+    converted_quote = models.ForeignKey('Quote', on_delete=models.SET_NULL, null=True,
+                                        blank=True, related_name='source_quotation')
+    # The rendered document, kept so email can attach it, WhatsApp can link to
+    # it, and the lead's own page can offer it for download later. Same
+    # arrangement as the proforma invoice — see deliver_document.
+    pdf = models.FileField(upload_to='quotations/', null=True, blank=True)
+
+    class Meta(_NumberedDoc.Meta):
+        pass
+
+    def save(self, *args, **kwargs):
+        creating = self._state.adding
+        # Skip _NumberedDoc's QT-0001 numbering; this document has its own series.
+        models.Model.save(self, *args, **kwargs)
+        if creating and not self.number:
+            self.number = next_quotation_number(self.quotation_date)
+            models.Model.save(self, update_fields=['number'])
+
+    # ── What it comes to ──
+    @property
+    def extras_total(self):
+        return sum((c.amount or Decimal('0') for c in self.costs.all()), Decimal('0'))
+
+    @property
+    def subtotal(self):
+        """The package plus whatever was added to it, before the discount.
+
+        Overrides _NumberedDoc.subtotal, which sums line items; a quotation is
+        one package and a list of extras, not a list of products.
+        """
+        return Decimal(self.package_amount or 0) + self.extras_total
+
+    @property
+    def net_amount(self):
+        """What is left after the discount — the figure tax is worked on."""
+        return self.subtotal - Decimal(self.discount_amount or 0)
+
+    @property
+    def figures(self):
+        """Base, tax and total, on the same side of the tax as the package price.
+
+        If the project quoted a tax-inclusive price then the extras and the
+        discount are inclusive too, because they are adjustments to that same
+        figure. Mixing the two sides on one document is how a quotation ends up
+        a few thousand rupees away from what anybody agreed.
+        """
+        return split_tax(self.net_amount, self.tax_percent, self.price_includes_tax)
+
+    @property
+    def total(self):
+        return self.figures['total']
+
+    def fill_from_project(self):
+        """Take the specification and the price from the chosen project.
+
+        The one definition of what picking a project on a quotation means. A
+        project priced at nothing for the chosen variant leaves the amount
+        alone, the same rule the proforma follows.
+        """
+        if not self.project_id:
+            return
+        project = self.project
+        project.copy_spec_to(self, QuotationSpecLine, 'quotation')
+        figures = project.figures_for(self.price_variant)
+        if figures['price']:
+            self.package_amount = figures['price']
+        self.tax_percent = project.tax_percent
+        self.price_includes_tax = project.price_includes_tax
+        self.save(update_fields=['package_amount', 'tax_percent',
+                                 'price_includes_tax', 'updated_at'])
+
+
+class QuotationSpecLine(SectionedSpecLine):
+    quotation = models.ForeignKey(Quotation, on_delete=models.CASCADE,
+                                  related_name='spec_lines')
+
+
+class QuotationCost(models.Model):
+    """One thing added to the price, and why.
+
+    The remark is not optional decoration. A crane, a longer cable run and a
+    scaffold are three different conversations with the customer, and a single
+    lump labelled "extra charges" is the one a customer argues with.
+    """
+    quotation = models.ForeignKey(Quotation, on_delete=models.CASCADE, related_name='costs')
+    remark = models.CharField(max_length=255)
+    amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    position = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['position', 'id']
+
+    def __str__(self):
+        return f'{self.remark} — {self.amount}'
 
 
 # ─── Sales Orders ───────────────────────────────────────────────────────────

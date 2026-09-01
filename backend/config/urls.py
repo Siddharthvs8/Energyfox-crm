@@ -18,6 +18,7 @@ from users.views import (UserViewSet, SubscriptionStatusView, WorkspaceTeamViewS
                          InventoryDocumentProfileView)
 from leads.views import LeadViewSet, IntegrationSettingsViewSet, DashboardStatsView, LeaderboardView, ConvertedAnalyticsView, ProductViewSet, DistrictViewSet, ServiceEntryViewSet, EmergencyServiceViewSet
 from inventory.views import (VendorViewSet, PurchaseOrderViewSet, QuoteViewSet, SalesOrderViewSet,
+                            ProjectViewSet, QuotationViewSet,
                             StockItemViewSet, StockCustomerViewSet, GoodsReceiptViewSet,
                             StockDispatchViewSet, StockSummaryView, StockPaymentsView,
                             StockPaymentView,
@@ -38,6 +39,8 @@ router.register(r'service-entries', ServiceEntryViewSet, basename='service-entri
 router.register(r'emergency-services', EmergencyServiceViewSet, basename='emergency-services')
 router.register(r'vendors', VendorViewSet, basename='vendors')
 router.register(r'purchase-orders', PurchaseOrderViewSet, basename='purchase-orders')
+router.register(r'projects', ProjectViewSet, basename='projects')
+router.register(r'quotations', QuotationViewSet, basename='quotations')
 router.register(r'quotes', QuoteViewSet, basename='quotes')
 router.register(r'sales-orders', SalesOrderViewSet, basename='sales-orders')
 router.register(r'stock-items', StockItemViewSet, basename='stock-items')
