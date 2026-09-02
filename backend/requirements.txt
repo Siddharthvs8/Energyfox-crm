@@ -14,3 +14,8 @@ django-storages>=1.14
 boto3>=1.34
 # Reading .xlsx uploads (the periodic-maintenance bulk import).
 openpyxl==3.1.5
+# Building the customer's quotation on the company's own artwork: the approved
+# template's pages are used verbatim and only the three carrying a customer's
+# figures are redrawn. Pinned, because the proposal depends on its redaction
+# behaviour — see inventory/proposal.py.
+PyMuPDF==1.28.2

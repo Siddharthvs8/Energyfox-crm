@@ -13,7 +13,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
-import { buildProformaPdf, proformaFileName } from "@/lib/proformaPdf";
+import { fetchProposal, proposalFileName, saveBlob } from "@/lib/quotationProposal";
 import QuotationFormModal, { VARIANTS, money, type Quotation }
   from "@/components/QuotationFormModal";
 import QuotationPreviewModal from "@/components/QuotationPreviewModal";
@@ -61,27 +61,22 @@ export default function QuotationsPage() {
   const openNew = () => { setEditing(null); setOpen(true); };
   const openEdit = (q: Quotation) => { setEditing(q); setOpen(true); };
 
-  const pdfFor = async (q: Quotation) => {
-    const r = await fetch(`${api}/api/quotations/${q.id}/document/`, { headers: headers() });
-    if (!r.ok) throw new Error("document");
-    return buildProformaPdf(await r.json());
-  };
-
   const download = async (q: Quotation) => {
     setBusy(q.id);
     try {
-      const doc = await pdfFor(q);
-      doc.save(`${proformaFileName(q.number, q.lead_name)}.pdf`);
-    } catch { alert("Could not build the PDF."); }
-    finally { setBusy(null); }
+      saveBlob(await fetchProposal(q.id), proposalFileName(q.number, q.lead_name));
+    } catch (e: any) {
+      alert(e?.message || "Could not build the document.");
+    } finally { setBusy(null); }
   };
 
   const send = async (q: Quotation) => {
     setBusy(q.id);
     try {
-      const doc = await pdfFor(q);
+      // The very file the customer would download — sent, not rebuilt.
+      const pdf = await fetchProposal(q.id);
       const fd = new FormData();
-      fd.append("pdf", doc.output("blob"), `${proformaFileName(q.number, q.lead_name)}.pdf`);
+      fd.append("pdf", pdf, proposalFileName(q.number, q.lead_name));
       fd.append("channels", "email");
       const r = await fetch(`${api}/api/quotations/${q.id}/send/`, {
         method: "POST",
@@ -90,10 +85,11 @@ export default function QuotationsPage() {
       });
       const d = await r.json().catch(() => ({}));
       alert(d.sent ? `Sent to ${d.sent_to || "the customer"}.`
-                   : (d.error || (d.failures || []).join("\n") || "Could not send."));
+                   : (d.error || (d.failures || []).join(" ") || "Could not send."));
       await load();
-    } catch { alert("Could not send this quotation."); }
-    finally { setBusy(null); }
+    } catch (e: any) {
+      alert(e?.message || "Could not send this quotation.");
+    } finally { setBusy(null); }
   };
 
   const convert = async (q: Quotation) => {

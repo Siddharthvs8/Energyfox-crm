@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
-import { proformaFileName } from "@/lib/proformaPdf";
+import { fetchProposal, proposalFileName } from "@/lib/quotationProposal";
 
 export default function QuotationPreviewModal({ quotation, onClose, onSent }: {
   /** null closes it; an object opens it on that quotation. */
@@ -36,18 +36,11 @@ export default function QuotationPreviewModal({ quotation, onClose, onSent }: {
   const build = useCallback(async (id: number) => {
     setError(null); setUrl(null); setNote(null);
     try {
-      const r = await fetch(`${api}/api/quotations/${id}/proposal/`, {
-        headers: { Authorization: `Bearer ${token()}` } });
-      if (!r.ok) {
-        const d = await r.json().catch(() => ({}));
-        setError(d.error || "Could not load this proposal.");
-        return;
-      }
-      const blob = await r.blob();
+      const blob = await fetchProposal(id);
       docRef.current = blob;
       setUrl(URL.createObjectURL(blob));
-    } catch {
-      setError("Could not build the document.");
+    } catch (e: any) {
+      setError(e?.message || "Could not build the document.");
     }
   }, [api]);
 
@@ -61,7 +54,7 @@ export default function QuotationPreviewModal({ quotation, onClose, onSent }: {
 
   if (!quotation) return null;
 
-  const fileName = `${proformaFileName(quotation.number, quotation.lead_name ?? null)}.pdf`;
+  const fileName = proposalFileName(quotation.number, quotation.lead_name ?? null);
 
   const download = () => {
     if (!url) return;

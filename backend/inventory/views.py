@@ -273,7 +273,17 @@ class QuotationViewSet(viewsets.ModelViewSet):
         file lives here.
         """
         from django.http import HttpResponse
-        from .proposal import build_proposal
+        try:
+            from .proposal import build_proposal
+        except ImportError:
+            # PyMuPDF builds this document; without it the endpoint should say
+            # so rather than answering 500 and leaving someone guessing at a
+            # missing dependency from the outside.
+            logger.exception('PyMuPDF is not installed; the proposal cannot be built')
+            return Response(
+                {'error': 'The document builder is not installed on this server '
+                          '(PyMuPDF). Deploy the current requirements.txt.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
         q = self.get_object()
         template = self._template_for(q)

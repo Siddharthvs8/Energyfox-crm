@@ -15,16 +15,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
-import { buildProformaPdf, proformaFileName } from "@/lib/proformaPdf";
-import QuotationFormModal, { VARIANTS, money }
+import { fetchProposal, proposalFileName, saveBlob } from "@/lib/quotationProposal";
+import QuotationFormModal, { VARIANTS, money, type Quotation }
   from "@/components/QuotationFormModal";
 import QuotationPreviewModal from "@/components/QuotationPreviewModal";
-
-type Quotation = {
-  id: number; number: string; status: string; project_name: string | null;
-  price_variant: string; grand_total: string; discount_amount: string;
-  pdf: string | null; converted_quote: number | null; quotation_date: string | null;
-};
 
 const STATUS_STYLE: Record<string, string> = {
   draft: "bg-slate-100 text-slate-600",
@@ -46,6 +40,8 @@ export default function LeadQuotationsPanel({ leadId, customerEmail }: {
 
   const [rows, setRows] = useState<Quotation[]>([]);
   const [open, setOpen] = useState(false);
+  // null while raising a new one; the quotation itself while editing it.
+  const [editing, setEditing] = useState<Quotation | null>(null);
   const [preview, setPreview] = useState<Quotation | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
@@ -62,27 +58,22 @@ export default function LeadQuotationsPanel({ leadId, customerEmail }: {
 
   useEffect(() => { load(); }, [load]);
 
-  const pdfFor = async (q: Quotation) => {
-    const r = await fetch(`${api}/api/quotations/${q.id}/document/`, { headers: headers() });
-    if (!r.ok) throw new Error("document");
-    return buildProformaPdf(await r.json());
-  };
-
   const download = async (q: Quotation) => {
     setBusy(q.id); setNote(null);
     try {
-      const doc = await pdfFor(q);
-      doc.save(`${proformaFileName(q.number, null)}.pdf`);
-    } catch { setNote({ ok: false, text: "Could not build the PDF." }); }
-    finally { setBusy(null); }
+      saveBlob(await fetchProposal(q.id), proposalFileName(q.number, q.lead_name));
+    } catch (e: any) {
+      setNote({ ok: false, text: e?.message || "Could not build the document." });
+    } finally { setBusy(null); }
   };
 
   const send = async (q: Quotation) => {
     setBusy(q.id); setNote(null);
     try {
-      const doc = await pdfFor(q);
+      // The very file the customer would download — sent, not rebuilt.
+      const pdf = await fetchProposal(q.id);
       const fd = new FormData();
-      fd.append("pdf", doc.output("blob"), `${proformaFileName(q.number, null)}.pdf`);
+      fd.append("pdf", pdf, proposalFileName(q.number, q.lead_name));
       fd.append("channels", "email");
       const r = await fetch(`${api}/api/quotations/${q.id}/send/`, {
         method: "POST", headers: { Authorization: `Bearer ${token()}` }, body: fd });
@@ -91,8 +82,9 @@ export default function LeadQuotationsPanel({ leadId, customerEmail }: {
         ? { ok: true, text: `${q.number} sent to ${d.sent_to || customerEmail || "the customer"}.` }
         : { ok: false, text: d.error || (d.failures || []).join(" ") || "Could not send it." });
       await load();
-    } catch { setNote({ ok: false, text: "Could not send this quotation." }); }
-    finally { setBusy(null); }
+    } catch (e: any) {
+      setNote({ ok: false, text: e?.message || "Could not send this quotation." });
+    } finally { setBusy(null); }
   };
 
   return (
@@ -104,7 +96,7 @@ export default function LeadQuotationsPanel({ leadId, customerEmail }: {
             Raised for this customer — also listed in Inventory → Quotation.
           </p>
         </div>
-        <button onClick={() => setOpen(true)}
+        <button onClick={() => { setEditing(null); setOpen(true); }}
           className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 transition">
           + New quotation
         </button>
@@ -131,6 +123,8 @@ export default function LeadQuotationsPanel({ leadId, customerEmail }: {
                 STATUS_STYLE[q.status] || "bg-slate-100 text-slate-600"}`}>{q.status}</span>
               <span className="text-sm font-bold text-slate-900 ml-auto">₹{money(q.grand_total)}</span>
               <div className="flex items-center gap-3 text-xs font-bold">
+                <button onClick={() => { setEditing(q); setOpen(true); }}
+                  className="text-indigo-600 hover:text-indigo-800">Edit</button>
                 <button onClick={() => download(q)} disabled={busy === q.id}
                   className="text-slate-500 hover:text-slate-800 disabled:opacity-40">Download</button>
                 <button onClick={() => send(q)} disabled={busy === q.id}
@@ -155,8 +149,8 @@ export default function LeadQuotationsPanel({ leadId, customerEmail }: {
 
       {/* The module's own form, with this customer fixed — see the header note. */}
       <QuotationFormModal
-        open={open} editing={null} lockedLeadId={leadId}
-        onClose={() => setOpen(false)}
+        open={open} editing={editing} lockedLeadId={leadId}
+        onClose={() => { setOpen(false); setEditing(null); }}
         onSaved={() => { setNote({ ok: true, text: "Quotation saved." }); load(); }} />
     </div>
   );
