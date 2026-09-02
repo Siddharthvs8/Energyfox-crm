@@ -29,10 +29,10 @@ def can_access_retail_inventory(user):
     the CRM layout. Keeping the two in step is the whole point: a module a user
     cannot see should also be one they cannot call.
 
-    BDEs are here because they quote: a project and a quotation are how they put
-    a price in front of a customer.
+    The module itself — suppliers, purchases, sales, the stock lists — is for
+    the admin tier. The two roles that quote reach the quotation from a lead's
+    own page instead; see QUOTING_ROLES below.
     """
-    from users.models import ROLE_BDE
     if not user or not user.is_authenticated:
         return False
     # Wholesale staff work some of these same shared lists from their own side;
@@ -42,7 +42,14 @@ def can_access_retail_inventory(user):
     granted = user.can('inventory')      # a custom role decides for itself
     if granted is not None:
         return granted
-    return user.sees_everything or user.role == ROLE_BDE
+    return user.sees_everything
+
+
+# A BDE and a tele caller do not get the inventory module, but both quote: they
+# raise a quotation from a lead's own page, and that needs the quotation itself
+# and the projects it is built from. Nothing else — not suppliers, not
+# purchases, not the stock lists.
+QUOTING_ROLES = ('bde', 'tele_caller')
 
 
 class RetailInventoryAccess(permissions.BasePermission):
@@ -53,16 +60,24 @@ class RetailInventoryAccess(permissions.BasePermission):
     purchase orders included. This closes that, and closes it the same way the
     nav decides, so the two cannot drift.
 
+    Two tiers, because "can raise a quotation" and "can see the module" are
+    different questions: the admin tier gets everything, while the roles that
+    quote reach only the endpoints a quotation needs. A viewset opts into the
+    second by setting ``open_to_quoting_roles``.
+
     The spectator keeps its bargain: it reads everything and writes nothing.
     """
     def has_permission(self, request, view):
         from leads.access import is_view_only
         user = request.user
-        if not can_access_retail_inventory(user):
+        if not (user and user.is_authenticated):
             return False
         if request.method not in permissions.SAFE_METHODS and is_view_only(user):
             return False
-        return True
+        if can_access_retail_inventory(user):
+            return True
+        return (getattr(view, 'open_to_quoting_roles', False)
+                and user.role in QUOTING_ROLES)
 
 
 class SuppliersAccess(permissions.BasePermission):
@@ -99,6 +114,9 @@ class ProjectViewSet(viewsets.ModelViewSet):
     """
     serializer_class = ProjectSpecSerializer
     permission_classes = [permissions.IsAuthenticated, RetailInventoryAccess]
+    # Reachable from a lead page by whoever may quote there, without
+    # handing them the rest of the module.
+    open_to_quoting_roles = True
     queryset = ProjectSpec.objects.all()
 
     def get_queryset(self):
@@ -141,6 +159,9 @@ class QuotationViewSet(viewsets.ModelViewSet):
     """Quotations — what the customer is offered, before an invoice is raised."""
     serializer_class = QuotationSerializer
     permission_classes = [permissions.IsAuthenticated, RetailInventoryAccess]
+    # Reachable from a lead page by whoever may quote there, without
+    # handing them the rest of the module.
+    open_to_quoting_roles = True
     queryset = Quotation.objects.all()
 
     def get_queryset(self):

@@ -33,11 +33,18 @@ PRICE_VARIANTS = [(DCR, 'DCR'), (NON_DCR, 'Non-DCR')]
 
 # How the system is wired. Module level because the project declares it and the
 # proposal template is chosen by it, and one list keeps the two in step.
-ON_GRID, HYBRID, MICRO_INVERTER = 'on_grid', 'hybrid', 'micro_inverter'
+#
+# Adding one here is most of the job: the project form, the template store and
+# the proposal renderer all read this list. What a new type still needs is its
+# own uploaded template — until then a quotation on it says so rather than
+# sending the customer another system's document.
+ON_GRID, HYBRID, MICRO_INVERTER, EN_PHASE = (
+    'on_grid', 'hybrid', 'micro_inverter', 'en_phase')
 SYSTEM_TYPES = [
     (ON_GRID, 'On-Grid'),
     (HYBRID, 'Hybrid'),
     (MICRO_INVERTER, 'Micro Inverter'),
+    (EN_PHASE, 'EN-PHASE'),
 ]
 
 

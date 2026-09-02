@@ -39,7 +39,8 @@ const VARIANTS: [string, string][] = [["dcr", "DCR"], ["non_dcr", "Non-DCR"]];
 // first thing a customer comparing two quotations asks about. Mirrors
 // ProjectSpec.SYSTEM_TYPES on the server.
 const SYSTEM_TYPES: [string, string][] = [
-  ["on_grid", "On-Grid"], ["hybrid", "Hybrid"], ["micro_inverter", "Micro Inverter"],
+  ["on_grid", "On-Grid"], ["hybrid", "Hybrid"],
+  ["micro_inverter", "Micro Inverter"], ["en_phase", "EN-PHASE"],
 ];
 
 const money = (v: string | number) =>

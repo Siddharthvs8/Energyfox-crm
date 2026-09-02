@@ -727,16 +727,17 @@ export default function DashboardLayout({
     item.perm || (item.href === `/` ? "dashboard" : String(item.href || "").replace(/^\//, ""));
 
   // B2B is the stock register, so its staff always have the group. On the retail
-  // side it is the admin/GM module it always was, plus BDEs — a project and a
-  // quotation are how a BDE puts a price in front of a customer.
+  // side it is the admin/GM module it always was.
   //
-  // The server enforces the same rule (RetailInventoryAccess); if this changes,
-  // change that too, or a module hidden here stays open to a direct call.
+  // A BDE and a tele caller are deliberately not here: they raise quotations
+  // from a lead's own page, which needs no sidebar entry. The server draws the
+  // same line (RetailInventoryAccess plus `open_to_quoting_roles`); if this
+  // changes, change that too, or a module hidden here stays open to a call.
   const canSeeInventory = isB2BOnly || bizMode === "b2b"
     ? true
     : onCustomRole
       ? grantedPerms.includes("inventory")
-      : seesAllModules || currentUser?.role === "bde";
+      : seesAllModules;
 
   // Manager features visible to manager, general manager, and admin
   const navItems = allNavItems.filter(item => {
@@ -866,16 +867,18 @@ export default function DashboardLayout({
 
   // ── Inventory module (grouped, collapsible) ──
   // The retail CRM's Inventory module — the original sales-document set.
+  // Suppliers, Customers and Purchases are the wholesale side's business and
+  // are listed under B2B; the retail group is the selling path — a package, the
+  // quotation for it, and the dispatch that follows. Their pages and endpoints
+  // stay where they are: the same supplier list is what B2B reads, so closing
+  // it here would shut a module that is still in use over there.
   const b2cInventoryItems = [
     { href: `/inventory-dashboard`, label: "Dashboard",   Icon: Nav.Dashboard },
     // Retail sells packages, not loose parts, so this slot is the bundle: the
     // product catalogue behind it still exists and still prices the proforma.
     { href: `/projects`,        label: "Project",         Icon: Nav.Products },
-    { href: `/vendors`,         label: "Suppliers",       Icon: Nav.Vendor },
-    { href: `/customers`,       label: "Customers",       Icon: Nav.Team },
     { href: `/quotations`,      label: "Quotation",       Icon: Nav.Quote },
     { href: `/sales-orders`,    label: "Sales / Dispatches", Icon: Nav.StockOut },
-    { href: `/purchase-orders`, label: "Purchases",       Icon: Nav.StockIn },
   ];
 
   // The wholesale side's Inventory module is the stock register — that is the

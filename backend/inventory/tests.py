@@ -3057,9 +3057,11 @@ class ProjectTests(TestCase):
         self.assertEqual(p['system_type'], 'hybrid')
         self.assertEqual(p['system_type_display'], 'Hybrid')
 
-    def test_all_three_arrangements_are_offered(self):
-        for value, label in (('on_grid', 'On-Grid'), ('hybrid', 'Hybrid'),
-                             ('micro_inverter', 'Micro Inverter')):
+    def test_every_arrangement_is_offered(self):
+        """Driven off the server's own list, so a type added later is checked
+        here rather than quietly working only on the form."""
+        from inventory.models import SYSTEM_TYPES
+        for value, label in SYSTEM_TYPES:
             p = self.post('/api/projects/', {'name': f'P {value}', 'system_type': value}).json()
             self.assertEqual(p['system_type_display'], label)
 
@@ -3621,11 +3623,14 @@ class RetailInventoryAccessTests(TestCase):
     # The roles the sidebar shows the group to: the admin tier (is_staff), the
     # three that carry is_general_manager, the spectator — and now the BDE.
     ALLOWED = ['superadmin', 'admin', 'coo', 'sales_manager', 'documentation_manager',
-               'spectator', 'bde']
+               'spectator']
     # Everyone else works a different desk and never had a link to it.
     BLOCKED = ['leads_manager', 'documentation_staff', 'accounts_manager',
                'accounts_staff', 'purchase_staff', 'project_manager',
-               'liasoning_officer', 'branch_manager', 'tele_caller']
+               'liasoning_officer', 'branch_manager']
+    # Not in the module, but they quote from a lead's page — see the two tests
+    # at the end. Listed so the coverage guard still accounts for them.
+    QUOTING = ['bde', 'tele_caller']
     # The wholesale roles reach the shared lists from their own side; what they
     # may do there is SuppliersAccess's business, not this gate's.
     B2B_ONLY = ['store_manager', 'store_keeper', 'accounts_b2b']
@@ -3647,10 +3652,20 @@ class RetailInventoryAccessTests(TestCase):
             for url in self.ENDPOINTS:
                 self.assertEqual(self.reach(role, url), 200, f'{role} -> {url}')
 
-    def test_a_bde_can_reach_it(self):
-        """The reason for this change: a BDE quotes, so a BDE needs the module."""
-        for url in self.ENDPOINTS:
-            self.assertEqual(self.reach('bde', url), 200, url)
+    def test_the_roles_that_quote_do_not_get_the_module(self):
+        """They raise a quotation from a lead's page; that is not the same as
+        being handed suppliers, purchases and the stock lists."""
+        for role in self.QUOTING:
+            for url in ('/api/products/', '/api/purchase-orders/', '/api/sales-orders/',
+                        '/api/quotes/'):
+                self.assertEqual(self.reach(role, url), 403, f'{role} -> {url}')
+
+    def test_the_roles_that_quote_can_still_quote(self):
+        """The quotation and the projects behind it stay reachable, or the
+        panel on a lead's page would be a button that answers 403."""
+        for role in self.QUOTING:
+            for url in ('/api/quotations/', '/api/projects/'):
+                self.assertEqual(self.reach(role, url), 200, f'{role} -> {url}')
 
     def test_every_other_role_is_turned_away(self):
         for role in self.BLOCKED:
@@ -3659,8 +3674,8 @@ class RetailInventoryAccessTests(TestCase):
 
     def test_purchase_orders_are_no_longer_open_to_the_whole_company(self):
         """The gap this closes, stated on its own so it cannot quietly reopen."""
-        self.assertEqual(self.reach('tele_caller', '/api/purchase-orders/'), 403)
-        self.assertEqual(self.reach('tele_caller', '/api/products/'), 403)
+        self.assertEqual(self.reach('documentation_staff', '/api/purchase-orders/'), 403)
+        self.assertEqual(self.reach('documentation_staff', '/api/products/'), 403)
 
     def test_suppliers_keeps_its_own_rule(self):
         """The shared list is not this gate's business.
@@ -3684,9 +3699,9 @@ class RetailInventoryAccessTests(TestCase):
                              HTTP_AUTHORIZATION=token_for(spectator))
         self.assertEqual(r.status_code, 403)
 
-    def test_a_bde_can_actually_raise_a_quotation(self):
-        """Read access alone would be a module a BDE could look at and not use."""
-        bde = self.user('bde')
+    def test_a_tele_caller_can_actually_raise_a_quotation(self):
+        """Read access alone would be a panel they could open and not use."""
+        bde = self.user('tele_caller')
         project = self.client.post(
             '/api/projects/', data={'name': '5kW', 'price_dcr': '200000', 'tax_percent': '18'},
             content_type='application/json', HTTP_AUTHORIZATION=token_for(bde))
@@ -3704,7 +3719,7 @@ class RetailInventoryAccessTests(TestCase):
         in either list — is the one where nobody notices it was never decided.
         """
         from users.models import ROLE_CHOICES, ROLE_CUSTOM
-        known = set(self.ALLOWED) | set(self.BLOCKED) | set(self.B2B_ONLY)
+        known = set(self.ALLOWED) | set(self.BLOCKED) | set(self.B2B_ONLY) | set(self.QUOTING)
         # A custom role carries its own permission list, tested separately.
         declared = {r for r, _ in ROLE_CHOICES} - {ROLE_CUSTOM}
         self.assertEqual(declared - known, set(), 'unclassified role(s)')

@@ -20,6 +20,7 @@ export type Quotation = {
   project: number | null; project_name: string | null; price_variant: string;
   quotation_date: string | null; expiry_date: string | null; site: string;
   package_amount: string; tax_percent: string; price_includes_tax: boolean;
+  subsidy_amount: string; subsidy_shown: string; net_effective: string;
   discount_amount: string; discount_remark: string;
   spec_lines: SpecLine[]; costs: Cost[];
   extras_total: string; subtotal: string; net_amount: string;
@@ -69,7 +70,7 @@ async function describeFailure(r: Response): Promise<string> {
 const blankForm = () => ({
   lead: "", project: "", price_variant: "dcr", status: "draft",
   quotation_date: new Date().toISOString().slice(0, 10), expiry_date: "", site: "",
-  package_amount: "", tax_percent: "", price_includes_tax: false,
+  package_amount: "", tax_percent: "", price_includes_tax: false, subsidy_amount: "",
   discount_amount: "", discount_remark: "", notes: "",
 });
 
@@ -134,6 +135,7 @@ export default function QuotationFormModal({ open, editing, lockedLeadId, onClos
         package_amount: Number(editing.package_amount) ? String(Number(editing.package_amount)) : "",
         tax_percent: Number(editing.tax_percent) ? String(Number(editing.tax_percent)) : "",
         price_includes_tax: editing.price_includes_tax,
+        subsidy_amount: Number(editing.subsidy_amount) ? String(Number(editing.subsidy_amount)) : "",
         discount_amount: Number(editing.discount_amount) ? String(Number(editing.discount_amount)) : "",
         discount_remark: editing.discount_remark || "", notes: editing.notes || "",
       });
@@ -160,8 +162,14 @@ export default function QuotationFormModal({ open, editing, lockedLeadId, onClos
       ? Math.round((net / (1 + rate / 100)) * 100) / 100
       : net;
     const total = form.price_includes_tax ? net : Math.round((net + net * rate / 100) * 100) / 100;
-    return { pkg, extras, discount, net, base, tax: total - base, total };
-  }, [form.package_amount, form.discount_amount, form.tax_percent, form.price_includes_tax, costs]);
+    // Only a DCR system is in the PM Surya Ghar scheme, so a non-DCR quotation
+    // shows no subsidy at all rather than one of zero — "you get nothing back"
+    // is a different claim from "this system is not eligible".
+    const subsidy = form.price_variant === "dcr" ? (Number(form.subsidy_amount) || 0) : 0;
+    return { pkg, extras, discount, net, base, tax: total - base, total,
+             subsidy, netEffective: total - subsidy };
+  }, [form.package_amount, form.discount_amount, form.tax_percent, form.price_includes_tax,
+      form.subsidy_amount, form.price_variant, costs]);
 
   /** Picking a project pulls its sheet and price in, so the form shows what the
    *  server would fill without waiting for a save. */
@@ -175,6 +183,7 @@ export default function QuotationFormModal({ open, editing, lockedLeadId, onClos
       package_amount: Number(price) ? String(Number(price)) : "",
       tax_percent: Number(p.tax_percent) ? String(Number(p.tax_percent)) : "",
       price_includes_tax: !!p.price_includes_tax,
+      subsidy_amount: Number(p.subsidy_amount) ? String(Number(p.subsidy_amount)) : "",
     }));
   };
 
@@ -200,6 +209,7 @@ export default function QuotationFormModal({ open, editing, lockedLeadId, onClos
         lead: lockedLeadId ? Number(lockedLeadId) : (form.lead ? Number(form.lead) : null),
         project: form.project ? Number(form.project) : null,
         package_amount: form.package_amount || 0,
+        subsidy_amount: form.subsidy_amount || 0,
         tax_percent: form.tax_percent || 0,
         discount_amount: form.discount_amount || 0,
         expiry_date: form.expiry_date || null,
@@ -370,12 +380,29 @@ export default function QuotationFormModal({ open, editing, lockedLeadId, onClos
 
           {/* ── The money ── */}
           <div className="border border-slate-200 rounded-xl p-4 space-y-4">
-            <div className="grid sm:grid-cols-[1fr_120px] gap-4">
+            <div className="grid sm:grid-cols-2 lg:grid-cols-[1fr_1fr_120px] gap-4">
               <div>
                 <label className={labelCls}>Package price (₹)</label>
                 <input type="number" min="0" step="0.01" value={form.package_amount}
                   onChange={e => setForm({ ...form, package_amount: e.target.value })}
                   placeholder="200000" className={inputCls} />
+              </div>
+              <div>
+                {/* Filled from the project, then this customer's to settle: the
+                    scheme's slabs move and eligibility is agreed with them, not
+                    with us. */}
+                <label className={labelCls}>PM Surya Ghar subsidy (₹)</label>
+                <input type="number" min="0" step="0.01" value={form.subsidy_amount}
+                  onChange={e => setForm({ ...form, subsidy_amount: e.target.value })}
+                  placeholder="78000" className={inputCls}
+                  disabled={form.price_variant !== "dcr"}
+                  title={form.price_variant !== "dcr"
+                    ? "Only a DCR system is in the scheme" : undefined} />
+                {form.price_variant !== "dcr" && (
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    Non-DCR is not in the scheme.
+                  </p>
+                )}
               </div>
               <div>
                 <label className={labelCls}>Tax %</label>
@@ -455,9 +482,20 @@ export default function QuotationFormModal({ open, editing, lockedLeadId, onClos
                 <Row label={`${form.price_includes_tax ? "Includes" : "Plus"} tax @ ${Number(form.tax_percent)}%`}
                   value={live.tax} muted />
               )}
-              <div className="flex justify-between pt-2 border-t border-slate-100 font-black text-slate-900">
-                <span>Total</span><span>₹{money(live.total)}</span>
+              <div className={`flex justify-between pt-2 border-t border-slate-100 ${
+                live.subsidy > 0 ? "font-semibold text-slate-700" : "font-black text-slate-900"}`}>
+                <span>{live.subsidy > 0 ? "Amount to pay to Energyfox" : "Total"}</span>
+                <span>₹{money(live.total)}</span>
               </div>
+              {live.subsidy > 0 && (
+                <>
+                  <Row label="PM Surya Ghar subsidy" value={-live.subsidy} />
+                  <div className="flex justify-between pt-2 border-t border-slate-100 font-black text-slate-900">
+                    <span>Net effective price</span>
+                    <span>₹{money(live.netEffective)}</span>
+                  </div>
+                </>
+              )}
             </div>
           </div>
 
