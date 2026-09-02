@@ -143,7 +143,15 @@ export default function QuotationsPage() {
 
       <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          {/* A full grid: every cell boxed, so a row of six columns can be read
+              across without losing the line. The vertical rules follow the
+              horizontal ones — slate-200 through the header, slate-100 between
+              the rows — and the last column drops its rule so the card's own
+              rounded border closes the table. */}
+          <table className="w-full text-sm
+                            [&_th]:border-r [&_th]:border-slate-200
+                            [&_td]:border-r [&_td]:border-slate-100
+                            [&_th:last-child]:border-r-0 [&_td:last-child]:border-r-0">
             <thead className="bg-slate-50 border-b border-slate-200 text-left text-[11px] font-bold text-slate-500 uppercase tracking-wider">
               <tr>
                 <th className="py-4 px-6">Number</th>

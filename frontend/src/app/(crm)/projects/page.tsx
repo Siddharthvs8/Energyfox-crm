@@ -25,7 +25,7 @@ type Line = { item_name: string; brand: string; quantity: string; position: numb
 type Project = {
   id: number; name: string; capacity: string; notes: string; is_active: boolean;
   system_type: string; system_type_display: string;
-  price_dcr: string; price_non_dcr: string;
+  price_dcr: string; price_non_dcr: string; subsidy_amount: string;
   tax_percent: string; price_includes_tax: boolean;
   pricing: Record<string, { price: string; base_amount: string; tax_amount: string; total: string }>;
   lines: Line[]; line_count: number; quoted_count: number;

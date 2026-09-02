@@ -53,6 +53,10 @@ BLUE = (0 / 255, 74 / 255, 173 / 255)          # headings
 DEEP_BLUE = (0.0, 0.2902, 0.6784)              # the filled header boxes
 ORANGE = (248 / 255, 156 / 255, 28 / 255)      # the figures
 GREY = (0.9765, 0.9725, 0.9725)                # the value boxes
+# The specification table's own cell shading, counted off the template. Clearing
+# the region leaves plain white, which reads as a different table from the one
+# the company designed — so the cells are laid back down in their own colour.
+CELL = (0.976, 0.973, 0.973)
 WHITE = (1, 1, 1)
 INK = (0.15, 0.16, 0.18)
 RULE = (0.78, 0.80, 0.83)
@@ -66,10 +70,13 @@ COVER_META = pymupdf.Rect(138, 855, 480, 918)     # company / proposal no / date
 # line with its label rather than floating above it.
 COVER_ROWS = ((723, 753), (763, 793), (803, 833))
 
-# Wide enough to take the template's own row separators with it: they start at
-# x≈93, further left than the text does, and a narrower region left them
-# sticking out beside the new rows like tick marks.
-SPEC_TABLE = pymupdf.Rect(88, 186, 722, 690)      # under the Item/Brand/Quantity header
+# Starts exactly where the template's first data row does (192.9), not a few
+# points above it: clearing higher than that ate the bottom of the Item / Brand
+# / Quantity header's own cells and left a white strip between the header and
+# the first row. Wide enough, too, to take the template's row separators with
+# it — they start at x≈93, further left than the text does, and a narrower
+# region left them sticking out beside the new rows like tick marks.
+SPEC_TABLE = pymupdf.Rect(88, 192.9, 722, 690)    # under the Item/Brand/Quantity header
 # The template's own column edges, counted off its cell rectangles — so the
 # rows line up with the Item / Brand / Quantity header above them instead of
 # sitting a few points inside it.
@@ -126,7 +133,10 @@ def _clear(page, *rects, words_only=False):
         region goes and the area is repainted clean.
     """
     for rect in rects:
-        page.add_redact_annot(rect)
+        # fill=False matters: a redaction annotation paints its region white by
+        # default, which on the cover's grey ground and diagonal band leaves the
+        # very blank rectangle this is trying to avoid.
+        page.add_redact_annot(rect, fill=False if words_only else None)
     if words_only:
         page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE,
                               graphics=pymupdf.PDF_REDACT_LINE_ART_NONE)
@@ -199,7 +209,9 @@ def _specification(page, quotation):
     if not lines:
         return
 
-    top = SPEC_TABLE.y0 + 7
+    # The first row begins where the cleared region does, so it butts against
+    # the header rather than floating below it.
+    top = SPEC_TABLE.y0
     available = SPEC_TABLE.y1 - top
     height = SPEC_ROW_HEIGHT
     if len(lines) * height > available:
@@ -207,18 +219,24 @@ def _specification(page, quotation):
     size = SPEC_FONT_SIZE if height >= 44 else max(height * 0.32, 8)
 
     left, right = SPEC_COLS[0], SPEC_COLS[-1]
+
+    # The cells first, in the template's own shade, then the text on top of
+    # them — a table drawn on plain white is not the table that was designed.
+    y = top
+    for _ in lines:
+        for x0, x1 in zip(SPEC_COLS, SPEC_COLS[1:]):
+            page.draw_rect(pymupdf.Rect(x0, y, x1, y + height), color=RULE,
+                           fill=CELL, width=0.9)
+        y += height
+
     y = top
     for line in lines:
         for (x0, x1), text in zip(zip(SPEC_COLS, SPEC_COLS[1:]),
                                   (line.item_name, line.brand or '-', line.quantity or '-')):
             _centred(page, pymupdf.Rect(x0, y, x1, y + height), str(text), size=size)
         y += height
-        page.draw_line(pymupdf.Point(left, y), pymupdf.Point(right, y),
-                       color=RULE, width=0.9)
 
-    page.draw_rect(pymupdf.Rect(left, top, right, y), color=RULE, width=1.1)
-    for x in SPEC_COLS[1:-1]:
-        page.draw_line(pymupdf.Point(x, top), pymupdf.Point(x, y), color=RULE, width=1.1)
+    page.draw_rect(pymupdf.Rect(left, top, right, y), color=RULE, width=1.2)
 
 
 def _centred(page, cell, text, *, size):
