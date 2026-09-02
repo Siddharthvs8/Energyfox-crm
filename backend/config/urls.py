@@ -19,6 +19,7 @@ from users.views import (UserViewSet, SubscriptionStatusView, WorkspaceTeamViewS
 from leads.views import LeadViewSet, IntegrationSettingsViewSet, DashboardStatsView, LeaderboardView, ConvertedAnalyticsView, ProductViewSet, DistrictViewSet, ServiceEntryViewSet, EmergencyServiceViewSet
 from inventory.views import (VendorViewSet, PurchaseOrderViewSet, QuoteViewSet, SalesOrderViewSet,
                             ProjectViewSet, QuotationViewSet,
+                            QuotationTemplateViewSet,
                             StockItemViewSet, StockCustomerViewSet, GoodsReceiptViewSet,
                             StockDispatchViewSet, StockSummaryView, StockPaymentsView,
                             StockPaymentView,
@@ -41,6 +42,8 @@ router.register(r'vendors', VendorViewSet, basename='vendors')
 router.register(r'purchase-orders', PurchaseOrderViewSet, basename='purchase-orders')
 router.register(r'projects', ProjectViewSet, basename='projects')
 router.register(r'quotations', QuotationViewSet, basename='quotations')
+router.register(r'quotation-templates', QuotationTemplateViewSet,
+                basename='quotation-templates')
 
 from audit.views import AuditEntryViewSet  # noqa: E402
 router.register(r'activity-log', AuditEntryViewSet, basename='activity-log')

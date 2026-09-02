@@ -20,6 +20,7 @@ import { getApiBase } from "@/lib/mock-data";
 
 import React, { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import ProposalTemplates from "@/components/ProposalTemplates";
 
 type Line = { item_name: string; brand: string; quantity: string; position: number };
 type Project = {
@@ -284,6 +285,10 @@ export default function ProjectsPage() {
       </div>
 
       {error && <div className="mb-6 p-4 bg-red-50 text-red-600 rounded-xl text-sm border border-red-100">{error}</div>}
+
+      {/* Above the list, because a missing template is not visible from a
+          project row — it only shows up when someone tries to send one. */}
+      <ProposalTemplates />
 
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
         <div className="overflow-x-auto">

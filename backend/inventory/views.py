@@ -13,12 +13,13 @@ from rest_framework.response import Response
 from . import b2b_access
 from .models import (Vendor, PurchaseOrder, Quote, SalesOrder, SalesOrderItem,
                      ProjectSpec, ProjectSpecLine, Quotation, QuoteItem,
-                     QuoteSpecLine, PRICE_VARIANTS, split_tax, round_off_for)
+                     QuoteSpecLine, QuotationTemplate, PRICE_VARIANTS, split_tax,
+                     round_off_for)
 
 logger = logging.getLogger(__name__)
 from .serializers import (
     VendorSerializer, PurchaseOrderSerializer, QuoteSerializer, SalesOrderSerializer,
-    ProjectSpecSerializer, QuotationSerializer,
+    ProjectSpecSerializer, QuotationSerializer, QuotationTemplateSerializer,
 )
 
 
@@ -153,6 +154,56 @@ class ProjectViewSet(viewsets.ModelViewSet):
         ])
         return Response(ProjectSpecSerializer(copy, context={'request': request}).data,
                         status=status.HTTP_201_CREATED)
+
+
+class QuotationTemplateViewSet(viewsets.ModelViewSet):
+    """The proposal artwork, one file per system type.
+
+    Uploadable from the CRM because the file lives in the database, not in the
+    code: it does not travel with a deployment, and every environment needs its
+    own copy. Without this the only way in was the Django admin, which is not
+    where anyone would look.
+
+    Replacing rather than duplicating: a system type has one approved document,
+    so uploading again overwrites what is there.
+    """
+    serializer_class = QuotationTemplateSerializer
+    permission_classes = [permissions.IsAuthenticated, RetailInventoryAccess]
+    parser_classes = [parsers.MultiPartParser, parsers.FormParser, parsers.JSONParser]
+    queryset = QuotationTemplate.objects.all()
+
+    def create(self, request, *args, **kwargs):
+        system_type = request.data.get('system_type')
+        existing = QuotationTemplate.objects.filter(system_type=system_type).first()
+        if existing is None:
+            return super().create(request, *args, **kwargs)
+        # One approved document per type: a second upload replaces the first
+        # rather than leaving two and a question about which one is sent.
+        serializer = self.get_serializer(existing, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(uploaded_by=request.user)
+        return Response(serializer.data)
+
+    def perform_create(self, serializer):
+        serializer.save(uploaded_by=self.request.user)
+
+    @action(detail=False, methods=['get'])
+    def status(self, request):
+        """Which system types have artwork and which are still waiting.
+
+        Listed from the system types themselves rather than from what has been
+        uploaded, so a type with no template appears as a gap instead of simply
+        being absent.
+        """
+        from .models import SYSTEM_TYPES
+        have = {t.system_type: t for t in QuotationTemplate.objects.all()}
+        return Response([{
+            'system_type': value,
+            'system_type_display': label,
+            'uploaded': value in have,
+            **(QuotationTemplateSerializer(have[value], context={'request': request}).data
+               if value in have else {}),
+        } for value, label in SYSTEM_TYPES])
 
 
 class QuotationViewSet(viewsets.ModelViewSet):

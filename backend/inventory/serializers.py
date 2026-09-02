@@ -7,7 +7,7 @@ from .models import (
     Quote, QuoteItem,
     SalesOrder, SalesOrderItem,
     ProjectSpec, ProjectSpecLine, QuoteSpecLine, PRICE_VARIANTS,
-    Quotation, QuotationSpecLine, QuotationCost,
+    Quotation, QuotationSpecLine, QuotationCost, QuotationTemplate, SYSTEM_TYPES,
 )
 
 
@@ -228,6 +228,37 @@ class ProjectSpecSerializer(serializers.ModelSerializer):
         if lines is not None:
             self._replace_lines(instance, lines)
         return instance
+
+
+class QuotationTemplateSerializer(serializers.ModelSerializer):
+    """The uploaded artwork a system type's proposal is built on."""
+    system_type_display = serializers.CharField(source='get_system_type_display',
+                                                read_only=True)
+    uploaded_by_name = serializers.SerializerMethodField()
+    file_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = QuotationTemplate
+        fields = ['id', 'system_type', 'system_type_display', 'pdf', 'file_name',
+                  'uploaded_at', 'uploaded_by', 'uploaded_by_name']
+        read_only_fields = ['uploaded_at', 'uploaded_by']
+
+    def get_uploaded_by_name(self, obj):
+        u = obj.uploaded_by
+        return (f'{u.first_name} {u.last_name}'.strip() or u.username) if u else None
+
+    def get_file_name(self, obj):
+        return obj.pdf.name.rsplit('/', 1)[-1] if obj.pdf else ''
+
+    def validate_pdf(self, value):
+        # A template that is not a PDF fails much later, inside the renderer,
+        # with a message about page counts. Better to say so at the door.
+        if not (value.name or '').lower().endswith('.pdf'):
+            return self.fail_pdf()
+        return value
+
+    def fail_pdf(self):
+        raise serializers.ValidationError('The template must be a PDF.')
 
 
 # ─── Quotations ─────────────────────────────────────────────────────────────
