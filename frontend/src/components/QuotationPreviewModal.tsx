@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
-import { buildProformaPdf, proformaFileName } from "@/lib/proformaPdf";
+import { proformaFileName } from "@/lib/proformaPdf";
 
 export default function QuotationPreviewModal({ quotation, onClose, onSent }: {
   /** null closes it; an object opens it on that quotation. */
@@ -31,15 +31,21 @@ export default function QuotationPreviewModal({ quotation, onClose, onSent }: {
   // it — and so the object URL can be released when this closes.
   const docRef = useRef<any>(null);
 
+  // The proposal is built on the company's approved artwork, which is a file on
+  // the server — so the server renders it and the browser just shows it.
   const build = useCallback(async (id: number) => {
     setError(null); setUrl(null); setNote(null);
     try {
-      const r = await fetch(`${api}/api/quotations/${id}/document/`, {
+      const r = await fetch(`${api}/api/quotations/${id}/proposal/`, {
         headers: { Authorization: `Bearer ${token()}` } });
-      if (!r.ok) { setError("Could not load this quotation."); return; }
-      const doc = await buildProformaPdf(await r.json());
-      docRef.current = doc;
-      setUrl(URL.createObjectURL(doc.output("blob")));
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        setError(d.error || "Could not load this proposal.");
+        return;
+      }
+      const blob = await r.blob();
+      docRef.current = blob;
+      setUrl(URL.createObjectURL(blob));
     } catch {
       setError("Could not build the document.");
     }
@@ -57,14 +63,19 @@ export default function QuotationPreviewModal({ quotation, onClose, onSent }: {
 
   const fileName = `${proformaFileName(quotation.number, quotation.lead_name ?? null)}.pdf`;
 
-  const download = () => docRef.current?.save(fileName);
+  const download = () => {
+    if (!url) return;
+    const a = document.createElement("a");
+    a.href = url; a.download = fileName;
+    a.click();
+  };
 
   const send = async () => {
     if (!docRef.current) return;
     setBusy("send"); setNote(null);
     try {
       const fd = new FormData();
-      fd.append("pdf", docRef.current.output("blob"), fileName);
+      fd.append("pdf", docRef.current, fileName);
       fd.append("channels", "email");
       const r = await fetch(`${api}/api/quotations/${quotation.id}/send/`, {
         method: "POST", headers: { Authorization: `Bearer ${token()}` }, body: fd });

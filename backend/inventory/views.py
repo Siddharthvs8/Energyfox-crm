@@ -107,7 +107,8 @@ class ProjectViewSet(viewsets.ModelViewSet):
               .order_by('name'))
         search = self.request.query_params.get('search')
         if search:
-            qs = qs.filter(Q(name__icontains=search) | Q(capacity__icontains=search))
+            qs = qs.filter(Q(name__icontains=search) | Q(capacity__icontains=search)
+                           | Q(system_type__icontains=search))
         # Retired projects stay out of the way unless asked for, so the picker on
         # a new quote offers only what is still sold.
         if self.request.query_params.get('all') not in ('1', 'true', 'yes'):
@@ -125,10 +126,11 @@ class ProjectViewSet(viewsets.ModelViewSet):
         source = self.get_object()
         copy = ProjectSpec.objects.create(
             name=f'{source.name} (copy)', capacity=source.capacity,
+            system_type=source.system_type,
             notes=source.notes, created_by=request.user)
         ProjectSpecLine.objects.bulk_create([
-            ProjectSpecLine(project=copy, section=l.section, item_name=l.item_name,
-                            brand=l.brand, quantity=l.quantity, position=l.position).tidy()
+            ProjectSpecLine(project=copy, item_name=l.item_name,
+                            brand=l.brand, quantity=l.quantity, position=l.position)
             for l in source.lines.all()
         ])
         return Response(ProjectSpecSerializer(copy, context={'request': request}).data,
@@ -198,9 +200,8 @@ class QuotationViewSet(viewsets.ModelViewSet):
         def base_of(amount):
             return split_tax(amount, rate, inclusive)['base_amount']
 
-        package_label = q.project.name if q.project else 'Solar installation'
-        if q.project and q.project.capacity:
-            package_label = f'{package_label} — {q.project.capacity}'
+        # The same name the invoice line carries — see ProjectSpec.full_name.
+        package_label = q.project.full_name if q.project else 'Solar installation'
         package_label += f' ({dict(PRICE_VARIANTS).get(q.price_variant, "")})'
 
         components = [(package_label, base_of(q.package_amount))]
@@ -238,10 +239,49 @@ class QuotationViewSet(viewsets.ModelViewSet):
                      + ['This quotation is valid for 15 days from the date above.'],
             # Extra, for the screen: the specification and the statement as
             # entered. Ignored by the PDF template, which takes the lines above.
-            'spec': [{'section': l.section, 'section_label': l.get_section_display(),
-                      'item_name': l.item_name, 'brand': l.brand, 'quantity': l.quantity}
+            'spec': [{'item_name': l.item_name, 'brand': l.brand, 'quantity': l.quantity}
                      for l in q.spec_lines.all()],
         })
+
+    @action(detail=True, methods=['get'])
+    def proposal(self, request, pk=None):
+        """The branded proposal for this quotation, as a PDF.
+
+        Rendered on the server rather than in the browser because it is built on
+        the company's own approved artwork — the template is a file, and the
+        file lives here.
+        """
+        from django.http import HttpResponse
+        from .proposal import build_proposal
+
+        q = self.get_object()
+        template = self._template_for(q)
+        if template is None:
+            return Response(
+                {'error': 'No proposal template has been uploaded for '
+                          f'{q.project.get_system_type_display() if q.project and q.project.system_type else "this system type"}.'},
+                status=status.HTTP_400_BAD_REQUEST)
+
+        with template.pdf.open('rb') as handle:
+            pdf = build_proposal(q, handle)
+        response = HttpResponse(pdf, content_type='application/pdf')
+        response['Content-Disposition'] = (
+            f'inline; filename="{safe_doc_name(q.number, self.quotation_party(q).get("name"))}.pdf"')
+        return response
+
+    @staticmethod
+    def _template_for(quotation):
+        """The artwork for this quotation's system type.
+
+        A quotation whose project has no system type set has no template to
+        use — the three documents differ, and guessing which one a customer
+        should receive is worse than saying nothing has been uploaded.
+        """
+        from .models import QuotationTemplate
+        system_type = quotation.project.system_type if quotation.project else ''
+        if not system_type:
+            return None
+        return QuotationTemplate.objects.filter(system_type=system_type).first()
 
     @action(detail=True, methods=['post'], parser_classes=[parsers.MultiPartParser, parsers.FormParser])
     def send(self, request, pk=None):
@@ -298,7 +338,7 @@ class QuotationViewSet(viewsets.ModelViewSet):
         # customer was offered, not send them back to the quotation for it.
         for line in quotation.spec_lines.all():
             QuoteSpecLine.objects.create(
-                quote=quote, section=line.section, item_name=line.item_name,
+                quote=quote, item_name=line.item_name,
                 brand=line.brand, quantity=line.quantity, position=line.position)
 
         quotation.converted_quote = quote

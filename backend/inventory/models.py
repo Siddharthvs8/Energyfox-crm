@@ -31,6 +31,15 @@ class Vendor(models.Model):
 DCR, NON_DCR = 'dcr', 'non_dcr'
 PRICE_VARIANTS = [(DCR, 'DCR'), (NON_DCR, 'Non-DCR')]
 
+# How the system is wired. Module level because the project declares it and the
+# proposal template is chosen by it, and one list keeps the two in step.
+ON_GRID, HYBRID, MICRO_INVERTER = 'on_grid', 'hybrid', 'micro_inverter'
+SYSTEM_TYPES = [
+    (ON_GRID, 'On-Grid'),
+    (HYBRID, 'Hybrid'),
+    (MICRO_INVERTER, 'Micro Inverter'),
+]
+
 
 def split_tax(amount, rate, inclusive):
     """Base, tax and total for an amount, told which side of the tax it sits on.
@@ -421,35 +430,19 @@ class QuoteItem(models.Model):
 
 # ─── Projects (B2C product bundles) ─────────────────────────────────────────
 
-class SectionedSpecLine(models.Model):
+class SpecLine(models.Model):
     """One line of a system specification: what it is, whose make, how many.
 
-    Abstract because the same four-section shape is kept twice — once on the
-    project itself, and once copied onto every proforma that quotes it. See
-    ``QuoteSpecLine`` for why the copy exists.
+    Abstract because the same shape is kept three times — on the project, on the
+    quotation, and on the proforma — and each keeps its own copy so that what
+    was quoted cannot change because the project was edited afterwards.
 
-    ``quantity`` is free text on purpose. The column in a real specification
+    `quantity` is free text on purpose. The column in a real specification
     carries "1 Each", "36 M" and "50 Sqmm AL Conductor, Earth Pit, SS
     Mono-Spike" in neighbouring rows; a decimal and a unit could not hold the
     third. Nothing here is totalled or costed — this is a specification, not a
     price list — so there is nothing for a number to buy.
     """
-    PANELS, INVERTER, STRUCTURE, BOS = 'panels', 'inverter', 'structure', 'bos'
-    SECTIONS = [
-        (PANELS, 'Panels'),
-        (INVERTER, 'Inverter'),
-        (STRUCTURE, 'Structure'),
-        (BOS, 'Balance of System'),
-    ]
-    # The order the sheet reads in, so an empty section still knows its place.
-    SECTION_ORDER = [PANELS, INVERTER, STRUCTURE, BOS]
-    # Only the balance of system is a table. The panels, the inverter and the
-    # structure are each simply named — "Topcon-Adani, Premier, Waaree" is the
-    # whole of what the sheet says about the panels — so those three carry a
-    # name and nothing else.
-    NAMED_ONLY = frozenset({PANELS, INVERTER, STRUCTURE})
-
-    section = models.CharField(max_length=12, choices=SECTIONS, db_index=True)
     item_name = models.CharField(max_length=200)
     brand = models.CharField(max_length=200, blank=True, default='')
     quantity = models.CharField(max_length=120, blank=True, default='')
@@ -460,25 +453,8 @@ class SectionedSpecLine(models.Model):
         abstract = True
         ordering = ['position', 'id']
 
-    def tidy(self):
-        """Drop what this section does not carry, and return self.
-
-        The single place the named-only rule is applied. Every writer goes
-        through here — the form, a copy onto a quote, a duplicated project — so
-        a brand cannot survive on a panels line by arriving down a path that
-        forgot to check.
-        """
-        if self.section in self.NAMED_ONLY:
-            self.brand = ''
-            self.quantity = ''
-        return self
-
-    def save(self, *args, **kwargs):
-        self.tidy()
-        return super().save(*args, **kwargs)
-
     def __str__(self):
-        return f'{self.get_section_display()} — {self.item_name}'
+        return self.item_name
 
 
 class ProjectSpec(models.Model):
@@ -494,6 +470,12 @@ class ProjectSpec(models.Model):
     this is the sheet that says what the customer is getting.
     """
     name = models.CharField(max_length=200)
+    # Blank is allowed rather than defaulted to On-Grid: the projects already on
+    # the books were built before this field existed, and guessing their type
+    # would put a wrong answer on a customer's quotation. An empty one simply
+    # says nothing until someone sets it.
+    system_type = models.CharField(max_length=20, choices=SYSTEM_TYPES,
+                                   blank=True, default='', db_index=True)
     capacity = models.CharField(max_length=60, blank=True, default='',
                                 help_text='e.g. 5kVA Single Phase')
     # What the package sells for. One figure per module type for the whole
@@ -505,6 +487,12 @@ class ProjectSpec(models.Model):
     # invoice says which one it was written for.
     price_dcr = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     price_non_dcr = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    # The PM Surya Ghar subsidy, which only a DCR system is eligible for — the
+    # modules have to be Indian-made to qualify. It is not a discount the
+    # company gives, so it never touches what the customer pays us; it is what
+    # the government pays them back, and the proposal shows both figures and the
+    # difference between them.
+    subsidy_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     # One rate and one inclusive/exclusive rule across both: it is the same sale
     # under the same tax, only the modules differ.
     tax_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
@@ -528,6 +516,19 @@ class ProjectSpec(models.Model):
 
     def __str__(self):
         return self.name
+
+    @property
+    def full_name(self):
+        """The project as it is named on a document: what it is, how it is
+        wired, how big.
+
+        One definition, because two documents name it — the invoice line and the
+        printed quotation — and a customer holding both should not find the
+        package described two different ways.
+        """
+        detail = ' — '.join(part for part in (self.get_system_type_display(),
+                                              self.capacity) if part)
+        return f'{self.name} — {detail}' if detail else self.name
 
     # ── What the customer pays ──
     # Derived, never stored: two copies of a total go out of step, and the one
@@ -561,11 +562,9 @@ class ProjectSpec(models.Model):
         because the project was edited afterwards.
         """
         line_model.objects.filter(**{field: doc}).delete()
-        # bulk_create does not call save(), so tidy() is applied by hand.
         line_model.objects.bulk_create([
-            line_model(**{field: doc}, section=line.section, item_name=line.item_name,
-                       brand=line.brand, quantity=line.quantity,
-                       position=line.position).tidy()
+            line_model(**{field: doc}, item_name=line.item_name,
+                       brand=line.brand, quantity=line.quantity, position=line.position)
             for line in self.lines.all()
         ])
 
@@ -589,19 +588,17 @@ class ProjectSpec(models.Model):
         label = dict(PRICE_VARIANTS)[quote.price_variant]
         quote.items.all().delete()
         QuoteItem.objects.create(
-            quote=quote,
-            description=f'{self.name}'
-                        f'{f" — {self.capacity}" if self.capacity else ""} ({label})',
+            quote=quote, description=f'{self.full_name} ({label})',
             quantity=Decimal('1'), unit_price=figures['base_amount'])
         quote.tax_percent = self.tax_percent
         quote.save(update_fields=['tax_percent'])
 
 
-class ProjectSpecLine(SectionedSpecLine):
+class ProjectSpecLine(SpecLine):
     project = models.ForeignKey(ProjectSpec, on_delete=models.CASCADE, related_name='lines')
 
 
-class QuoteSpecLine(SectionedSpecLine):
+class QuoteSpecLine(SpecLine):
     """The specification as it stands on one proforma.
 
     A copy, not a pointer into the project. Choosing a project fills these in;
@@ -682,6 +679,10 @@ class Quotation(RoundedTotalMixin, _NumberedDoc):
     discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     discount_remark = models.CharField(max_length=255, blank=True, default='')
 
+    # Copied from the project, then the desk's to change: the scheme's slabs
+    # move, and a customer's eligibility is settled with them, not with us.
+    subsidy_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
     # The proforma this became, if it was accepted.
     converted_quote = models.ForeignKey('Quote', on_delete=models.SET_NULL, null=True,
                                         blank=True, related_name='source_quotation')
@@ -735,6 +736,22 @@ class Quotation(RoundedTotalMixin, _NumberedDoc):
     def total(self):
         return self.figures['total']
 
+    @property
+    def subsidy_shown(self):
+        """The subsidy this quotation may show — nothing, unless it is DCR.
+
+        Only Indian-made modules qualify for PM Surya Ghar, so a non-DCR
+        proposal carries no subsidy box at all. Printing one at zero would read
+        as "you get nothing back", which is a different claim from "this system
+        is not in the scheme".
+        """
+        return Decimal(self.subsidy_amount or 0) if self.price_variant == DCR else Decimal('0')
+
+    @property
+    def net_effective(self):
+        """What the customer is out of pocket once the subsidy reaches them."""
+        return self.total - self.subsidy_shown
+
     def fill_from_project(self):
         """Take the specification and the price from the chosen project.
 
@@ -751,11 +768,34 @@ class Quotation(RoundedTotalMixin, _NumberedDoc):
             self.package_amount = figures['price']
         self.tax_percent = project.tax_percent
         self.price_includes_tax = project.price_includes_tax
-        self.save(update_fields=['package_amount', 'tax_percent',
-                                 'price_includes_tax', 'updated_at'])
+        self.subsidy_amount = project.subsidy_amount
+        self.save(update_fields=['package_amount', 'tax_percent', 'price_includes_tax',
+                                 'subsidy_amount', 'updated_at'])
 
 
-class QuotationSpecLine(SectionedSpecLine):
+class QuotationTemplate(models.Model):
+    """The branded proposal document, per system type.
+
+    Uploaded rather than drawn in code: it is a designed document — cover
+    photograph, brand grid, schematic, terms — and the pages that do not change
+    are taken from it verbatim so the customer receives exactly the artwork the
+    company approved. Only the pages that carry the customer's own figures are
+    redrawn. See `proposal.py`.
+    """
+    system_type = models.CharField(max_length=20, choices=SYSTEM_TYPES, unique=True)
+    pdf = models.FileField(upload_to='quotation-templates/')
+    uploaded_at = models.DateTimeField(auto_now=True)
+    uploaded_by = models.ForeignKey('users.User', on_delete=models.SET_NULL, null=True,
+                                    blank=True, related_name='+')
+
+    class Meta:
+        ordering = ['system_type']
+
+    def __str__(self):
+        return f'{self.get_system_type_display()} proposal template'
+
+
+class QuotationSpecLine(SpecLine):
     quotation = models.ForeignKey(Quotation, on_delete=models.CASCADE,
                                   related_name='spec_lines')
 

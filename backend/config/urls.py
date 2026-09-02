@@ -41,6 +41,9 @@ router.register(r'vendors', VendorViewSet, basename='vendors')
 router.register(r'purchase-orders', PurchaseOrderViewSet, basename='purchase-orders')
 router.register(r'projects', ProjectViewSet, basename='projects')
 router.register(r'quotations', QuotationViewSet, basename='quotations')
+
+from audit.views import AuditEntryViewSet  # noqa: E402
+router.register(r'activity-log', AuditEntryViewSet, basename='activity-log')
 router.register(r'quotes', QuoteViewSet, basename='quotes')
 router.register(r'sales-orders', SalesOrderViewSet, basename='sales-orders')
 router.register(r'stock-items', StockItemViewSet, basename='stock-items')

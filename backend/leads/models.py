@@ -385,7 +385,10 @@ class Lead(models.Model):
         self._loaded_district = self.district
 
     def __str__(self):
-        return f"{self.first_name} {self.last_name}"
+        # `last_name` is nullable, so a customer with only a first name used to
+        # print as "Asha None" — on the activity log, in the admin, and in every
+        # notification that names a lead.
+        return ' '.join(part for part in (self.first_name, self.last_name) if part)
 
 
 class SiteVisit(models.Model):

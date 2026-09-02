@@ -2780,15 +2780,15 @@ class ProjectTests(TestCase):
                                  **self.auth(user))
 
     LINES = [
-        {'section': 'panels', 'item_name': 'Topcon Module 545W',
+        {'item_name': 'Topcon Module 545W',
          'brand': 'Adani / Premier / Waaree', 'quantity': '10 Nos', 'position': 0},
-        {'section': 'inverter', 'item_name': '5kVA Single Phase',
+        {'item_name': '5kVA Single Phase',
          'brand': 'FOX ESS', 'quantity': '1 Nos', 'position': 0},
-        {'section': 'structure', 'item_name': 'GI Structure 16G',
+        {'item_name': 'GI Structure 16G',
          'brand': '', 'quantity': '1 Set', 'position': 0},
-        {'section': 'bos', 'item_name': 'DC Cable',
+        {'item_name': 'DC Cable',
          'brand': 'POLYCAB, LAPP', 'quantity': '36 M', 'position': 0},
-        {'section': 'bos', 'item_name': 'Earthing',
+        {'item_name': 'Earthing',
          'brand': 'EXCEL', 'quantity': '10 SWG DC Earthing, 10 SWG AC Earthing', 'position': 1},
     ]
 
@@ -2816,10 +2816,11 @@ class ProjectTests(TestCase):
         self.assertEqual(project['line_count'], 5)
         self.assertEqual(self.line(project, 'DC Cable')['brand'], 'POLYCAB, LAPP')
 
-    def test_the_four_sections_are_all_usable(self):
+    def test_every_line_is_kept(self):
         project = self.make_project()
-        sections = {l['section'] for l in project['lines']}
-        self.assertEqual(sections, {'panels', 'inverter', 'structure', 'bos'})
+        self.assertEqual([l['item_name'] for l in project['lines']],
+                         ['Topcon Module 545W', '5kVA Single Phase', 'GI Structure 16G',
+                          'DC Cable', 'Earthing'])
 
     def test_quantity_keeps_whatever_the_sheet_says(self):
         """A real specification says "1 Each", "36 M" and a sentence about
@@ -2830,13 +2831,13 @@ class ProjectTests(TestCase):
 
     def test_lines_come_back_in_the_order_they_were_arranged(self):
         project = self.make_project()
-        bos = [l['item_name'] for l in project['lines'] if l['section'] == 'bos']
-        self.assertEqual(bos, ['DC Cable', 'Earthing'])
+        names = [l['item_name'] for l in project['lines']]
+        self.assertLess(names.index('DC Cable'), names.index('Earthing'))
 
     def test_editing_a_project_replaces_its_sheet(self):
         project = self.make_project()
         r = self.patch(f"/api/projects/{project['id']}/",
-                       {'lines': [{'section': 'panels', 'item_name': 'Mono PERC 440W',
+                       {'lines': [{'item_name': 'Mono PERC 440W',
                                    'brand': 'Waaree', 'quantity': '12 Nos', 'position': 0}]})
         self.assertEqual(r.status_code, 200, r.content[:300])
         self.assertEqual(r.json()['line_count'], 1)
@@ -2868,59 +2869,6 @@ class ProjectTests(TestCase):
         everything = self.client.get('/api/projects/?all=true', **self.auth()).json()
         rows = everything if isinstance(everything, list) else everything['results']
         self.assertTrue(any(p['id'] == project['id'] for p in rows))
-
-    # ── Panels, inverter and structure are named, not tabulated ──
-    def test_the_named_sections_take_a_name_and_nothing_else(self):
-        """The sheet says "Topcon-Adani, Premier, Waaree" against Panels and
-        stops there. A brand and a quantity sent for one of those three are not
-        stored, wherever they came from."""
-        project = self.post('/api/projects/', {'name': 'Named only', 'lines': [
-            {'section': 'panels', 'item_name': 'Topcon-Adani, Premier, Waaree',
-             'brand': 'should not stick', 'quantity': '10 Nos', 'position': 0},
-            {'section': 'inverter', 'item_name': '5kVA Single Phase',
-             'brand': 'should not stick', 'quantity': '1 Nos', 'position': 0},
-            {'section': 'structure', 'item_name': '16G GI Structure',
-             'brand': 'should not stick', 'quantity': '1 Set', 'position': 0},
-        ]}).json()
-        for name in ('Topcon-Adani, Premier, Waaree', '5kVA Single Phase', '16G GI Structure'):
-            line = self.line(project, name)
-            self.assertEqual(line['brand'], '', name)
-            self.assertEqual(line['quantity'], '', name)
-
-    def test_the_balance_of_system_keeps_all_three_columns(self):
-        project = self.make_project()
-        line = self.line(project, 'DC Cable')
-        self.assertEqual(line['brand'], 'POLYCAB, LAPP')
-        self.assertEqual(line['quantity'], '36 M')
-
-    def test_the_rule_survives_a_copy_onto_a_quote(self):
-        """bulk_create skips save(), so the copy path has to apply it itself."""
-        project = self.post('/api/projects/', {'name': 'Copy me', 'lines': [
-            {'section': 'panels', 'item_name': 'Adani', 'brand': 'x', 'quantity': 'y', 'position': 0},
-            {'section': 'bos', 'item_name': 'DC Cable', 'brand': 'POLYCAB', 'quantity': '36 M', 'position': 0},
-        ]}).json()
-        quote = self.make_quote(project['id'])
-        self.assertEqual(self.line(quote, 'Adani')['brand'], '')
-        self.assertEqual(self.line(quote, 'DC Cable')['brand'], 'POLYCAB')
-
-    def test_the_rule_survives_a_duplicate(self):
-        project = self.post('/api/projects/', {'name': 'Dup me', 'lines': [
-            {'section': 'structure', 'item_name': '16G', 'brand': 'x', 'quantity': 'y', 'position': 0},
-        ]}).json()
-        copy = self.post(f"/api/projects/{project['id']}/duplicate/", {}).json()
-        self.assertEqual(self.line(copy, '16G')['brand'], '')
-
-    def test_the_rule_survives_an_edit_made_on_the_quote(self):
-        project = self.make_project()
-        quote = self.make_quote(project['id'])
-        edited = [dict(l) for l in quote['spec_lines']]
-        for l in edited:
-            if l['section'] == 'panels':
-                l['brand'], l['quantity'] = 'sneaked in', '99 Nos'
-        r = self.patch(f"/api/quotes/{quote['id']}/", {'spec_lines': edited})
-        panels = next(l for l in r.json()['spec_lines'] if l['section'] == 'panels')
-        self.assertEqual(panels['brand'], '')
-        self.assertEqual(panels['quantity'], '')
 
     # ── Picking one on a proforma ──
     def test_choosing_a_project_copies_its_sheet_onto_the_quote(self):
@@ -2969,7 +2917,7 @@ class ProjectTests(TestCase):
     def test_switching_to_another_project_brings_that_sheet_across(self):
         first = self.make_project()
         second = self.make_project(name='3kW On-Grid', lines=[
-            {'section': 'panels', 'item_name': 'Mono PERC 440W', 'brand': 'Waaree',
+            {'item_name': 'Mono PERC 440W', 'brand': 'Waaree',
              'quantity': '7 Nos', 'position': 0}])
         quote = self.make_quote(first['id'])
         r = self.patch(f"/api/quotes/{quote['id']}/", {'project': second['id']})
@@ -2981,7 +2929,7 @@ class ProjectTests(TestCase):
         project = self.make_project()
         quote = self.make_quote(project['id'])
         self.patch(f"/api/projects/{project['id']}/",
-                   {'lines': [{'section': 'panels', 'item_name': 'Something else',
+                   {'lines': [{'item_name': 'Something else',
                                'brand': '', 'quantity': '1', 'position': 0}]})
         back = self.client.get(f"/api/quotes/{quote['id']}/", **self.auth()).json()
         self.assertEqual(len(back['spec_lines']), 5)
@@ -3101,6 +3049,51 @@ class ProjectTests(TestCase):
             {'description': 'Agreed price', 'quantity': '1', 'unit_price': '170000'}]})
         again = self.patch(f"/api/quotes/{quote['id']}/", {'status': 'sent'})
         self.assertEqual(again.json()['items'][0]['unit_price'], '170000.00')
+
+    # ── How the system is wired ──
+    def test_a_project_records_its_system_type(self):
+        p = self.post('/api/projects/', {
+            'name': '5kW Hybrid', 'system_type': 'hybrid'}).json()
+        self.assertEqual(p['system_type'], 'hybrid')
+        self.assertEqual(p['system_type_display'], 'Hybrid')
+
+    def test_all_three_arrangements_are_offered(self):
+        for value, label in (('on_grid', 'On-Grid'), ('hybrid', 'Hybrid'),
+                             ('micro_inverter', 'Micro Inverter')):
+            p = self.post('/api/projects/', {'name': f'P {value}', 'system_type': value}).json()
+            self.assertEqual(p['system_type_display'], label)
+
+    def test_it_may_be_left_unset(self):
+        """The projects already on the books predate the field; guessing their
+        type would put a wrong answer on a customer's quotation."""
+        r = self.post('/api/projects/', {'name': 'Unset'})
+        self.assertEqual(r.status_code, 201, r.content[:200])
+        self.assertEqual(r.json()['system_type'], '')
+        self.assertEqual(r.json()['system_type_display'], '')
+
+    def test_something_that_is_not_one_of_the_three_is_refused(self):
+        r = self.post('/api/projects/', {'name': 'Nope', 'system_type': 'off_grid'})
+        self.assertEqual(r.status_code, 400)
+
+    def test_a_duplicate_keeps_the_system_type(self):
+        """It is the same system, so the copy is the same arrangement."""
+        p = self.post('/api/projects/', {'name': 'Dup', 'system_type': 'micro_inverter'}).json()
+        copy = self.post(f"/api/projects/{p['id']}/duplicate/", {}).json()
+        self.assertEqual(copy['system_type'], 'micro_inverter')
+
+    def test_the_list_can_be_searched_by_it(self):
+        self.post('/api/projects/', {'name': 'Searchable', 'system_type': 'hybrid'})
+        r = self.client.get('/api/projects/?search=hybrid', **self.auth())
+        rows = r.json() if isinstance(r.json(), list) else r.json()['results']
+        self.assertTrue(any(p['name'] == 'Searchable' for p in rows))
+
+    def test_the_printed_quotation_names_the_system(self):
+        """It is what a customer comparing two quotations reads first."""
+        project = self.post('/api/projects/', {
+            'name': '5kW Rooftop', 'system_type': 'hybrid', 'capacity': '5kVA Single Phase',
+            'price_dcr': '200000', 'tax_percent': '18'}).json()
+        quote = self.make_quote(project['id'])
+        self.assertIn('Hybrid', quote['items'][0]['description'])
 
     # ── DCR and non-DCR ──
     def two_priced(self):
@@ -3248,8 +3241,8 @@ class QuotationTests(TestCase):
             'price_dcr': dcr, 'price_non_dcr': non_dcr,
             'tax_percent': tax, 'price_includes_tax': inclusive,
             'lines': [
-                {'section': 'panels', 'item_name': 'Topcon-Adani', 'brand': '', 'quantity': '', 'position': 0},
-                {'section': 'bos', 'item_name': 'DC Cable', 'brand': 'POLYCAB', 'quantity': '36 M', 'position': 0},
+                {'item_name': 'Topcon-Adani', 'brand': '', 'quantity': '', 'position': 0},
+                {'item_name': 'DC Cable', 'brand': 'POLYCAB', 'quantity': '36 M', 'position': 0},
             ]})
         self.assertEqual(r.status_code, 201, r.content[:300])
         return r.json()
@@ -3445,6 +3438,125 @@ class QuotationTests(TestCase):
         r = self.patch(f"/api/quotations/{q['id']}/", {'costs': [
             {'remark': 'Crane hire for 3rd floor', 'amount': '12000', 'position': 0}]})
         self.assertEqual(r.status_code, 200, r.content[:300])
+
+    # ── The branded proposal ──
+    def with_template(self):
+        """The approved artwork, as a stand-in six-page PDF."""
+        import pymupdf
+        from django.core.files.base import ContentFile
+        from .models import QuotationTemplate
+        doc = pymupdf.open()
+        for _ in range(6):
+            doc.new_page(width=810, height=1012)
+        t = QuotationTemplate.objects.create(system_type='on_grid')
+        t.pdf.save('t.pdf', ContentFile(doc.tobytes()), save=True)
+        doc.close()
+        return t
+
+    def priced_project(self, subsidy='78000'):
+        return self.post('/api/projects/', {
+            'name': '5kW On-Grid', 'system_type': 'on_grid',
+            'price_dcr': '200000', 'price_non_dcr': '180000',
+            'subsidy_amount': subsidy, 'lines': [
+                {'item_name': 'PV module', 'brand': 'Adani / Waaree',
+                 'quantity': '10 Nos', 'position': 0},
+                {'item_name': 'DC Cable', 'brand': 'POLYCAB',
+                 'quantity': '36 M', 'position': 1},
+            ]}).json()
+
+    def test_the_subsidy_only_counts_for_dcr(self):
+        """Only Indian-made modules qualify for PM Surya Ghar."""
+        project = self.priced_project()
+        dcr = self.make_quotation(project['id'])
+        self.assertEqual(dcr['subsidy_shown'], '78000.00')
+        self.assertEqual(dcr['net_effective'], '122000.00')
+
+        non = self.patch(f"/api/quotations/{dcr['id']}/", {'price_variant': 'non_dcr'}).json()
+        self.assertEqual(non['subsidy_shown'], '0.00')
+        self.assertEqual(non['net_effective'], non['total'])
+
+    def test_the_subsidy_comes_across_from_the_project(self):
+        project = self.priced_project()
+        q = self.make_quotation(project['id'])
+        self.assertEqual(q['subsidy_amount'], '78000.00')
+
+    def test_the_proposal_renders_on_the_company_artwork(self):
+        self.with_template()
+        q = self.make_quotation(self.priced_project()['id'])
+        r = self.client.get(f"/api/quotations/{q['id']}/proposal/", **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertEqual(r['Content-Type'], 'application/pdf')
+        self.assertTrue(r.content.startswith(b'%PDF'))
+
+    def test_the_proposal_keeps_every_page_of_the_template(self):
+        """The pages nobody edits are the company's own and travel untouched."""
+        import pymupdf
+        self.with_template()
+        q = self.make_quotation(self.priced_project()['id'])
+        r = self.client.get(f"/api/quotations/{q['id']}/proposal/", **self.auth())
+        doc = pymupdf.open(stream=r.content, filetype='pdf')
+        self.assertEqual(doc.page_count, 6)
+        doc.close()
+
+    def test_the_pricing_page_carries_only_this_quotation_s_figures(self):
+        """A proposal showing two sets of numbers is worse than none."""
+        import pymupdf
+        self.with_template()
+        q = self.make_quotation(self.priced_project()['id'])
+        r = self.client.get(f"/api/quotations/{q['id']}/proposal/", **self.auth())
+        doc = pymupdf.open(stream=r.content, filetype='pdf')
+        amounts = [w.strip() for w in doc[3].get_text().splitlines() if '₹' in w]
+        doc.close()
+        self.assertEqual(len(amounts), 3)          # paid, subsidy, net
+        self.assertIn('2,00,000', ' '.join(amounts))
+        self.assertIn('78,000', ' '.join(amounts))
+        self.assertIn('1,22,000', ' '.join(amounts))
+
+    def test_a_non_dcr_proposal_shows_one_figure_not_a_zero_subsidy(self):
+        """"You get nothing back" is a different claim from "this system is not
+        in the scheme"."""
+        import pymupdf
+        self.with_template()
+        q = self.make_quotation(self.priced_project()['id'])
+        self.patch(f"/api/quotations/{q['id']}/", {'price_variant': 'non_dcr'})
+        r = self.client.get(f"/api/quotations/{q['id']}/proposal/", **self.auth())
+        doc = pymupdf.open(stream=r.content, filetype='pdf')
+        amounts = [w.strip() for w in doc[3].get_text().splitlines() if '₹' in w]
+        doc.close()
+        self.assertEqual(len(amounts), 1)
+        self.assertIn('1,80,000', amounts[0])
+
+    def test_the_rupee_sign_actually_prints(self):
+        """None of the fonts every reader has carries U+20B9; without the
+        bundled one the customer receives "? 2,00,000"."""
+        import pymupdf
+        self.with_template()
+        q = self.make_quotation(self.priced_project()['id'])
+        r = self.client.get(f"/api/quotations/{q['id']}/proposal/", **self.auth())
+        doc = pymupdf.open(stream=r.content, filetype='pdf')
+        text = doc[3].get_text()
+        doc.close()
+        self.assertIn('₹', text)
+        self.assertNotIn('?', text.replace('?', '', 0) if False else text.split('₹')[0][-2:])
+
+    def test_the_cover_names_the_customer_and_the_quotation(self):
+        import pymupdf
+        self.with_template()
+        project = self.priced_project()
+        q = self.make_quotation(project['id'])
+        r = self.client.get(f"/api/quotations/{q['id']}/proposal/", **self.auth())
+        doc = pymupdf.open(stream=r.content, filetype='pdf')
+        cover = doc[0].get_text()
+        doc.close()
+        self.assertIn(q['number'], cover)
+        self.assertIn('5KW ON-GRID', cover.upper())
+
+    def test_without_a_template_it_says_so(self):
+        """Rather than sending a customer the wrong system's document."""
+        q = self.make_quotation(self.priced_project()['id'])
+        r = self.client.get(f"/api/quotations/{q['id']}/proposal/", **self.auth())
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('template', r.json()['error'].lower())
 
     # ── Becoming an invoice ──
     def test_it_converts_to_a_proforma_for_the_agreed_figure(self):

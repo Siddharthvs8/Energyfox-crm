@@ -156,7 +156,7 @@ class _SpecLineSerializer(serializers.ModelSerializer):
     """A specification line — the same three columns wherever it appears."""
 
     class Meta:
-        fields = ['id', 'section', 'item_name', 'brand', 'quantity', 'position']
+        fields = ['id', 'item_name', 'brand', 'quantity', 'position']
         read_only_fields = ['id']
 
 
@@ -178,6 +178,7 @@ class ProjectSpecSerializer(serializers.ModelSerializer):
 
     # Derived on the server so the screen and the invoice cannot disagree about
     # what a package costs. One block per price, keyed by variant.
+    system_type_display = serializers.CharField(source='get_system_type_display', read_only=True)
     pricing = serializers.SerializerMethodField()
 
     def get_pricing(self, obj):
@@ -186,7 +187,7 @@ class ProjectSpecSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ProjectSpec
-        fields = ['id', 'name', 'capacity',
+        fields = ['id', 'name', 'system_type', 'system_type_display', 'capacity', 'subsidy_amount',
                   'price_dcr', 'price_non_dcr', 'tax_percent', 'price_includes_tax',
                   'pricing',
                   'notes', 'is_active', 'lines',
@@ -208,7 +209,7 @@ class ProjectSpecSerializer(serializers.ModelSerializer):
         """
         project.lines.all().delete()
         ProjectSpecLine.objects.bulk_create(
-            [ProjectSpecLine(project=project, **line).tidy() for line in lines])
+            [ProjectSpecLine(project=project, **line) for line in lines])
 
     def create(self, validated_data):
         lines = validated_data.pop('lines', [])
@@ -260,6 +261,8 @@ class QuotationSerializer(serializers.ModelSerializer):
     extras_total = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     subtotal = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     net_amount = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    subsidy_shown = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    net_effective = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     base_amount = serializers.SerializerMethodField()
     tax_amount = serializers.SerializerMethodField()
     total = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
@@ -272,9 +275,10 @@ class QuotationSerializer(serializers.ModelSerializer):
             'id', 'number', 'lead', 'lead_name', 'project', 'project_name',
             'price_variant', 'status', 'quotation_date', 'expiry_date', 'site',
             'package_amount', 'tax_percent', 'price_includes_tax',
-            'discount_amount', 'discount_remark',
+            'discount_amount', 'discount_remark', 'subsidy_amount',
             'spec_lines', 'costs',
-            'extras_total', 'subtotal', 'net_amount', 'base_amount', 'tax_amount',
+            'extras_total', 'subtotal', 'net_amount', 'subsidy_shown', 'net_effective',
+            'base_amount', 'tax_amount',
             'total', 'grand_total', 'round_off',
             'converted_quote', 'pdf', 'notes', 'created_by', 'created_at',
         ]
@@ -333,7 +337,7 @@ class QuotationSerializer(serializers.ModelSerializer):
         if spec_lines is not None:
             quotation.spec_lines.all().delete()
             QuotationSpecLine.objects.bulk_create(
-                [QuotationSpecLine(quotation=quotation, **l).tidy() for l in spec_lines])
+                [QuotationSpecLine(quotation=quotation, **l) for l in spec_lines])
         if costs is not None:
             quotation.costs.all().delete()
             QuotationCost.objects.bulk_create(
@@ -409,7 +413,7 @@ class QuoteSerializer(_TaxedDocSerializer):
         if spec_lines is not None:
             quote.spec_lines.all().delete()
             QuoteSpecLine.objects.bulk_create(
-                [QuoteSpecLine(quote=quote, **line).tidy() for line in spec_lines])
+                [QuoteSpecLine(quote=quote, **line) for line in spec_lines])
         elif project_sent and quote.project_id:
             quote.project.copy_onto(quote)
             return

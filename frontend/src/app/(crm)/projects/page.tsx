@@ -21,9 +21,10 @@ import { getApiBase } from "@/lib/mock-data";
 import React, { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
-type Line = { section: string; item_name: string; brand: string; quantity: string; position: number };
+type Line = { item_name: string; brand: string; quantity: string; position: number };
 type Project = {
   id: number; name: string; capacity: string; notes: string; is_active: boolean;
+  system_type: string; system_type_display: string;
   price_dcr: string; price_non_dcr: string;
   tax_percent: string; price_includes_tax: boolean;
   pricing: Record<string, { price: string; base_amount: string; tax_amount: string; total: string }>;
@@ -33,6 +34,13 @@ type Project = {
 // The same system, built with Indian-made modules or imported ones. A different
 // price, not a different product — so a project quotes both.
 const VARIANTS: [string, string][] = [["dcr", "DCR"], ["non_dcr", "Non-DCR"]];
+
+// How the system is wired — the three arrangements the company sells, and the
+// first thing a customer comparing two quotations asks about. Mirrors
+// ProjectSpec.SYSTEM_TYPES on the server.
+const SYSTEM_TYPES: [string, string][] = [
+  ["on_grid", "On-Grid"], ["hybrid", "Hybrid"], ["micro_inverter", "Micro Inverter"],
+];
 
 const money = (v: string | number) =>
   Number(v || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -52,94 +60,63 @@ function split(price: number, rate: number, inclusive: boolean) {
   return { base, tax: price - base, total: price };
 }
 
-const SECTIONS: [string, string][] = [
-  ["panels", "Panels"],
-  ["inverter", "Inverter"],
-  ["structure", "Structure"],
-  ["bos", "Balance of System"],
-];
-
-// Only the balance of system is a table. The panels, the inverter and the
-// structure are each simply named — "Topcon-Adani, Premier, Waaree" is the whole
-// of what the sheet says about the panels — so those three take a name and
-// nothing else. Mirrors SectionedSpecLine.NAMED_ONLY on the server.
-const NAMED_ONLY = new Set(["panels", "inverter", "structure"]);
-
-const blankLine = (section: string, position: number): Line =>
-  ({ section, item_name: "", brand: "", quantity: "", position });
+const blankLine = (position: number): Line =>
+  ({ item_name: "", brand: "", quantity: "", position });
 
 const inputCls =
   "w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 " +
   "placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition";
 const labelCls = "block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5";
 
-/* ── The editor for one section: three columns, as many rows as needed ── */
-function SectionEditor({ section, label, lines, onChange }: {
-  section: string; label: string; lines: Line[];
-  onChange: (section: string, lines: Line[]) => void;
+/* ── The specification: one table of item, brand and quantity ── */
+function SpecEditor({ lines, onChange }: {
+  lines: Line[]; onChange: (lines: Line[]) => void;
 }) {
-  const rows = lines.filter(l => l.section === section);
-
   const setRow = (i: number, patch: Partial<Line>) =>
-    onChange(section, rows.map((r, n) => (n === i ? { ...r, ...patch } : r)));
-  const addRow = () => onChange(section, [...rows, blankLine(section, rows.length)]);
+    onChange(lines.map((r, n) => (n === i ? { ...r, ...patch } : r)));
+  const addRow = () => onChange([...lines, blankLine(lines.length)]);
   const removeRow = (i: number) =>
-    onChange(section, rows.filter((_, n) => n !== i).map((r, n) => ({ ...r, position: n })));
-
-  const namedOnly = NAMED_ONLY.has(section);
-  const grid = namedOnly ? "grid-cols-[1fr_32px]" : "sm:grid-cols-[1fr_1fr_180px_32px]";
-  const remove = (i: number) => (
-    <button type="button" onClick={() => removeRow(i)} title="Remove this line"
-      className="justify-self-center text-slate-300 hover:text-rose-500 transition p-1">
-      <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2"
-        strokeLinecap="round" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" /></svg>
-    </button>
-  );
+    onChange(lines.filter((_, n) => n !== i).map((r, n) => ({ ...r, position: n })));
 
   return (
     <div className="border border-slate-200 rounded-xl overflow-hidden">
       <div className="flex items-center justify-between bg-slate-50 px-4 py-2.5 border-b border-slate-200">
-        <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wide">{label}</h3>
+        <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wide">Specifications</h3>
         <button type="button" onClick={addRow}
           className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 transition">
           + Add line
         </button>
       </div>
 
-      {rows.length === 0 ? (
+      {lines.length === 0 ? (
         <p className="px-4 py-4 text-[12px] text-slate-400">
-          Nothing here yet — this section is left off the sheet.
+          Nothing here yet — this project has no specification.
         </p>
       ) : (
         <div className="divide-y divide-slate-100">
-          {/* Headings once, not per row: repeating the labels down a long
-              balance-of-system list made the sheet unreadable. */}
-          {!namedOnly && (
-            <div className="hidden sm:grid grid-cols-[1fr_1fr_180px_32px] gap-2 px-4 pt-3 pb-1">
-              <span className={labelCls}>Item</span>
-              <span className={labelCls}>Brand</span>
-              <span className={labelCls}>Quantity</span>
-              <span />
-            </div>
-          )}
-          {rows.map((r, i) => (
-            <div key={i} className={`grid ${grid} gap-2 px-4 py-2.5 items-center`}>
+          {/* Headings once, not per row: repeating the labels down a long list
+              made the sheet unreadable. */}
+          <div className="hidden sm:grid grid-cols-[1fr_1fr_180px_32px] gap-2 px-4 pt-3 pb-1">
+            <span className={labelCls}>Item</span>
+            <span className={labelCls}>Brand</span>
+            <span className={labelCls}>Quantity</span>
+            <span />
+          </div>
+          {lines.map((r, i) => (
+            <div key={i} className="grid sm:grid-cols-[1fr_1fr_180px_32px] gap-2 px-4 py-2.5 items-center">
               <input value={r.item_name} onChange={e => setRow(i, { item_name: e.target.value })}
-                placeholder={namedOnly
-                  ? "e.g. Topcon-Adani, Premier, Waaree"
-                  : "e.g. Array Junction Box (DCDB, MCB, SPD)"}
-                className={inputCls} />
-              {!namedOnly && (
-                <>
-                  <input value={r.brand} onChange={e => setRow(i, { brand: e.target.value })}
-                    placeholder="e.g. MERSEN / L&T / SCHNEIDER" className={inputCls} />
-                  {/* Free text, not a number: a real sheet says "1 Each", "36 M"
-                      and "50 Sqmm AL Conductor, Earth Pit" in neighbouring rows. */}
-                  <input value={r.quantity} onChange={e => setRow(i, { quantity: e.target.value })}
-                    placeholder="1 Each · 36 M" className={inputCls} />
-                </>
-              )}
-              {remove(i)}
+                placeholder="e.g. Array Junction Box (DCDB, MCB, SPD)" className={inputCls} />
+              <input value={r.brand} onChange={e => setRow(i, { brand: e.target.value })}
+                placeholder="e.g. MERSEN / L&T / SCHNEIDER" className={inputCls} />
+              {/* Free text, not a number: a real sheet says "1 Each", "36 M"
+                  and "50 Sqmm AL Conductor, Earth Pit" in neighbouring rows. */}
+              <input value={r.quantity} onChange={e => setRow(i, { quantity: e.target.value })}
+                placeholder="1 Each · 36 M" className={inputCls} />
+              <button type="button" onClick={() => removeRow(i)} title="Remove this line"
+                className="justify-self-center text-slate-300 hover:text-rose-500 transition p-1">
+                <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2"
+                  strokeLinecap="round" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" /></svg>
+              </button>
             </div>
           ))}
         </div>
@@ -150,59 +127,32 @@ function SectionEditor({ section, label, lines, onChange }: {
 
 /* ── The sheet as the customer sees it ── */
 export function SpecSheet({ lines }: { lines: Line[] }) {
-  const of = (s: string) => lines.filter(l => l.section === s);
-  const bos = of("bos");
-
-  const Card = ({ title, rows }: { title: string; rows: Line[] }) => (
-    <div className="mb-4">
-      <div className="bg-slate-200/70 px-4 py-2 rounded-t-lg">
-        <h4 className="font-black text-slate-800 text-sm">{title}</h4>
-      </div>
-      <div className="border border-t-0 border-slate-200 rounded-b-lg px-4 py-3 bg-white">
-        {rows.length === 0 ? (
-          <p className="text-[12px] text-slate-400">—</p>
-        ) : rows.map((r, i) => (
-          <div key={i} className="text-[13px] font-semibold text-slate-700 leading-snug mb-1.5 last:mb-0">
-            {r.item_name}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-
   return (
-    <div className="grid lg:grid-cols-2 gap-5">
-      <div>
-        {SECTIONS.filter(([k]) => k !== "bos").map(([k, label]) => (
-          <Card key={k} title={label} rows={of(k)} />
-        ))}
+    <div>
+      <div className="bg-slate-200/70 px-4 py-2 rounded-t-lg">
+        <h4 className="font-black text-slate-800 text-sm text-center">Specifications</h4>
       </div>
-      <div>
-        <div className="bg-slate-200/70 px-4 py-2 rounded-t-lg">
-          <h4 className="font-black text-slate-800 text-sm text-center">Balance of System</h4>
-        </div>
-        <div className="border border-t-0 border-slate-200 rounded-b-lg overflow-x-auto bg-white">
-          <table className="w-full text-left border-collapse text-[13px]">
-            <thead>
-              <tr className="border-b border-slate-200 text-slate-500">
-                <th className="py-2 px-3 font-semibold">Item</th>
-                <th className="py-2 px-3 font-semibold">Brand</th>
-                <th className="py-2 px-3 font-semibold">Quantity</th>
+      <div className="border border-t-0 border-slate-200 rounded-b-lg overflow-x-auto bg-white">
+        <table className="w-full text-left border-collapse text-[13px]">
+          <thead>
+            <tr className="border-b border-slate-200 text-slate-500">
+              <th className="py-2 px-3 font-semibold">Item</th>
+              <th className="py-2 px-3 font-semibold">Brand</th>
+              <th className="py-2 px-3 font-semibold">Quantity</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {lines.length === 0 ? (
+              <tr><td colSpan={3} className="py-4 px-3 text-slate-400">No specification lines yet.</td></tr>
+            ) : lines.map((r, i) => (
+              <tr key={i}>
+                <td className="py-2 px-3 text-slate-800">{r.item_name}</td>
+                <td className="py-2 px-3 text-slate-600">{r.brand || "—"}</td>
+                <td className="py-2 px-3 text-slate-600">{r.quantity || "—"}</td>
               </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {bos.length === 0 ? (
-                <tr><td colSpan={3} className="py-4 px-3 text-slate-400">No balance-of-system lines yet.</td></tr>
-              ) : bos.map((r, i) => (
-                <tr key={i}>
-                  <td className="py-2 px-3 text-slate-800">{r.item_name}</td>
-                  <td className="py-2 px-3 text-slate-600">{r.brand || "—"}</td>
-                  <td className="py-2 px-3 text-slate-600">{r.quantity || "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -221,7 +171,7 @@ export default function ProjectsPage() {
   const [creating, setCreating] = useState(false);
   const [preview, setPreview] = useState<Project | null>(null);
   const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState({ name: "", capacity: "", price_dcr: "", price_non_dcr: "", tax_percent: "", notes: "", price_includes_tax: false });
+  const [form, setForm] = useState({ name: "", system_type: "", capacity: "", price_dcr: "", price_non_dcr: "", subsidy_amount: "", tax_percent: "", notes: "", price_includes_tax: false });
   const [lines, setLines] = useState<Line[]>([]);
 
   const auth = () => ({ Authorization: `Bearer ${localStorage.getItem(`${domain}_access`)}` });
@@ -240,15 +190,16 @@ export default function ProjectsPage() {
 
   const openNew = () => {
     setCreating(true); setEditing(null);
-    setForm({ name: "", capacity: "", price_dcr: "", price_non_dcr: "", tax_percent: "", notes: "", price_includes_tax: false });
+    setForm({ name: "", system_type: "", capacity: "", price_dcr: "", price_non_dcr: "", subsidy_amount: "", tax_percent: "", notes: "", price_includes_tax: false });
     setLines([]);
   };
   const openEdit = (p: Project) => {
     setCreating(false); setEditing(p);
     setForm({
-      name: p.name, capacity: p.capacity || "", notes: p.notes || "",
+      name: p.name, system_type: p.system_type || "", capacity: p.capacity || "", notes: p.notes || "",
       price_dcr: Number(p.price_dcr) ? String(Number(p.price_dcr)) : "",
       price_non_dcr: Number(p.price_non_dcr) ? String(Number(p.price_non_dcr)) : "",
+      subsidy_amount: Number(p.subsidy_amount) ? String(Number(p.subsidy_amount)) : "",
       tax_percent: p.tax_percent && Number(p.tax_percent) ? String(Number(p.tax_percent)) : "",
       price_includes_tax: !!p.price_includes_tax,
     });
@@ -257,8 +208,6 @@ export default function ProjectsPage() {
   const close = () => { setEditing(null); setCreating(false); };
 
   // One section's rows are replaced wholesale; the rest are untouched.
-  const setSection = (section: string, rows: Line[]) =>
-    setLines([...lines.filter(l => l.section !== section), ...rows]);
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -270,10 +219,9 @@ export default function ProjectsPage() {
       ...form,
       price_dcr: form.price_dcr || 0,
       price_non_dcr: form.price_non_dcr || 0,
+      subsidy_amount: form.subsidy_amount || 0,
       tax_percent: form.tax_percent || 0,
-      lines: SECTIONS.flatMap(([k]) =>
-        lines.filter(l => l.section === k && l.item_name.trim())
-          .map((l, i) => ({ ...l, position: i }))),
+      lines: lines.filter(l => l.item_name.trim()).map((l, i) => ({ ...l, position: i })),
     };
     const url = editing ? `${api}/api/projects/${editing.id}/` : `${api}/api/projects/`;
     try {
@@ -363,7 +311,16 @@ export default function ProjectsPage() {
                     <span className="font-medium text-slate-900">{p.name}</span>
                     {!p.is_active && <span className="ml-2 text-[10px] font-bold uppercase text-slate-400">Retired</span>}
                   </td>
-                  <td className="py-4 px-6 text-slate-600">{p.capacity || "—"}</td>
+                  <td className="py-4 px-6 text-slate-600">
+                    {p.system_type_display ? (
+                      <span className="inline-block px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 text-[10px] font-bold">
+                        {p.system_type_display}
+                      </span>
+                    ) : null}
+                    <span className={p.system_type_display ? "block mt-1" : ""}>
+                      {p.capacity || (p.system_type_display ? "" : "—")}
+                    </span>
+                  </td>
                   <td className="py-4 px-6 text-right whitespace-nowrap">
                     {VARIANTS.some(([k]) => Number(p.pricing?.[k]?.price)) ? (
                       VARIANTS.map(([k, label]) => Number(p.pricing?.[k]?.price) ? (
@@ -417,6 +374,15 @@ export default function ProjectsPage() {
                     placeholder="5kW Single Phase On-Grid" required className={inputCls} />
                 </div>
                 <div>
+                  <label className={labelCls}>System type</label>
+                  <select value={form.system_type}
+                    onChange={e => setForm({ ...form, system_type: e.target.value })}
+                    className={inputCls}>
+                    <option value="">Not set</option>
+                    {SYSTEM_TYPES.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+                  </select>
+                </div>
+                <div>
                   <label className={labelCls}>Capacity</label>
                   <input value={form.capacity} onChange={e => setForm({ ...form, capacity: e.target.value })}
                     placeholder="5kVA Single Phase" className={inputCls} />
@@ -425,7 +391,7 @@ export default function ProjectsPage() {
 
               {/* ── What the package sells for ── */}
               <div className="border border-slate-200 rounded-xl px-4 py-4">
-                <div className="grid sm:grid-cols-[1fr_1fr_120px] gap-4">
+                <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
                   <div>
                     <label className={labelCls}>DCR price (₹)</label>
                     <input type="number" min="0" step="0.01" value={form.price_dcr}
@@ -437,6 +403,15 @@ export default function ProjectsPage() {
                     <input type="number" min="0" step="0.01" value={form.price_non_dcr}
                       onChange={e => setForm({ ...form, price_non_dcr: e.target.value })}
                       placeholder="180000" className={inputCls} />
+                  </div>
+                  <div>
+                    <label className={labelCls}>PM Surya Ghar subsidy (₹)</label>
+                    <input type="number" min="0" step="0.01" value={form.subsidy_amount}
+                      onChange={e => setForm({ ...form, subsidy_amount: e.target.value })}
+                      placeholder="78000" className={inputCls} />
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Shown on DCR proposals only — non-DCR is not in the scheme.
+                    </p>
                   </div>
                   <div>
                     <label className={labelCls}>Tax %</label>
@@ -477,9 +452,7 @@ export default function ProjectsPage() {
                 )}
               </div>
 
-              {SECTIONS.map(([k, label]) => (
-                <SectionEditor key={k} section={k} label={label} lines={lines} onChange={setSection} />
-              ))}
+              <SpecEditor lines={lines} onChange={setLines} />
 
               <div>
                 <label className={labelCls}>Notes</label>
@@ -511,7 +484,11 @@ export default function ProjectsPage() {
             <div className="px-6 py-5 border-b border-slate-100 flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-lg font-bold text-slate-900">{preview.name}</h2>
-                {preview.capacity && <p className="text-sm text-slate-500 mt-0.5">{preview.capacity}</p>}
+                {(preview.system_type_display || preview.capacity) && (
+                  <p className="text-sm text-slate-500 mt-0.5">
+                    {[preview.system_type_display, preview.capacity].filter(Boolean).join(" · ")}
+                  </p>
+                )}
               </div>
               <button onClick={() => setPreview(null)}
                 className="text-slate-400 hover:text-slate-700 transition p-1">

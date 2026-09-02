@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     'automations',
     'inventory',
     'messaging',
+    'audit',
 ]
 
 MIDDLEWARE = [
@@ -60,6 +61,10 @@ MIDDLEWARE = [
     # After authentication so a session user is already resolved; it falls back
     # to the bearer token for API calls. Refuses every write from a spectator.
     'core.middleware.SpectatorReadOnlyMiddleware',
+    # After the spectator guard: a refused write never happened, so it has
+    # nothing to record. Names whoever is making this request for the audit
+    # signals — see audit/middleware.py.
+    'audit.middleware.AuditActorMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]

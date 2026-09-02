@@ -56,6 +56,12 @@ const Nav = {
       <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
     </svg>
   ),
+  Activity: () => (
+    <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+      <path d="M12 8v4l3 2" /><circle cx="12" cy="12" r="9" />
+      <path d="M3.05 11a9 9 0 0 1 .5-2" />
+    </svg>
+  ),
   Settings: () => (
     <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" viewBox="0 0 24 24">
       <circle cx="12" cy="12" r="3" />
@@ -695,6 +701,7 @@ export default function DashboardLayout({
     { href: `/discom-followup`, label: "Discom Follow-up", Icon: Nav.Alert, liasoningFeature: true },
     { href: `/periodic-maintenance`, label: "Periodic Maintenance", Icon: Nav.Settings, liasoningFeature: true },
     { href: `/emergency-service`, label: "Emergency Service", Icon: Nav.Alert, liasoningFeature: true },
+    { href: `/activity-log`,  label: "Activity Log",    Icon: Nav.Activity, adminAndSuperOnly: true },
     { href: `/settings`,      label: "Settings",        Icon: Nav.Settings, adminOnly: true },
   ];
 
@@ -819,6 +826,13 @@ export default function DashboardLayout({
     }
     if (item.strictAdminOnly) {
       return currentUser?.is_staff || isSpectator;
+    }
+    // Narrower than strictAdminOnly on purpose: that one lets the spectator
+    // watch, and a record of who changed what — roles and money included — is
+    // not a watching brief. Matches AdminOnly on the server exactly; if either
+    // moves, move both or the sidebar offers a page that answers 403.
+    if (item.adminAndSuperOnly) {
+      return ["admin", "superadmin"].includes(currentUser?.role);
     }
     if (item.adminOnly) {
       return seesAllModules;

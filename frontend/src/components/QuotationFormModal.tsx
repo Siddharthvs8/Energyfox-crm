@@ -12,7 +12,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
 
-export type SpecLine = { section: string; item_name: string; brand: string; quantity: string; position: number };
+export type SpecLine = { item_name: string; brand: string; quantity: string; position: number };
 export type Cost = { remark: string; amount: string; position: number };
 export type Quotation = {
   id: number; number: string; status: string;
@@ -27,12 +27,6 @@ export type Quotation = {
   converted_quote: number | null; pdf: string | null; notes: string;
 };
 
-export const SECTIONS: [string, string][] = [
-  ["panels", "Panels"], ["inverter", "Inverter"],
-  ["structure", "Structure"], ["bos", "Balance of System"],
-];
-// Only the balance of system is a table; the other three are simply named.
-const NAMED_ONLY = new Set(["panels", "inverter", "structure"]);
 export const VARIANTS: [string, string][] = [["dcr", "DCR"], ["non_dcr", "Non-DCR"]];
 
 export const money = (v: string | number) =>
@@ -42,6 +36,35 @@ const inputCls =
   "w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 " +
   "placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition";
 const labelCls = "block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5";
+
+/** What actually went wrong, in words.
+ *
+ * A rejection arrives in one of three shapes and only one of them was being
+ * read: {"detail": "..."} for a permission problem, {"field": ["reason"]} for a
+ * validation one, and HTML for a server error. Everything but the first used to
+ * come out as "Could not save this quotation", which tells the person at the
+ * screen nothing and sends them to ask someone with a server log.
+ */
+async function describeFailure(r: Response): Promise<string> {
+  let body: any = null;
+  try { body = await r.json(); } catch { /* not JSON — a server error page */ }
+
+  if (!body) {
+    return r.status >= 500
+      ? `The server could not save this (error ${r.status}). Nothing was changed.`
+      : `Could not save this quotation (error ${r.status}).`;
+  }
+  if (typeof body === "string") return body;
+  if (body.detail || body.error) return body.detail || body.error;
+
+  // Field errors: name the field, so the fix is obvious.
+  const parts = Object.entries(body).map(([field, msgs]) => {
+    const text = Array.isArray(msgs) ? msgs.join(" ") : String(msgs);
+    return field === "non_field_errors" ? text
+      : `${field.replace(/_/g, " ")}: ${text}`;
+  });
+  return parts.join("  ·  ") || "Could not save this quotation.";
+}
 
 const blankForm = () => ({
   lead: "", project: "", price_variant: "dcr", status: "draft",
@@ -188,11 +211,7 @@ export default function QuotationFormModal({ open, editing, lockedLeadId, onClos
       const r = await fetch(
         editing ? `${api}/api/quotations/${editing.id}/` : `${api}/api/quotations/`,
         { method: editing ? "PATCH" : "POST", headers: headers(), body: JSON.stringify(body) });
-      if (!r.ok) {
-        const e = await r.json().catch(() => ({}));
-        setError(e.detail || e.error || "Could not save this quotation.");
-        return;
-      }
+      if (!r.ok) { setError(await describeFailure(r)); return; }
       onSaved();
       onClose();
     } catch { setError("Network error — nothing was saved."); }
@@ -267,7 +286,7 @@ export default function QuotationFormModal({ open, editing, lockedLeadId, onClos
                   <option value="">No project</option>
                   {projects.map(p => (
                     <option key={p.id} value={p.id}>
-                      {p.name}{p.capacity ? ` · ${p.capacity}` : ""}
+                      {[p.name, p.system_type_display, p.capacity].filter(Boolean).join(" · ")}
                     </option>
                   ))}
                 </select>
@@ -307,52 +326,38 @@ export default function QuotationFormModal({ open, editing, lockedLeadId, onClos
 
             {specOpen && (
               <div className="mt-4 space-y-3">
-                {SECTIONS.map(([key, label]) => {
-                  const rows = spec.filter(l => l.section === key);
-                  const named = NAMED_ONLY.has(key);
-                  const write = (next: SpecLine[]) =>
-                    setSpec([...spec.filter(l => l.section !== key), ...next]);
-                  return (
-                    <div key={key} className="border border-slate-100 rounded-lg p-3">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">{label}</span>
-                        <button type="button"
-                          onClick={() => write([...rows, { section: key, item_name: "", brand: "", quantity: "", position: rows.length }])}
-                          className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800">+ Add</button>
+                <div className="border border-slate-100 rounded-lg p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                      Specifications
+                    </span>
+                    <button type="button"
+                      onClick={() => setSpec([...spec, { item_name: "", brand: "", quantity: "", position: spec.length }])}
+                      className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800">+ Add</button>
+                  </div>
+                  {spec.length === 0 ? (
+                    <p className="text-[11px] text-slate-400">Nothing specified yet.</p>
+                  ) : spec.map((r, i) => {
+                    const set = (patch: Partial<SpecLine>) =>
+                      setSpec(spec.map((x, n) => (n === i ? { ...x, ...patch } : x)));
+                    return (
+                      <div key={i} className="grid gap-2 mb-2 items-center sm:grid-cols-[1fr_1fr_130px_28px]">
+                        <input value={r.item_name} onChange={e => set({ item_name: e.target.value })}
+                          placeholder="Item" className={inputCls} />
+                        <input value={r.brand} onChange={e => set({ brand: e.target.value })}
+                          placeholder="Brand" className={inputCls} />
+                        <input value={r.quantity} onChange={e => set({ quantity: e.target.value })}
+                          placeholder="Qty" className={inputCls} />
+                        <button type="button" onClick={() => setSpec(spec.filter((_, n) => n !== i))}
+                          className="justify-self-center text-slate-300 hover:text-rose-500">
+                          <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2"
+                            strokeLinecap="round" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" /></svg>
+                        </button>
                       </div>
-                      {rows.length === 0 ? (
-                        <p className="text-[11px] text-slate-400">Nothing in this section.</p>
-                      ) : rows.map((r, i) => {
-                        const set = (patch: Partial<SpecLine>) =>
-                          write(rows.map((x, n) => (n === i ? { ...x, ...patch } : x)));
-                        return (
-                          <div key={i} className={`grid gap-2 mb-2 items-center ${
-                            named ? "grid-cols-[1fr_28px]" : "sm:grid-cols-[1fr_1fr_130px_28px]"}`}>
-                            <input value={r.item_name} onChange={e => set({ item_name: e.target.value })}
-                              placeholder={named ? label : "Item"} className={inputCls} />
-                            {!named && (
-                              <>
-                                <input value={r.brand} onChange={e => set({ brand: e.target.value })}
-                                  placeholder="Brand" className={inputCls} />
-                                <input value={r.quantity} onChange={e => set({ quantity: e.target.value })}
-                                  placeholder="Qty" className={inputCls} />
-                              </>
-                            )}
-                            <button type="button" onClick={() => write(rows.filter((_, n) => n !== i))}
-                              className="justify-self-center text-slate-300 hover:text-rose-500">
-                              <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2"
-                                strokeLinecap="round" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" /></svg>
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
 
-                {/* At the foot of the items, not above them: after working down
-                    a long balance-of-system, the way out should be where the
-                    hand already is rather than back at the top of the card. */}
                 <div className="flex justify-end pt-1">
                   <button type="button" onClick={() => setSpecOpen(false)}
                     className="px-5 py-2 rounded-xl bg-slate-800 text-white text-xs font-bold hover:bg-slate-900 transition">

@@ -19,23 +19,10 @@ const STATUS: Record<string, { label: string; cls: string }> = {
   converted: { label: "Converted", cls: "bg-violet-50 text-violet-600" },
 };
 
-// The specification's four sections, in the order the sheet reads. Mirrors the
-// server's SectionedSpecLine.SECTION_ORDER.
-// Only the balance of system is a table; the other three are simply named.
-// Mirrors SectionedSpecLine.NAMED_ONLY on the server.
-const SPEC_NAMED_ONLY = new Set(["panels", "inverter", "structure"]);
-
 // The same system, built with Indian-made modules or imported ones — a
 // different price, not a different product. The invoice records which it is
 // written for, so "why is this one ₹20,000 more" has an answer on the paper.
 const PRICE_VARIANTS: [string, string][] = [["dcr", "DCR"], ["non_dcr", "Non-DCR"]];
-
-const SPEC_SECTIONS: [string, string][] = [
-  ["panels", "Panels"],
-  ["inverter", "Inverter"],
-  ["structure", "Structure"],
-  ["bos", "Balance of System"],
-];
 
 export default function QuotesPage({ params: paramsPromise }: { params: Promise<{ domain: string }> }) {
   const params = React.use(paramsPromise);
@@ -365,46 +352,37 @@ export default function QuotesPage({ params: paramsPromise }: { params: Promise<
                         Save first — the project&rsquo;s items are copied across, then they can be edited here.
                       </p>
                     )}
-                    {SPEC_SECTIONS.map(([key, label]) => {
-                      const rows = specLines.filter(l => l.section === key);
-                      if (!rows.length) return null;
-                      return (
-                        <div key={key}>
-                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">{label}</p>
-                          <div className="space-y-1.5">
-                            {rows.map((row) => {
-                              const idx = specLines.indexOf(row);
-                              const set = (patch: any) => {
-                                setSpecTouched(true);
-                                setSpecLines(specLines.map((l, n) => (n === idx ? { ...l, ...patch } : l)));
-                              };
-                              const namedOnly = SPEC_NAMED_ONLY.has(key);
-                              return (
-                                <div key={idx} className={`grid gap-2 items-center ${
-                                  namedOnly ? "grid-cols-[1fr_28px]" : "sm:grid-cols-[1fr_1fr_140px_28px]"}`}>
-                                  <input value={row.item_name} onChange={e => set({ item_name: e.target.value })}
-                                    placeholder={namedOnly ? label : "Item"} className={field} />
-                                  {!namedOnly && (
-                                    <>
-                                      <input value={row.brand || ""} onChange={e => set({ brand: e.target.value })}
-                                        placeholder="Brand" className={field} />
-                                      <input value={row.quantity || ""} onChange={e => set({ quantity: e.target.value })}
-                                        placeholder="Qty" className={field} />
-                                    </>
-                                  )}
-                                  <button type="button" title="Remove this line"
-                                    onClick={() => { setSpecTouched(true); setSpecLines(specLines.filter((_, n) => n !== idx)); }}
-                                    className="justify-self-center text-slate-300 hover:text-rose-500 transition">
-                                    <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2"
-                                      strokeLinecap="round" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" /></svg>
-                                  </button>
-                                </div>
-                              );
-                            })}
-                          </div>
+                    {specLines.length > 0 && (
+                      <div>
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                          Specifications
+                        </p>
+                        <div className="space-y-1.5">
+                          {specLines.map((row, idx) => {
+                            const set = (patch: any) => {
+                              setSpecTouched(true);
+                              setSpecLines(specLines.map((l, n) => (n === idx ? { ...l, ...patch } : l)));
+                            };
+                            return (
+                              <div key={idx} className="grid gap-2 items-center sm:grid-cols-[1fr_1fr_140px_28px]">
+                                <input value={row.item_name} onChange={e => set({ item_name: e.target.value })}
+                                  placeholder="Item" className={field} />
+                                <input value={row.brand || ""} onChange={e => set({ brand: e.target.value })}
+                                  placeholder="Brand" className={field} />
+                                <input value={row.quantity || ""} onChange={e => set({ quantity: e.target.value })}
+                                  placeholder="Qty" className={field} />
+                                <button type="button" title="Remove this line"
+                                  onClick={() => { setSpecTouched(true); setSpecLines(specLines.filter((_, n) => n !== idx)); }}
+                                  className="justify-self-center text-slate-300 hover:text-rose-500 transition">
+                                  <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2"
+                                    strokeLinecap="round" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" /></svg>
+                                </button>
+                              </div>
+                            );
+                          })}
                         </div>
-                      );
-                    })}
+                      </div>
+                    )}
                     {specLines.length > 0 && (
                       <p className="text-[11px] text-slate-400">
                         Edits stay on this invoice. The project itself is unchanged.
