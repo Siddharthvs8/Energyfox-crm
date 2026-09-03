@@ -13,7 +13,9 @@ from .document_kinds import SHARED_KIND_LABELS, kind_for
 # Module-level: the nine module payloads all report this one rule, and
 # access.py imports nothing, so there is no cycle to dodge.
 from .access import can_cleanup_deleted_lead
-from datetime import timedelta
+# datetime.timezone.utc, not django.utils.timezone.utc — that alias was removed in
+# Django 5.0, and reading it raises AttributeError at runtime, not on import.
+from datetime import datetime, timedelta, timezone as dt_timezone
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
@@ -123,7 +125,7 @@ def _least_recently_assigned_doc(candidates):
     person who hasn't received a pushed lead for the longest goes next.
     """
     best, best_time = None, None
-    floor = timezone.datetime.min.replace(tzinfo=timezone.utc)
+    floor = datetime.min.replace(tzinfo=dt_timezone.utc)
     for u in candidates:
         last = (Lead.objects.filter(documentation_staff=u)
                 .order_by('-pushed_to_documentation_at').first())
@@ -169,7 +171,7 @@ def auto_assign_documentation(lead):
 def _least_recently_assigned_accounts(candidates):
     """Round-robin pick among accounts staff (least recently assigned goes next)."""
     best, best_time = None, None
-    floor = timezone.datetime.min.replace(tzinfo=timezone.utc)
+    floor = datetime.min.replace(tzinfo=dt_timezone.utc)
     for u in candidates:
         last = (Lead.objects.filter(accounts_staff=u)
                 .order_by('-pushed_to_accounts_at').first())
@@ -200,7 +202,7 @@ def auto_assign_accounts(lead):
 def _least_recently_assigned_purchase(candidates):
     """Round-robin pick among purchase staff (least recently assigned goes next)."""
     best, best_time = None, None
-    floor = timezone.datetime.min.replace(tzinfo=timezone.utc)
+    floor = datetime.min.replace(tzinfo=dt_timezone.utc)
     for u in candidates:
         last = (Lead.objects.filter(purchase_staff=u)
                 .order_by('-pushed_to_purchase_at').first())
@@ -231,7 +233,7 @@ def auto_assign_purchase(lead):
 def _least_recently_assigned_project(candidates):
     """Round-robin pick among project managers (least recently assigned goes next)."""
     best, best_time = None, None
-    floor = timezone.datetime.min.replace(tzinfo=timezone.utc)
+    floor = datetime.min.replace(tzinfo=dt_timezone.utc)
     for u in candidates:
         last = (Lead.objects.filter(project_manager=u)
                 .order_by('-pushed_to_project_at').first())
@@ -1670,6 +1672,21 @@ class LeadViewSet(viewsets.ModelViewSet):
         # procurement starts on a part payment; the balance is chased in parallel
         # rather than holding the order up.
         if (pv.amount_received or 0) > 0:
+            # The customer has paid against what they accepted, so their
+            # accepted quotations stop being offers and become orders. Imported
+            # here rather than at module level: inventory already imports from
+            # leads, and a top-level import both ways will not load.
+            #
+            # Before the purchase hand-off, not after: whether the order was
+            # agreed is a fact about the customer's payment, and it should not
+            # be lost because procurement had nobody to assign the work to.
+            from inventory.models import Quotation
+            for quotation in Quotation.convert_accepted_for(lead):
+                ActivityLog.objects.create(
+                    activity_type='note_added', lead=lead,
+                    actor=request.user if request.user.is_authenticated else None,
+                    description=f'{quotation.number} became an order on payment.',
+                    extra={'auto_generated': True, 'quotation': quotation.number})
             self._push_to_purchase(lead, request)
         else:
             fire_automation('payment_partially_paid', lead, {'balance_amount': float(pv.balance_amount)})

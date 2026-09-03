@@ -26,6 +26,9 @@ export type Quotation = {
   extras_total: string; subtotal: string; net_amount: string;
   base_amount: string; tax_amount: string; total: string; grand_total: string; round_off: string;
   converted_quote: number | null; pdf: string | null; notes: string;
+  // Set once the customer has paid against it: from then on the document is a
+  // record of what was agreed, and the module closes it to editing.
+  order_converted_at: string | null; is_order: boolean;
 };
 
 export const VARIANTS: [string, string][] = [["dcr", "DCR"], ["non_dcr", "Non-DCR"]];

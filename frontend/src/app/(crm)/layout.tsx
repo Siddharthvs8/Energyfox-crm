@@ -878,7 +878,10 @@ export default function DashboardLayout({
     // product catalogue behind it still exists and still prices the proforma.
     { href: `/projects`,        label: "Project",         Icon: Nav.Products },
     { href: `/quotations`,      label: "Quotation",       Icon: Nav.Quote },
-    { href: `/sales-orders`,    label: "Sales / Dispatches", Icon: Nav.StockOut },
+    // Where a quotation goes once the customer's money arrives. Its own module
+    // rather than a filter, because an order is a different thing from an offer
+    // and nobody should have to remember to switch a dropdown to find one.
+    { href: `/converted-orders`, label: "Converted Orders", Icon: Nav.StockOut },
   ];
 
   // The wholesale side's Inventory module is the stock register — that is the

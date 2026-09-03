@@ -28,6 +28,11 @@ const STATUS_STYLE: Record<string, string> = {
   converted: "bg-indigo-50 text-indigo-700",
 };
 
+/* 'converted' on the offer side means a proforma invoice was raised from it —
+   not that it became an order. Both used to print CONVERTED, which left a BDE
+   unable to tell an invoiced offer from a paid order on the same list. */
+const STATUS_LABEL: Record<string, string> = { converted: "Invoiced" };
+
 export default function LeadQuotationsPanel({ leadId, customerEmail }: {
   leadId: number | string;
   customerEmail?: string | null;
@@ -48,7 +53,13 @@ export default function LeadQuotationsPanel({ leadId, customerEmail }: {
 
   const load = useCallback(async () => {
     try {
-      const r = await fetch(`${api}/api/quotations/?lead=${leadId}`, { headers: headers() });
+      // scope=all: converted orders are listed here as well as open offers.
+      // The Inventory module splits the two across two screens, but a BDE or a
+      // telecaller cannot open Inventory at all — this panel is the only place
+      // they see the customer's paperwork, and an order that disappeared from
+      // it would look like it had been lost.
+      const r = await fetch(`${api}/api/quotations/?lead=${leadId}&scope=all`,
+                            { headers: headers() });
       if (r.ok) {
         const d = await r.json();
         setRows(Array.isArray(d) ? d : (d.results || []));
@@ -119,12 +130,24 @@ export default function LeadQuotationsPanel({ leadId, customerEmail }: {
                   {Number(q.discount_amount) > 0 && ` · ₹${money(q.discount_amount)} off`}
                 </p>
               </div>
+              {/* Once it is an order, that is the fact worth showing: `status`
+                  still carries where the offer got to, which by then is
+                  history. */}
               <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide ${
-                STATUS_STYLE[q.status] || "bg-slate-100 text-slate-600"}`}>{q.status}</span>
+                q.is_order ? "bg-indigo-50 text-indigo-700"
+                           : STATUS_STYLE[q.status] || "bg-slate-100 text-slate-600"}`}>
+                {q.is_order ? "Converted" : (STATUS_LABEL[q.status] || q.status)}
+              </span>
               <span className="text-sm font-bold text-slate-900 ml-auto">₹{money(q.grand_total)}</span>
               <div className="flex items-center gap-3 text-xs font-bold">
-                <button onClick={() => { setEditing(q); setOpen(true); }}
-                  className="text-indigo-600 hover:text-indigo-800">Edit</button>
+                {/* An order is the record of what was agreed and paid against,
+                    so it is read-only from here as it is in Inventory. The
+                    server refuses the edit too — this only stops the offer of
+                    one. */}
+                {!q.is_order && (
+                  <button onClick={() => { setEditing(q); setOpen(true); }}
+                    className="text-indigo-600 hover:text-indigo-800">Edit</button>
+                )}
                 <button onClick={() => download(q)} disabled={busy === q.id}
                   className="text-slate-500 hover:text-slate-800 disabled:opacity-40">Download</button>
                 <button onClick={() => send(q)} disabled={busy === q.id}

@@ -292,6 +292,7 @@ class QuotationSerializer(serializers.ModelSerializer):
     extras_total = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     subtotal = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     net_amount = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    is_order = serializers.BooleanField(read_only=True)
     subsidy_shown = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     net_effective = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     base_amount = serializers.SerializerMethodField()
@@ -311,9 +312,11 @@ class QuotationSerializer(serializers.ModelSerializer):
             'extras_total', 'subtotal', 'net_amount', 'subsidy_shown', 'net_effective',
             'base_amount', 'tax_amount',
             'total', 'grand_total', 'round_off',
-            'converted_quote', 'pdf', 'notes', 'created_by', 'created_at',
+            'converted_quote', 'order_converted_at', 'is_order',
+            'pdf', 'notes', 'created_by', 'created_at',
         ]
-        read_only_fields = ['number', 'created_by', 'converted_quote', 'pdf']
+        read_only_fields = ['number', 'created_by', 'converted_quote', 'pdf',
+                            'order_converted_at']
 
     def get_lead_name(self, obj):
         if obj.lead:
@@ -390,6 +393,13 @@ class QuotationSerializer(serializers.ModelSerializer):
         return quotation
 
     def update(self, instance, validated_data):
+        if instance.is_order:
+            # A converted order is the record of what the customer paid against.
+            # Editing it would change the agreement after the money arrived,
+            # and the document has already been sent.
+            raise serializers.ValidationError(
+                {'detail': f'{instance.number} became an order when payment was '
+                           f'received and can no longer be edited.'})
         spec_lines = validated_data.pop('spec_lines', None)
         costs = validated_data.pop('costs', None)
         # Only a *change* re-fills from the project. Re-saving with the same

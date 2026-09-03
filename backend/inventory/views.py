@@ -220,8 +220,22 @@ class QuotationViewSet(viewsets.ModelViewSet):
               .select_related('lead', 'project')
               .prefetch_related('spec_lines', 'costs')
               .order_by('-created_at'))
+        # Offers and orders are two lists, not one filtered view somebody has to
+        # remember to set: once money arrives a quotation leaves the quotation
+        # module entirely and lives in Converted Orders. Asking for both is
+        # possible but never the default.
+        # Only the list is split. get_queryset also serves retrieve, delete and
+        # the actions, and narrowing those made a converted order 404 — it would
+        # have been unopenable from the very module built to hold it.
+        if self.action == 'list':
+            scope = self.request.query_params.get('scope', 'open')
+            if scope == 'orders':
+                qs = qs.filter(order_converted_at__isnull=False)
+            elif scope != 'all':
+                qs = qs.filter(order_converted_at__isnull=True)
+
         status_filter = self.request.query_params.get('status')
-        if status_filter:
+        if status_filter and status_filter != 'all':
             qs = qs.filter(status=status_filter)
         # The panel on a lead's own page asks for just that lead's quotations.
         lead = self.request.query_params.get('lead')
@@ -380,6 +394,16 @@ class QuotationViewSet(viewsets.ModelViewSet):
             q.status = 'sent'
             q.save(update_fields=['status', 'updated_at'])
         return Response(payload, status=code)
+
+    def destroy(self, request, *args, **kwargs):
+        quotation = self.get_object()
+        if quotation.is_order:
+            # The record of what the customer paid against.
+            return Response(
+                {'error': f'{quotation.number} became an order when payment was '
+                          f'received and cannot be deleted.'},
+                status=status.HTTP_400_BAD_REQUEST)
+        return super().destroy(request, *args, **kwargs)
 
     @action(detail=True, methods=['post'])
     def convert(self, request, pk=None):

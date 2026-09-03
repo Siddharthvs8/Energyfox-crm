@@ -1,5 +1,6 @@
 from decimal import Decimal, ROUND_HALF_UP
-from django.db import models
+from django.db import models, transaction
+from django.utils import timezone
 
 
 class Vendor(models.Model):
@@ -619,6 +620,75 @@ class QuoteSpecLine(SpecLine):
 
 
 # ─── Quotations (B2C) ───────────────────────────────────────────────────────
+class DocumentCounter(models.Model):
+    """The highest number ever issued in one document series.
+
+    A document number is a promise: EF/26-27/QT002 names one quotation, for
+    good. Deriving the next number from the rows that happen to exist breaks
+    that promise — delete the latest quotation and its number falls free for
+    the next one, even though the deleted document may be sitting in a
+    customer's inbox, quoted in an email, or written on a cheque. Probing for
+    gaps does not save it: the highest number is not a gap, it is the end of
+    the list, and the probe walks straight back onto it.
+
+    So issuance is recorded rather than inferred. This number only ever climbs,
+    and deleting a document does not touch it.
+
+    One row per series, where the series is the whole prefix including the
+    financial year — 'EF/26-27/QT'. That is what makes each year start at 001
+    again on 1 April without anything having to reset it: come April the prefix
+    is different, so it is a different series with its own count.
+    """
+    series = models.CharField(max_length=64, unique=True)
+    last_number = models.PositiveIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['series']
+
+    def __str__(self):
+        return f'{self.series} → {self.last_number}'
+
+    @classmethod
+    def next_for(cls, series, seed=0):
+        """Reserve the next number in `series` and return it.
+
+        `seed` is the highest number already issued before this counter
+        existed, and is read only when the row is first created — so a series
+        that was being counted the old way carries on from where it had got to
+        instead of re-issuing numbers that are already on documents. Pass a
+        callable to skip that lookup once the counter is in place.
+
+        The row is locked for the duration, so two people saving a quotation in
+        the same moment cannot come away with the same number.
+        """
+        with transaction.atomic():
+            row = cls.objects.select_for_update().filter(series=series).first()
+            if row is None:
+                start = seed() if callable(seed) else seed
+                cls.objects.get_or_create(series=series,
+                                          defaults={'last_number': start})
+                row = cls.objects.select_for_update().get(series=series)
+            row.last_number += 1
+            row.save(update_fields=['last_number', 'updated_at'])
+            return row.last_number
+
+
+def highest_issued(model, prefix):
+    """The largest sequence number already sitting on a document in a series.
+
+    Only used to seed a counter that does not exist yet — see
+    DocumentCounter.next_for.
+    """
+    highest = 0
+    for number in (model.objects.filter(number__startswith=prefix)
+                   .values_list('number', flat=True)):
+        tail = number[len(prefix):]
+        if tail.isdigit():
+            highest = max(highest, int(tail))
+    return highest
+
+
 def next_quotation_number(on=None):
     """The next number in the EF/<FY>/QT<seq> series, e.g. EF/26-27/QT009.
 
@@ -627,17 +697,14 @@ def next_quotation_number(on=None):
     at once, and giving them the same number would make them impossible to tell
     apart in a conversation.
 
-    Numbers are probed rather than counted, for the same reason as the proforma
-    series: deleting one mid-year would otherwise hand its successor's number
-    out twice.
+    Issued from a counter that only climbs, so a number is never handed out
+    twice — not even after the document holding it is deleted. The financial
+    year is part of the series, so the sequence begins again at 001 on 1 April.
     """
     prefix = f"EF/{financial_year(on)}/QT"
-    taken = set(Quotation.objects.filter(number__startswith=prefix)
-                .values_list('number', flat=True))
-    n = len(taken) + 1
-    while f"{prefix}{n:03d}" in taken:
-        n += 1
-    return f"{prefix}{n:03d}"
+    seq = DocumentCounter.next_for(
+        prefix, seed=lambda: highest_issued(Quotation, prefix))
+    return f"{prefix}{seq:03d}"
 
 
 class Quotation(RoundedTotalMixin, _NumberedDoc):
@@ -693,16 +760,45 @@ class Quotation(RoundedTotalMixin, _NumberedDoc):
     # The proforma this became, if it was accepted.
     converted_quote = models.ForeignKey('Quote', on_delete=models.SET_NULL, null=True,
                                         blank=True, related_name='source_quotation')
+
+    # When the customer's money arrived and this stopped being an offer.
+    #
+    # Separate from `status`, which is where the offer got to with the customer;
+    # this is whether it became an order. A quotation can be accepted and still
+    # unpaid for weeks, and the two questions have different answers in that
+    # gap. Once set, the document is a record of what was agreed and is closed
+    # to editing — see the serializer.
+    order_converted_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    # When the customer said yes — remembered, because `status` does not keep
+    # it. Raising the proforma invoice overwrites `status` with 'converted', so
+    # by the time the money arrives the field no longer says the offer was ever
+    # accepted, and that is exactly the path most orders take: accept, invoice,
+    # pay. Stamped once and never cleared.
+    accepted_at = models.DateTimeField(null=True, blank=True, db_index=True)
     # The rendered document, kept so email can attach it, WhatsApp can link to
     # it, and the lead's own page can offer it for download later. Same
     # arrangement as the proforma invoice — see deliver_document.
     pdf = models.FileField(upload_to='quotations/', null=True, blank=True)
 
     class Meta(_NumberedDoc.Meta):
-        pass
+        constraints = [
+            # The number is the document's identity, so the database refuses a
+            # second document holding it — whatever route the write came in by.
+            # Blank is exempt: a new row is saved once to get a primary key and
+            # numbered immediately after, and that gap is not a collision.
+            models.UniqueConstraint(
+                fields=['number'], condition=~models.Q(number=''),
+                name='unique_quotation_number'),
+        ]
 
     def save(self, *args, **kwargs):
         creating = self._state.adding
+        if self.status == 'accepted' and self.accepted_at is None:
+            self.accepted_at = timezone.now()
+            # A caller saving only `status` would otherwise drop the stamp.
+            fields = kwargs.get('update_fields')
+            if fields is not None:
+                kwargs['update_fields'] = list(fields) + ['accepted_at']
         # Skip _NumberedDoc's QT-0001 numbering; this document has its own series.
         models.Model.save(self, *args, **kwargs)
         if creating and not self.number:
@@ -742,6 +838,38 @@ class Quotation(RoundedTotalMixin, _NumberedDoc):
     @property
     def total(self):
         return self.figures['total']
+
+    @property
+    def is_order(self):
+        return self.order_converted_at is not None
+
+    @classmethod
+    def convert_accepted_for(cls, lead, actor=None):
+        """Money has come in for this customer: their accepted offers are orders.
+
+        Only the accepted ones. A draft or a declined quotation on the same
+        customer is not what they paid against, and sweeping it along would put
+        a document nobody agreed to into the order book.
+
+        Part payment counts. Procurement already starts on a part payment — the
+        order is real from the first rupee, and the balance is chased in
+        parallel rather than holding it up.
+        """
+        pending = cls.objects.filter(
+            lead=lead, accepted_at__isnull=False,
+            # Accepted, or accepted and since invoiced. Not one the customer
+            # later declined, and not a draft that was invoiced without ever
+            # being agreed — neither was ever said yes to.
+            status__in=('accepted', 'converted'),
+            order_converted_at__isnull=True)
+        moved = list(pending)
+        if not moved:
+            return []
+        # `status` is left alone: it says where the offer got to with the
+        # customer, and 'converted' there already means "invoiced". Whether this
+        # is an order is order_converted_at's question, and it has now answered.
+        pending.update(order_converted_at=timezone.now())
+        return moved
 
     @property
     def subsidy_shown(self):

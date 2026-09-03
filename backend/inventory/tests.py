@@ -3237,6 +3237,11 @@ class QuotationTests(TestCase):
     def get(self, url):
         return self.client.get(url, **self.auth()).json()
 
+    def rows(self, query=''):
+        """The quotation list as the module shows it."""
+        d = self.get(f'/api/quotations/{query}')
+        return d if isinstance(d, list) else d.get('results', [])
+
     def make_project(self, dcr='200000', non_dcr='180000', tax='18', inclusive=True):
         r = self.post('/api/projects/', {
             'name': '5kW On-Grid', 'capacity': '5kVA Single Phase',
@@ -3256,6 +3261,67 @@ class QuotationTests(TestCase):
         r = self.post('/api/quotations/', body)
         self.assertEqual(r.status_code, 201, r.content[:300])
         return r.json()
+
+    # ── The number is a promise ──
+    def test_a_deleted_number_is_never_handed_out_again(self):
+        """Delete the latest quotation and the next one must not inherit it.
+
+        The number may already be in a customer's inbox, quoted in an email, or
+        written on a cheque; two documents answering to it is the one outcome
+        the series exists to prevent.
+        """
+        project = self.make_project()['id']
+        first = self.make_quotation(project)
+        self.client.delete(f"/api/quotations/{first['id']}/", **self.auth())
+        second = self.make_quotation(project)
+        self.assertNotEqual(second['number'], first['number'])
+
+    def test_deleting_several_in_a_row_still_moves_forward(self):
+        project = self.make_project()['id']
+        made = [self.make_quotation(project) for _ in range(3)]
+        for q in made:
+            self.client.delete(f"/api/quotations/{q['id']}/", **self.auth())
+        nxt = self.make_quotation(project)
+        self.assertNotIn(nxt['number'], {q['number'] for q in made})
+
+    def test_numbers_run_in_sequence_while_nothing_is_deleted(self):
+        project = self.make_project()['id']
+        numbers = [self.make_quotation(project)['number'] for _ in range(3)]
+        self.assertEqual(numbers, sorted(numbers))
+        self.assertEqual(len(set(numbers)), 3)
+
+    def test_a_new_financial_year_starts_again_at_001(self):
+        """April is the boundary: the year is part of the series, so a fresh one
+        counts from its own beginning without disturbing the old."""
+        project = self.make_project()['id']
+        march = self.make_quotation(project, quotation_date='2027-03-31')
+        april = self.make_quotation(project, quotation_date='2027-04-01')
+        self.assertIn('/26-27/', march['number'])
+        self.assertTrue(april['number'].endswith('QT001'), april['number'])
+        self.assertIn('/27-28/', april['number'])
+
+    def test_a_new_year_is_not_disturbed_by_deletions_in_the_old_one(self):
+        project = self.make_project()['id']
+        old = self.make_quotation(project, quotation_date='2027-03-31')
+        self.client.delete(f"/api/quotations/{old['id']}/", **self.auth())
+        new_year = self.make_quotation(project, quotation_date='2027-04-01')
+        self.assertTrue(new_year['number'].endswith('QT001'), new_year['number'])
+
+    def test_the_database_itself_refuses_a_duplicate_number(self):
+        """Belt and braces: whatever route a write comes in by."""
+        from django.db import IntegrityError, transaction
+        from inventory.models import Quotation
+        q = self.make_quotation(self.make_project()['id'])
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Quotation.objects.create(number=q['number'], quotation_date='2026-09-01')
+
+    def test_the_counter_starts_from_numbers_already_issued(self):
+        """A series counted the old way carries on rather than starting over."""
+        from inventory.models import DocumentCounter, next_quotation_number, Quotation
+        Quotation.objects.create(number='EF/30-31/QT007', quotation_date='2030-09-01')
+        DocumentCounter.objects.filter(series='EF/30-31/QT').delete()
+        self.assertEqual(next_quotation_number(date(2030, 9, 1)), 'EF/30-31/QT008')
 
     # ── Built from a project ──
     def test_a_quotation_takes_its_specification_and_price_from_the_project(self):
@@ -3559,6 +3625,156 @@ class QuotationTests(TestCase):
         r = self.client.get(f"/api/quotations/{q['id']}/proposal/", **self.auth())
         self.assertEqual(r.status_code, 400)
         self.assertIn('template', r.json()['error'].lower())
+
+    # ── Payment turns an accepted offer into an order ──
+    _paid = 0
+
+    def paid_lead(self, amount='50000'):
+        """A customer sitting in accounts with money against them.
+
+        `pushed_to_accounts` and a payment mode are what the accounts module
+        itself requires before anyone may complete a verification — the test
+        goes through that gate rather than around it, because the conversion
+        hangs off the real completion.
+        """
+        from leads.models import Lead, PaymentVerification
+        QuotationTests._paid += 1
+        lead = Lead.objects.create(
+            first_name='Paid', last_name=f'Customer {QuotationTests._paid}',
+            phone=f'989560{QuotationTests._paid:04d}', value=200000,
+            pushed_to_accounts=True)
+        PaymentVerification.objects.create(lead=lead, amount_received=amount,
+                                           payment_mode='cash')
+        return lead
+
+    def complete_payment(self, lead, user=None):
+        return self.client.post(
+            f'/api/leads/{lead.id}/complete-payment-verification/',
+            data={}, content_type='application/json', **self.auth(user))
+
+    def quotation_for(self, lead, status='accepted'):
+        q = self.make_quotation(self.make_project()['id'], lead=lead.id)
+        self.patch(f"/api/quotations/{q['id']}/", {'status': status})
+        return q
+
+    def test_payment_turns_an_accepted_quotation_into_an_order(self):
+        lead = self.paid_lead()
+        q = self.quotation_for(lead)
+        r = self.complete_payment(lead)
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        back = self.get(f"/api/quotations/{q['id']}/")
+        self.assertTrue(back['is_order'])
+        self.assertIsNotNone(back['order_converted_at'])
+
+    def test_a_part_payment_is_enough(self):
+        """Procurement already starts on a part payment; the order is real from
+        the first rupee."""
+        lead = self.paid_lead(amount='1')
+        q = self.quotation_for(lead)
+        self.complete_payment(lead)
+        self.assertTrue(self.get(f"/api/quotations/{q['id']}/")['is_order'])
+
+    def test_an_invoiced_quotation_still_becomes_an_order(self):
+        """The ordinary path: accept it, raise the proforma, then get paid.
+
+        Raising the invoice overwrites `status` with 'converted', so a check for
+        status == 'accepted' at payment time finds nothing and the order is
+        never recorded — on the route most orders actually take.
+        """
+        lead = self.paid_lead()
+        q = self.quotation_for(lead)
+        self.post(f"/api/quotations/{q['id']}/convert/", {})
+        self.assertEqual(self.get(f"/api/quotations/{q['id']}/")['status'], 'converted')
+        self.complete_payment(lead)
+        self.assertTrue(self.get(f"/api/quotations/{q['id']}/")['is_order'])
+
+    def test_an_invoiced_draft_is_not_an_order(self):
+        """Invoiced without ever being agreed to is not the same as accepted."""
+        lead = self.paid_lead()
+        q = self.quotation_for(lead, status='draft')
+        self.post(f"/api/quotations/{q['id']}/convert/", {})
+        self.complete_payment(lead)
+        self.assertFalse(self.get(f"/api/quotations/{q['id']}/")['is_order'])
+
+    def test_accepting_then_declining_does_not_make_an_order(self):
+        """Acceptance is remembered, but the customer's last word still rules."""
+        lead = self.paid_lead()
+        q = self.quotation_for(lead, status='accepted')
+        self.patch(f"/api/quotations/{q['id']}/", {'status': 'declined'})
+        self.complete_payment(lead)
+        self.assertFalse(self.get(f"/api/quotations/{q['id']}/")['is_order'])
+
+    def test_only_accepted_quotations_move(self):
+        """A draft on the same customer is not what they paid against."""
+        lead = self.paid_lead()
+        draft = self.quotation_for(lead, status='draft')
+        declined = self.quotation_for(lead, status='declined')
+        accepted = self.quotation_for(lead, status='accepted')
+        self.complete_payment(lead)
+        self.assertFalse(self.get(f"/api/quotations/{draft['id']}/")['is_order'])
+        self.assertFalse(self.get(f"/api/quotations/{declined['id']}/")['is_order'])
+        self.assertTrue(self.get(f"/api/quotations/{accepted['id']}/")['is_order'])
+
+    def test_an_order_leaves_the_quotation_list(self):
+        lead = self.paid_lead()
+        q = self.quotation_for(lead)
+        self.complete_payment(lead)
+        numbers = [r['number'] for r in self.rows()]
+        self.assertNotIn(q['number'], numbers)
+
+    def test_a_lead_still_sees_its_order_on_its_own_page(self):
+        """The lead panel is the only view a BDE or telecaller has.
+
+        Inventory splits offers from orders across two screens, but neither role
+        can open Inventory — if the lead's own panel inherited that split, a
+        converted order would simply vanish from the only place they look.
+        """
+        lead = self.paid_lead()
+        q = self.quotation_for(lead)
+        self.complete_payment(lead)
+        panel = [r['number'] for r in self.rows(f"?lead={lead.id}&scope=all")]
+        self.assertIn(q['number'], panel)
+
+    def test_an_order_appears_in_converted_orders(self):
+        lead = self.paid_lead()
+        q = self.quotation_for(lead)
+        self.complete_payment(lead)
+        numbers = [r['number'] for r in self.rows('?scope=orders')]
+        self.assertIn(q['number'], numbers)
+
+    def test_an_order_cannot_be_edited(self):
+        """It is the record of what the customer paid against."""
+        lead = self.paid_lead()
+        q = self.quotation_for(lead)
+        self.complete_payment(lead)
+        r = self.patch(f"/api/quotations/{q['id']}/", {'package_amount': '1'})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('no longer be edited', str(r.json()))
+
+    def test_an_order_cannot_be_deleted(self):
+        lead = self.paid_lead()
+        q = self.quotation_for(lead)
+        self.complete_payment(lead)
+        r = self.client.delete(f"/api/quotations/{q['id']}/", **self.auth())
+        self.assertEqual(r.status_code, 400)
+
+    def test_paying_twice_does_not_reconvert(self):
+        """The conversion date is when it became an order, not when it was last
+        touched by a payment."""
+        lead = self.paid_lead()
+        q = self.quotation_for(lead)
+        self.complete_payment(lead)
+        first = self.get(f"/api/quotations/{q['id']}/")['order_converted_at']
+        self.complete_payment(lead)          # refused; already complete
+        self.assertEqual(self.get(f"/api/quotations/{q['id']}/")['order_converted_at'], first)
+
+    def test_the_quotation_list_can_still_filter_by_status(self):
+        lead = self.paid_lead()
+        self.quotation_for(lead, status='draft')
+        self.quotation_for(lead, status='sent')
+        drafts = self.rows('?status=draft')
+        self.assertTrue(drafts)
+        self.assertTrue(all(r['status'] == 'draft' for r in drafts))
 
     # ── Becoming an invoice ──
     def test_it_converts_to_a_proforma_for_the_agreed_figure(self):

@@ -7,7 +7,7 @@ AI Manager Intelligence Engine
 """
 
 import calendar
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone as dt_timezone
 from decimal import Decimal, ROUND_HALF_UP
 from django.utils import timezone
 
@@ -72,7 +72,7 @@ def _round_robin_assign(agents):
     last_assigned = []
     for agent in agent_list:
         last_lead = Lead.objects.filter(assigned_to=agent).order_by('-created_at').first()
-        last_time = last_lead.created_at if last_lead else timezone.datetime.min.replace(tzinfo=timezone.utc)
+        last_time = last_lead.created_at if last_lead else datetime.min.replace(tzinfo=dt_timezone.utc)
         last_assigned.append((agent, last_time))
 
     # Sort by last assignment time (ascending) — agent who hasn't received one recently goes first

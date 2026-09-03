@@ -26,11 +26,20 @@ const STATUS_STYLE: Record<string, string> = {
   converted: "bg-indigo-50 text-indigo-700",
 };
 
+/* 'converted' on the offer side means a proforma invoice was raised from it —
+   not that it became an order. Both used to print CONVERTED, which left a BDE
+   unable to tell an invoiced offer from a paid order on the same list. */
+const STATUS_LABEL: Record<string, string> = { converted: "Invoiced" };
+
 const inputCls =
   "w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 " +
   "placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition";
 
-export default function QuotationsPage() {
+/** Quotation and Converted Orders are the same list either side of payment, so
+ *  they are one page told which side it is showing. Two copies would drift the
+ *  moment either grew a column. */
+export default function QuotationsPage({ scope = "open" }: { scope?: "open" | "orders" }) {
+  const isOrders = scope === "orders";
   const api = getApiBase(APP_SLUG);
   const headers = useCallback(() => ({
     "Content-Type": "application/json",
@@ -44,17 +53,20 @@ export default function QuotationsPage() {
   const [preview, setPreview] = useState<Quotation | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
 
   const load = useCallback(async () => {
     try {
-      const r = await fetch(`${api}/api/quotations/`, { headers: headers() });
+      const query = new URLSearchParams({ scope });
+      if (statusFilter !== "all") query.set("status", statusFilter);
+      const r = await fetch(`${api}/api/quotations/?${query}`, { headers: headers() });
       if (r.ok) {
         const d = await r.json();
         setRows(Array.isArray(d) ? d : (d.results || []));
       }
     } catch { /* an empty board rather than a broken one */ }
     finally { setLoading(false); }
-  }, [api, headers]);
+  }, [api, headers, scope, statusFilter]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -92,20 +104,6 @@ export default function QuotationsPage() {
     } finally { setBusy(null); }
   };
 
-  const convert = async (q: Quotation) => {
-    if (!window.confirm(`Raise a proforma invoice from ${q.number} for ₹${money(q.grand_total)}?`)) return;
-    setBusy(q.id);
-    try {
-      const r = await fetch(`${api}/api/quotations/${q.id}/convert/`, {
-        method: "POST", headers: headers(), body: "{}" });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok) { alert(d.error || "Could not convert."); return; }
-      alert(`Proforma invoice ${d.number} raised.`);
-      await load();
-    } catch { alert("Network error."); }
-    finally { setBusy(null); }
-  };
-
   const remove = async (q: Quotation) => {
     if (!window.confirm(`Delete ${q.number}? This cannot be undone.`)) return;
     const r = await fetch(`${api}/api/quotations/${q.id}/`, { method: "DELETE", headers: headers() });
@@ -122,20 +120,40 @@ export default function QuotationsPage() {
     <div className="p-6 lg:p-8 max-w-[1500px] mx-auto">
       <div className="flex flex-wrap items-start justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-2xl font-black text-slate-900">Quotation</h1>
+          <h1 className="text-2xl font-black text-slate-900">
+            {isOrders ? "Converted Orders" : "Quotation"}
+          </h1>
           <p className="text-sm text-slate-500 mt-1">
-            What the customer is offered — built from a project, then negotiated.
+            {isOrders
+              ? "Accepted quotations the customer has paid against. Kept as the record of what was agreed, so they cannot be edited."
+              : "What the customer is offered — built from a project, then negotiated."}
           </p>
         </div>
-        <button onClick={openNew}
-          className="px-5 py-3 rounded-xl bg-indigo-600 text-white text-sm font-bold hover:bg-indigo-700 transition shadow-sm">
-          + New Quotation
-        </button>
+        {!isOrders && (
+          <button onClick={openNew}
+            className="px-5 py-3 rounded-xl bg-indigo-600 text-white text-sm font-bold hover:bg-indigo-700 transition shadow-sm">
+            + New Quotation
+          </button>
+        )}
       </div>
 
-      <input value={search} onChange={e => setSearch(e.target.value)}
-        placeholder="Search by number, customer or project…"
-        className={`${inputCls} max-w-md mb-5`} />
+      <div className="flex flex-wrap gap-3 mb-5">
+        <input value={search} onChange={e => setSearch(e.target.value)}
+          placeholder="Search by number, customer or project…"
+          className={`${inputCls} flex-1 min-w-[240px] max-w-md`} />
+        {/* Only offers have a status worth filtering: an order is by definition
+            one that was accepted and paid. */}
+        {!isOrders && (
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+            className={`${inputCls} w-[180px]`}>
+            <option value="all">All statuses</option>
+            <option value="draft">Draft</option>
+            <option value="sent">Sent</option>
+            <option value="accepted">Accepted</option>
+            <option value="declined">Declined</option>
+          </select>
+        )}
+      </div>
 
       <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
         <div className="overflow-x-auto">
@@ -163,7 +181,9 @@ export default function QuotationsPage() {
                 <tr><td colSpan={6} className="py-12 text-center text-slate-400">Loading…</td></tr>
               ) : shown.length === 0 ? (
                 <tr><td colSpan={6} className="py-12 text-center text-slate-500">
-                  No quotations yet. Build one from a project.
+                  {isOrders
+                    ? "No converted orders yet. An accepted quotation lands here once the customer pays."
+                    : "No quotations yet. Build one from a project."}
                 </td></tr>
               ) : shown.map(q => (
                 <tr key={q.id} className="hover:bg-slate-50/70 transition">
@@ -190,7 +210,10 @@ export default function QuotationsPage() {
                   </td>
                   <td className="py-4 px-6 text-center">
                     <span className={`inline-block px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide ${
-                      STATUS_STYLE[q.status] || "bg-slate-100 text-slate-600"}`}>{q.status}</span>
+                      q.is_order ? "bg-indigo-50 text-indigo-700"
+                                 : STATUS_STYLE[q.status] || "bg-slate-100 text-slate-600"}`}>
+                      {q.is_order ? "Converted" : (STATUS_LABEL[q.status] || q.status)}
+                    </span>
                   </td>
                   <td className="py-4 px-6 text-right whitespace-nowrap">
                     <div className="inline-flex items-center gap-3 text-xs font-bold">
@@ -200,13 +223,13 @@ export default function QuotationsPage() {
                         className="text-slate-500 hover:text-slate-800 disabled:opacity-40">PDF</button>
                       <button onClick={() => send(q)} disabled={busy === q.id}
                         className="text-slate-500 hover:text-slate-800 disabled:opacity-40">Send</button>
-                      <button onClick={() => openEdit(q)}
-                        className="text-indigo-600 hover:text-indigo-800">Edit</button>
-                      {!q.converted_quote && (
-                        <button onClick={() => convert(q)} disabled={busy === q.id}
-                          className="text-emerald-600 hover:text-emerald-800 disabled:opacity-40">Invoice</button>
+                      {!q.is_order && (
+                        <>
+                          <button onClick={() => openEdit(q)}
+                            className="text-indigo-600 hover:text-indigo-800">Edit</button>
+                          <button onClick={() => remove(q)} className="text-rose-500 hover:text-rose-700">Delete</button>
+                        </>
                       )}
-                      <button onClick={() => remove(q)} className="text-rose-500 hover:text-rose-700">Delete</button>
                     </div>
                   </td>
                 </tr>
