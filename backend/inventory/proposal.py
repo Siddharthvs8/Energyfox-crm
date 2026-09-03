@@ -59,7 +59,11 @@ GREY = (0.9765, 0.9725, 0.9725)                # the value boxes
 CELL = (0.976, 0.973, 0.973)
 WHITE = (1, 1, 1)
 INK = (0.15, 0.16, 0.18)
-RULE = (0.78, 0.80, 0.83)
+# Black, not grey. The template draws no stroke at all — its grid comes from
+# the artwork itself — and sampling a border pixel on the original shows solid
+# black at roughly 0.6pt. A light grey rule read as a washed-out table beside
+# the header and the warranty blocks, which are all crisp.
+RULE = (0, 0, 0)
 
 # ── Where things sit, in the template's own coordinates (810 x 1012 pt) ──
 COVER_TITLE = pymupdf.Rect(90, 200, 720, 275)
@@ -86,6 +90,9 @@ COLUMN_TOLERANCE = 24
 # A vertical space larger than this means the table has ended and something
 # else — the Warranty blocks — has begun.
 ROW_GAP = 12
+# Matched to the template's own grid, measured off a rendered border pixel.
+RULE_WIDTH = 0.8
+FRAME_WIDTH = 1.1
 # The template's own row height and body size, so a redrawn table sits in the
 # page the way the designed one did.
 SPEC_ROW_HEIGHT = 51
@@ -299,7 +306,7 @@ def _specification(page, quotation):
     for _ in lines:
         for x0, x1 in zip(columns, columns[1:]):
             page.draw_rect(pymupdf.Rect(x0, y, x1, y + height), color=RULE,
-                           fill=CELL, width=0.9)
+                           fill=CELL, width=RULE_WIDTH)
         y += height
 
     y = top
@@ -309,7 +316,7 @@ def _specification(page, quotation):
             _centred(page, pymupdf.Rect(x0, y, x1, y + height), str(text), size=size)
         y += height
 
-    page.draw_rect(pymupdf.Rect(left, top, right, y), color=RULE, width=1.2)
+    page.draw_rect(pymupdf.Rect(left, top, right, y), color=RULE, width=FRAME_WIDTH)
 
 
 def _centred(page, cell, text, *, size):
