@@ -76,11 +76,16 @@ COVER_ROWS = ((723, 753), (763, 793), (803, 833))
 # the first row. Wide enough, too, to take the template's row separators with
 # it — they start at x≈93, further left than the text does, and a narrower
 # region left them sticking out beside the new rows like tick marks.
-SPEC_TABLE = pymupdf.Rect(88, 192.9, 722, 690)    # under the Item/Brand/Quantity header
+SPEC_TOP, SPEC_BOTTOM = 192.9, 690                # the fallback vertical extent
 # The template's own column edges, counted off its cell rectangles — so the
 # rows line up with the Item / Brand / Quantity header above them instead of
 # sitting a few points inside it.
-SPEC_COLS = (93, 301, 509, 718)                   # item | brand | quantity edges
+SPEC_COLS = (93, 301, 509, 718)                   # the fallback column edges
+# How far apart two measured edges can be and still be the same column.
+COLUMN_TOLERANCE = 24
+# A vertical space larger than this means the table has ended and something
+# else — the Warranty blocks — has begun.
+ROW_GAP = 12
 # The template's own row height and body size, so a redrawn table sits in the
 # page the way the designed one did.
 SPEC_ROW_HEIGHT = 51
@@ -109,6 +114,75 @@ def _rupees(amount, symbol='₹'):
             parts.insert(0, head)
         text = ','.join(parts + [tail])
     return f"{'-' if n < 0 else ''}{symbol} {text} /-"
+
+
+def _spec_geometry(page):
+    """Find the specification table on this page: its columns, and how far down
+    it runs.
+
+    Measured rather than assumed, because the templates are not identical. The
+    On-Grid sheet puts its columns at 93/301/509/718 and the Hybrid one at
+    108/306/505/703, and a constant that fits the first leaves the second's rows
+    overhanging their own header with the old frame still showing around them.
+    Measuring also means the next template — EN-PHASE, or a redesign — works
+    without anyone editing coordinates.
+
+    Returns (columns, top, bottom), falling back to the On-Grid figures when the
+    page does not look like a table at all; a slightly misplaced table is a
+    better failure than no document.
+    """
+    edges, cells = {}, []
+    for drawing in page.get_drawings():
+        rect = drawing['rect']
+        # Cell-shaped: inside the table band, wide enough to be a column rather
+        # than a rule, and not the full-page border.
+        if 150 < rect.y0 < 800 and 40 < rect.width < 700:
+            cells.append(rect)
+            for x in (rect.x0, rect.x1):
+                edges[round(x)] = edges.get(round(x), 0) + 1
+
+    # Edges arrive a few points apart — a cell's border and its fill, and the
+    # header's own box — so nearby values are one column and the one drawn most
+    # often wins. The tolerance is 24pt because the Hybrid sheet separates two
+    # of its edges by 17, which a tighter window split into a fifth column.
+    clusters, current = [], []
+    for x in sorted(e for e, n in edges.items() if n >= 3):
+        if current and x - current[-1] > COLUMN_TOLERANCE:
+            clusters.append(current)
+            current = []
+        current.append(x)
+    if current:
+        clusters.append(current)
+
+    columns = tuple(max(c, key=lambda x: edges[x]) for c in clusters)
+    if len(columns) != 4 or not cells:
+        logger.warning('Could not read the specification table; using the default layout')
+        return SPEC_COLS, SPEC_TOP, SPEC_BOTTOM
+
+    # How far the table runs, judged only by cells that sit *in* its columns.
+    # Measuring the outer bounds instead swept in the Warranty boxes below,
+    # which share the same left and right edges, and put the bottom 240 points
+    # too low — clearing away the warranty blocks with it.
+    def in_a_column(value):
+        return any(abs(value - edge) <= COLUMN_TOLERANCE for edge in columns)
+
+    inside = [c for c in cells if in_a_column(c.x0) and in_a_column(c.x1)]
+    if not inside:
+        return columns, SPEC_TOP, SPEC_BOTTOM
+
+    # The table's rows touch: each one starts where the last ended. The Warranty
+    # blocks below share these same column edges, so bounding the region by its
+    # outermost cell swept them in and put the bottom 240 points too low. Walking
+    # down from the first row and stopping at the first gap ends the table where
+    # it actually ends.
+    bands = sorted({(round(c.y0, 1), round(c.y1, 1)) for c in inside})
+    top = bands[0][0]
+    bottom = bands[0][1]
+    for start, end in bands[1:]:
+        if start - bottom > ROW_GAP:
+            break
+        bottom = max(bottom, end)
+    return columns, top, bottom
 
 
 def _clear(page, *rects, words_only=False):
@@ -205,33 +279,32 @@ def _specification(page, quotation):
     height give way, down to what stays readable.
     """
     lines = list(quotation.spec_lines.all())
-    _clear(page, SPEC_TABLE)
+    columns, top, bottom = _spec_geometry(page)
+    left, right = columns[0], columns[-1]
+    # Cleared a little wider and deeper than the table itself, so its own
+    # borders go with it rather than framing the new rows.
+    _clear(page, pymupdf.Rect(left - 6, top, right + 6, bottom + 4))
     if not lines:
         return
 
-    # The first row begins where the cleared region does, so it butts against
-    # the header rather than floating below it.
-    top = SPEC_TABLE.y0
-    available = SPEC_TABLE.y1 - top
+    available = bottom - top
     height = SPEC_ROW_HEIGHT
     if len(lines) * height > available:
         height = max(available / len(lines), 24)     # a long sheet tightens up
     size = SPEC_FONT_SIZE if height >= 44 else max(height * 0.32, 8)
 
-    left, right = SPEC_COLS[0], SPEC_COLS[-1]
-
     # The cells first, in the template's own shade, then the text on top of
     # them — a table drawn on plain white is not the table that was designed.
     y = top
     for _ in lines:
-        for x0, x1 in zip(SPEC_COLS, SPEC_COLS[1:]):
+        for x0, x1 in zip(columns, columns[1:]):
             page.draw_rect(pymupdf.Rect(x0, y, x1, y + height), color=RULE,
                            fill=CELL, width=0.9)
         y += height
 
     y = top
     for line in lines:
-        for (x0, x1), text in zip(zip(SPEC_COLS, SPEC_COLS[1:]),
+        for (x0, x1), text in zip(zip(columns, columns[1:]),
                                   (line.item_name, line.brand or '-', line.quantity or '-')):
             _centred(page, pymupdf.Rect(x0, y, x1, y + height), str(text), size=size)
         y += height
