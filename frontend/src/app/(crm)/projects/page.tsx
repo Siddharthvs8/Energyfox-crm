@@ -167,6 +167,7 @@ export default function ProjectsPage() {
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
   const [error, setError] = useState("");
 
   const [editing, setEditing] = useState<Project | null>(null);   // null = closed
@@ -267,6 +268,22 @@ export default function ProjectsPage() {
 
   const open = creating || editing !== null;
 
+  /* Filtered here rather than on the server: the page already holds every
+     project, so this answers as you type, and it can match what is actually on
+     screen — the server only sees `en_phase`, never the "EN-PHASE" the row
+     shows. Every word has to appear somewhere, in any order, so "10 hybrid"
+     and "hybrid 10" both find the 10kW hybrid. */
+  const shown = (() => {
+    const text = search.trim().toLowerCase();
+    if (!text) return projects;
+    const words = text.split(/\s+/);
+    return projects.filter(p => {
+      const hay = [p.name, p.capacity, p.system_type_display, p.system_type]
+        .filter(Boolean).join(" ").toLowerCase();
+      return words.every(w => hay.includes(w));
+    });
+  })();
+
   return (
     <div className="max-w-6xl mx-auto p-4 sm:p-6 lg:p-8">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
@@ -290,6 +307,20 @@ export default function ProjectsPage() {
           project row — it only shows up when someone tries to send one. */}
       <ProposalTemplates />
 
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <input value={search} onChange={e => setSearch(e.target.value)}
+          placeholder="Search projects by name, type or capacity…"
+          className="flex-1 min-w-[240px] max-w-md bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition" />
+        <span className="text-xs font-semibold text-slate-400">
+          {shown.length} project{shown.length === 1 ? "" : "s"}
+          {search.trim() && projects.length !== shown.length ? ` of ${projects.length}` : ""}
+        </span>
+        {search.trim() && (
+          <button onClick={() => setSearch("")}
+            className="text-xs font-bold text-slate-400 hover:text-slate-700 transition">Clear</button>
+        )}
+      </div>
+
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse min-w-[720px]">
@@ -304,14 +335,25 @@ export default function ProjectsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {projects.length === 0 ? (
+              {shown.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="py-12 text-center text-slate-500">
-                    <p className="font-medium text-slate-900">No projects yet</p>
-                    <p className="text-sm mt-1">Create one, and it becomes selectable on every proforma invoice.</p>
+                    {/* "Nothing yet" and "nothing matched" are different
+                        problems, and only one of them is solved by New Project. */}
+                    {search.trim() ? (
+                      <>
+                        <p className="font-medium text-slate-900">No project matches &ldquo;{search.trim()}&rdquo;</p>
+                        <p className="text-sm mt-1">Try a capacity, a system type, or part of the name.</p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="font-medium text-slate-900">No projects yet</p>
+                        <p className="text-sm mt-1">Create one, and it becomes selectable on every quotation.</p>
+                      </>
+                    )}
                   </td>
                 </tr>
-              ) : projects.map(p => (
+              ) : shown.map(p => (
                 <tr key={p.id} className="hover:bg-slate-50/50 transition-colors">
                   <td className="py-4 px-6">
                     <span className="font-medium text-slate-900">{p.name}</span>
