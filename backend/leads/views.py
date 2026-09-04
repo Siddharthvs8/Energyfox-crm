@@ -3304,6 +3304,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             data = DocumentationStage2Serializer(rec, context={'request': request}).data
             data['prefill'] = self._doc_stage2_prefill(lead)
             data['can_reopen'] = can_reopen_documentation(request.user)
+            data['earlier_images'] = self._doc_stage2_earlier_images(lead, request)
             return Response(data)
         # The discom approval arrives from KSEB on its own schedule, often after
         # the rest of Stage 2 has been signed off — so it survives the lock. The
@@ -3320,6 +3321,32 @@ class LeadViewSet(viewsets.ModelViewSet):
         if 'discom_approval' in request.data:
             self._sync_discom_to_liasoning(lead, rec, old_discom, request)
         return Response(serializer.data)
+
+    def _doc_stage2_earlier_images(self, lead, request):
+        """What was photographed earlier, shown here read-only.
+
+        Stage 2 writes the completion documents out of what Stage 1 collected
+        and what the installation crew photographed on site — the serial
+        numbers, the meter, the plant. Both sets already exist in the system,
+        but they live in two other modules, and a documentation officer working
+        Stage 2 may not be able to open either. Making them go and look meant
+        working from memory, which is how a serial number gets typed wrong onto
+        a document that goes to KSEB.
+
+        Read-only on purpose: this is the earlier stages' evidence, and Stage 2
+        is not where it gets changed.
+        """
+        context = {'request': request}
+        stage1 = getattr(lead, 'documentation_stage1', None)
+        project = getattr(lead, 'project', None)
+        return {
+            'stage1': DocumentationStage1DocumentSerializer(
+                stage1.documents.all() if stage1 else [],
+                many=True, context=context).data,
+            'installation': ProjectDocumentSerializer(
+                project.documents.all() if project else [],
+                many=True, context=context).data,
+        }
 
     def _sync_discom_to_liasoning(self, lead, rec, old_discom, request):
         """Documentation Stage 2 owns the discom approval; Liasoning displays it.
@@ -3745,7 +3772,7 @@ class LeadViewSet(viewsets.ModelViewSet):
 
     # ── Liasoning & Service (post-installation; handled by the liasoning officer) ──
     def _liasoning_payload(self, lead, request):
-        from .access import can_access_liasoning
+        from .access import can_access_liasoning, can_reopen_liasoning
         rec = getattr(lead, 'liasoning_service', None)
 
         def name(u):
@@ -3773,6 +3800,9 @@ class LeadViewSet(viewsets.ModelViewSet):
             'record': LiasoningServiceSerializer(rec, context={'request': request}).data if rec else None,
             'is_complete': bool(rec and rec.is_complete),
             'can_edit': can_access_liasoning(request.user),
+            # Decided here rather than in the browser: whether the unlock button
+            # is offered is the same question as whether it would be allowed.
+            'can_reopen': can_reopen_liasoning(getattr(request, 'user', None)),
         }
 
     @action(detail=False, methods=['get'], url_path='liasoning')
@@ -3857,8 +3887,15 @@ class LeadViewSet(viewsets.ModelViewSet):
         if not file:
             return Response({'error': 'file is required.'}, status=status.HTTP_400_BAD_REQUEST)
         doc_type = (request.data.get('doc_type') or LiasoningService.PLANT_PHOTO).strip()
-        if doc_type != LiasoningService.PLANT_PHOTO:
+        if doc_type not in dict(LiasoningService.PHOTO_SLOTS):
             return Response({'error': 'Unknown document type.'}, status=status.HTTP_400_BAD_REQUEST)
+        # Each slot holds one picture, so uploading replaces rather than adds:
+        # "the plant photo" is a single thing, and a slot quietly holding three
+        # of them leaves the next person guessing which one the sign-off meant.
+        # The old file is removed from disk with its row.
+        for old_doc in rec.documents.filter(doc_type=doc_type):
+            old_doc.file.delete(save=False)
+            old_doc.delete()
         doc = LiasoningDocument.objects.create(
             liasoning=rec, doc_type=doc_type, file=file,
             uploaded_by=request.user if request.user.is_authenticated else None)
@@ -3897,11 +3934,18 @@ class LeadViewSet(viewsets.ModelViewSet):
         rec, _ = LiasoningService.objects.get_or_create(lead=lead)
         if rec.is_complete:
             return Response({'error': 'Liasoning & Service is already completed.'}, status=status.HTTP_400_BAD_REQUEST)
-        # Signing this off says the plant is live, so it waits on the evidence.
-        if not rec.has_plant_photo:
+        # Signing this off says the plant is live, so it waits on the evidence —
+        # both pictures, not just the one. The client disables the tick until
+        # they are in; this is the same rule where it cannot be skipped.
+        if not rec.photos_complete:
+            missing = [label for slot, label in LiasoningService.PHOTO_SLOTS
+                       if not rec.documents.filter(doc_type=slot).exists()]
             return Response(
-                {'error': 'Upload the commissioned plant photo before completing liasoning.',
-                 'needs_plant_photo': True},
+                {'error': 'Upload the %s before completing liasoning.'
+                          % ' and '.join(missing),
+                 'needs_plant_photo': not rec.has_plant_photo,
+                 'needs_rf_image': not rec.has_rf_image,
+                 'missing_photos': missing},
                 status=status.HTTP_400_BAD_REQUEST)
         rec.is_complete = True
         rec.completed_at = timezone.now()
@@ -3912,6 +3956,38 @@ class LeadViewSet(viewsets.ModelViewSet):
             actor=request.user if request.user.is_authenticated else None,
             lead=lead, extra={'auto_generated': True})
         fire_automation('liasoning_completed', lead)
+        return Response(self._liasoning_payload(lead, request))
+
+    @action(detail=True, methods=['post'], url_path='reopen-liasoning')
+    def reopen_liasoning(self, request, pk=None):
+        """Super admin unlocks a completed liasoning record for further editing.
+
+        Kept to the super admin alone. Completing liasoning states that the
+        plant is live and its evidence is filed; if the officer who signed it
+        could also unsign it, the lock would be a formality rather than a
+        record. The reopening is logged against the lead for the same reason.
+        """
+        from .access import can_reopen_liasoning
+        lead = self.get_object()
+        if not can_reopen_liasoning(request.user):
+            return Response({'error': 'Only the super admin can unlock a completed liasoning record.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        rec = getattr(lead, 'liasoning_service', None)
+        if not rec or not rec.is_complete:
+            return Response({'error': 'Liasoning & Service is not completed.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        rec.is_complete = False
+        rec.completed_at = None
+        rec.completed_by = None
+        rec.save(update_fields=['is_complete', 'completed_at', 'completed_by', 'updated_at'])
+        actor = (f"{request.user.first_name} {request.user.last_name}".strip()
+                 or request.user.username)
+        ActivityLog.objects.create(
+            activity_type='note_added',
+            description=f"Liasoning & Service unlocked for editing by {actor}.",
+            actor=request.user if request.user.is_authenticated else None,
+            lead=lead,
+        )
         return Response(self._liasoning_payload(lead, request))
 
     # ── Periodic maintenance (5 years, 6-month tenure gap) ──

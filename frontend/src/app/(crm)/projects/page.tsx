@@ -274,7 +274,7 @@ export default function ProjectsPage() {
           <h1 className="text-2xl font-bold text-slate-900">Project</h1>
           <p className="text-sm text-slate-500 mt-1">
             Bundles of products — panels, inverter, structure and balance of system.
-            Pick one on a proforma invoice and its specification is copied across.
+            Pick one on a quotation and its specification is copied across.
           </p>
         </div>
         <button onClick={openNew}

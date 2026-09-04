@@ -31,6 +31,18 @@ const STATUS_STYLE: Record<string, string> = {
    unable to tell an invoiced offer from a paid order on the same list. */
 const STATUS_LABEL: Record<string, string> = { converted: "Invoiced" };
 
+/** "3 Sep 2026, 9:30 am" — the date carries the time because two quotations
+ *  raised for the same customer on the same day are told apart by it. */
+const when = (iso: string) => {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("en-IN", {
+    day: "numeric", month: "short", year: "numeric",
+    hour: "numeric", minute: "2-digit", hour12: true,
+  });
+};
+
 const inputCls =
   "w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 " +
   "placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition";
@@ -54,11 +66,16 @@ export default function QuotationsPage({ scope = "open" }: { scope?: "open" | "o
   const [busy, setBusy] = useState<number | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  // Raised between these two dates. Either alone is a valid question.
+  const [createdFrom, setCreatedFrom] = useState("");
+  const [createdTo, setCreatedTo] = useState("");
 
   const load = useCallback(async () => {
     try {
       const query = new URLSearchParams({ scope });
       if (statusFilter !== "all") query.set("status", statusFilter);
+      if (createdFrom) query.set("created_from", createdFrom);
+      if (createdTo) query.set("created_to", createdTo);
       const r = await fetch(`${api}/api/quotations/?${query}`, { headers: headers() });
       if (r.ok) {
         const d = await r.json();
@@ -66,7 +83,7 @@ export default function QuotationsPage({ scope = "open" }: { scope?: "open" | "o
       }
     } catch { /* an empty board rather than a broken one */ }
     finally { setLoading(false); }
-  }, [api, headers, scope, statusFilter]);
+  }, [api, headers, scope, statusFilter, createdFrom, createdTo]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -153,6 +170,23 @@ export default function QuotationsPage({ scope = "open" }: { scope?: "open" | "o
             <option value="declined">Declined</option>
           </select>
         )}
+        {/* Raised between. Labelled, because two bare date boxes side by side
+            do not say which end is which. */}
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Raised</span>
+          <input type="date" value={createdFrom} max={createdTo || undefined}
+            onChange={e => setCreatedFrom(e.target.value)}
+            title="From this date" className={`${inputCls} w-[150px]`} />
+          <span className="text-xs text-slate-400">to</span>
+          <input type="date" value={createdTo} min={createdFrom || undefined}
+            onChange={e => setCreatedTo(e.target.value)}
+            title="Up to this date" className={`${inputCls} w-[150px]`} />
+          {(createdFrom || createdTo) && (
+            <button onClick={() => { setCreatedFrom(""); setCreatedTo(""); }}
+              className="text-xs font-bold text-slate-400 hover:text-slate-700 transition px-1"
+              title="Clear the date range">Clear</button>
+          )}
+        </div>
       </div>
 
       <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
@@ -169,6 +203,7 @@ export default function QuotationsPage({ scope = "open" }: { scope?: "open" | "o
             <thead className="bg-slate-50 border-b border-slate-200 text-left text-[11px] font-bold text-slate-500 uppercase tracking-wider">
               <tr>
                 <th className="py-4 px-6">Number</th>
+                <th className="py-4 px-6">Created</th>
                 <th className="py-4 px-6">Customer</th>
                 <th className="py-4 px-6">Project</th>
                 <th className="py-4 px-6 text-right">Total</th>
@@ -178,9 +213,9 @@ export default function QuotationsPage({ scope = "open" }: { scope?: "open" | "o
             </thead>
             <tbody className="divide-y divide-slate-100">
               {loading ? (
-                <tr><td colSpan={6} className="py-12 text-center text-slate-400">Loading…</td></tr>
+                <tr><td colSpan={7} className="py-12 text-center text-slate-400">Loading…</td></tr>
               ) : shown.length === 0 ? (
-                <tr><td colSpan={6} className="py-12 text-center text-slate-500">
+                <tr><td colSpan={7} className="py-12 text-center text-slate-500">
                   {isOrders
                     ? "No converted orders yet. An accepted quotation lands here once the customer pays."
                     : "No quotations yet. Build one from a project."}
@@ -192,6 +227,9 @@ export default function QuotationsPage({ scope = "open" }: { scope?: "open" | "o
                       className="font-semibold text-slate-900 hover:text-indigo-600 transition">
                       {q.number}
                     </button>
+                  </td>
+                  <td className="py-4 px-6 text-slate-500 whitespace-nowrap text-[12px]">
+                    {when(q.created_at)}
                   </td>
                   <td className="py-4 px-6 text-slate-600">{q.lead_name || <span className="text-slate-400">—</span>}</td>
                   <td className="py-4 px-6 text-slate-600">

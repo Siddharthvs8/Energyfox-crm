@@ -73,6 +73,19 @@ COVER_META = pymupdf.Rect(138, 855, 480, 918)     # company / proposal no / date
 # LOCATION 805-831. The value is written into the same band so it sits on the
 # line with its label rather than floating above it.
 COVER_ROWS = ((723, 753), (763, 793), (803, 833))
+# The third label itself. Every template prints LOCATION there, but what the
+# customer needs on a solar proposal is the KSEB consumer number their
+# connection is quoted against — so the word is redacted along with the value
+# beside it and rewritten. Measured off the artwork, identical in all four
+# templates: the label column runs from the table's left edge at 140 to where
+# the value column begins at 370, and the labels are set in CanvaSans-Bold at
+# 18.9. The replacement is centred across that column rather than pinned to the
+# old word's left edge: it is nearly twice as long, and holding the left edge
+# meant shrinking it to about three-quarters the size of NAME and Phone NO
+# above it. Centred, it keeps their size, which is what actually reads as
+# belonging to the same table.
+COVER_LABEL = pymupdf.Rect(146, 802, 364, 834)
+COVER_LABEL_SIZE = 18.9
 
 # Starts exactly where the template's first data row does (192.9), not a few
 # points above it: clearing higher than that ate the bottom of the Item / Brand
@@ -256,14 +269,30 @@ def _cover(page, quotation):
          font='hebo', size=34, colour=BLUE)
 
     # The three empty cells of the customer table.
+    #
+    # The consumer number is recorded on the site visit, which is where anyone
+    # would have read it off the customer's KSEB bill. A lead quoted before the
+    # visit has none yet, and the row is then left empty rather than filled with
+    # something else — a wrong consumer number on a proposal is worse than a
+    # blank one, because it is the number the connection is applied for under.
+    visit = getattr(lead, 'site_visit', None) if lead else None
     name = (f"{lead.first_name or ''} {lead.last_name or ''}".strip() if lead else '')
-    values = (name, (lead.phone if lead else '') or '', (quotation.site or
-              (lead.installation_location or lead.company if lead else '') or ''))
+    values = (name, (lead.phone if lead else '') or '',
+              (visit.consumer_number if visit else '') or '')
     for (top, bottom), value in zip(COVER_ROWS, values):
         if not value:
             continue
         cell = pymupdf.Rect(COVER_FIELDS.x0 + 8, top, COVER_FIELDS.x1 - 8, bottom + 6)
         _fit(page, cell, str(value), font='hebo', size=16, colour=INK)
+
+    # And the label beside it, which the template prints as LOCATION. Redacted
+    # rather than painted over, like everything else on this cover: the words
+    # would otherwise stay in the text layer and a customer searching the page
+    # would still find LOCATION on it. Line art is left alone by the redaction,
+    # so the cell's own borders survive.
+    _clear(page, COVER_LABEL, words_only=True)
+    _fit(page, COVER_LABEL + (0, 1, 0, 0), 'CONSUMER NUMBER',
+         font='hebo', size=COVER_LABEL_SIZE, colour=(0, 0, 0))
 
     # The number and the date beneath it.
     date = quotation.quotation_date

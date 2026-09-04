@@ -4,6 +4,10 @@ import { getApiBase } from "@/lib/mock-data";
 import React, { useCallback, useEffect, useState } from "react";
 import { loadEnergyfoxLogo } from "@/lib/pdf-logo";
 import { toISODate, toDisplayDate } from "@/lib/date-fields";
+// Named where they are defined, so these read back under the same labels
+// the forms that collected them used.
+import { STAGE1_SLOT_LABELS } from "../../documentation/[id]/DocumentationStage1Section";
+import { PHOTO_SLOTS } from "../../project/[id]/ProjectSection";
 
 const ANNEXURE_SLOT = "annexure3";
 const DISCOM_OPTIONS = [
@@ -140,6 +144,9 @@ export default function DocumentationStage2Section({ leadId, canEdit, onChanged 
   });
   // Pre-fill values pulled from the customer's history (lead / site visit / stage 1 / project).
   const [prefill, setPrefill] = useState<Record<string, Record<string, string>>>({});
+  // What the earlier stages photographed, shown here read-only.
+  const [earlier, setEarlier] = useState<{ stage1: Doc[]; installation: Doc[] }>(
+    { stage1: [], installation: [] });
   const [openForm, setOpenForm] = useState<string | null>(null);
   const [formDraft, setFormDraft] = useState<Record<string, string>>({});
   // Panel serial numbers as a dynamic list of inputs (stored comma-joined in the JSON).
@@ -161,6 +168,10 @@ export default function DocumentationStage2Section({ leadId, canEdit, onChanged 
       inverter_panel_details: d.inverter_panel_details || {},
     });
     if (d.prefill) setPrefill(d.prefill);
+    if (d.earlier_images) setEarlier({
+      stage1: d.earlier_images.stage1 || [],
+      installation: d.earlier_images.installation || [],
+    });
     if (d.can_reopen !== undefined) setCanReopen(!!d.can_reopen);
     setDocuments(Array.isArray(d.documents) ? d.documents : []);
     if (d.mnre_portal_url) setPortalUrl(d.mnre_portal_url);
@@ -620,6 +631,50 @@ export default function DocumentationStage2Section({ leadId, canEdit, onChanged 
     );
   };
 
+  /** The earlier stages' pictures, read-only.
+   *
+   * A thumbnail where the file is an image and a named chip where it is not —
+   * a PDF has no preview to show, and dropping it from the list would quietly
+   * hide a document somebody uploaded. Both open the file itself.
+   */
+  const renderGallery = (rows: Doc[], labels: Record<string, string>, empty: string) => {
+    if (rows.length === 0) return <p className="text-[11px] text-slate-400">{empty}</p>;
+    return (
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+        {rows.map(d => {
+          const href = d.file.startsWith("http") ? d.file : `${apiBase}${d.file}`;
+          const name = decodeURIComponent(d.file.split("/").pop() || "file");
+          const label = labels[d.doc_type] || d.doc_type;
+          const isImage = /\.(jpe?g|png|gif|webp|bmp|heic|avif)$/i.test(name);
+          return (
+            <a key={d.id} href={href} target="_blank" rel="noreferrer" title={`${label} — ${name}`}
+              className="group block border border-slate-200 rounded-xl overflow-hidden bg-white hover:border-indigo-300 hover:shadow-sm transition">
+              <div className="aspect-[4/3] bg-slate-50 flex items-center justify-center overflow-hidden">
+                {isImage ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={href} alt={label} loading="lazy"
+                    className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform" />
+                ) : (
+                  <div className="flex flex-col items-center gap-1 text-slate-400">
+                    <svg width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8"
+                      strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                      <polyline points="14 2 14 8 20 8" />
+                    </svg>
+                    <span className="text-[10px] font-semibold uppercase tracking-wide">
+                      {(name.split(".").pop() || "file").slice(0, 5)}
+                    </span>
+                  </div>
+                )}
+              </div>
+              <p className="px-2.5 py-1.5 text-[10px] font-semibold text-slate-600 truncate">{label}</p>
+            </a>
+          );
+        })}
+      </div>
+    );
+  };
+
   return (
     <div className="mt-5 space-y-5">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -644,6 +699,28 @@ export default function DocumentationStage2Section({ leadId, canEdit, onChanged 
         ) : !canEdit ? (
           <span className="text-xs text-slate-400">Read-only.</span>
         ) : null}
+      </div>
+
+      {/* The earlier stages' evidence, read-only. Placed above the completion
+          docs because that is the order the work happens in: these are what
+          Annexure 3 is written from. */}
+      <div className={cardCls}>
+        <h3 className={sectionTitle}>Documentation Stage 1 Images</h3>
+        <p className="text-[11px] text-slate-400 mb-4">
+          Uploaded during Stage 1. Shown here so the completion documents can be
+          written from them without leaving this page.
+        </p>
+        {renderGallery(earlier.stage1, STAGE1_SLOT_LABELS,
+          "Nothing was uploaded in Documentation Stage 1.")}
+      </div>
+
+      <div className={cardCls}>
+        <h3 className={sectionTitle}>Project Installation Images</h3>
+        <p className="text-[11px] text-slate-400 mb-4">
+          The geotagged photos taken on site — serial numbers, meter and plant.
+        </p>
+        {renderGallery(earlier.installation, Object.fromEntries(PHOTO_SLOTS),
+          "The installation photos have not been uploaded yet.")}
       </div>
 
       {/* 1. Completion docs / Annexure 3 */}
@@ -730,14 +807,18 @@ export default function DocumentationStage2Section({ leadId, canEdit, onChanged 
         </div>
 
         {f.discom_approval === "yes" && (
-          <div className="mt-4 bg-emerald-50/60 border border-emerald-100 rounded-xl p-3">
+          <div className="mt-4 bg-emerald-50/60 border border-emerald-100 rounded-xl p-3 flex flex-col items-start gap-3">
             {/* Like the approval above it, this survives the sign-off: the claim
                 can only go in once KSEB has answered, which is often after Stage
-                2 is closed. The customer's tracking link shows this step. */}
+                2 is closed. The customer's tracking link shows this step.
+
+                Laid out as a column with a gap rather than a margin on the
+                button: the button is an inline-block, so a margin-top alone
+                left it on the same line as the label, touching it. */}
             <Check checked={f.subsidy_requested} disabled={!canEdit} onChange={v => set("subsidy_requested", v)} label="Subsidy requested" />
             {canEdit && isComplete && (
               <button onClick={save} disabled={saving}
-                className="mt-2 px-4 py-2 bg-slate-800 text-white rounded-xl text-xs font-semibold hover:bg-slate-900 disabled:opacity-50 transition">
+                className="px-4 py-2 bg-slate-800 text-white rounded-xl text-xs font-semibold hover:bg-slate-900 disabled:opacity-50 transition">
                 {saving ? "Saving…" : saved ? "Saved ✓" : "Save subsidy status"}
               </button>
             )}

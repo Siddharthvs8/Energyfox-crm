@@ -2260,6 +2260,72 @@ class LiasoningAnnexure3Tests(TestCase):
         self.assertEqual(s2.discom_approval, 'pending')
 
 
+class Stage2EarlierImagesTests(TestCase):
+    """Stage 2 shows back what Stage 1 and the installation crew photographed.
+
+    Annexure 3 is written from those pictures — the serial numbers, the meter,
+    the plant — and they live in two modules a Stage 2 officer may not be able
+    to open. Working from memory is how a serial number reaches KSEB wrong.
+    """
+
+    def setUp(self):
+        from django.core.files.base import ContentFile
+        from leads.models import (DocumentationStage1, DocumentationStage1Document,
+                                  Project, ProjectDocument)
+        self.docstaff = mk('img_doc', 'documentation_staff')
+        self.lead = Lead.objects.create(
+            first_name='Gallery', last_name='Lead', phone='9849394941',
+            status='converted', pushed_to_doc_stage2=True,
+            pushed_to_doc_stage2_at=timezone.now(), doc_stage2_staff=self.docstaff)
+
+        stage1, _ = DocumentationStage1.objects.get_or_create(lead=self.lead)
+        for slot in ('mnre_aadhaar', 'mnre_kseb_bill'):
+            d = DocumentationStage1Document(stage1=stage1, doc_type=slot)
+            d.file.save(f'{slot}.png', ContentFile(b'x'), save=True)
+
+        project, _ = Project.objects.get_or_create(lead=self.lead)
+        d = ProjectDocument(project=project, doc_type='panel_serial_numbers')
+        d.file.save('panel.png', ContentFile(b'x'), save=True)
+
+    def get(self, who=None):
+        return self.client.get(
+            f'/api/leads/{self.lead.id}/documentation-stage2-record/',
+            HTTP_AUTHORIZATION=token_for(who or self.docstaff))
+
+    def test_both_sets_come_back_with_the_record(self):
+        r = self.get()
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        images = r.json()['earlier_images']
+        self.assertEqual([d['doc_type'] for d in images['stage1']],
+                         ['mnre_aadhaar', 'mnre_kseb_bill'])
+        self.assertEqual([d['doc_type'] for d in images['installation']],
+                         ['panel_serial_numbers'])
+
+    def test_a_customer_with_neither_still_loads(self):
+        """Stage 2 can be reached before the photos exist."""
+        bare = Lead.objects.create(
+            first_name='No', last_name='Pictures', phone='9849394942',
+            status='converted', pushed_to_doc_stage2=True,
+            pushed_to_doc_stage2_at=timezone.now(), doc_stage2_staff=self.docstaff)
+        r = self.client.get(f'/api/leads/{bare.id}/documentation-stage2-record/',
+                            HTTP_AUTHORIZATION=token_for(self.docstaff))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(r.json()['earlier_images'],
+                         {'stage1': [], 'installation': []})
+
+    def test_they_are_not_offered_to_someone_outside_documentation(self):
+        """The pictures inherit the stage's own gate rather than a wider one.
+
+        A BDE is refused at the lead queryset before the stage check is even
+        reached, so the refusal reads 404 rather than 403 — either way nothing
+        comes back, which is what matters here.
+        """
+        outsider = mk('img_bde', 'bde')
+        r = self.get(outsider)
+        self.assertIn(r.status_code, (403, 404))
+        self.assertNotIn('earlier_images', r.content.decode())
+
+
 class DiscomApprovalDirectionTests(TestCase):
     """Documentation Stage 2 owns the discom approval; Liasoning displays it."""
 
@@ -2319,6 +2385,99 @@ class DiscomApprovalDirectionTests(TestCase):
         self.stage2({'discom_approval': 'yes'})
         self.lead.refresh_from_db()
         self.assertTrue(self.lead.pushed_to_warranty)
+
+
+class LiasoningLockAndUnlockTests(TestCase):
+    """Signing off closes the record; only the super admin can open it again.
+
+    The tick states that the plant is live and the evidence is filed. If the
+    officer who made that statement could also take it back, the lock would be
+    a formality rather than a record — so reopening sits above the role.
+    """
+
+    def setUp(self):
+        from .models import LiasoningService
+        self.officer = mk('lock_officer', 'liasoning_officer')
+        # The super admin is the role, not a hand-set flag: User.save() derives
+        # is_superuser from `role`, so setting the boolean alone is overwritten.
+        self.admin = mk('lock_admin', 'superadmin')
+        self.assertTrue(self.admin.is_superuser)
+        self.lead = Lead.objects.create(first_name='Locked', last_name='Case',
+                                        phone='9526396826', status='converted',
+                                        pushed_to_liasoning=True,
+                                        pushed_to_liasoning_at=timezone.now())
+        self.rec = LiasoningService.objects.create(lead=self.lead)
+
+    def photo(self):
+        return SimpleUploadedFile('p.jpg', b'jpeg bytes', content_type='image/jpeg')
+
+    def sign_off(self):
+        from .models import LiasoningService
+        for slot in (LiasoningService.PLANT_PHOTO, LiasoningService.RF_IMAGE):
+            self.client.post(f'/api/leads/{self.lead.id}/liasoning/documents/',
+                             data={'file': self.photo(), 'doc_type': slot},
+                             HTTP_AUTHORIZATION=token_for(self.officer))
+        r = self.client.post(f'/api/leads/{self.lead.id}/complete-liasoning/',
+                             HTTP_AUTHORIZATION=token_for(self.officer))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+
+    def reopen(self, who):
+        return self.client.post(f'/api/leads/{self.lead.id}/reopen-liasoning/',
+                                HTTP_AUTHORIZATION=token_for(who))
+
+    def patch(self, who, **body):
+        return self.client.patch(f'/api/leads/{self.lead.id}/liasoning-record/',
+                                 data=body, content_type='application/json',
+                                 HTTP_AUTHORIZATION=token_for(who))
+
+    def test_the_record_cannot_be_edited_once_signed_off(self):
+        self.sign_off()
+        self.assertEqual(self.patch(self.officer, annexure3_remark='late').status_code, 400)
+        self.rec.refresh_from_db()
+        self.assertNotEqual(self.rec.annexure3_remark, 'late')
+
+    def test_the_officer_cannot_unlock_it(self):
+        self.sign_off()
+        r = self.reopen(self.officer)
+        self.assertEqual(r.status_code, 403, r.content[:200])
+        self.rec.refresh_from_db()
+        self.assertTrue(self.rec.is_complete)
+
+    def test_a_plain_admin_cannot_unlock_it_either(self):
+        """Grantable permissions do not reach this; it is the super admin alone."""
+        self.sign_off()
+        plain = mk('lock_plain_admin', 'admin')
+        self.assertFalse(plain.is_superuser)
+        self.assertEqual(self.reopen(plain).status_code, 403)
+
+    def test_the_super_admin_unlocks_it_and_editing_resumes(self):
+        self.sign_off()
+        r = self.reopen(self.admin)
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertFalse(r.json()['is_complete'])
+        self.rec.refresh_from_db()
+        self.assertFalse(self.rec.is_complete)
+        self.assertIsNone(self.rec.completed_at)
+        self.assertEqual(self.patch(self.officer, annexure3_remark='after unlock').status_code, 200)
+
+    def test_unlocking_keeps_the_photos(self):
+        """Reopening is for correcting the record, not for losing its evidence."""
+        self.sign_off()
+        self.reopen(self.admin)
+        self.rec.refresh_from_db()
+        self.assertEqual(self.rec.documents.count(), 2)
+        self.assertTrue(self.rec.photos_complete)
+
+    def test_unlocking_one_that_is_not_locked_is_refused(self):
+        self.assertEqual(self.reopen(self.admin).status_code, 400)
+
+    def test_the_row_says_who_may_unlock(self):
+        """The button is offered on the same answer the server would give."""
+        self.sign_off()
+        for who, expected in ((self.admin, True), (self.officer, False)):
+            r = self.client.get(f'/api/leads/{self.lead.id}/liasoning-detail/',
+                                HTTP_AUTHORIZATION=token_for(who))
+            self.assertIs(r.json()['can_reopen'], expected)
 
 
 class DiscomFollowupBelongsToLiasoningTests(TestCase):
@@ -2797,6 +2956,12 @@ class LiasoningWaitsForThePlantPhotoTests(TestCase):
         return self.client.post(f'/api/leads/{self.lead.id}/liasoning/documents/',
                                 data=data, HTTP_AUTHORIZATION=token_for(self.officer))
 
+    def upload_both(self):
+        """Both required photos — the sign-off waits on the pair."""
+        from .models import LiasoningService
+        self.upload(doc_type=LiasoningService.PLANT_PHOTO)
+        self.upload(doc_type=LiasoningService.RF_IMAGE)
+
     def complete(self):
         return self.client.post(f'/api/leads/{self.lead.id}/complete-liasoning/',
                                 HTTP_AUTHORIZATION=token_for(self.officer))
@@ -2808,10 +2973,28 @@ class LiasoningWaitsForThePlantPhotoTests(TestCase):
         self.rec.refresh_from_db()
         self.assertFalse(self.rec.is_complete)
 
-    def test_completion_works_once_the_photo_is_there(self):
+    def test_the_plant_photo_alone_is_not_enough(self):
+        """Both pictures are the evidence, so both are required."""
         self.assertEqual(self.upload().status_code, 201)
         self.rec.refresh_from_db()
         self.assertTrue(self.rec.has_plant_photo)
+        r = self.complete()
+        self.assertEqual(r.status_code, 400, r.content[:300])
+        self.assertEqual(r.json()['missing_photos'], ['RF Image'])
+        self.rec.refresh_from_db()
+        self.assertFalse(self.rec.is_complete)
+
+    def test_the_rf_image_alone_is_not_enough_either(self):
+        from .models import LiasoningService
+        self.upload(doc_type=LiasoningService.RF_IMAGE)
+        r = self.complete()
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()['missing_photos'], ['Plant Photo'])
+
+    def test_completion_works_once_both_photos_are_there(self):
+        self.upload_both()
+        self.rec.refresh_from_db()
+        self.assertTrue(self.rec.photos_complete)
         self.assertEqual(self.complete().status_code, 200)
         self.rec.refresh_from_db()
         self.assertTrue(self.rec.is_complete)
@@ -2826,11 +3009,24 @@ class LiasoningWaitsForThePlantPhotoTests(TestCase):
         self.assertIs(r.json()['has_plant_photo'], True)
         self.assertEqual(len(r.json()['documents']), 1)
 
-    def test_several_photos_are_allowed(self):
-        self.assertEqual(self.upload().status_code, 201)
-        self.assertEqual(self.upload().status_code, 201)
+    def test_uploading_again_replaces_rather_than_piles_up(self):
+        """A slot holds one picture. "The plant photo" is a single thing, and a
+        slot quietly holding three leaves the next person guessing which one the
+        sign-off meant."""
+        first = self.upload().json()['id']
+        second = self.upload().json()['id']
+        self.rec.refresh_from_db()
+        self.assertEqual(self.rec.documents.count(), 1)
+        self.assertEqual(self.rec.documents.first().id, second)
+        self.assertNotEqual(first, second)
+
+    def test_the_two_slots_do_not_replace_each_other(self):
+        from .models import LiasoningService
+        self.upload_both()
         self.rec.refresh_from_db()
         self.assertEqual(self.rec.documents.count(), 2)
+        self.assertTrue(self.rec.has_plant_photo)
+        self.assertTrue(self.rec.has_rf_image)
 
     def test_an_unknown_slot_is_refused(self):
         r = self.upload(doc_type='something_else')
@@ -2846,7 +3042,8 @@ class LiasoningWaitsForThePlantPhotoTests(TestCase):
     def test_the_photo_is_locked_once_signed_off(self):
         """It is the evidence behind the sign-off, so it cannot be pulled after."""
         doc_id = self.upload().json()['id']
-        self.complete()
+        self.upload(doc_type='rf_image')
+        self.assertEqual(self.complete().status_code, 200)
         r = self.client.delete(f'/api/leads/{self.lead.id}/liasoning/documents/{doc_id}/',
                                HTTP_AUTHORIZATION=token_for(self.officer))
         self.assertEqual(r.status_code, 400)

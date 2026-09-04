@@ -237,6 +237,18 @@ class QuotationViewSet(viewsets.ModelViewSet):
         status_filter = self.request.query_params.get('status')
         if status_filter and status_filter != 'all':
             qs = qs.filter(status=status_filter)
+        # Raised between these two dates, inclusive of both. Either may be given
+        # on its own — "everything since April" and "everything up to the 12th"
+        # are both ordinary questions. Compared on the date rather than the
+        # timestamp, so a quotation raised at 4pm still counts as that day's
+        # when the day itself is the filter; __date resolves in the project's
+        # timezone, which is the one whose "today" the user means.
+        created_from = self.request.query_params.get('created_from')
+        if created_from:
+            qs = qs.filter(created_at__date__gte=created_from)
+        created_to = self.request.query_params.get('created_to')
+        if created_to:
+            qs = qs.filter(created_at__date__lte=created_to)
         # The panel on a lead's own page asks for just that lead's quotations.
         lead = self.request.query_params.get('lead')
         if lead:

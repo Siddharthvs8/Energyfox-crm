@@ -10,10 +10,19 @@ import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCl
 import { isSpectator } from "@/lib/spectator";
 import BdeTag from "@/components/BdeTag";
 const PLANT_PHOTO = "plant_commissioned";
+const RF_IMAGE = "rf_image";
+// Both are evidence the sign-off rests on, so both are required before it —
+// mirrors LiasoningService.PHOTO_SLOTS on the server, which enforces it.
+const PHOTO_SLOTS: [string, string][] = [
+  [PLANT_PHOTO, "Plant Photo"],
+  [RF_IMAGE, "RF Image"],
+];
 
 type LiasoningRecord = {
-  // Liasoning waits on the commissioned plant photo before it can be signed off.
+  // Liasoning waits on both photos before it can be signed off.
   has_plant_photo?: boolean;
+  has_rf_image?: boolean;
+  photos_complete?: boolean;
   documents?: { id: number; doc_type: string; file: string }[];
   annexure3_completed: boolean; annexure3_remark: string;
   discom_approval: string;
@@ -35,6 +44,8 @@ type LiasoningLead = {
   value: number;
   is_complete: boolean;
   can_edit: boolean;
+  /** Super admin only — the server decides it and the row offers Unlock. */
+  can_reopen?: boolean;
   pushed_at: string | null;
   record: LiasoningRecord | null;
 };
@@ -61,7 +72,8 @@ export default function LiasoningPage() {
   const [search, setSearch] = useState("");
   const [rows, setRows] = useState<Record<number, RowDraft>>({});
   const [savingId, setSavingId] = useState<number | null>(null);
-  const [photoId, setPhotoId] = useState<number | null>(null);
+  // "<leadId>:<slot>" while that one slot is uploading.
+  const [photoId, setPhotoId] = useState<string | null>(null);
 
   const token = () => localStorage.getItem(`${domain}_access`);
 
@@ -102,30 +114,58 @@ export default function LiasoningPage() {
   const setRow = (id: number, patch: Partial<RowDraft>) =>
     setRows(p => ({ ...p, [id]: { ...p[id], ...patch } }));
 
-  /** Upload the commissioned plant photo from the row, so the officer does not
-   *  have to open the customer to attach it. */
-  const uploadPhoto = async (lead: LiasoningLead, file: File | null) => {
+  /** Upload one of the two photos from the row, so the officer does not have to
+   *  open the customer to attach it.
+   *
+   *  The same call replaces: a slot holds one picture, and the server drops the
+   *  slot's previous file when a new one arrives. So "Replace" is this with a
+   *  slot that already has something in it, not a separate operation. */
+  const uploadPhoto = async (lead: LiasoningLead, slot: string, file: File | null) => {
     if (!file) return;
-    setPhotoId(lead.id);
+    setPhotoId(`${lead.id}:${slot}`);
     try {
       const body = new FormData();
       body.append("file", file);
-      body.append("doc_type", PLANT_PHOTO);
+      body.append("doc_type", slot);
       const r = await fetch(`${getApiBase(domain)}/api/leads/${lead.id}/liasoning/documents/`, {
         method: "POST", headers: { Authorization: `Bearer ${token()}` }, body,
       });
       if (!r.ok) { const e = await r.json().catch(() => ({})); alert(e.error || "Could not upload the photo."); return; }
       const doc = await r.json();
-      setLeads(prev => prev.map(x => (x.id === lead.id ? {
-        ...x,
-        record: {
-          ...(x.record || {} as LiasoningRecord),
-          has_plant_photo: true,
-          documents: [...(x.record?.documents || []), doc],
-        },
-      } : x)));
+      setLeads(prev => prev.map(x => {
+        if (x.id !== lead.id) return x;
+        // Mirror the server: this slot now holds exactly the new file.
+        const kept = (x.record?.documents || []).filter(d => d.doc_type !== slot);
+        const documents = [...kept, doc];
+        const has = (t: string) => documents.some(d => d.doc_type === t);
+        return {
+          ...x,
+          record: {
+            ...(x.record || {} as LiasoningRecord),
+            documents,
+            has_plant_photo: has(PLANT_PHOTO),
+            has_rf_image: has(RF_IMAGE),
+            photos_complete: has(PLANT_PHOTO) && has(RF_IMAGE),
+          },
+        };
+      }));
     } catch { alert("Network error while uploading."); }
     finally { setPhotoId(null); }
+  };
+
+  /** Super admin unlocks a signed-off row so it can be edited again. */
+  const unlock = async (lead: LiasoningLead) => {
+    if (!window.confirm(`Unlock ${lead.first_name} ${lead.last_name || ""} for editing?`)) return;
+    setSavingId(lead.id);
+    try {
+      const r = await fetch(`${getApiBase(domain)}/api/leads/${lead.id}/reopen-liasoning/`, {
+        method: "POST", headers: { Authorization: `Bearer ${token()}` },
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(d.error || "Could not unlock this record."); return; }
+      setLeads(prev => prev.map(x => (x.id === lead.id ? d : x)));
+    } catch { alert("Network error while unlocking."); }
+    finally { setSavingId(null); }
   };
 
   const saveRow = async (lead: LiasoningLead) => {
@@ -146,6 +186,24 @@ export default function LiasoningPage() {
         const d = await r.json();
         // Keep the saved record on the lead so the Annexure 3 gate reflects saved state.
         setLeads(prev => prev.map(x => (x.id === lead.id ? { ...x, record: { ...(x.record || {}), ...d } } : x)));
+        // Ticking Completed is the sign-off, and the sign-off is what locks the
+        // row. Done after the save so the remark is stored before the record
+        // closes to editing. The server re-checks the photos.
+        //
+        // Guarded on the photos here as well, so that Save on a row ticked
+        // before this rule existed still saves rather than failing on a
+        // sign-off it was never going to be allowed.
+        const docs = lead.record?.documents || [];
+        const photosIn = lead.record?.photos_complete
+          ?? (docs.some(x => x.doc_type === PLANT_PHOTO) && docs.some(x => x.doc_type === RF_IMAGE));
+        if (draft.annexure3_completed && photosIn && !lead.record?.is_complete) {
+          const c = await fetch(`${getApiBase(domain)}/api/leads/${lead.id}/complete-liasoning/`, {
+            method: "POST", headers: { Authorization: `Bearer ${token()}` },
+          });
+          const cd = await c.json().catch(() => ({}));
+          if (!c.ok) { alert(cd.error || "Saved, but could not complete this record."); return; }
+          setLeads(prev => prev.map(x => (x.id === lead.id ? cd : x)));
+        }
       } else { const e = await r.json().catch(() => ({})); alert(e.error || "Failed to save."); }
     } catch { alert("Network error while saving."); }
     finally { setSavingId(null); }
@@ -195,14 +253,16 @@ export default function LiasoningPage() {
           ) : (
             <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
               <div className="overflow-x-auto">
-                <table className="w-full text-sm min-w-[900px]">
+                <table className="w-full text-sm min-w-[1080px]">
                   <thead>
                     <tr className="text-left text-[10px] font-bold text-slate-400 uppercase tracking-wide border-b border-slate-100 bg-slate-50/60">
                       <th className="px-5 py-3">Customer</th>
                       <th className="px-5 py-3">Completed</th>
                       <th className="px-5 py-3">Remarks</th>
                       <th className="px-5 py-3">Discom Approval</th>
-                      <th className="px-5 py-3">Plant Photo</th>
+                      {PHOTO_SLOTS.map(([slot, label]) => (
+                        <th key={slot} className="px-5 py-3">{label}</th>
+                      ))}
                       <th className="px-5 py-3 text-right">Actions</th>
                     </tr>
                   </thead>
@@ -211,6 +271,10 @@ export default function LiasoningPage() {
                       const d = rows[l.id];
                       if (!d) return null;
                       const locked = !l.can_edit || !!l.record?.is_complete;
+                      const docs = l.record?.documents || [];
+                      const hasSlot = (t: string) => docs.some(x => x.doc_type === t);
+                      const photosIn = l.record?.photos_complete
+                        ?? (hasSlot(PLANT_PHOTO) && hasSlot(RF_IMAGE));
                       const completed = d.annexure3_completed;
                       const remark = d.annexure3_remark;
                       return (
@@ -231,14 +295,28 @@ export default function LiasoningPage() {
                             <p className="text-[11px] text-slate-400">{l.phone || "—"}{l.location ? ` · ${l.location}` : ""}</p>
                           </td>
                           <td className="px-5 py-3">
-                            <label className="inline-flex items-center gap-2 cursor-pointer">
-                              <input type="checkbox" checked={completed} disabled={locked}
+                            {/* Ticking this signs the record off, and the sign-off
+                                says the plant is live with the evidence on file —
+                                so it stays out of reach until both photos are in. */}
+                            <label className={`inline-flex items-center gap-2 ${
+                              locked || photosIn || completed ? "cursor-pointer" : "cursor-not-allowed"}`}
+                              title={!locked && !photosIn && !completed
+                                ? "Upload the plant photo and the RF image first"
+                                : undefined}>
+                              <input type="checkbox" checked={completed}
+                                disabled={locked || (!photosIn && !completed)}
                                 onChange={e => setRow(l.id, { annexure3_completed: e.target.checked })}
-                                className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500/30" />
+                                className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500/30 disabled:opacity-40" />
                               <span className={`text-xs font-semibold ${completed ? "text-emerald-600" : "text-slate-400"}`}>
                                 {completed ? "Completed" : "Not completed"}
                               </span>
                             </label>
+                            {/* Only where it is still the thing standing in the
+                                way. A row ticked before this rule existed keeps
+                                its tick and can still be unticked. */}
+                            {!locked && !photosIn && !completed && (
+                              <p className="text-[10px] text-amber-600 mt-1">Both photos required</p>
+                            )}
                           </td>
                           <td className="px-5 py-3 min-w-[220px]">
                             <input value={remark} disabled={locked} placeholder="Remarks"
@@ -261,33 +339,56 @@ export default function LiasoningPage() {
                               );
                             })()}
                           </td>
-                          <td className="px-5 py-3 min-w-[150px]">
-                            {/* Required before liasoning can be completed. */}
-                            {(() => {
-                              const photos = (l.record?.documents || []).filter(d => d.doc_type === PLANT_PHOTO);
-                              const has = !!l.record?.has_plant_photo || photos.length > 0;
-                              if (has) {
-                                return (
-                                  <a href={photos[0]?.file} target="_blank" rel="noreferrer"
-                                    className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 hover:text-emerald-800">
-                                    ✓ Uploaded{photos.length > 1 ? ` (${photos.length})` : ""}
-                                  </a>
-                                );
-                              }
-                              if (locked) return <span className="text-xs text-slate-400">—</span>;
-                              return (
-                                <label className="inline-flex items-center gap-2 cursor-pointer text-xs font-semibold text-amber-600 hover:text-amber-800">
-                                  {photoId === l.id ? "Uploading…" : "+ Upload"}
-                                  <input type="file" accept="image/*" className="hidden"
-                                    disabled={photoId === l.id}
-                                    onChange={e => uploadPhoto(l, e.target.files?.[0] ?? null)} />
-                                </label>
-                              );
-                            })()}
-                          </td>
+                          {/* Both required before the record can be signed off.
+                              Uploaded, each offers Open and Replace; the replace
+                              is the same upload, which supersedes the slot. */}
+                          {PHOTO_SLOTS.map(([slot, label]) => {
+                            const busy = photoId === `${l.id}:${slot}`;
+                            const doc = docs.find(x => x.doc_type === slot);
+                            return (
+                              <td key={slot} className="px-5 py-3 min-w-[150px]">
+                                {doc ? (
+                                  <div className="flex items-center gap-2">
+                                    <a href={doc.file} target="_blank" rel="noreferrer"
+                                      title={`Open the ${label.toLowerCase()}`}
+                                      className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 hover:text-emerald-800">
+                                      ✓ Open
+                                    </a>
+                                    {!locked && (
+                                      <label className="text-xs font-semibold text-slate-400 hover:text-indigo-600 cursor-pointer transition"
+                                        title={`Replace the ${label.toLowerCase()}`}>
+                                        {busy ? "Replacing…" : "Replace"}
+                                        <input type="file" accept="image/*" className="hidden" disabled={busy}
+                                          onChange={e => { const f = e.target.files?.[0] ?? null; e.currentTarget.value = ""; uploadPhoto(l, slot, f); }} />
+                                      </label>
+                                    )}
+                                  </div>
+                                ) : locked ? (
+                                  <span className="text-xs text-slate-400">—</span>
+                                ) : (
+                                  <label className="inline-flex items-center gap-2 cursor-pointer text-xs font-semibold text-amber-600 hover:text-amber-800">
+                                    {busy ? "Uploading…" : "+ Upload"}
+                                    <input type="file" accept="image/*" className="hidden" disabled={busy}
+                                      onChange={e => { const f = e.target.files?.[0] ?? null; e.currentTarget.value = ""; uploadPhoto(l, slot, f); }} />
+                                  </label>
+                                )}
+                              </td>
+                            );
+                          })}
                           <td className="px-5 py-3 text-right">
                             {locked ? (
-                              <span className="text-[11px] text-slate-400">Read-only</span>
+                              <div className="inline-flex items-center gap-3">
+                                <span className="text-[11px] text-slate-400">
+                                  {l.record?.is_complete ? "Locked" : "Read-only"}
+                                </span>
+                                {l.record?.is_complete && l.can_reopen && (
+                                  <button onClick={() => unlock(l)} disabled={savingId === l.id}
+                                    title="Unlock this record so it can be edited again"
+                                    className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg text-[11px] font-semibold hover:bg-slate-50 hover:text-indigo-600 disabled:opacity-50 transition">
+                                    {savingId === l.id ? "Unlocking…" : "Unlock"}
+                                  </button>
+                                )}
+                              </div>
                             ) : (
                               <button onClick={() => saveRow(l)} disabled={savingId === l.id}
                                 className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-semibold hover:bg-indigo-700 disabled:opacity-50 transition">

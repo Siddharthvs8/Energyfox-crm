@@ -3548,6 +3548,58 @@ class QuotationTests(TestCase):
         q = self.make_quotation(project['id'])
         self.assertEqual(q['subsidy_amount'], '78000.00')
 
+    def test_the_cover_carries_the_consumer_number_from_the_site_visit(self):
+        """The third row of the cover table is the KSEB consumer number.
+
+        It is recorded on the site visit, which is where someone reads it off
+        the customer's bill — the proposal takes it from there rather than
+        asking for it a second time.
+        """
+        import pymupdf
+        from leads.models import Lead, SiteVisit
+        self.with_template()
+        lead = Lead.objects.create(first_name='Meter', last_name='Reader',
+                                   phone='9000123456')
+        SiteVisit.objects.create(lead=lead, consumer_number='1234567890123')
+        q = self.make_quotation(self.priced_project()['id'], lead=lead.id)
+        r = self.client.get(f"/api/quotations/{q['id']}/proposal/", **self.auth())
+        doc = pymupdf.open(stream=r.content, filetype='pdf')
+        cover = doc[0].get_text()
+        doc.close()
+        self.assertIn('CONSUMER NUMBER', cover)
+        self.assertIn('1234567890123', cover)
+
+    def test_the_cover_no_longer_prints_the_location(self):
+        """The row it replaced. A lead with a location on file must not have it
+        appear where the consumer number now belongs."""
+        import pymupdf
+        from leads.models import Lead
+        self.with_template()
+        lead = Lead.objects.create(first_name='Located', last_name='Elsewhere',
+                                   phone='9000123457',
+                                   installation_location='Pattom, Trivandrum')
+        q = self.make_quotation(self.priced_project()['id'], lead=lead.id)
+        r = self.client.get(f"/api/quotations/{q['id']}/proposal/", **self.auth())
+        doc = pymupdf.open(stream=r.content, filetype='pdf')
+        cover = doc[0].get_text()
+        doc.close()
+        self.assertNotIn('Pattom', cover)
+        self.assertIn('CONSUMER NUMBER', cover)
+
+    def test_the_cover_renders_when_there_is_no_site_visit_yet(self):
+        """Quoted before the visit: the row is left empty rather than guessed at."""
+        import pymupdf
+        from leads.models import Lead
+        self.with_template()
+        lead = Lead.objects.create(first_name='Not', last_name='Visited',
+                                   phone='9000123458')
+        q = self.make_quotation(self.priced_project()['id'], lead=lead.id)
+        r = self.client.get(f"/api/quotations/{q['id']}/proposal/", **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        doc = pymupdf.open(stream=r.content, filetype='pdf')
+        self.assertIn('CONSUMER NUMBER', doc[0].get_text())
+        doc.close()
+
     def test_the_proposal_renders_on_the_company_artwork(self):
         self.with_template()
         q = self.make_quotation(self.priced_project()['id'])
@@ -3714,6 +3766,54 @@ class QuotationTests(TestCase):
         self.assertFalse(self.get(f"/api/quotations/{draft['id']}/")['is_order'])
         self.assertFalse(self.get(f"/api/quotations/{declined['id']}/")['is_order'])
         self.assertTrue(self.get(f"/api/quotations/{accepted['id']}/")['is_order'])
+
+    def raised_on(self, days_ago, **kw):
+        """A quotation with its creation date moved back — created_at is
+        auto_now_add, so it is written afterwards rather than passed in."""
+        from django.utils import timezone
+        from datetime import timedelta
+        from .models import Quotation
+        q = self.make_quotation(self.make_project()['id'], **kw)
+        Quotation.objects.filter(pk=q['id']).update(
+            created_at=timezone.now() - timedelta(days=days_ago))
+        return q
+
+    def test_the_list_can_be_filtered_by_the_date_it_was_raised(self):
+        from django.utils import timezone
+        from datetime import timedelta
+        old = self.raised_on(10)
+        recent = self.raised_on(1)
+        cut = (timezone.localtime() - timedelta(days=5)).date().isoformat()
+
+        since = [r['number'] for r in self.rows(f'?created_from={cut}')]
+        self.assertIn(recent['number'], since)
+        self.assertNotIn(old['number'], since)
+
+        upto = [r['number'] for r in self.rows(f'?created_to={cut}')]
+        self.assertIn(old['number'], upto)
+        self.assertNotIn(recent['number'], upto)
+
+    def test_both_ends_of_the_range_are_included(self):
+        """A single day as the range must return that day's quotations —
+        compared on the date, not the timestamp, or anything raised after
+        midnight would fall outside its own day."""
+        from django.utils import timezone
+        q = self.make_quotation(self.make_project()['id'])
+        today = timezone.localtime().date().isoformat()
+        numbers = [r['number'] for r in
+                   self.rows(f'?created_from={today}&created_to={today}')]
+        self.assertIn(q['number'], numbers)
+
+    def test_the_date_range_composes_with_the_status_filter(self):
+        from django.utils import timezone
+        from datetime import timedelta
+        draft = self.raised_on(1)
+        accepted = self.raised_on(1, status='accepted')
+        cut = (timezone.localtime() - timedelta(days=5)).date().isoformat()
+        numbers = [r['number'] for r in
+                   self.rows(f'?created_from={cut}&status=accepted')]
+        self.assertIn(accepted['number'], numbers)
+        self.assertNotIn(draft['number'], numbers)
 
     def test_an_order_leaves_the_quotation_list(self):
         lead = self.paid_lead()

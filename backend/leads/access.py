@@ -330,6 +330,21 @@ def can_reopen_documentation(user):
             or getattr(user, 'role', '') == 'documentation_manager')
 
 
+def can_reopen_liasoning(user):
+    """Who may unlock a completed liasoning record so it can be edited again:
+    the super admin, and no one else.
+
+    Deliberately not routed through ``custom_grant``. Completing liasoning is a
+    statement that the plant is live and the evidence is on file; letting the
+    same person who made that statement quietly take it back would leave the
+    record saying nothing at all. Reopening is an exception someone senior
+    grants, not a permission the role carries.
+    """
+    if not user or not getattr(user, 'is_authenticated', False):
+        return False
+    return bool(getattr(user, 'is_superuser', False))
+
+
 def can_access_liasoning(user):
     """Who can open the Liasoning & Service module: the liasoning officer plus
     admins / general managers who oversee them."""

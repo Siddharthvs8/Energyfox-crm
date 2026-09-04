@@ -44,6 +44,25 @@ const LOAN_FILES = [
 const LOAN_ITR: readonly [string, string] = ["loan_itr", "ITR"];
 const LOAN_PDF: readonly [string, string] = ["loan_agreement_purchase_order", "Agreement / Purchase Order"];
 
+/** Every stage-1 upload slot, flattened and qualified by its section.
+ *
+ * Exported because Documentation Stage 2 shows these files back read-only and
+ * has to name them the way this form named them. Derived from the groups above
+ * rather than written out again — four sections each hold an "Aadhaar", and a
+ * second hand-maintained list would drift and start labelling the wrong one.
+ */
+export const STAGE1_SLOT_LABELS: Record<string, string> = Object.fromEntries([
+  ...NC_FILES.map(([k, l]) => [k, `Name Change · ${l}`]),
+  ...LE_FILES.map(([k, l]) => [k, `Loan Enhancement · ${l}`]),
+  ...MNRE_KYC.map(([k, l]) => [k, `MNRE · ${l}`]),
+  ...MNRE_FILES.map(([k, l]) => [k, `MNRE · ${l}`]),
+  [MNRE_PDF[0], `MNRE · ${MNRE_PDF[1]}`],
+  ...LOAN_KYC.map(([k, l]) => [k, `Loan · ${l}`]),
+  ...LOAN_FILES.map(([k, l]) => [k, `Loan · ${l}`]),
+  [LOAN_ITR[0], `Loan · ${LOAN_ITR[1]}`],
+  [LOAN_PDF[0], `Loan · ${LOAN_PDF[1]}`],
+]);
+
 // Non-file inputs → saved via JSON PATCH.
 const BOOL_KEYS = ["name_change_completed", "load_enhancement_completed", "mnre_completed"] as const;
 // ITR is only required above this loan amount (read from the site visit).

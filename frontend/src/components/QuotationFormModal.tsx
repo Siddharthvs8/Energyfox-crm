@@ -8,7 +8,8 @@
  * it is the same document, and a BDE sitting with a customer needs the whole of
  * it, not a short form that has to be finished somewhere else later.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
 
@@ -29,6 +30,9 @@ export type Quotation = {
   // Set once the customer has paid against it: from then on the document is a
   // record of what was agreed, and the module closes it to editing.
   order_converted_at: string | null; is_order: boolean;
+  /** When it was raised. Server-set and never edited — the list shows it and
+   *  filters on it. */
+  created_at: string;
 };
 
 export const VARIANTS: [string, string][] = [["dcr", "DCR"], ["non_dcr", "Non-DCR"]];
@@ -40,6 +44,137 @@ const inputCls =
   "w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 " +
   "placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition";
 const labelCls = "block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5";
+
+/** Choosing the project: a search box rather than a list to scroll.
+ *
+ * The catalogue grows a row per capacity per system type — 3kW, 4kW, 5kW and up,
+ * each of them On-Grid, Hybrid, Micro Inverter and EN-PHASE — so hunting down a
+ * dropdown stops being workable long before the catalogue is finished. Typing
+ * "10 hybrid" should be enough to land on it.
+ */
+function ProjectPicker({ projects, value, onChange }: {
+  projects: any[];
+  /** The chosen project's id as a string; "" for none. */
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const box = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLUListElement>(null);
+
+  const describe = (p: any) =>
+    [p.name, p.system_type_display, p.capacity].filter(Boolean).join(" · ");
+  const chosen = projects.find(p => String(p.id) === value) || null;
+
+  const matches = useMemo(() => {
+    const text = query.trim().toLowerCase();
+    if (!text) return projects;
+    // Every word has to appear somewhere, in any order — so "hybrid 10" and
+    // "10 hybrid" both find the 10kW Hybrid, and neither has to be typed the
+    // way the name happens to be written.
+    const words = text.split(/\s+/);
+    return projects.filter(p => {
+      const hay = describe(p).toLowerCase();
+      return words.every(w => hay.includes(w));
+    });
+  }, [projects, query]);
+
+  useEffect(() => { setActive(0); }, [query]);
+
+  // Clicking anywhere else closes it and leaves the choice as it was.
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => {
+      if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", away);
+    return () => document.removeEventListener("mousedown", away);
+  }, [open]);
+
+  // Keep the keyboard selection in sight when arrowing past the fold.
+  useEffect(() => {
+    if (!open || !list.current) return;
+    const el = list.current.querySelectorAll("[data-option]")[active] as HTMLElement | undefined;
+    el?.scrollIntoView({ block: "nearest" });
+  }, [active, open]);
+
+  const pick = (p: any | null) => {
+    onChange(p ? String(p.id) : "");
+    setQuery("");
+    setOpen(false);
+  };
+
+  const onKey = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!open) { setOpen(true); return; }
+      const n = matches.length;
+      if (n) setActive(i => e.key === "ArrowDown" ? (i + 1) % n : (i - 1 + n) % n);
+    } else if (e.key === "Enter" && open) {
+      // Enter picks the highlighted row; it must not also submit the form.
+      e.preventDefault();
+      if (matches[active]) pick(matches[active]);
+    } else if (e.key === "Escape" && open) {
+      e.preventDefault();
+      setOpen(false);
+    }
+  };
+
+  return (
+    <div className="relative" ref={box}>
+      <input
+        // Closed, it reads as the choice; open, it is the search box.
+        value={open ? query : (chosen ? describe(chosen) : "")}
+        onChange={e => { setQuery(e.target.value); setOpen(true); }}
+        onFocus={() => { setQuery(""); setOpen(true); }}
+        onKeyDown={onKey}
+        placeholder={projects.length
+          ? "Search projects by name, type or capacity…"
+          : "No projects yet"}
+        role="combobox" aria-expanded={open} aria-autocomplete="list"
+        className={`${inputCls} ${chosen && !open ? "pr-9" : ""}`} />
+
+      {chosen && !open && (
+        <button type="button" onClick={() => pick(null)} title="Clear the project"
+          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 transition">
+          <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2"
+            strokeLinecap="round" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" /></svg>
+        </button>
+      )}
+
+      {open && (
+        <ul ref={list}
+          className="absolute z-30 mt-1 w-full max-h-64 overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-lg py-1">
+          <li>
+            <button type="button" onClick={() => pick(null)}
+              className="w-full text-left px-4 py-2 text-sm text-slate-500 hover:bg-slate-50 transition">
+              No project
+            </button>
+          </li>
+          {matches.length === 0 ? (
+            <li className="px-4 py-3 text-sm text-slate-400">
+              Nothing matches &ldquo;{query}&rdquo;.
+            </li>
+          ) : matches.map((p, i) => (
+            <li key={p.id}>
+              <button type="button" data-option onClick={() => pick(p)}
+                onMouseEnter={() => setActive(i)}
+                className={`w-full text-left px-4 py-2 transition ${
+                  i === active ? "bg-indigo-50" : "hover:bg-slate-50"}`}>
+                <span className="block text-sm font-medium text-slate-800">{p.name}</span>
+                <span className="block text-[11px] text-slate-400">
+                  {[p.system_type_display, p.capacity].filter(Boolean).join(" · ") || "—"}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 /** What actually went wrong, in words.
  *
@@ -294,15 +429,8 @@ export default function QuotationFormModal({ open, editing, lockedLeadId, onClos
             <div className="grid sm:grid-cols-[1fr_auto_auto] gap-4 items-end">
               <div>
                 <label className={labelCls}>Project</label>
-                <select value={form.project} onChange={e => chooseProject(e.target.value)}
-                  className={inputCls}>
-                  <option value="">No project</option>
-                  {projects.map(p => (
-                    <option key={p.id} value={p.id}>
-                      {[p.name, p.system_type_display, p.capacity].filter(Boolean).join(" · ")}
-                    </option>
-                  ))}
-                </select>
+                <ProjectPicker projects={projects} value={form.project}
+                  onChange={chooseProject} />
               </div>
               {form.project && (
                 <div>

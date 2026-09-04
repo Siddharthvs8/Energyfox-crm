@@ -297,8 +297,10 @@ class LiasoningDocumentSerializer(serializers.ModelSerializer):
 class LiasoningServiceSerializer(serializers.ModelSerializer):
     completed_by_name = serializers.SerializerMethodField()
     documents = LiasoningDocumentSerializer(many=True, read_only=True)
-    # Liasoning cannot be signed off until the commissioned plant is photographed.
+    # Liasoning cannot be signed off until both required photos are on file.
     has_plant_photo = serializers.BooleanField(read_only=True)
+    has_rf_image = serializers.BooleanField(read_only=True)
+    photos_complete = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = LiasoningService

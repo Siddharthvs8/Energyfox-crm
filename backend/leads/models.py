@@ -1221,8 +1221,14 @@ class LiasoningService(models.Model):
     annexure3_remark = models.CharField(max_length=255, blank=True, default='')
     discom_approval = models.CharField(max_length=10, choices=DISCOM_CHOICES, blank=True, default='pending')
 
-    # The one document slot on this record; see LiasoningDocument.
+    # The document slots on this record; see LiasoningDocument. Both are
+    # evidence the sign-off rests on, so both are required before it.
     PLANT_PHOTO = 'plant_commissioned'
+    RF_IMAGE = 'rf_image'
+    PHOTO_SLOTS = [
+        (PLANT_PHOTO, 'Plant Photo'),
+        (RF_IMAGE, 'RF Image'),
+    ]
 
     is_complete = models.BooleanField(default=False, db_index=True)
     completed_at = models.DateTimeField(null=True, blank=True)
@@ -1237,6 +1243,21 @@ class LiasoningService(models.Model):
         """Whether the commissioned plant has been photographed. Liasoning waits
         on it — the sign-off says the plant is live, so it needs the evidence."""
         return self.documents.filter(doc_type=self.PLANT_PHOTO).exists()
+
+    @property
+    def has_rf_image(self):
+        """Whether the RF image is on file. Required alongside the plant photo."""
+        return self.documents.filter(doc_type=self.RF_IMAGE).exists()
+
+    @property
+    def photos_complete(self):
+        """Both required photos are in. Until then the record cannot be signed
+        off — the sign-off asserts what these two pictures are the evidence
+        for, so it must not be possible to give it without them."""
+        present = set(self.documents.filter(
+            doc_type__in=[self.PLANT_PHOTO, self.RF_IMAGE]
+        ).values_list('doc_type', flat=True))
+        return present >= {self.PLANT_PHOTO, self.RF_IMAGE}
 
     def __str__(self):
         return f"Liasoning & Service — {self.lead}"
