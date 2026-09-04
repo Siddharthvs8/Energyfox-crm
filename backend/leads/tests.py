@@ -2270,7 +2270,7 @@ class Stage2EarlierImagesTests(TestCase):
 
     def setUp(self):
         from django.core.files.base import ContentFile
-        from leads.models import (DocumentationStage1, DocumentationStage1Document,
+        from leads.models import (SiteVisit, SiteVisitDocument,
                                   Project, ProjectDocument)
         self.docstaff = mk('img_doc', 'documentation_staff')
         self.lead = Lead.objects.create(
@@ -2278,9 +2278,10 @@ class Stage2EarlierImagesTests(TestCase):
             status='converted', pushed_to_doc_stage2=True,
             pushed_to_doc_stage2_at=timezone.now(), doc_stage2_staff=self.docstaff)
 
-        stage1, _ = DocumentationStage1.objects.get_or_create(lead=self.lead)
-        for slot in ('mnre_aadhaar', 'mnre_kseb_bill'):
-            d = DocumentationStage1Document(stage1=stage1, doc_type=slot)
+        # The site visit's own files — what Documentation Stage 1 shows.
+        visit, _ = SiteVisit.objects.get_or_create(lead=self.lead)
+        for slot in ('photo_meterbox', 'kseb_bill_file'):
+            d = SiteVisitDocument(site_visit=visit, doc_type=slot)
             d.file.save(f'{slot}.png', ContentFile(b'x'), save=True)
 
         project, _ = Project.objects.get_or_create(lead=self.lead)
@@ -2296,10 +2297,20 @@ class Stage2EarlierImagesTests(TestCase):
         r = self.get()
         self.assertEqual(r.status_code, 200, r.content[:300])
         images = r.json()['earlier_images']
+        # Declared order, not upload order — kseb_bill_file is listed first.
         self.assertEqual([d['doc_type'] for d in images['stage1']],
-                         ['mnre_aadhaar', 'mnre_kseb_bill'])
+                         ['kseb_bill_file', 'photo_meterbox'])
         self.assertEqual([d['doc_type'] for d in images['installation']],
                          ['panel_serial_numbers'])
+
+    def test_each_file_is_named_the_way_its_own_module_names_it(self):
+        """The labels come from the lists the collecting modules use, so the
+        Stage 2 page and the Stage 1 page cannot end up disagreeing."""
+        images = self.get().json()['earlier_images']
+        self.assertEqual([d['label'] for d in images['stage1']],
+                         ['KSEB Bill', 'Meter Box'])
+        self.assertEqual([d['label'] for d in images['installation']],
+                         ['Panel Serial Numbers'])
 
     def test_a_customer_with_neither_still_loads(self):
         """Stage 2 can be reached before the photos exist."""
@@ -2381,10 +2392,15 @@ class DiscomApprovalDirectionTests(TestCase):
         lia.refresh_from_db()
         self.assertEqual(lia.discom_approval, 'yes')
 
-    def test_approval_hands_the_customer_to_warranty(self):
+    def test_approval_alone_does_not_hand_the_customer_to_warranty(self):
+        """The approval is not the hand-over; the liasoning sign-off is.
+
+        A warranty is a promise about a plant that is live and cleared, and the
+        officer still has to sign off after the discom answers.
+        """
         self.stage2({'discom_approval': 'yes'})
         self.lead.refresh_from_db()
-        self.assertTrue(self.lead.pushed_to_warranty)
+        self.assertFalse(self.lead.pushed_to_warranty)
 
 
 class LiasoningLockAndUnlockTests(TestCase):
@@ -2429,6 +2445,31 @@ class LiasoningLockAndUnlockTests(TestCase):
         return self.client.patch(f'/api/leads/{self.lead.id}/liasoning-record/',
                                  data=body, content_type='application/json',
                                  HTTP_AUTHORIZATION=token_for(who))
+
+    def test_the_sign_off_is_what_hands_the_customer_to_warranty(self):
+        self.lead.refresh_from_db()
+        self.assertFalse(self.lead.pushed_to_warranty)
+        self.sign_off()
+        self.lead.refresh_from_db()
+        self.assertTrue(self.lead.pushed_to_warranty)
+        from .models import Warranty
+        self.assertTrue(Warranty.objects.filter(lead=self.lead).exists())
+
+    def test_unlocking_does_not_take_the_customer_back_out_of_warranty(self):
+        """Correcting the liasoning record must not withdraw a warranty that
+        may already have been issued."""
+        self.sign_off()
+        self.reopen(self.admin)
+        self.lead.refresh_from_db()
+        self.assertTrue(self.lead.pushed_to_warranty)
+
+    def test_warranty_shows_the_photos_liasoning_signed_off_on(self):
+        self.sign_off()
+        r = self.client.get(f'/api/leads/{self.lead.id}/warranty-detail/',
+                            HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        labels = [i['label'] for i in r.json()['liasoning_images']]
+        self.assertEqual(labels, ['Plant Photo', 'RF Image'])
 
     def test_the_record_cannot_be_edited_once_signed_off(self):
         self.sign_off()

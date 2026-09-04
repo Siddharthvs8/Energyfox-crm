@@ -19,6 +19,8 @@ type WarrantyDetail = {
   is_complete: boolean;
   can_edit: boolean;
   record: { completed_by_name: string | null } | null;
+  /** The photos liasoning signed off on — read-only here. */
+  liasoning_images?: { id: number; doc_type: string; label: string; file: string }[];
 };
 
 export default function WarrantyDetailPage({ params: paramsPromise }: { params: Promise<{ id: string }> }) {
@@ -82,6 +84,35 @@ export default function WarrantyDetailPage({ params: paramsPromise }: { params: 
           <Detail label="Documentation Staff" value={data.documentation_staff_name} />
           <Detail label="Reached Warranty" value={data.pushed_at ? new Date(data.pushed_at).toLocaleString("en-IN") : null} />
         </div>
+      </div>
+
+      {/* The evidence liasoning signed off on. The customer is only here
+          because liasoning said the plant is live, and the certificate below
+          describes that same plant — so the pictures of it belong on this page
+          rather than one module away. */}
+      <div className="mt-5 bg-white border border-slate-200 rounded-2xl shadow-sm p-5">
+        <h2 className="text-sm font-bold text-slate-900">Liasoning Images</h2>
+        <p className="text-[11px] text-slate-400 mt-0.5 mb-4">
+          Uploaded at liasoning sign-off. Read-only.
+        </p>
+        {(data.liasoning_images || []).length === 0 ? (
+          <p className="text-[11px] text-slate-400">No photos on the liasoning record.</p>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            {(data.liasoning_images || []).map(img => (
+              <a key={img.id} href={img.file} target="_blank" rel="noreferrer"
+                title={`Open the ${img.label.toLowerCase()}`}
+                className="group block border border-slate-200 rounded-xl overflow-hidden bg-white hover:border-indigo-300 hover:shadow-sm transition">
+                <div className="aspect-[4/3] bg-slate-50 overflow-hidden">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={img.file} alt={img.label} loading="lazy"
+                    className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform" />
+                </div>
+                <p className="px-2.5 py-1.5 text-[10px] font-semibold text-slate-600 truncate">{img.label}</p>
+              </a>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Warranty form */}

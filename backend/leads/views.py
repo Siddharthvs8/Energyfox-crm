@@ -2970,16 +2970,15 @@ class LeadViewSet(viewsets.ModelViewSet):
             lead.pushed_to_liasoning_at = now
             fanout += ['pushed_to_liasoning', 'pushed_to_liasoning_at']
             LiasoningService.objects.get_or_create(lead=lead)
-        if not lead.pushed_to_warranty:
-            lead.pushed_to_warranty = True
-            lead.pushed_to_warranty_at = now
-            fanout += ['pushed_to_warranty', 'pushed_to_warranty_at']
-            Warranty.objects.get_or_create(lead=lead)
+        # Warranty is deliberately not in this fan-out. It waits for liasoning to
+        # be signed off — see complete_liasoning. A warranty is a promise about a
+        # plant that is live and cleared, and installation finishing is not yet
+        # either of those.
         if fanout:
             lead.save(update_fields=fanout)
             ActivityLog.objects.create(
                 activity_type='note_added',
-                description="Moved to Documentation Stage 2, Warranty and Liasoning & Service.",
+                description="Moved to Documentation Stage 2 and Liasoning & Service.",
                 actor=request.user if request.user.is_authenticated else None,
                 lead=lead, extra={'auto_generated': True})
         fire_automation('project_completed', lead)
@@ -3325,27 +3324,50 @@ class LeadViewSet(viewsets.ModelViewSet):
     def _doc_stage2_earlier_images(self, lead, request):
         """What was photographed earlier, shown here read-only.
 
-        Stage 2 writes the completion documents out of what Stage 1 collected
-        and what the installation crew photographed on site — the serial
-        numbers, the meter, the plant. Both sets already exist in the system,
-        but they live in two other modules, and a documentation officer working
-        Stage 2 may not be able to open either. Making them go and look meant
-        working from memory, which is how a serial number gets typed wrong onto
-        a document that goes to KSEB.
+        Stage 2 writes the completion documents out of what the site visit
+        collected and what the installation crew photographed — the meter box,
+        the earthing, the serial numbers, the plant. Both sets already exist in
+        the system, but they live in two other modules, and a documentation
+        officer working Stage 2 may not be able to open either. Making them go
+        and look meant working from memory, which is how a serial number gets
+        typed wrong onto a document that goes to KSEB.
+
+        The first group is the site visit's own files — the same ones the
+        Documentation Stage 1 page shows, labelled the same way, because that is
+        where the officer is used to seeing them.
 
         Read-only on purpose: this is the earlier stages' evidence, and Stage 2
         is not where it gets changed.
         """
-        context = {'request': request}
-        stage1 = getattr(lead, 'documentation_stage1', None)
+        def rows(queryset, labels, order):
+            out = []
+            for doc in queryset:
+                try:
+                    url = request.build_absolute_uri(doc.file.url) if request else doc.file.url
+                except Exception:
+                    continue
+                out.append({
+                    'id': doc.id,
+                    'doc_type': doc.doc_type,
+                    'label': labels.get(doc.doc_type, doc.doc_type),
+                    'file': url,
+                    'uploaded_at': doc.uploaded_at,
+                })
+            # In the order the slots are declared, so the page reads the same
+            # way each time rather than in upload order.
+            place = {slot: i for i, slot in enumerate(order)}
+            out.sort(key=lambda r: place.get(r['doc_type'], len(place)))
+            return out
+
+        visit = getattr(lead, 'site_visit', None)
         project = getattr(lead, 'project', None)
+        visit_labels = dict(SITE_VISIT_ATTACHMENTS)
+        photo_labels = dict(Project.PHOTO_SLOTS)
         return {
-            'stage1': DocumentationStage1DocumentSerializer(
-                stage1.documents.all() if stage1 else [],
-                many=True, context=context).data,
-            'installation': ProjectDocumentSerializer(
-                project.documents.all() if project else [],
-                many=True, context=context).data,
+            'stage1': rows(visit.documents.all() if visit else [], visit_labels,
+                           [s for s, _ in SITE_VISIT_ATTACHMENTS]),
+            'installation': rows(project.documents.all() if project else [], photo_labels,
+                                 [s for s, _ in Project.PHOTO_SLOTS]),
         }
 
     def _sync_discom_to_liasoning(self, lead, rec, old_discom, request):
@@ -3359,11 +3381,9 @@ class LeadViewSet(viewsets.ModelViewSet):
         if lia.discom_approval != rec.discom_approval:
             lia.discom_approval = rec.discom_approval
             lia.save(update_fields=['discom_approval', 'updated_at'])
-        # Approval clears the customer for the warranty hand-over. Checked on the
-        # current state (not just the transition) and idempotent, so a customer
-        # approved before this rule existed still gets moved on the next save.
-        if rec.discom_approval == 'yes':
-            self._push_to_warranty(lead, request)
+        # The approval alone no longer opens warranty: the liasoning officer
+        # signs off after it, and that sign-off is the hand-over — see
+        # complete_liasoning.
         if rec.discom_approval != old_discom:
             if rec.discom_approval == 'yes':
                 fire_automation('discom_approved', lead)
@@ -3473,9 +3493,11 @@ class LeadViewSet(viewsets.ModelViewSet):
     def _push_to_warranty(self, lead, request=None):
         """Hand the customer over to the Warranty module (idempotent).
 
-        Normally happens in the fan-out when the project completes; also called
-        when liasoning records the discom approval, so approved customers reach
-        warranty even if they finished installation before that fan-out existed.
+        Called from one place: the liasoning sign-off. Warranty used to open at
+        project completion alongside Documentation Stage 2 and Liasoning, which
+        put customers in front of the warranty desk months before their plant
+        was cleared — and a warranty issued then is a promise about something
+        nobody has confirmed is live.
         """
         if lead.pushed_to_warranty:
             return False
@@ -3485,7 +3507,7 @@ class LeadViewSet(viewsets.ModelViewSet):
         Warranty.objects.get_or_create(lead=lead)
         ActivityLog.objects.create(
             activity_type='note_added',
-            description="Discom approved — moved to warranty.",
+            description="Liasoning completed — moved to warranty.",
             actor=request.user if (request and request.user.is_authenticated) else None,
             lead=lead, extra={'auto_generated': True})
         return True
@@ -3518,7 +3540,34 @@ class LeadViewSet(viewsets.ModelViewSet):
             'record': WarrantySerializer(rec, context={'request': request}).data if rec else None,
             'is_complete': bool(rec and rec.is_complete),
             'can_edit': can_access_warranty(request.user),
+            'liasoning_images': self._liasoning_images(lead, request),
         }
+
+    def _liasoning_images(self, lead, request):
+        """The photos liasoning signed off on, shown read-only in Warranty.
+
+        A customer only reaches Warranty because liasoning said the plant is
+        live, and these two pictures are what that rests on. The warranty
+        certificate describes that same plant, so having them on the page beats
+        opening the liasoning module to check what was actually installed.
+        """
+        rec = getattr(lead, 'liasoning_service', None)
+        labels = dict(LiasoningService.PHOTO_SLOTS)
+        rows = []
+        if rec:
+            for doc in rec.documents.filter(doc_type__in=labels):
+                rows.append({
+                    'id': doc.id,
+                    'doc_type': doc.doc_type,
+                    'label': labels[doc.doc_type],
+                    'file': request.build_absolute_uri(doc.file.url) if request else doc.file.url,
+                    'uploaded_at': doc.uploaded_at,
+                })
+        # In the order the slots are declared, so the page reads the same way
+        # every time regardless of which was uploaded first.
+        order = [slot for slot, _ in LiasoningService.PHOTO_SLOTS]
+        rows.sort(key=lambda r: order.index(r['doc_type']))
+        return rows
 
     def _warranty_prefill(self, lead):
         """Pre-fill for the warranty certificate form, pulled from the customer's
@@ -3955,6 +4004,10 @@ class LeadViewSet(viewsets.ModelViewSet):
             activity_type='note_added', description="Liasoning & Service completed.",
             actor=request.user if request.user.is_authenticated else None,
             lead=lead, extra={'auto_generated': True})
+        # And this is what hands the customer to Warranty. The warranty is a
+        # promise about a plant that is live and cleared with the discom; until
+        # liasoning says so, there is nothing to promise about.
+        self._push_to_warranty(lead, request)
         fire_automation('liasoning_completed', lead)
         return Response(self._liasoning_payload(lead, request))
 

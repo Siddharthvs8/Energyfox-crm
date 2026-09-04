@@ -4,9 +4,7 @@ import { getApiBase } from "@/lib/mock-data";
 import React, { useCallback, useEffect, useState } from "react";
 
 // Geotagged installation photo slots — mirror Project.PHOTO_SLOTS on the backend.
-/** Shared with Documentation Stage 2, which shows these photos back
- *  read-only — same slots, same names. */
-export const PHOTO_SLOTS: [string, string][] = [
+const PHOTO_SLOTS: [string, string][] = [
   ["panel_serial_numbers", "Panel Serial Numbers"],
   ["inverter_sn", "Inverter SN"],
   ["generation_meter", "Generation Meter"],

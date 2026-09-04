@@ -4,10 +4,6 @@ import { getApiBase } from "@/lib/mock-data";
 import React, { useCallback, useEffect, useState } from "react";
 import { loadEnergyfoxLogo } from "@/lib/pdf-logo";
 import { toISODate, toDisplayDate } from "@/lib/date-fields";
-// Named where they are defined, so these read back under the same labels
-// the forms that collected them used.
-import { STAGE1_SLOT_LABELS } from "../../documentation/[id]/DocumentationStage1Section";
-import { PHOTO_SLOTS } from "../../project/[id]/ProjectSection";
 
 const ANNEXURE_SLOT = "annexure3";
 const DISCOM_OPTIONS = [
@@ -145,7 +141,8 @@ export default function DocumentationStage2Section({ leadId, canEdit, onChanged 
   // Pre-fill values pulled from the customer's history (lead / site visit / stage 1 / project).
   const [prefill, setPrefill] = useState<Record<string, Record<string, string>>>({});
   // What the earlier stages photographed, shown here read-only.
-  const [earlier, setEarlier] = useState<{ stage1: Doc[]; installation: Doc[] }>(
+  const [earlier, setEarlier] = useState<{
+    stage1: (Doc & { label?: string })[]; installation: (Doc & { label?: string })[] }>(
     { stage1: [], installation: [] });
   const [openForm, setOpenForm] = useState<string | null>(null);
   const [formDraft, setFormDraft] = useState<Record<string, string>>({});
@@ -637,14 +634,16 @@ export default function DocumentationStage2Section({ leadId, canEdit, onChanged 
    * a PDF has no preview to show, and dropping it from the list would quietly
    * hide a document somebody uploaded. Both open the file itself.
    */
-  const renderGallery = (rows: Doc[], labels: Record<string, string>, empty: string) => {
+  const renderGallery = (rows: (Doc & { label?: string })[], empty: string) => {
     if (rows.length === 0) return <p className="text-[11px] text-slate-400">{empty}</p>;
     return (
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
         {rows.map(d => {
           const href = d.file.startsWith("http") ? d.file : `${apiBase}${d.file}`;
           const name = decodeURIComponent(d.file.split("/").pop() || "file");
-          const label = labels[d.doc_type] || d.doc_type;
+          // Named by the server, from the same lists the modules that collected
+          // these files label them with — so the two pages cannot drift apart.
+          const label = d.label || d.doc_type;
           const isImage = /\.(jpe?g|png|gif|webp|bmp|heic|avif)$/i.test(name);
           return (
             <a key={d.id} href={href} target="_blank" rel="noreferrer" title={`${label} — ${name}`}
@@ -707,11 +706,12 @@ export default function DocumentationStage2Section({ leadId, canEdit, onChanged 
       <div className={cardCls}>
         <h3 className={sectionTitle}>Documentation Stage 1 Images</h3>
         <p className="text-[11px] text-slate-400 mb-4">
-          Uploaded during Stage 1. Shown here so the completion documents can be
-          written from them without leaving this page.
+          The site visit&rsquo;s own files, as Documentation Stage 1 shows them.
+          Here so the completion documents can be written from them without
+          leaving this page.
         </p>
-        {renderGallery(earlier.stage1, STAGE1_SLOT_LABELS,
-          "Nothing was uploaded in Documentation Stage 1.")}
+        {renderGallery(earlier.stage1,
+          "No site visit files were uploaded for this customer.")}
       </div>
 
       <div className={cardCls}>
@@ -719,7 +719,7 @@ export default function DocumentationStage2Section({ leadId, canEdit, onChanged 
         <p className="text-[11px] text-slate-400 mb-4">
           The geotagged photos taken on site — serial numbers, meter and plant.
         </p>
-        {renderGallery(earlier.installation, Object.fromEntries(PHOTO_SLOTS),
+        {renderGallery(earlier.installation,
           "The installation photos have not been uploaded yet.")}
       </div>
 
