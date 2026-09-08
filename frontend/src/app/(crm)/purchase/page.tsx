@@ -31,6 +31,29 @@ type PurchaseLead = {
   amount_received: number | null;
 };
 
+/** The two cuts sit in one strip: procurement state first, then payment. */
+type TabKey = "pending" | "completed" | "partially_paid" | "fully_paid" | "all";
+
+const TAB_KEYS: TabKey[] = ["pending", "completed", "partially_paid", "fully_paid", "all"];
+
+const TAB_LABEL: Record<TabKey, string> = {
+  pending: "Pending",
+  completed: "Completed",
+  partially_paid: "Partially Paid",
+  fully_paid: "Fully Paid",
+  all: "All",
+};
+
+// Pending and Completed read the procurement flag; the other two read the
+// payment bucket. They are separate questions, so a row can be Pending and
+// Partially Paid at once and appears under both.
+const inTab = (l: PurchaseLead, key: TabKey) => {
+  if (key === "all") return true;
+  if (key === "pending") return !l.purchase_complete;
+  if (key === "completed") return l.purchase_complete;
+  return l.payment_state === key;
+};
+
 export default function PurchasePage() {
   const domain = APP_SLUG;
   const router = useRouter();
@@ -39,8 +62,10 @@ export default function PurchasePage() {
   const [leads, setLeads] = useState<PurchaseLead[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  // Procurement starts on a part payment, so the queue holds both — this splits them.
-  const [payment, setPayment] = useState<"all" | "partially_paid" | "fully_paid">("all");
+  // Two things are being tracked here at once, so the tabs cut the queue both
+  // ways: where the procurement stands, and what the customer has paid.
+  // Opens on the work still to do, with everything one tab away.
+  const [tab, setTab] = useState<TabKey>("pending");
 
   const token = () => localStorage.getItem(`${domain}_access`);
 
@@ -75,25 +100,21 @@ export default function PurchasePage() {
   if (!allowed) return null;
 
   const counts = {
-    all: leads.length,
+    pending: leads.filter(l => !l.purchase_complete).length,
+    completed: leads.filter(l => l.purchase_complete).length,
     partially_paid: leads.filter(l => l.payment_state === "partially_paid").length,
     fully_paid: leads.filter(l => l.payment_state === "fully_paid").length,
+    all: leads.length,
   };
 
   const filtered = leads.filter(l => {
-    if (payment !== "all" && l.payment_state !== payment) return false;
+    if (!inTab(l, tab)) return false;
     const q = search.trim().toLowerCase();
     if (!q) return true;
     return (`${l.first_name} ${l.last_name || ""}`.toLowerCase().includes(q)
       || (l.phone || "").toLowerCase().includes(q)
       || (l.location || "").toLowerCase().includes(q));
   });
-
-  const TABS: { key: typeof payment; label: string }[] = [
-    { key: "all", label: "All" },
-    { key: "partially_paid", label: "Partially Paid" },
-    { key: "fully_paid", label: "Fully Paid" },
-  ];
 
   return (
     <div className="p-6 lg:p-8 max-w-[1200px]">
@@ -103,14 +124,14 @@ export default function PurchasePage() {
       </div>
 
       <div className="flex gap-1 mb-5 border-b border-slate-200 overflow-x-auto no-scrollbar">
-        {TABS.map(t => (
-          <button key={t.key} onClick={() => setPayment(t.key)}
+        {TAB_KEYS.map(key => (
+          <button key={key} onClick={() => setTab(key)}
             className={`flex items-center gap-2 px-4 py-2.5 text-sm font-semibold whitespace-nowrap border-b-2 -mb-px transition-colors ${
-              payment === t.key ? "border-indigo-600 text-indigo-600" : "border-transparent text-slate-500 hover:text-slate-800"}`}>
-            {t.label}
+              tab === key ? "border-indigo-600 text-indigo-600" : "border-transparent text-slate-500 hover:text-slate-800"}`}>
+            {TAB_LABEL[key]}
             <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
-              payment === t.key ? "bg-indigo-50 text-indigo-700" : "bg-slate-100 text-slate-500"}`}>
-              {counts[t.key]}
+              tab === key ? "bg-indigo-50 text-indigo-700" : "bg-slate-100 text-slate-500"}`}>
+              {counts[key]}
             </span>
           </button>
         ))}
@@ -130,9 +151,9 @@ export default function PurchasePage() {
         <div className="py-16 text-center text-sm text-slate-400">Loading…</div>
       ) : filtered.length === 0 ? (
         <div className="bg-white border border-dashed border-slate-200 rounded-2xl p-12 text-center text-sm text-slate-400">
-          {payment === "all"
+          {tab === "all"
             ? "No customers in purchase & logistics yet."
-            : `No ${payment === "fully_paid" ? "fully" : "partially"} paid customers here yet.`}
+            : `No ${TAB_LABEL[tab].toLowerCase()} customers here yet.`}
         </div>
       ) : (
         <div className="space-y-4">

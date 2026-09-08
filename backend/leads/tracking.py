@@ -21,11 +21,16 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Lead, TrackingLink
+from .models import Lead, LiasoningService, TrackingLink
 
 
 def _done(flag, when=None):
-    return {'done': bool(flag), 'on': when.date().isoformat() if when else None}
+    # Read in the company's own timezone, not UTC. Everything here is stamped as
+    # an aware UTC datetime, so a sign-off at 2am IST falls on the previous UTC
+    # day — and the customer would be shown a date one behind the one they were
+    # given on the phone.
+    return {'done': bool(flag),
+            'on': timezone.localtime(when).date().isoformat() if when else None}
 
 
 def stages_for(lead):
@@ -50,6 +55,14 @@ def stages_for(lead):
     pl = getattr(lead, 'purchase_logistics', None)
     pr = getattr(lead, 'project', None)
     wr = getattr(lead, 'warranty', None)
+    lia = getattr(lead, 'liasoning_service', None)
+
+    # The RF image is the registration receipt the liasoning officer photographs
+    # at the board's counter, so the picture itself is the completion flag —
+    # there is no separate tick to fall out of step with it. Its upload time is
+    # the date the customer is shown.
+    rf = (lia.documents.filter(doc_type=LiasoningService.RF_IMAGE)
+          .order_by('uploaded_at', 'id').first()) if lia else None
 
     # ── The spine: one thing after another, in this order, always ──
     spine = [
@@ -92,11 +105,51 @@ def stages_for(lead):
         },
     ]
 
-    # ── After the installation: two jobs that run side by side ──
-    # The warranty can be issued before the subsidy is filed or long after it,
-    # so neither is evidence of the other. They are kept out of the spine for
-    # exactly that reason — see the forwards-only rule below.
-    after = []
+    # ── After the installation: jobs that run side by side ──
+    # Registration, commissioning, the board's approval, the subsidy claim and
+    # the warranty are independent of each other: the warranty can be issued
+    # before the subsidy is filed or long after it, so none of them is evidence
+    # of another. They are kept out of the spine for exactly that reason — see
+    # the forwards-only rule below.
+    after = [{
+        'key': 'kseb_registration',
+        'title': 'KSEB registration',
+        # Neutral on purpose: a pending row must not tell a customer their
+        # system is registered with the board when it is not.
+        'blurb': 'We register your installed system with KSEB.',
+        **_done(rf, getattr(rf, 'uploaded_at', None)),
+    }, {
+        'key': 'commissioning',
+        'title': 'Commissioning',
+        # Neutral on purpose, like the registration above it.
+        'blurb': 'We file your completion documents with KSEB to commission '
+                 'the system.',
+        # The officer's Completed tick. Signing the record off is what that tick
+        # does once both photos are in, and it is the half that carries a date;
+        # the bare flag is read as well so a row ticked before the photo rule
+        # existed still shows the customer what the office already believes.
+        **_done(lia and (lia.is_complete or lia.annexure3_completed),
+                getattr(lia, 'completed_at', None)),
+    }, {
+        'key': 'discom_approval',
+        'title': 'KSEB approval',
+        # Neutral on purpose: this row is pending for a customer whose approval
+        # has not come in, and it must not read as though it had.
+        'blurb': 'The board approves your completed installation.',
+        # Only 'yes' counts. 'no' is a refusal, not a step still to come, and
+        # 'pending' is the default every record starts on.
+        **_done(s2 and s2.discom_approval == 'yes',
+                getattr(s2, 'discom_approval_at', None)),
+    }]
+    after.append({
+        'key': 'warranty',
+        'title': 'Warranty issued',
+        'blurb': 'Your warranty certificate has been issued and sent to you.',
+        **_done(wr and wr.is_complete, getattr(wr, 'completed_at', None)),
+    })
+    # The claim goes in last, after the warranty is issued, so it reads to the
+    # customer in the order the office works. Ordering only: these steps are
+    # still independent of each other and neither infers the other.
     if s2 and s2.discom_approval == 'yes':
         after.append({
             'key': 'subsidy',
@@ -109,12 +162,6 @@ def stages_for(lead):
             'blurb': 'We claim your national subsidy from MNRE on your behalf.',
             **_done(s2.subsidy_requested, s2.subsidy_requested_at),
         })
-    after.append({
-        'key': 'warranty',
-        'title': 'Warranty issued',
-        'blurb': 'Your warranty certificate has been issued and sent to you.',
-        **_done(wr and wr.is_complete, getattr(wr, 'completed_at', None)),
-    })
 
     # The journey only runs forwards — but only along the spine. Departments
     # mark their own stage complete and they do not always do it in order: a job
@@ -131,6 +178,11 @@ def stages_for(lead):
     # parallel tasks with no order between them, so an issued warranty is no
     # evidence at all that the subsidy was claimed — inferring it would tell a
     # customer their claim was filed when it was not.
+    #
+    # KSEB registration is kept out of the spine for the same reason. A
+    # liasoning record can be opened from the discom sync before the project is
+    # signed off, so an RF image is not proof the installation is finished, and
+    # inferring it would tell a customer their system is up when it is not.
     reached = False
     for step in reversed(spine):
         if step['done']:
@@ -186,7 +238,8 @@ class TrackingLinkView(APIView):
         link = (TrackingLink.objects
                 .select_related('lead', 'lead__site_visit', 'lead__documentation_stage1',
                                 'lead__documentation_stage2', 'lead__purchase_logistics',
-                                'lead__project', 'lead__warranty')
+                                'lead__project', 'lead__warranty',
+                                'lead__liasoning_service')
                 .filter(token=token).first())
 
         if link is None or link.revoked or link.lead.is_trashed:

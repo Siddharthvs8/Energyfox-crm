@@ -811,9 +811,14 @@ class PurchaseQueueTests(TestCase):
 
     def make_lead(self, last, value='100000'):
         from decimal import Decimal
+        from .models import SiteVisit
         lead = Lead.objects.create(first_name='P', last_name=last, phone=f'99931{last[:5]}',
                                    status='converted', bde=self.bde, value=Decimal(value),
                                    pushed_to_accounts=True)
+        # Accounts refuses to verify a payment while KSEB feasibility is pending
+        # (see AccountsNeedsFeasibilityTests). These tests are about the payment
+        # buckets, so the sanction is already in hand.
+        SiteVisit.objects.create(lead=lead, kseb_feasibility_complete=True)
         return lead
 
     def verify(self, lead, received, discount=0):
@@ -907,9 +912,92 @@ class PurchaseQueueTests(TestCase):
 
 
 
-class Stage1NeedsFeasibilityTests(TestCase):
-    """Documentation Stage 1 hands the customer to accounts, so it waits for the
-    BDE's KSEB feasibility sign-off."""
+class AccountsNeedsFeasibilityTests(TestCase):
+    """Verifying the payment is what hands the customer to purchase.
+
+    Procurement orders against the sanctioned capacity, so panels must not be
+    ordered for a size KSEB has not sanctioned. The gate sits here rather than
+    at the documentation hand-over, which is a step earlier and does not spend
+    any money.
+    """
+
+    def setUp(self):
+        from .models import PaymentVerification, SiteVisit
+        self.accountant = mk('acc_feas', 'accounts_staff')
+        self.lead = Lead.objects.create(
+            first_name='Acc', last_name='Feas', phone='9994100002',
+            status='converted', value=200000,
+            pushed_to_accounts=True, pushed_to_accounts_at=timezone.now(),
+            accounts_staff=self.accountant)
+        self.sv = SiteVisit.objects.create(lead=self.lead)
+        self.pv = PaymentVerification.objects.create(
+            lead=self.lead, amount_received=50000, payment_mode='cash')
+
+    def verify(self):
+        return self.client.post(
+            f'/api/leads/{self.lead.id}/complete-payment-verification/',
+            HTTP_AUTHORIZATION=token_for(self.accountant))
+
+    def feasibility_done(self):
+        self.sv.kseb_feasibility_complete = True
+        self.sv.save(update_fields=['kseb_feasibility_complete'])
+
+    def test_verification_is_refused_while_feasibility_is_pending(self):
+        r = self.verify()
+        self.assertEqual(r.status_code, 400, r.content[:300])
+        self.assertTrue(r.json().get('kseb_feasibility_pending'))
+        self.pv.refresh_from_db(); self.lead.refresh_from_db()
+        self.assertFalse(self.pv.is_complete)
+        self.assertFalse(self.lead.pushed_to_purchase)
+
+    def test_verification_works_once_feasibility_is_complete(self):
+        self.feasibility_done()
+        r = self.verify()
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.pv.refresh_from_db(); self.lead.refresh_from_db()
+        self.assertTrue(self.pv.is_complete)
+        self.assertTrue(self.lead.pushed_to_purchase)
+
+    def test_a_lead_with_no_site_visit_at_all_is_refused(self):
+        self.sv.delete()
+        r = self.verify()
+        self.assertEqual(r.status_code, 400)
+        self.assertTrue(r.json().get('kseb_feasibility_pending'))
+
+    def test_the_payment_mode_gate_still_comes_first(self):
+        """A missing payment mode is reported as such, not as a feasibility
+        problem — otherwise the accountant is sent to the wrong module."""
+        self.pv.payment_mode = ''
+        self.pv.save(update_fields=['payment_mode'])
+        r = self.verify()
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('missing', r.json())
+        self.assertNotIn('kseb_feasibility_pending', r.json())
+
+    def test_nothing_reaches_purchase_while_it_is_pending(self):
+        """The whole point of the gate: no procurement without the sanction."""
+        self.verify()
+        from .models import PurchaseLogistics
+        self.assertFalse(PurchaseLogistics.objects.filter(lead=self.lead).exists())
+
+    def test_the_accounts_screen_says_where_feasibility_stands(self):
+        r = self.client.get(f'/api/leads/{self.lead.id}/accounts-detail/',
+                            HTTP_AUTHORIZATION=token_for(self.accountant))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertIs(r.json()['kseb_feasibility_complete'], False)
+        self.feasibility_done()
+        r = self.client.get(f'/api/leads/{self.lead.id}/accounts-detail/',
+                            HTTP_AUTHORIZATION=token_for(self.accountant))
+        self.assertIs(r.json()['kseb_feasibility_complete'], True)
+
+
+class Stage1DoesNotWaitForFeasibilityTests(TestCase):
+    """Documentation finishes its own paperwork without the KSEB sanction.
+
+    The gate moved to accounts: what must not start without a sanctioned
+    capacity is procurement, not the documentation hand-over. Documentation can
+    close while the BDE is still waiting on the section office.
+    """
 
     def setUp(self):
         from .models import DocumentationStage1, LeadDocument, SiteVisit
@@ -938,28 +1026,28 @@ class Stage1NeedsFeasibilityTests(TestCase):
         return self.client.post(f'/api/leads/{self.lead.id}/complete-documentation-stage1/',
                                 HTTP_AUTHORIZATION=token_for(self.doc))
 
-    def test_push_is_refused_while_feasibility_is_pending(self):
-        r = self.push()
-        self.assertEqual(r.status_code, 400, r.content[:300])
-        self.assertTrue(r.json().get('kseb_feasibility_pending'))
-        self.lead.refresh_from_db(); self.stage1.refresh_from_db()
-        self.assertFalse(self.stage1.is_complete)
-        self.assertFalse(self.lead.pushed_to_accounts)
-
-    def test_push_works_once_feasibility_is_complete(self):
-        self.sv.kseb_feasibility_complete = True
-        self.sv.save(update_fields=['kseb_feasibility_complete'])
+    def test_push_goes_through_while_feasibility_is_pending(self):
+        self.assertFalse(self.sv.kseb_feasibility_complete)
         r = self.push()
         self.assertEqual(r.status_code, 200, r.content[:300])
         self.lead.refresh_from_db(); self.stage1.refresh_from_db()
         self.assertTrue(self.stage1.is_complete)
         self.assertTrue(self.lead.pushed_to_accounts)
 
-    def test_a_lead_with_no_site_visit_at_all_is_refused(self):
+    def test_push_works_once_feasibility_is_complete_too(self):
+        self.sv.kseb_feasibility_complete = True
+        self.sv.save(update_fields=['kseb_feasibility_complete'])
+        r = self.push()
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.lead.refresh_from_db()
+        self.assertTrue(self.lead.pushed_to_accounts)
+
+    def test_a_lead_with_no_site_visit_at_all_still_pushes(self):
         self.sv.delete()
         r = self.push()
-        self.assertEqual(r.status_code, 400)
-        self.assertTrue(r.json().get('kseb_feasibility_pending'))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.lead.refresh_from_db()
+        self.assertTrue(self.lead.pushed_to_accounts)
 
     def test_the_mnre_gate_still_comes_first(self):
         """A missing MNRE field is reported as such, not as a feasibility problem."""
@@ -7904,7 +7992,9 @@ class CustomerTrackingLinkTests(TestCase):
     """
 
     def setUp(self):
+        from django.core.cache import cache
         from .models import DocumentationStage1, TrackingLink
+        cache.clear()  # see TrackingStagesTests.setUp — one shared anon budget
         self.TrackingLink = TrackingLink
         self.docstaff = mk('trk_doc', 'documentation_staff')
         self.bde = mk('trk_bde', 'bde')
@@ -8017,6 +8107,21 @@ class CustomerTrackingLinkTests(TestCase):
         self.assertTrue(materials['inferred'])
         # An inferred step must not borrow a date it was never given.
         self.assertIsNone(materials['on'])
+
+    def test_dates_are_shown_in_the_company_timezone(self):
+        """Stamps are stored as UTC. A job finished at 2am IST falls on the
+        previous UTC day, and the customer must not be shown a date a day behind
+        the one they were told."""
+        from datetime import datetime, timezone as dt_timezone
+        from .models import Project
+        # 20:30 UTC on the 8th is 02:00 IST on the 9th.
+        Project.objects.create(
+            lead=self.lead, is_complete=True,
+            completed_at=datetime(2026, 9, 8, 20, 30, tzinfo=dt_timezone.utc))
+        token = self.generate().json()['token']
+        step = next(s for s in self.track(token).json()['stages']
+                    if s['key'] == 'installation')
+        self.assertEqual(step['on'], '2026-09-09')
 
     def test_opening_the_page_is_counted(self):
         """The only evidence the address was right and the mail arrived."""
@@ -8151,7 +8256,12 @@ class TrackingStagesTests(TestCase):
     """
 
     def setUp(self):
+        from django.core.cache import cache
         from .models import DocumentationStage1, SiteVisit
+        # The customer's page is anonymous, so every test in this file draws on
+        # one shared anon throttle budget and a long class would start 429ing
+        # tests that had done nothing wrong.
+        cache.clear()
         self.docstaff = mk('stg_doc', 'documentation_staff')
         self.bde = mk('stg_bde', 'bde')
         self.lead = Lead.objects.create(
@@ -8200,6 +8310,62 @@ class TrackingStagesTests(TestCase):
             f'/api/leads/{self.lead.id}/documentation-stage2-record/',
             data={'subsidy_requested': requested},
             content_type='application/json', **self.auth())
+
+    def approve_discom(self, answer='yes'):
+        """Through Documentation Stage 2's own endpoint, which is where the
+        approval is recorded and where its date is stamped."""
+        Lead.objects.filter(pk=self.lead.pk).update(
+            pushed_to_doc_stage2=True, doc_stage2_staff=self.docstaff)
+        self.lead.refresh_from_db()
+        r = self.client.patch(
+            f'/api/leads/{self.lead.id}/documentation-stage2-record/',
+            data={'discom_approval': answer}, content_type='application/json',
+            **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return r
+
+    def officer(self):
+        """The liasoning officer, with the lead sitting in their module."""
+        from .models import LiasoningService
+        user = (User.objects.filter(username='stg_lia').first()
+                or mk('stg_lia', 'liasoning_officer'))
+        Lead.objects.filter(pk=self.lead.pk).update(
+            pushed_to_liasoning=True, pushed_to_liasoning_at=timezone.now())
+        LiasoningService.objects.get_or_create(lead=self.lead)
+        return user
+
+    def upload_photo(self, slot):
+        r = self.client.post(
+            f'/api/leads/{self.lead.id}/liasoning/documents/',
+            data={'file': SimpleUploadedFile('photo.jpg', b'jpeg bytes',
+                                             content_type='image/jpeg'),
+                  'doc_type': slot},
+            HTTP_AUTHORIZATION=token_for(self.officer()))
+        self.assertEqual(r.status_code, 201, r.content[:200])
+        return r
+
+    def upload_rf(self):
+        """Through the officer's own endpoint, since it is the upload itself —
+        not a second tick beside it — that registers the customer."""
+        from .models import LiasoningService
+        return self.upload_photo(LiasoningService.RF_IMAGE)
+
+    def sign_off_liasoning(self):
+        """What the Completed tick does on the liasoning list: it saves the
+        Annexure 3 flag, then signs the record off — which the server allows
+        only once both photos are in."""
+        from .models import LiasoningService
+        self.upload_photo(LiasoningService.PLANT_PHOTO)
+        self.upload_photo(LiasoningService.RF_IMAGE)
+        r = self.client.patch(
+            f'/api/leads/{self.lead.id}/liasoning-record/',
+            data={'annexure3_completed': True}, content_type='application/json',
+            HTTP_AUTHORIZATION=token_for(self.officer()))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        r = self.client.post(f'/api/leads/{self.lead.id}/complete-liasoning/',
+                             HTTP_AUTHORIZATION=token_for(self.officer()))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return r
 
     # ── What replaced the approvals step ──
     def test_the_approvals_step_is_gone(self):
@@ -8263,7 +8429,56 @@ class TrackingStagesTests(TestCase):
         self.with_loan()
         self.assertEqual(self.sanction(user=mk('stg_spec', 'spectator')).status_code, 403)
 
+    # ── KSEB approval ──
+    def test_the_approval_comes_straight_after_commissioning(self):
+        keys = self.keys()
+        self.assertEqual(keys[keys.index('commissioning') + 1], 'discom_approval')
+
+    def test_every_customer_sees_the_approval_step(self):
+        """Unlike the subsidy below it, which only appears once the answer is
+        yes, the approval itself is a step every customer waits on."""
+        self.assertIn('discom_approval', self.keys())
+
+    def test_approving_the_discom_ticks_it(self):
+        step = self.step('discom_approval')
+        self.assertFalse(step['done'])
+        self.assertIsNone(step['on'])
+        self.approve_discom()
+        step = self.step('discom_approval')
+        self.assertTrue(step['done'])
+        self.assertEqual(step['on'], timezone.localdate().isoformat())
+
+    def test_a_refusal_is_not_an_approval(self):
+        self.approve_discom('no')
+        step = self.step('discom_approval')
+        self.assertFalse(step['done'])
+        self.assertIsNone(step['on'])
+
+    def test_a_reversed_approval_unticks_and_drops_its_date(self):
+        """Otherwise a customer keeps a tick, and a date, for an approval the
+        board has taken back."""
+        from .models import DocumentationStage2
+        self.approve_discom()
+        self.approve_discom('pending')
+        step = self.step('discom_approval')
+        self.assertFalse(step['done'])
+        self.assertIsNone(step['on'])
+        self.assertIsNone(DocumentationStage2.objects.get(lead=self.lead).discom_approval_at)
+
+    def test_the_approval_blurb_claims_nothing_that_has_not_happened(self):
+        blurb = self.step('discom_approval')['blurb'].lower()
+        self.assertIn('board', blurb)
+        for wrong in ('has approved', 'has been', 'approved your'):
+            self.assertNotIn(wrong, blurb)
+
     # ── Subsidy ──
+    def test_the_subsidy_is_claimed_after_the_warranty_is_issued(self):
+        """The claim goes in last, so it reads in the order the office works."""
+        self.stage2(discom_approval='yes')
+        keys = self.keys()
+        self.assertEqual(keys[-1], 'subsidy')
+        self.assertLess(keys.index('warranty'), keys.index('subsidy'))
+
     def test_no_subsidy_step_before_the_discom_has_decided(self):
         """A maybe is not shown: a step that later vanishes reads as a promise
         withdrawn."""
@@ -8321,8 +8536,110 @@ class TrackingStagesTests(TestCase):
         for wrong in ('has been', 'credited', 'paid', 'received', '₹'):
             self.assertNotIn(wrong, blurb)
 
+    # ── KSEB registration ──
+    def test_registration_comes_straight_after_the_installation(self):
+        keys = self.keys()
+        self.assertEqual(keys[keys.index('installation') + 1], 'kseb_registration')
+
+    def test_every_customer_sees_the_registration_step(self):
+        """Unlike the loan and the subsidy, it happens to everyone."""
+        self.assertIn('kseb_registration', self.keys())
+
+    def test_the_rf_image_is_what_ticks_it(self):
+        step = self.step('kseb_registration')
+        self.assertFalse(step['done'])
+        self.assertIsNone(step['on'])
+        self.upload_rf()
+        step = self.step('kseb_registration')
+        self.assertTrue(step['done'])
+        self.assertEqual(step['on'], timezone.now().date().isoformat())
+
+    def test_the_plant_photo_alone_does_not_tick_it(self):
+        """The two slots mean different things; only the RF image is the
+        registration."""
+        from .models import LiasoningDocument, LiasoningService
+        rec, _ = LiasoningService.objects.get_or_create(lead=self.lead)
+        LiasoningDocument.objects.create(
+            liasoning=rec, doc_type=LiasoningService.PLANT_PHOTO,
+            file=SimpleUploadedFile('plant.jpg', b'jpeg bytes',
+                                    content_type='image/jpeg'))
+        self.assertFalse(self.step('kseb_registration')['done'])
+
+    def test_registration_does_not_imply_the_installation_is_finished(self):
+        """A liasoning record can be opened before the project is signed off, so
+        an RF image is no evidence the system is up. Saying otherwise would tell
+        a customer their installation is complete when it is not."""
+        self.upload_rf()
+        installation = self.step('installation')
+        self.assertFalse(installation['done'])
+        self.assertFalse(installation['inferred'])
+
+    def test_a_warranty_does_not_imply_the_registration(self):
+        from .models import Project, Warranty
+        Project.objects.create(lead=self.lead, is_complete=True, completed_at=timezone.now())
+        Warranty.objects.create(lead=self.lead, is_complete=True, completed_at=timezone.now())
+        step = self.step('kseb_registration')
+        self.assertFalse(step['done'])
+        self.assertFalse(step['inferred'])
+
+    def test_the_registration_blurb_claims_nothing_that_has_not_happened(self):
+        blurb = self.step('kseb_registration')['blurb'].lower()
+        self.assertIn('kseb', blurb)
+        for wrong in ('has been', 'registered with kseb.', 'approved'):
+            self.assertNotIn(wrong, blurb)
+
+    # ── Commissioning ──
+    def test_commissioning_comes_straight_after_the_registration(self):
+        keys = self.keys()
+        self.assertEqual(keys[keys.index('kseb_registration') + 1], 'commissioning')
+
+    def test_every_customer_sees_the_commissioning_step(self):
+        self.assertIn('commissioning', self.keys())
+
+    def test_the_completed_tick_is_what_ticks_it(self):
+        step = self.step('commissioning')
+        self.assertFalse(step['done'])
+        self.assertIsNone(step['on'])
+        self.sign_off_liasoning()
+        step = self.step('commissioning')
+        self.assertTrue(step['done'])
+        self.assertEqual(step['on'], timezone.now().date().isoformat())
+
+    def test_the_photos_alone_do_not_commission_the_system(self):
+        """They are what the tick waits on, not the tick itself."""
+        from .models import LiasoningService
+        self.upload_photo(LiasoningService.PLANT_PHOTO)
+        self.upload_photo(LiasoningService.RF_IMAGE)
+        self.assertFalse(self.step('commissioning')['done'])
+        # The registration, which is the picture on its own, is done by now.
+        self.assertTrue(self.step('kseb_registration')['done'])
+
+    def test_a_row_ticked_before_the_photo_rule_still_counts(self):
+        """Those rows carry the tick without the sign-off behind it. The office
+        says the completion doc went in, so the customer is told so — with no
+        date, since none was ever stamped."""
+        from .models import LiasoningService
+        self.officer()
+        LiasoningService.objects.filter(lead=self.lead).update(annexure3_completed=True)
+        step = self.step('commissioning')
+        self.assertTrue(step['done'])
+        self.assertIsNone(step['on'])
+
+    def test_commissioning_does_not_imply_the_installation_is_finished(self):
+        self.sign_off_liasoning()
+        installation = self.step('installation')
+        self.assertFalse(installation['done'])
+        self.assertFalse(installation['inferred'])
+
+    def test_the_commissioning_blurb_claims_nothing_that_has_not_happened(self):
+        blurb = self.step('commissioning')['blurb'].lower()
+        self.assertIn('commission', blurb)
+        for wrong in ('has been', 'is commissioned', 'approved'):
+            self.assertNotIn(wrong, blurb)
+
     # ── Warranty ──
-    def test_the_warranty_is_the_last_step_and_is_always_shown(self):
+    def test_the_warranty_is_always_shown_and_ends_a_journey_with_no_subsidy(self):
+        self.assertIn('warranty', self.keys())
         self.assertEqual(self.keys()[-1], 'warranty')
 
     def test_the_warranty_step_lights_up_when_it_is_issued(self):
@@ -8352,7 +8669,18 @@ class TrackingStagesTests(TestCase):
         token = r.json()['token']
         self.assertFalse(self.client.get(f'/api/track/{token}/').json()['complete'])
         Warranty.objects.create(lead=self.lead, is_complete=True, completed_at=timezone.now())
-        self.assertTrue(self.client.get(f'/api/track/{token}/').json()['complete'])
+        # Registration, commissioning and the board's approval are steps now, so
+        # a warranty no longer finishes the journey on its own.
+        done = lambda: self.client.get(f'/api/track/{token}/').json()['complete']
+        self.assertFalse(done())
+        self.sign_off_liasoning()
+        self.assertFalse(done())
+        # Approving brings the subsidy row with it, so the journey grows a step
+        # at the same moment it finishes one.
+        self.approve_discom()
+        self.assertFalse(done())
+        self.claim_subsidy()
+        self.assertTrue(done())
 
     # ── The link has to outlive the steps that come after the installation ──
     def test_the_link_stays_open_until_the_last_step_is_done(self):

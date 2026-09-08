@@ -1110,6 +1110,11 @@ class DocumentationStage2(models.Model):
 
     # ── 2. MNRE Stage 2 (discom approval) ──
     discom_approval = models.CharField(max_length=10, choices=DISCOM_CHOICES, blank=True, default='pending')
+    # Stamped when the approval comes in, for the same reason as the subsidy
+    # stamp below: the customer's tracking page shows the day the board approved
+    # rather than a bare tick. Cleared if the answer later moves off 'yes', so a
+    # re-approval is dated when it actually happened.
+    discom_approval_at = models.DateTimeField(null=True, blank=True)
     subsidy_requested = models.BooleanField(default=False)   # when discom approved
     # Stamped when the claim is filed, so the customer's tracking page can show
     # the date rather than a bare tick.

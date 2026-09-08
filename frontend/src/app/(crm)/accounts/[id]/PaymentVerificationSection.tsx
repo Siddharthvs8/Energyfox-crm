@@ -25,9 +25,16 @@ const toNum = (v: any) => {
 };
 
 export default function PaymentVerificationSection({ leadId, canEdit, canReopen, dealValue,
-                                                     customerEmail, customerPhone, onChanged }: {
+                                                     customerEmail, customerPhone, onChanged,
+                                                     feasibilityDone = true, feasibilityDate,
+                                                     feasibilityDue }: {
   leadId: number | string; canEdit: boolean; canReopen?: boolean; dealValue: number;
   customerEmail?: string | null; customerPhone?: string | null; onChanged?: () => void;
+  /** Verifying the payment starts procurement, and procurement orders against
+   *  the sanctioned capacity — so the sanction has to be in first. */
+  feasibilityDone?: boolean;
+  feasibilityDate?: string | null;
+  feasibilityDue?: string | null;
 }) {
   const apiBase = getApiBase(APP_SLUG);
   const url = `${apiBase}/api/leads/${leadId}/payment-verification/`;
@@ -279,6 +286,32 @@ export default function PaymentVerificationSection({ leadId, canEdit, canReopen,
         </div>
       </div>
 
+      {/* KSEB feasibility — mirrored read-only from the BDE's own section, since
+          verifying the payment is what hands the customer to purchase. */}
+      {canEdit && !isComplete && (
+        <div className="mt-6 mb-4 bg-white border border-slate-200 rounded-2xl px-5 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-xs font-bold text-indigo-600 uppercase tracking-wide">KSEB Feasibility</h3>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                Filled by the BDE in the KSEB Feasibility module — read-only here.
+              </p>
+            </div>
+            <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide ${
+              feasibilityDone ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                              : "bg-amber-50 text-amber-700 border border-amber-200"}`}>
+              {feasibilityDone ? "✓ Completed" : "● Pending"}
+            </span>
+          </div>
+          <p className="text-[11px] text-slate-400 mt-2">
+            {feasibilityDone
+              ? <>Taken on <b className="text-slate-600">{feasibilityDate ? new Date(feasibilityDate).toLocaleDateString("en-IN") : "—"}</b>.</>
+              : <>The customer can only be pushed to purchase once this is completed
+                  {feasibilityDue ? <> · due {new Date(feasibilityDue).toLocaleDateString("en-IN")}</> : null}.</>}
+          </p>
+        </div>
+      )}
+
       {canEdit && !isComplete && (
         <div className="flex flex-wrap items-center gap-3">
           <button onClick={save} disabled={saving || completing || !ready}
@@ -286,11 +319,19 @@ export default function PaymentVerificationSection({ leadId, canEdit, canReopen,
             className="px-5 py-2.5 bg-slate-800 text-white rounded-xl text-sm font-semibold hover:bg-slate-900 disabled:opacity-50 disabled:cursor-not-allowed transition">
             {saving ? "Saving…" : saved ? "Saved ✓" : "Save"}
           </button>
-          <button onClick={complete} disabled={completing || saving || !ready} title={!ready ? "Select a payment mode (and UTR for non-cash) first" : ""}
+          {/* Save stays available without the sanction — the money has come in
+              either way and should be recorded. Only the verification, which
+              starts procurement, waits. */}
+          <button onClick={complete} disabled={completing || saving || !ready || !feasibilityDone}
+            title={!ready ? "Select a payment mode (and UTR for non-cash) first"
+                          : !feasibilityDone ? "KSEB feasibility is still pending" : ""}
             className="px-5 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition">
             {completing ? "Completing…" : "Payment Verified"}
           </button>
           {!ready && <span className="text-xs text-slate-400">Select a payment mode (and UTR for non-cash) to verify.</span>}
+          {ready && !feasibilityDone && (
+            <span className="text-xs text-amber-600">KSEB feasibility is still pending.</span>
+          )}
         </div>
       )}
     </div>

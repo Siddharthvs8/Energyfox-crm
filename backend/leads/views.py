@@ -1267,16 +1267,10 @@ class LeadViewSet(viewsets.ModelViewSet):
             return Response(
                 {'error': 'Complete the mandatory MNRE section first.', 'missing': missing},
                 status=status.HTTP_400_BAD_REQUEST)
-        # Accounts price the job off the sanctioned capacity, so the BDE's KSEB
-        # feasibility has to be signed off before the customer can be handed over.
-        sv = getattr(lead, 'site_visit', None)
-        if not (sv and sv.kseb_feasibility_complete):
-            return Response(
-                {'error': 'KSEB feasibility is still pending. The BDE must complete it '
-                          'in the KSEB Feasibility module before this customer can be '
-                          'pushed to accounts.',
-                 'kseb_feasibility_pending': True},
-                status=status.HTTP_400_BAD_REQUEST)
+        # KSEB feasibility used to gate this hand-over. It gates the next one
+        # instead — see complete_payment_verification. Documentation can finish
+        # its own paperwork while the BDE is still waiting on the section
+        # office; what must not start without the sanction is procurement.
         stage1.is_complete = True
         stage1.completed_at = timezone.now()
         stage1.completed_by = request.user if request.user.is_authenticated else None
@@ -1436,6 +1430,7 @@ class LeadViewSet(viewsets.ModelViewSet):
         from .access import can_assign_accounts, can_edit_payment_verification
         pv = getattr(lead, 'payment_verification', None)
         s1 = getattr(lead, 'documentation_stage1', None)
+        sv = getattr(lead, 'site_visit', None)
 
         def name(u):
             return (f"{u.first_name} {u.last_name}".strip() or u.username) if u else None
@@ -1472,6 +1467,12 @@ class LeadViewSet(viewsets.ModelViewSet):
             'can_edit_payment': can_edit_payment_verification(request.user, lead),
             'can_assign': can_assign_accounts(request.user),
             'can_reopen_payment': can_assign_accounts(request.user),
+            # Verifying the payment starts procurement, which orders against the
+            # sanctioned capacity — so the screen shows where the sanction
+            # stands rather than only refusing at the last step.
+            'kseb_feasibility_complete': bool(sv and sv.kseb_feasibility_complete),
+            'kseb_feasibility_date': sv.kseb_feasibility_date if sv else None,
+            'feasibility_due_date': sv.kseb_feasibility_due_date if sv else None,
         }
 
     @action(detail=False, methods=['get'], url_path='accounts')
@@ -1484,7 +1485,9 @@ class LeadViewSet(viewsets.ModelViewSet):
                             status=status.HTTP_403_FORBIDDEN)
         qs = (Lead.objects.filter(pushed_to_accounts=True)
               .select_related('product', 'bde', 'documentation_staff', 'accounts_staff',
-                              'payment_verification', 'documentation_stage1')
+                              'payment_verification', 'documentation_stage1',
+                              # The queue shows where KSEB feasibility stands.
+                              'site_visit')
               .order_by('-pushed_to_accounts_at'))
         # Plain accounts staff see only the leads assigned to them.
         if (not user.is_staff and not getattr(user, 'is_general_manager', False)
@@ -1649,6 +1652,18 @@ class LeadViewSet(viewsets.ModelViewSet):
         if missing:
             return Response({'error': 'Select a payment mode (and UTR details for non-cash payments) first.',
                              'missing': missing}, status=status.HTTP_400_BAD_REQUEST)
+        # Completing this is what hands the customer to purchase & logistics, and
+        # procurement orders against the sanctioned capacity. Ordering panels for
+        # a capacity KSEB has not sanctioned is stock bought for a job that may
+        # not be built that size — so the sanction comes first.
+        sv = getattr(lead, 'site_visit', None)
+        if not (sv and sv.kseb_feasibility_complete):
+            return Response(
+                {'error': 'KSEB feasibility is still pending. The BDE must complete it '
+                          'in the KSEB Feasibility module before this customer can be '
+                          'pushed to purchase.',
+                 'kseb_feasibility_pending': True},
+                status=status.HTTP_400_BAD_REQUEST)
         pv.is_complete = True
         pv.completed_at = timezone.now()
         pv.completed_by = request.user if request.user.is_authenticated else None

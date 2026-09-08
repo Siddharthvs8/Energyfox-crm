@@ -3689,12 +3689,16 @@ class QuotationTests(TestCase):
         goes through that gate rather than around it, because the conversion
         hangs off the real completion.
         """
-        from leads.models import Lead, PaymentVerification
+        from leads.models import Lead, PaymentVerification, SiteVisit
         QuotationTests._paid += 1
         lead = Lead.objects.create(
             first_name='Paid', last_name=f'Customer {QuotationTests._paid}',
             phone=f'989560{QuotationTests._paid:04d}', value=200000,
             pushed_to_accounts=True)
+        # Completion is also gated on the KSEB sanction, since it is what pushes
+        # the customer to purchase. Granted here — the conversion, not the gate,
+        # is what these tests are about.
+        SiteVisit.objects.create(lead=lead, kseb_feasibility_complete=True)
         PaymentVerification.objects.create(lead=lead, amount_received=amount,
                                            payment_mode='cash')
         return lead

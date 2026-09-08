@@ -264,18 +264,22 @@ class DocumentationStage2Serializer(serializers.ModelSerializer):
         fields = '__all__'
         # The subsidy stamp is written here, not sent by the client.
         read_only_fields = ['lead', 'created_at', 'updated_at', 'is_complete', 'completed_at',
-                            'completed_by', 'subsidy_requested_at']
+                            'completed_by', 'subsidy_requested_at', 'discom_approval_at']
 
     def update(self, instance, validated_data):
-        """Stamp the date the subsidy claim was filed, whenever the flag flips.
+        """Stamp the dates the customer's tracking page shows.
 
-        The customer's tracking page shows this date, so it has to be the day the
-        claim actually went in rather than the day the stage was signed off.
+        Both have to be the day the thing actually happened rather than the day
+        the stage was signed off, so they are written where the flag flips.
         """
         if ('subsidy_requested' in validated_data
                 and validated_data['subsidy_requested'] != instance.subsidy_requested):
             validated_data['subsidy_requested_at'] = (
                 timezone.now() if validated_data['subsidy_requested'] else None)
+        if ('discom_approval' in validated_data
+                and validated_data['discom_approval'] != instance.discom_approval):
+            validated_data['discom_approval_at'] = (
+                timezone.now() if validated_data['discom_approval'] == 'yes' else None)
         return super().update(instance, validated_data)
 
     def get_completed_by_name(self, obj):

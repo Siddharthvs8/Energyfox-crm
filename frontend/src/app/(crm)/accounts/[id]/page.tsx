@@ -23,6 +23,12 @@ type AccountsDetail = {
   stage1_complete: boolean;
   payment_complete: boolean;
   can_edit_payment: boolean;
+  // Verifying the payment hands the customer to purchase, and procurement
+  // orders against the sanctioned capacity — so the screen shows where the
+  // KSEB sanction stands.
+  kseb_feasibility_complete?: boolean;
+  kseb_feasibility_date?: string | null;
+  feasibility_due_date?: string | null;
   can_assign: boolean;
   can_reopen_payment: boolean;
 };
@@ -148,6 +154,9 @@ export default function AccountsDetailPage({ params: paramsPromise }: { params: 
         customerEmail={data.email}
         customerPhone={data.phone}
         onChanged={load}
+        feasibilityDone={!!data.kseb_feasibility_complete}
+        feasibilityDate={data.kseb_feasibility_date}
+        feasibilityDue={data.feasibility_due_date}
       />
 
       {/* Balance collection (partially / fully paid) — once payment is verified */}
