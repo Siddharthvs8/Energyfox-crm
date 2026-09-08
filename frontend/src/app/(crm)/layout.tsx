@@ -683,9 +683,12 @@ export default function DashboardLayout({
     { href: `/team`,          label: "Team",            Icon: Nav.Team, inB2B: true },
     { href: `/branches`,      label: "Branches",        Icon: Nav.Admin, adminOnly: true },
     { href: `/documentation`, label: "Documentation Stage 1", Icon: Nav.Quote, docFeature: true },
+    // The read-only tracker sits directly above Stage 2: for everyone who sees
+    // it (admins and general managers — the doc team have their own queue and
+    // never see this row) it is the overview the two stages hang under.
+    { href: `/documentation-status`, label: "Documentation", Icon: Nav.Quote, docTracker: true },
     { href: `/documentation-stage2`, label: "Documentation Stage 2", Icon: Nav.Quote, docStage2Feature: true },
     { href: `/warranty`,      label: "Warranty",         Icon: Nav.Quote, warrantyFeature: true },
-    { href: `/documentation-status`, label: "Documentation", Icon: Nav.Quote, docTracker: true },
     { href: `/feasibility`,   label: "KSEB Feasibility", Icon: Nav.Tasks, feasibilityFeature: true },
     { href: `/accounts`,      label: "Accounts",        Icon: Nav.Billing, accountsFeature: true },
     { href: `/accounts/partially-paid`, label: "Partially Paid", Icon: Nav.MyPerformance, paymentBucketFeature: true },
