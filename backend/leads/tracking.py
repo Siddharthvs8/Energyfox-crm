@@ -113,17 +113,20 @@ def stages_for(lead):
     # the forwards-only rule below.
     after = [{
         'key': 'kseb_registration',
-        'title': 'KSEB registration',
+        'title': 'KSEB registration and completion',
         # Neutral on purpose: a pending row must not tell a customer their
         # system is registered with the board when it is not.
-        'blurb': 'We register your installed system with KSEB.',
+        'blurb': 'We register your installed system with KSEB and file your '
+                 'completion documents.',
         **_done(rf, getattr(rf, 'uploaded_at', None)),
     }, {
         'key': 'commissioning',
         'title': 'Commissioning',
-        # Neutral on purpose, like the registration above it.
-        'blurb': 'We file your completion documents with KSEB to commission '
-                 'the system.',
+        # Written as the finished state, the way 'Installation complete' above
+        # is: it is the moment the customer has been waiting for, and the row is
+        # visibly greyed until it happens. The filing that gets there is
+        # described on the registration row above, so it is not repeated here.
+        'blurb': 'Your plant is now on and generating.',
         # The officer's Completed tick. Signing the record off is what that tick
         # does once both photos are in, and it is the half that carries a date;
         # the bare flag is read as well so a row ticked before the photo rule

@@ -31,8 +31,8 @@ export default function ProjectSection({ leadId, canEdit, canReopen, lockedReaso
   const authHeader = () => ({ Authorization: `Bearer ${localStorage.getItem(`${APP_SLUG}_access`)}` });
 
   const [f, setF] = useState<Record<string, string>>({
-    structure_work_start_date: "", structure_work_completed_date: "",
-    electrical_work_start_date: "", electrical_work_completed_date: "",
+    structure_work_start_date: "", structure_work_completed_date: "", structure_work_team: "",
+    electrical_work_start_date: "", electrical_work_completed_date: "", electrical_work_team: "",
   });
   const [documents, setDocuments] = useState<ProjDoc[]>([]);
   const [uploadingType, setUploadingType] = useState<string | null>(null);
@@ -48,8 +48,10 @@ export default function ProjectSection({ leadId, canEdit, canReopen, lockedReaso
     setF({
       structure_work_start_date: d.structure_work_start_date || "",
       structure_work_completed_date: d.structure_work_completed_date || "",
+      structure_work_team: d.structure_work_team || "",
       electrical_work_start_date: d.electrical_work_start_date || "",
       electrical_work_completed_date: d.electrical_work_completed_date || "",
+      electrical_work_team: d.electrical_work_team || "",
     });
     setDocuments(Array.isArray(d.documents) ? d.documents : []);
     setIsComplete(!!d.is_complete);
@@ -74,6 +76,11 @@ export default function ProjectSection({ leadId, canEdit, canReopen, lockedReaso
     const body: Record<string, any> = {};
     for (const k of ["structure_work_start_date", "structure_work_completed_date", "electrical_work_start_date", "electrical_work_completed_date"]) {
       body[k] = f[k] ? f[k] : null;
+    }
+    // The team names are the opposite: CharFields reject null, and an empty
+    // string is how a crew gets cleared off a project.
+    for (const k of ["structure_work_team", "electrical_work_team"]) {
+      body[k] = f[k] || "";
     }
     const r = await fetch(url, { method: "PATCH", headers: { "Content-Type": "application/json", ...authHeader() }, body: JSON.stringify(body) });
     if (!r.ok) { const e = await r.json().catch(() => ({})); alert(e.error || "Failed to save project."); return null; }
@@ -178,12 +185,24 @@ export default function ProjectSection({ leadId, canEdit, canReopen, lockedReaso
               <div><label className={labelCls}>Start Date</label><input type="date" value={f.structure_work_start_date} disabled={readOnly} onChange={e => set("structure_work_start_date", e.target.value)} className={inputCls} /></div>
               <div><label className={labelCls}>Completed Date</label><input type="date" value={f.structure_work_completed_date} disabled={readOnly} onChange={e => set("structure_work_completed_date", e.target.value)} className={inputCls} /></div>
             </div>
+            <div className="mt-3">
+              <label className={labelCls}>Team</label>
+              <input type="text" value={f.structure_work_team} disabled={readOnly} maxLength={255}
+                placeholder="Who did the structure work" className={inputCls}
+                onChange={e => set("structure_work_team", e.target.value)} />
+            </div>
           </div>
           <div>
             <h3 className={sectionTitle}>Electrical Work</h3>
             <div className="grid grid-cols-2 gap-3">
               <div><label className={labelCls}>Start Date</label><input type="date" value={f.electrical_work_start_date} disabled={readOnly} onChange={e => set("electrical_work_start_date", e.target.value)} className={inputCls} /></div>
               <div><label className={labelCls}>Completed Date</label><input type="date" value={f.electrical_work_completed_date} disabled={readOnly} onChange={e => set("electrical_work_completed_date", e.target.value)} className={inputCls} /></div>
+            </div>
+            <div className="mt-3">
+              <label className={labelCls}>Team</label>
+              <input type="text" value={f.electrical_work_team} disabled={readOnly} maxLength={255}
+                placeholder="Who did the electrical work" className={inputCls}
+                onChange={e => set("electrical_work_team", e.target.value)} />
             </div>
           </div>
         </div>

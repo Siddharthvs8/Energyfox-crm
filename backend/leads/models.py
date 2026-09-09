@@ -963,9 +963,14 @@ class Project(models.Model):
     # ── Structure work ──
     structure_work_start_date = models.DateField(null=True, blank=True)
     structure_work_completed_date = models.DateField(null=True, blank=True)
+    # Free text, not a link to users: these are the crews who went to site, and
+    # a fitting team is usually a contractor's name rather than anyone holding
+    # a CRM login.
+    structure_work_team = models.CharField(max_length=255, blank=True, default='')
     # ── Electrical work ──
     electrical_work_start_date = models.DateField(null=True, blank=True)
     electrical_work_completed_date = models.DateField(null=True, blank=True)
+    electrical_work_team = models.CharField(max_length=255, blank=True, default='')
     # ── Pending site ──
     site_name = models.CharField(max_length=255, blank=True, default='')
     pending_remark = models.TextField(blank=True, default='')

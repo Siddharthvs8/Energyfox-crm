@@ -3940,6 +3940,85 @@ class MaintenanceReminderTests(TestCase):
         self.assertEqual(r.status_code, 403)
 
 
+class ProjectWorkTeamTests(TestCase):
+    """Who actually went to site for each half of the job.
+
+    Free text rather than a user link: a fitting crew is usually a contractor's
+    name, and nobody on it holds a CRM login.
+    """
+
+    def setUp(self):
+        from .models import Project
+        self.pm = mk('pwt_pm', 'project_manager')
+        self.lead = Lead.objects.create(
+            first_name='Ahsal', last_name='N', phone='9895271488',
+            status='converted', value=Decimal('235000'),
+            pushed_to_project=True, pushed_to_project_at=timezone.now(),
+            project_manager=self.pm)
+        self.project = Project.objects.create(lead=self.lead)
+
+    def patch(self, **data):
+        return self.client.patch(f'/api/leads/{self.lead.id}/project-record/',
+                                 data=data, content_type='application/json',
+                                 HTTP_AUTHORIZATION=token_for(self.pm))
+
+    def record(self):
+        r = self.client.get(f'/api/leads/{self.lead.id}/project-record/',
+                            HTTP_AUTHORIZATION=token_for(self.pm))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return r.json()
+
+    def test_both_teams_are_saved_and_read_back(self):
+        r = self.patch(structure_work_team='Rajan & crew',
+                       electrical_work_team='Volt Electricals')
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.structure_work_team, 'Rajan & crew')
+        self.assertEqual(self.project.electrical_work_team, 'Volt Electricals')
+        d = self.record()
+        self.assertEqual(d['structure_work_team'], 'Rajan & crew')
+        self.assertEqual(d['electrical_work_team'], 'Volt Electricals')
+
+    def test_they_start_empty_rather_than_null(self):
+        """The form binds them to a text input, which cannot hold null."""
+        d = self.record()
+        self.assertEqual(d['structure_work_team'], '')
+        self.assertEqual(d['electrical_work_team'], '')
+
+    def test_a_team_can_be_cleared(self):
+        """A crew booked to the wrong job has to be removable."""
+        self.patch(structure_work_team='Wrong crew')
+        self.assertEqual(self.patch(structure_work_team='').status_code, 200)
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.structure_work_team, '')
+
+    def test_the_dates_still_save_alongside_them(self):
+        """The client sends both in one PATCH — dates as null when blank, teams
+        as an empty string — so the two must not tread on each other."""
+        r = self.client.patch(
+            f'/api/leads/{self.lead.id}/project-record/',
+            data={'structure_work_start_date': '2026-09-09',
+                  'structure_work_completed_date': None,
+                  'structure_work_team': 'Rajan & crew'},
+            content_type='application/json', HTTP_AUTHORIZATION=token_for(self.pm))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.structure_work_start_date.isoformat(), '2026-09-09')
+        self.assertIsNone(self.project.structure_work_completed_date)
+        self.assertEqual(self.project.structure_work_team, 'Rajan & crew')
+
+    def test_they_lock_with_the_rest_of_the_record(self):
+        """A completed project is closed to editing, and a new field must not be
+        a way around that."""
+        self.project.is_complete = True
+        self.project.completed_at = timezone.now()
+        self.project.save()
+        r = self.patch(structure_work_team='Slipped in')
+        self.assertEqual(r.status_code, 400, r.content[:200])
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.structure_work_team, '')
+
+
 class OverdueProjectsModuleTests(TestCase):
     """Overdue Projects is its own module: its own queue, its own permission key,
     and its own sidebar count â€” the count going up is what pops the notice at the
@@ -8582,6 +8661,14 @@ class TrackingStagesTests(TestCase):
         self.assertFalse(step['done'])
         self.assertFalse(step['inferred'])
 
+    def test_the_registration_step_names_both_halves_of_the_job(self):
+        """One row covers the registration and the completion filing, so both
+        have to be named on it."""
+        step = self.step('kseb_registration')
+        self.assertEqual(step['title'], 'KSEB registration and completion')
+        self.assertIn('register', step['blurb'].lower())
+        self.assertIn('completion documents', step['blurb'].lower())
+
     def test_the_registration_blurb_claims_nothing_that_has_not_happened(self):
         blurb = self.step('kseb_registration')['blurb'].lower()
         self.assertIn('kseb', blurb)
@@ -8631,11 +8718,14 @@ class TrackingStagesTests(TestCase):
         self.assertFalse(installation['done'])
         self.assertFalse(installation['inferred'])
 
-    def test_the_commissioning_blurb_claims_nothing_that_has_not_happened(self):
+    def test_the_commissioning_row_announces_the_plant_is_running(self):
+        """This row is deliberately written as the finished state, the way
+        'Installation complete' is — it is the moment the customer is waiting
+        for, and the row is greyed out until it arrives. The paperwork that
+        gets there is described on the registration row, not repeated here."""
         blurb = self.step('commissioning')['blurb'].lower()
-        self.assertIn('commission', blurb)
-        for wrong in ('has been', 'is commissioned', 'approved'):
-            self.assertNotIn(wrong, blurb)
+        self.assertIn('generating', blurb)
+        self.assertNotIn('completion documents', blurb)
 
     # ── Warranty ──
     def test_the_warranty_is_always_shown_and_ends_a_journey_with_no_subsidy(self):
