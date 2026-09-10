@@ -60,8 +60,16 @@ def can_edit_site_visit(user, lead):
         return True
     # Once handed off to documentation, the field team (the BDE and their managers)
     # can no longer edit the site visit — it becomes read-only for them.
+    #
+    # Unless a super admin has reopened it. That is the whole point of the
+    # unlock: a correction to a survey is the BDE's job, and an unlock that only
+    # let the super admin type would mean ringing the office to have someone
+    # else enter what the BDE is standing in front of. Marking the visit
+    # complete again clears the flag and closes this door.
     if getattr(lead, 'pushed_to_documentation', False):
-        return False
+        sv = getattr(lead, 'site_visit', None)
+        if not (sv and sv.reopened_at):
+            return False
     bde = lead.bde
     if bde is None:
         return False
@@ -328,6 +336,21 @@ def can_reopen_documentation(user):
         return granted
     return (user.is_staff or getattr(user, 'is_general_manager', False)
             or getattr(user, 'role', '') == 'documentation_manager')
+
+
+def can_reopen_site_visit(user):
+    """Who may unlock a signed-off site visit so it can be edited again: the
+    super admin, and no one else.
+
+    Same reasoning as ``can_reopen_liasoning`` below, and deliberately not routed
+    through ``custom_grant``. Completing a site visit is what hands the customer
+    to documentation; letting the person who signed it quietly unsign it would
+    make the hand-off meaningless. Reopening is an exception someone senior
+    grants, and it is logged against the lead.
+    """
+    if not user or not getattr(user, 'is_authenticated', False):
+        return False
+    return bool(getattr(user, 'is_superuser', False))
 
 
 def can_reopen_liasoning(user):

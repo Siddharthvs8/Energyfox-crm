@@ -486,6 +486,11 @@ class LeadSerializer(serializers.ModelSerializer):
     # owner once it has been handed to a BDE — both are shown as its owners.
     tele_caller_name = serializers.SerializerMethodField()
     can_edit_site_visit = serializers.SerializerMethodField()
+    # Whether this viewer may unlock a signed-off site visit, and whether one is
+    # currently unlocked — the two the site-visit screen needs to decide between
+    # showing a lock, an Unlock button, or a "reopened" banner.
+    can_reopen_site_visit = serializers.SerializerMethodField()
+    site_visit_reopened = serializers.SerializerMethodField()
     can_assign_bde = serializers.SerializerMethodField()
     can_assign_documentation = serializers.SerializerMethodField()
     site_visit_complete = serializers.SerializerMethodField()
@@ -589,6 +594,14 @@ class LeadSerializer(serializers.ModelSerializer):
     def get_can_edit_site_visit(self, obj):
         from .access import can_edit_site_visit
         return can_edit_site_visit(self._request_user(), obj)
+
+    def get_can_reopen_site_visit(self, obj):
+        from .access import can_reopen_site_visit
+        return can_reopen_site_visit(self._request_user())
+
+    def get_site_visit_reopened(self, obj):
+        sv = getattr(obj, 'site_visit', None)
+        return bool(sv and sv.reopened_at)
 
     def get_can_assign_bde(self, obj):
         from .access import can_assign_bde

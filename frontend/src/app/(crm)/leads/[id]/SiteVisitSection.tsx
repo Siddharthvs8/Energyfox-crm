@@ -181,8 +181,16 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h3 className="text-xs font-bold text-indigo-600 uppercase tracking-wide mt-2 mb-1 sm:col-span-2 lg:col-span-3">{children}</h3>;
 }
 
-export default function SiteVisitSection({ leadId, canEdit = true, onSaved, reloadKey = 0 }: {
+export default function SiteVisitSection({
+  leadId, canEdit = true, onSaved, reloadKey = 0, canReopen = false, reopened = false, locked = false,
+}: {
   leadId: string; canEdit?: boolean; onSaved?: () => void;
+  /** Super admin only — may unlock a signed-off visit so it can be corrected. */
+  canReopen?: boolean;
+  /** Currently unlocked: the field team can edit again until it is signed off. */
+  reopened?: boolean;
+  /** Signed off, or handed to documentation — i.e. there is something to unlock. */
+  locked?: boolean;
   // Bumped by the page when it changes something this section reads — assigning
   // a product, which seeds the price below. Without it the section keeps the
   // data it loaded on mount and the new price only turns up on a refresh.
@@ -190,6 +198,7 @@ export default function SiteVisitSection({ leadId, canEdit = true, onSaved, relo
 }) {
   const [form, setForm] = useState<Form>(EMPTY);
   const [siteVisitComplete, setSiteVisitComplete] = useState(false);
+  const [reopening, setReopening] = useState(false);
   // lead.value, derived from the two below it rather than typed. Kept in state
   // so the box shows the server's figure until the next save recomputes it.
   const [dealValue, setDealValue] = useState("");
@@ -613,6 +622,36 @@ ${field}: ${Array.isArray(msg) ? msg[0] : msg}`;
               className="w-4 h-4 rounded accent-emerald-600" />
             Site visit complete
           </label>
+          {reopened && (
+            <span className="text-[11px] font-semibold text-amber-700 bg-amber-50 px-3 py-1.5 rounded-lg">
+              Reopened — sign off again to lock it
+            </span>
+          )}
+          {/* Unlocking is the super admin's alone, and it is logged against the
+              lead. It stays available after the hand-off to documentation,
+              which is the case it exists for: a wrong capacity is usually
+              spotted downstream, long after the BDE signed off. */}
+          {canReopen && locked && !reopened && (
+            <button
+              onClick={async () => {
+                if (!confirm("Reopen this site visit so it can be corrected? The lead stays where it is, and the BDE gets edit access back until it is signed off again.")) return;
+                setReopening(true);
+                try {
+                  const r = await fetch(`${apiBase}/api/leads/${leadId}/reopen-site-visit/`, {
+                    method: "POST",
+                    headers: { Authorization: `Bearer ${localStorage.getItem(`${APP_SLUG}_access`)}` },
+                  });
+                  const d = await r.json().catch(() => ({}));
+                  if (!r.ok) { alert(d.error || "Could not reopen this site visit."); return; }
+                  onSaved?.();
+                } catch { alert("Network error while reopening."); }
+                finally { setReopening(false); }
+              }}
+              disabled={reopening}
+              className="px-4 py-2 bg-amber-500 text-white rounded-xl text-sm font-semibold hover:bg-amber-600 transition-all disabled:opacity-40">
+              {reopening ? "Reopening…" : "Reopen site visit"}
+            </button>
+          )}
           {saved && <span className="text-xs font-semibold text-emerald-600">Saved ✓</span>}
           {canEdit ? (
             <button onClick={save} disabled={saving || loading || overDiscounted}

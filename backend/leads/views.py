@@ -346,9 +346,17 @@ class LeadViewSet(viewsets.ModelViewSet):
             return Response({'error': 'You do not have permission to edit this site visit.'},
                             status=status.HTTP_403_FORBIDDEN)
         had_po_date = bool(sv.po_signed_date)
+        was_complete = sv.site_visit_complete
         serializer = SiteVisitSerializer(sv, data=request.data, partial=(request.method == 'PATCH'))
         serializer.is_valid(raise_exception=True)
         sv = serializer.save()
+
+        # Signing off again closes the door the super admin held open: the field
+        # team's extra access lasts exactly as long as the correction does.
+        if sv.site_visit_complete and not was_complete and sv.reopened_at:
+            sv.reopened_at = None
+            sv.reopened_by = None
+            sv.save(update_fields=['reopened_at', 'reopened_by', 'updated_at'])
 
         # Signing the PO is what puts a lead on the KSEB feasibility queue, so the
         # BDE's reminder has to be raised from here too — not only from the
@@ -383,10 +391,87 @@ class LeadViewSet(viewsets.ModelViewSet):
         if lead_updates:
             lead.save(update_fields=lead_updates)
 
+        # A correction made after the customer has moved on has to reach the
+        # stages that took a copy of it.
+        self._sync_site_visit_downstream(lead, sv)
+
         data = serializer.data
         data.update(self._site_visit_deal(lead, sv))
         # Tells the site-visit screen to send the BDE on to KSEB Feasibility.
         data['po_just_signed'] = po_just_signed
+        return Response(data)
+
+    @staticmethod
+    def _sync_site_visit_downstream(lead, sv):
+        """Push a corrected site visit through to the stages that copied it.
+
+        Most of what later stages show is read live off the site visit — the
+        capacity chain, the consumer number, the uploaded documents — so a
+        correction reaches them by itself. Two things were *copied* at a moment
+        in time and would otherwise keep the old value for ever:
+
+          * the PO and KSEB feasibility dates, taken into accounts when the
+            feasibility was completed;
+          * the deal value, which the caller recomputes when a price or discount
+            is sent.
+
+        Only an existing payment verification is touched. Creating one here
+        would put a lead that never reached accounts into the accounts queue as
+        a side effect of editing a survey.
+
+        Documentation's own MNRE capacity is deliberately left alone. It falls
+        back to the site visit when blank, so a correction shows through; when
+        the documentation team has typed their own figure, that is their entry
+        and this is not the place to overwrite it.
+        """
+        pv = getattr(lead, 'payment_verification', None)
+        if pv is None:
+            return []
+        updates = []
+        if pv.po_date != sv.po_signed_date:
+            pv.po_date = sv.po_signed_date
+            updates.append('po_date')
+        if pv.kseb_feasibility_date != sv.kseb_feasibility_date:
+            pv.kseb_feasibility_date = sv.kseb_feasibility_date
+            updates.append('kseb_feasibility_date')
+        if updates:
+            pv.save(update_fields=updates + ['updated_at'])
+        return updates
+
+    @action(detail=True, methods=['post'], url_path='reopen-site-visit')
+    def reopen_site_visit(self, request, pk=None):
+        """Super admin unlocks a signed-off site visit so it can be corrected.
+
+        Works after the lead has gone to documentation, which is the case it
+        exists for: a wrong capacity or consumer number is usually found by the
+        team downstream, long after the BDE signed off. The lead stays where it
+        is — this reopens the survey, it does not pull the customer back out of
+        documentation.
+        """
+        from .access import can_reopen_site_visit
+        lead = self.get_object()
+        if not can_reopen_site_visit(request.user):
+            return Response({'error': 'Only the super admin can reopen a site visit.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        sv, _ = SiteVisit.objects.get_or_create(lead=lead)
+        if not sv.site_visit_complete and sv.reopened_at:
+            return Response({'error': 'This site visit is already open for editing.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        sv.site_visit_complete = False
+        sv.reopened_at = timezone.now()
+        sv.reopened_by = request.user if request.user.is_authenticated else None
+        sv.save(update_fields=['site_visit_complete', 'reopened_at', 'reopened_by', 'updated_at'])
+        actor = (f"{request.user.first_name} {request.user.last_name}".strip()
+                 or request.user.username)
+        where = ' (already with documentation)' if lead.pushed_to_documentation else ''
+        ActivityLog.objects.create(
+            activity_type='note_added',
+            description=f"Site visit reopened for editing by {actor}{where}.",
+            actor=request.user if request.user.is_authenticated else None,
+            lead=lead,
+        )
+        data = SiteVisitSerializer(sv).data
+        data.update(self._site_visit_deal(lead, sv))
         return Response(data)
 
     @staticmethod

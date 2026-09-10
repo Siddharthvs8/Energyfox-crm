@@ -3940,6 +3940,141 @@ class MaintenanceReminderTests(TestCase):
         self.assertEqual(r.status_code, 403)
 
 
+class ReopenSiteVisitTests(TestCase):
+    """A super admin unlocking a signed-off site visit.
+
+    The case this exists for is a correction found downstream: documentation
+    notice the capacity is wrong days after the BDE signed off and the customer
+    was handed over. The unlock puts the survey back in the BDE's hands without
+    pulling the customer back out of documentation, and what they fix has to
+    reach the stages that already took a copy of it.
+    """
+
+    def setUp(self):
+        from .models import PaymentVerification, SiteVisit
+        self.superadmin = mk('rsv_super', 'superadmin')
+        self.admin = mk('rsv_admin', 'admin')
+        self.bde = mk('rsv_bde', 'bde')
+        self.lead = Lead.objects.create(
+            first_name='Reopen', last_name='Case', phone='9895271489',
+            status='converted', value=Decimal('200000'), bde=self.bde,
+            pushed_to_documentation=True, pushed_to_documentation_at=timezone.now())
+        self.sv = SiteVisit.objects.create(
+            lead=self.lead, site_visit_complete=True, plant_capacity='5 kW',
+            po_signed_date=date(2026, 8, 1), kseb_feasibility_date=date(2026, 8, 5))
+        # Accounts already holds the dates it was handed when feasibility closed.
+        self.pv = PaymentVerification.objects.create(
+            lead=self.lead, po_date=date(2026, 8, 1), kseb_feasibility_date=date(2026, 8, 5))
+
+    def reopen(self, user):
+        return self.client.post(f'/api/leads/{self.lead.id}/reopen-site-visit/',
+                                HTTP_AUTHORIZATION=token_for(user))
+
+    def patch_sv(self, user, **data):
+        return self.client.patch(f'/api/leads/{self.lead.id}/site-visit/', data=data,
+                                 content_type='application/json',
+                                 HTTP_AUTHORIZATION=token_for(user))
+
+    def can_edit(self, user):
+        r = self.client.get(f'/api/leads/{self.lead.id}/', HTTP_AUTHORIZATION=token_for(user))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return r.json()['can_edit_site_visit']
+
+    # ── The lock ──
+    def test_the_bde_is_locked_out_once_it_reaches_documentation(self):
+        self.assertFalse(self.can_edit(self.bde))
+        self.assertEqual(self.patch_sv(self.bde, plant_capacity='7 kW').status_code, 403)
+
+    def test_only_the_super_admin_can_reopen(self):
+        self.assertEqual(self.reopen(self.bde).status_code, 403)
+        self.assertEqual(self.reopen(self.admin).status_code, 403)
+        self.assertEqual(self.reopen(self.superadmin).status_code, 200)
+
+    # ── The unlock ──
+    def test_reopening_hands_the_survey_back_to_the_bde(self):
+        """An unlock only the super admin could then type into would mean the
+        BDE reading the roof down the phone to someone at a desk."""
+        self.assertEqual(self.reopen(self.superadmin).status_code, 200)
+        self.sv.refresh_from_db()
+        self.assertFalse(self.sv.site_visit_complete)
+        self.assertIsNotNone(self.sv.reopened_at)
+        self.assertEqual(self.sv.reopened_by, self.superadmin)
+        self.assertTrue(self.can_edit(self.bde))
+        self.assertEqual(self.patch_sv(self.bde, plant_capacity='7.5 kW').status_code, 200)
+
+    def test_the_customer_stays_in_documentation(self):
+        """Reopening corrects a survey; it does not undo the hand-off."""
+        self.reopen(self.superadmin)
+        self.lead.refresh_from_db()
+        self.assertTrue(self.lead.pushed_to_documentation)
+
+    def test_reopening_is_logged_against_the_lead(self):
+        from .models import ActivityLog
+        self.reopen(self.superadmin)
+        note = (ActivityLog.objects.filter(lead=self.lead, description__icontains='reopened')
+                .order_by('-id').first())
+        self.assertIsNotNone(note)
+        self.assertIn('documentation', note.description)
+
+    def test_reopening_twice_says_it_is_already_open(self):
+        self.assertEqual(self.reopen(self.superadmin).status_code, 200)
+        r = self.reopen(self.superadmin)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('already open', r.json()['error'])
+
+    # ── The correction reaching the stages that copied it ──
+    def test_a_corrected_po_date_reaches_accounts(self):
+        """Accounts took a copy when the feasibility closed. Left alone it would
+        hold the old date for ever."""
+        self.reopen(self.superadmin)
+        r = self.patch_sv(self.bde, po_signed_date='2026-08-20', kseb_feasibility_date='2026-08-22')
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.pv.refresh_from_db()
+        self.assertEqual(self.pv.po_date, date(2026, 8, 20))
+        self.assertEqual(self.pv.kseb_feasibility_date, date(2026, 8, 22))
+
+    def test_a_corrected_price_still_recomputes_the_deal_value(self):
+        self.reopen(self.superadmin)
+        r = self.patch_sv(self.bde, product_price='300000', discount='25000')
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.lead.refresh_from_db()
+        self.assertEqual(self.lead.value, Decimal('275000'))
+
+    def test_a_lead_with_no_accounts_record_is_not_given_one(self):
+        """Editing a survey must not push a customer into the accounts queue as
+        a side effect."""
+        from .models import PaymentVerification, SiteVisit
+        other = Lead.objects.create(first_name='No', last_name='Accounts', phone='9895271490',
+                                    bde=self.bde, pushed_to_documentation=True)
+        SiteVisit.objects.create(lead=other, site_visit_complete=True)
+        self.client.post(f'/api/leads/{other.id}/reopen-site-visit/',
+                         HTTP_AUTHORIZATION=token_for(self.superadmin))
+        r = self.client.patch(f'/api/leads/{other.id}/site-visit/',
+                              data={'po_signed_date': '2026-08-20'}, content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.bde))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertFalse(PaymentVerification.objects.filter(lead=other).exists())
+
+    # ── Closing it again ──
+    def test_signing_off_again_locks_the_bde_back_out(self):
+        self.reopen(self.superadmin)
+        self.assertTrue(self.can_edit(self.bde))
+        r = self.patch_sv(self.bde, site_visit_complete=True)
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.sv.refresh_from_db()
+        self.assertIsNone(self.sv.reopened_at)
+        self.assertFalse(self.can_edit(self.bde))
+
+    def test_the_lead_payload_tells_the_screen_what_to_show(self):
+        r = self.client.get(f'/api/leads/{self.lead.id}/', HTTP_AUTHORIZATION=token_for(self.superadmin))
+        self.assertTrue(r.json()['can_reopen_site_visit'])
+        self.assertFalse(r.json()['site_visit_reopened'])
+        self.reopen(self.superadmin)
+        r = self.client.get(f'/api/leads/{self.lead.id}/', HTTP_AUTHORIZATION=token_for(self.bde))
+        self.assertFalse(r.json()['can_reopen_site_visit'])
+        self.assertTrue(r.json()['site_visit_reopened'])
+
+
 class ProjectWorkTeamTests(TestCase):
     """Who actually went to site for each half of the job.
 

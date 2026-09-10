@@ -468,6 +468,17 @@ class SiteVisit(models.Model):
     # Once the PO is signed, KSEB feasibility must be taken; if not, it's due 2 days
     # after PO signing and the BDE gets a reminder notification. On completion the
     # PO + feasibility dates reflect into the lead's accounts payment verification.
+    # ── Reopening ──
+    # Set when a super admin unlocks a signed-off site visit. While it is set the
+    # field team may edit again even though the lead has moved on to
+    # documentation (see access.can_edit_site_visit), and it is cleared the
+    # moment the visit is marked complete again — so the unlock is a door held
+    # open, not a door taken off its hinges.
+    reopened_at = models.DateTimeField(null=True, blank=True)
+    reopened_by = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='reopened_site_visits')
+
     po_signed_date = models.DateField(null=True, blank=True, help_text="Date the purchase order was signed")
     kseb_feasibility_taken = models.CharField(max_length=3, choices=YES_NO, blank=True, default='')
     kseb_feasibility_date = models.DateField(null=True, blank=True, help_text="Date KSEB feasibility was taken")

@@ -1315,7 +1315,10 @@ export default function LeadDetailPage({
       </div>
 
       <SiteVisitSection leadId={String(params.id)} canEdit={!!lead.can_edit_site_visit}
-        onSaved={fetchData} reloadKey={dealVersion} />
+        onSaved={fetchData} reloadKey={dealVersion}
+        canReopen={!!lead.can_reopen_site_visit}
+        reopened={!!lead.site_visit_reopened}
+        locked={!!lead.site_visit_complete || !!lead.pushed_to_documentation} />
 
       {/* Push to documentation — the hand-off that follows the site visit above. */}
       {lead.can_edit_site_visit && !lead.pushed_to_documentation && (
