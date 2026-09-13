@@ -6578,10 +6578,17 @@ class IntegrationSettingsViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def sync(self, request, pk=None):
-        from .meta_integration import import_meta_leads
+        """Sync this integration now, on top of the twelve-hourly job.
+
+        Goes through the same wrapper the scheduled job uses, so pressing this
+        also moves the automatic clock — "every 12 hours" means never letting
+        more than twelve hours pass without a sync, and a manual one satisfies
+        that as well as an automatic one.
+        """
+        from .meta_integration import sync_integration
 
         integration = self.get_object()
-        result = import_meta_leads(
+        result = sync_integration(
             integration,
             actor=request.user,
             page_id=request.data.get('page_id', ''),

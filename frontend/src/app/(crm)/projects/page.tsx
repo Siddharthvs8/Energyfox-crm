@@ -248,7 +248,7 @@ export default function ProjectsPage() {
 
   const remove = async (p: Project) => {
     const used = p.quoted_count > 0
-      ? `\n\nIt is named on ${p.quoted_count} proforma invoice${p.quoted_count === 1 ? "" : "s"}. Those keep the specification they were issued with.`
+      ? `\n\nIt is named on ${p.quoted_count} quotation/proforma${p.quoted_count === 1 ? "" : "s"}. Those keep the specification they were issued with.`
       : "";
     if (!window.confirm(`Delete "${p.name}"?${used}`)) return;
     try {
@@ -409,7 +409,7 @@ export default function ProjectsPage() {
               </h2>
               <p className="text-[12px] text-slate-400 mt-0.5">
                 {editing && editing.quoted_count > 0
-                  ? `Quoted on ${editing.quoted_count} proforma${editing.quoted_count === 1 ? "" : "s"} — those keep the specification they were issued with.`
+                  ? `Quoted on ${editing.quoted_count} document${editing.quoted_count === 1 ? "" : "s"} — those keep the specification they were issued with.`
                   : "The four sections always appear on the sheet, in this order."}
               </p>
             </div>

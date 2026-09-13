@@ -36,7 +36,29 @@ type Integration = {
   meta_form_id: string;
   lead_count: number;
   connected: boolean;
+  // Sync state, written by the sync itself — the twelve-hourly job and the
+  // Sync Now button share one clock.
+  last_synced_at: string | null;
+  last_sync_ok: boolean | null;
+  last_sync_note: string;
+  next_sync_due_at: string | null;
+  sync_every_hours: number;
 };
+
+/** "3h ago" / "in 9h" — close enough for a sync clock, and short enough for a row. */
+function whenRelative(iso: string | null): string {
+  if (!iso) return '';
+  const ms = new Date(iso).getTime() - Date.now();
+  if (Number.isNaN(ms)) return '';
+  const future = ms > 0;
+  const mins = Math.round(Math.abs(ms) / 60000);
+  if (mins < 1) return future ? 'any moment' : 'just now';
+  if (mins < 60) return future ? `in ${mins}m` : `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return future ? `in ${hrs}h` : `${hrs}h ago`;
+  const days = Math.round(hrs / 24);
+  return future ? `in ${days}d` : `${days}d ago`;
+}
 
 type CurrentUser = { is_staff?: boolean; is_general_manager?: boolean; role?: string;
                      read_only?: boolean };
@@ -344,7 +366,31 @@ export default function MetaPage() {
               <button onClick={() => deleteIntegration(it)} disabled={busyId === it.id} className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-red-500 hover:bg-red-50 disabled:opacity-50 transition-all">
                 <I.Trash /> Delete
               </button>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-3">
+                {/* What the schedule has actually been doing. Without this the
+                    only way to know the twelve-hourly job is alive is to read
+                    the server log. */}
+                {it.connected && (
+                  <p className="hidden sm:block text-[11px] text-right leading-tight">
+                    {it.last_synced_at ? (
+                      <>
+                        <span className={it.last_sync_ok === false ? 'font-semibold text-red-600' : 'text-slate-500'}>
+                          {it.last_sync_ok === false ? 'Sync failed' : 'Synced'} {whenRelative(it.last_synced_at)}
+                        </span>
+                        <br />
+                        <span className="text-slate-400">
+                          {it.last_sync_ok === false
+                            ? it.last_sync_note
+                            : `auto every ${it.sync_every_hours}h · next ${whenRelative(it.next_sync_due_at)}`}
+                        </span>
+                      </>
+                    ) : (
+                      <span className="text-slate-400">
+                        Auto-syncs every {it.sync_every_hours}h · not run yet
+                      </span>
+                    )}
+                  </p>
+                )}
                 <button onClick={() => syncIntegration(it)} disabled={busyId === it.id || !it.connected} className="flex items-center gap-1.5 px-3.5 py-2 border border-slate-200 rounded-xl text-xs font-semibold text-slate-600 hover:bg-white disabled:opacity-50 disabled:cursor-not-allowed transition-all">
                   <I.Sync /> Sync Now
                 </button>

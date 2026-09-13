@@ -695,11 +695,21 @@ class LeadSerializer(serializers.ModelSerializer):
 class IntegrationSettingsSerializer(serializers.ModelSerializer):
     lead_count = serializers.SerializerMethodField()
     connected = serializers.SerializerMethodField()
+    # When the twelve-hourly job will next pull this page. Derived, so the screen
+    # does not have to know the cadence.
+    next_sync_due_at = serializers.DateTimeField(read_only=True)
+    sync_every_hours = serializers.SerializerMethodField()
 
     class Meta:
         model = IntegrationSettings
         fields = '__all__'
-        read_only_fields = ['created_at', 'updated_at']
+        # The sync stamps are written by the sync itself, never by a client
+        # saving the form — otherwise editing a token would look like a sync.
+        read_only_fields = ['created_at', 'updated_at', 'last_synced_at',
+                            'last_sync_ok', 'last_sync_note']
+
+    def get_sync_every_hours(self, obj):
+        return IntegrationSettings.SYNC_EVERY_HOURS
 
     def get_lead_count(self, obj):
         return obj.leads.count()

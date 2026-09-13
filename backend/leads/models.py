@@ -561,8 +561,44 @@ class IntegrationSettings(models.Model):
     meta_page_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, help_text="Facebook Page ID — used to route incoming webhook leads to this integration")
     meta_form_id = models.CharField(max_length=100, blank=True, null=True, help_text="Optional Lead Form ID used for manual Meta lead sync")
 
+    # ── Sync state ──
+    # Leads arrive two ways: Meta pushes them to the webhook as they are filled,
+    # and this pull catches anything the webhook missed — a delivery that failed,
+    # a form added while the webhook was misconfigured, the backlog from before
+    # an integration was connected. Twelve hours is chosen to be well inside
+    # Meta's 90-day retention while costing only two calls a day per page.
+    SYNC_EVERY_HOURS = 12
+
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    # None until it has ever run, so "never synced" and "last sync failed" are
+    # different states on the screen rather than both showing as a problem.
+    last_sync_ok = models.BooleanField(null=True, blank=True)
+    last_sync_note = models.CharField(max_length=255, blank=True, default='')
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    @property
+    def next_sync_due_at(self):
+        """When the scheduled sync will next pick this up, or None if it never has."""
+        if not self.last_synced_at:
+            return None
+        from datetime import timedelta
+        return self.last_synced_at + timedelta(hours=self.SYNC_EVERY_HOURS)
+
+    @property
+    def sync_due(self):
+        """Whether the twelve hours are up.
+
+        A manual Sync Now counts: it stamps the same clock, so pressing it at
+        ten o'clock moves the automatic one to ten in the evening. "Every 12
+        hours" is really "never let more than 12 hours pass without a sync",
+        and a manual sync satisfies that.
+        """
+        from django.utils import timezone
+        if not self.last_synced_at:
+            return True
+        return timezone.now() >= self.next_sync_due_at
 
     class Meta:
         verbose_name = "Meta Integration"

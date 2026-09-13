@@ -198,7 +198,16 @@ class ProjectSpecSerializer(serializers.ModelSerializer):
         return obj.lines.count()
 
     def get_quoted_count(self, obj):
-        return obj.quotes.count()
+        """How many documents name this bundle — quotations and proformas both.
+
+        It used to count only `quotes` (proformas). That was right when they
+        were the only document a project could be named on, but the retail side
+        now sells through quotations, so a bundle used on five quotations and no
+        proformas reported zero. Two things read this: the QUOTED ON column,
+        which then showed a dash for a bundle in daily use, and the delete
+        confirmation, which told the user nothing depended on it.
+        """
+        return obj.quotations.count() + obj.quotes.count()
 
     def _replace_lines(self, project, lines):
         """The whole sheet is sent each time, so it is written the same way.

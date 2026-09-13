@@ -15,7 +15,8 @@ from organization.models import OrgSettings
 from users.models import User
 from .models import (Vendor, StockItem, StockCustomer, GoodsReceipt, StockDispatch,
                      StockPurchaseOrder, StockQuote, StockQuoteItem, Quote,
-                     DispatchPayment, DocumentNumberSeries, series_key)
+                     DispatchPayment, DocumentNumberSeries, series_key,
+                     ProjectSpec, Quotation)
 
 
 def token_for(user):
@@ -3919,6 +3920,50 @@ class QuotationTests(TestCase):
 
     def test_a_login_is_required(self):
         self.assertEqual(self.client.get('/api/quotations/').status_code, 401)
+
+
+class ProjectQuotedCountTests(TestCase):
+    """How many documents name a bundle.
+
+    Two things read this number: the QUOTED ON column, and the delete
+    confirmation that warns what depends on the bundle. It used to count only
+    proformas, from when they were the only document a project could appear on.
+    The retail side now sells through quotations, so a bundle in daily use on
+    quotations reported zero — a dash in the column, and a delete prompt saying
+    nothing depended on it.
+    """
+
+    def setUp(self):
+        self.admin = mk('pqc_admin', 'admin')
+        self.project = ProjectSpec.objects.create(name='5kW OnGrid', capacity='5kW')
+
+    def count(self):
+        r = self.client.get(f'/api/projects/{self.project.pk}/',
+                            HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return r.json()['quoted_count']
+
+    def test_an_unused_bundle_counts_zero(self):
+        self.assertEqual(self.count(), 0)
+
+    def test_quotations_are_counted(self):
+        Quotation.objects.create(project=self.project, package_amount=200000)
+        Quotation.objects.create(project=self.project, package_amount=250000)
+        self.assertEqual(self.count(), 2)
+
+    def test_proformas_are_still_counted(self):
+        Quote.objects.create(project=self.project)
+        self.assertEqual(self.count(), 1)
+
+    def test_both_document_types_add_up(self):
+        Quotation.objects.create(project=self.project, package_amount=200000)
+        Quote.objects.create(project=self.project)
+        self.assertEqual(self.count(), 2)
+
+    def test_another_bundle_is_not_counted(self):
+        other = ProjectSpec.objects.create(name='3kW OnGrid', capacity='3kW')
+        Quotation.objects.create(project=other, package_amount=150000)
+        self.assertEqual(self.count(), 0)
 
 
 class RetailInventoryAccessTests(TestCase):

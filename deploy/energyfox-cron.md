@@ -6,6 +6,7 @@ the app EC2 instance via systemd timers (no extra service needed for 50 users).
 | Job | Command | Cadence | What it does |
 |-----|---------|---------|--------------|
 | Automation queue | `process_automation_queue` | every 5 min | resumes timed automation steps, flushes queued bulk WhatsApp, fires `lead_inactive`, purges 7-day-old Trash, trims automation logs >90 days |
+| Meta lead sync | `sync_meta_leads` | hourly | pulls Meta Lead Ads leads for any integration whose 12 hours are up — the safety net for leads the webhook never delivered |
 | Archive old leads | `archive_old_leads` | nightly 02:30 | archives terminal leads (lost / not interested / fully delivered) older than `ARCHIVE_AFTER_MONTHS` |
 | Database backup | `deploy/backup-db.sh` | nightly 03:00 | `pg_dump` of the CRM database, gzipped to `/var/backups/energyfox`, keeping 30 |
 | Certificate backup | `deploy/backup-certs.sh` | nightly 03:15 | snapshots `certbot/conf` (certs, private keys, ACME account key, renewal config) to `/var/backups/energyfox`, keeping 30 |
@@ -41,6 +42,43 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 ```
+
+`energyfox-meta-sync.service`
+```ini
+[Unit]
+Description=EnergyFox Meta lead sync
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/energyfox
+ExecStart=/usr/bin/docker compose exec -T backend python manage.py sync_meta_leads
+```
+
+`energyfox-meta-sync.timer`
+```ini
+[Unit]
+Description=Pull Meta leads for any integration due a sync
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Run **hourly**, not twelve-hourly. The command decides due-ness per integration
+from its own `last_synced_at`, so an hourly timer still pulls each page once
+every twelve hours — and a page whose turn was missed (host down, deploy,
+container restarting) is picked up within the hour instead of waiting another
+twelve. `Persistent=true` covers a host that was off at the scheduled moment.
+
+Pressing **Sync Now** in the CRM moves the same clock, so a manual sync is never
+followed minutes later by an automatic one. To change the cadence, pass
+`--hours N`; to pull everything regardless, `--force`. `--dry-run` prints what
+is due without calling Meta.
 
 `energyfox-archive.service`
 ```ini
@@ -123,6 +161,7 @@ WantedBy=timers.target
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now energyfox-queue.timer energyfox-archive.timer \
+                            energyfox-meta-sync.timer \
                             energyfox-dbbackup.timer energyfox-certbackup.timer
 systemctl list-timers | grep energyfox      # confirm next run times
 ```
@@ -189,5 +228,6 @@ instance loss loses both; EBS snapshots are the fix for that.
 
 ```cron
 */5 * * * *  cd /opt/energyfox && docker compose exec -T backend python manage.py process_automation_queue >> /var/log/energyfox-queue.log 2>&1
+0 * * * *    cd /opt/energyfox && docker compose exec -T backend python manage.py sync_meta_leads >> /var/log/energyfox-meta-sync.log 2>&1
 30 2 * * *   cd /opt/energyfox && docker compose exec -T backend python manage.py archive_old_leads >> /var/log/energyfox-archive.log 2>&1
 ```

@@ -3940,6 +3940,206 @@ class MaintenanceReminderTests(TestCase):
         self.assertEqual(r.status_code, 403)
 
 
+class MetaAutoSyncTests(TestCase):
+    """The twelve-hourly Meta pull, and the Sync Now button beside it.
+
+    Meta pushes leads to the webhook as they are filled; this pull is the safety
+    net for the ones that never arrived — a failed delivery, a form added while
+    the webhook was misconfigured, the backlog from before a page was connected.
+
+    Nothing here calls Meta: `import_meta_leads` is stubbed, because what is
+    being tested is when the sync runs and what it records, not the Graph API.
+    """
+
+    def setUp(self):
+        from leads.models import IntegrationSettings
+        self.admin = mk('meta_admin', 'admin')
+        self.a = IntegrationSettings.objects.create(
+            name='Kochi', meta_page_id='111', meta_access_token='token-a')
+        self.b = IntegrationSettings.objects.create(
+            name='Calicut', meta_page_id='222', meta_access_token='token-b')
+        # Connected integrations only: one with no token has nothing to call.
+        self.nc = IntegrationSettings.objects.create(name='Not connected', meta_page_id='333')
+
+    @staticmethod
+    def _ok(imported=2, skipped=1):
+        from leads.meta_integration import MetaImportResult
+        r = MetaImportResult()
+        r.imported, r.skipped = imported, skipped
+        return r
+
+    @staticmethod
+    def _failed(message='Meta says the token has expired.'):
+        from leads.meta_integration import MetaImportResult
+        r = MetaImportResult()
+        r.errors.append(message)
+        return r
+
+    def run_job(self, **kwargs):
+        from leads.meta_integration import sync_due_integrations
+        return sync_due_integrations(**kwargs)
+
+    # ── When it runs ──
+    def test_an_integration_that_has_never_synced_is_due(self):
+        self.assertTrue(self.a.sync_due)
+        self.assertIsNone(self.a.next_sync_due_at)
+
+    def test_a_sync_holds_it_off_for_twelve_hours(self):
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()):
+            self.run_job()
+        self.a.refresh_from_db()
+        self.assertFalse(self.a.sync_due)
+        self.assertEqual(self.a.next_sync_due_at,
+                         self.a.last_synced_at + timedelta(hours=12))
+
+    def test_it_comes_due_again_after_twelve_hours(self):
+        from leads.models import IntegrationSettings
+        IntegrationSettings.objects.filter(pk=self.a.pk).update(
+            last_synced_at=timezone.now() - timedelta(hours=12, minutes=1))
+        self.a.refresh_from_db()
+        self.assertTrue(self.a.sync_due)
+
+    def test_a_job_run_before_the_twelve_hours_does_nothing(self):
+        """The job is safe to run hourly — each page still goes once every 12h."""
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()) as call:
+            self.run_job()
+            self.assertEqual(call.call_count, 2)   # the two connected ones
+            call.reset_mock()
+            self.run_job()
+            self.assertEqual(call.call_count, 0)   # nothing is due yet
+
+    def test_force_syncs_whatever_the_clock_says(self):
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()) as call:
+            self.run_job()
+            call.reset_mock()
+            self.run_job(force=True)
+            self.assertEqual(call.call_count, 2)
+
+    def test_the_cadence_can_be_overridden(self):
+        from leads.models import IntegrationSettings
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()):
+            self.run_job()
+        IntegrationSettings.objects.filter(pk=self.a.pk).update(
+            last_synced_at=timezone.now() - timedelta(hours=7))
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()) as call:
+            self.run_job(hours=6)
+            self.assertEqual(call.call_count, 1)
+
+    def test_an_integration_with_no_token_is_left_alone(self):
+        """There is nothing to call, and stamping a failure every twelve hours
+        would bury the real ones."""
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()):
+            self.run_job()
+        self.nc.refresh_from_db()
+        self.assertIsNone(self.nc.last_synced_at)
+        self.assertIsNone(self.nc.last_sync_ok)
+
+    # ── What it records ──
+    def test_a_good_sync_is_recorded(self):
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok(3, 4)):
+            self.run_job()
+        self.a.refresh_from_db()
+        self.assertTrue(self.a.last_sync_ok)
+        self.assertIsNotNone(self.a.last_synced_at)
+        self.assertIn('3 imported', self.a.last_sync_note)
+
+    def test_a_failed_sync_is_recorded_just_as_loudly(self):
+        """Leaving the stamp untouched on a failure reads on screen as 'never
+        synced' for an integration that has been failing twice a day for a
+        week."""
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._failed()):
+            self.run_job()
+        self.a.refresh_from_db()
+        self.assertIsNotNone(self.a.last_synced_at)
+        self.assertFalse(self.a.last_sync_ok)
+        self.assertIn('expired', self.a.last_sync_note)
+
+    def test_one_integration_blowing_up_does_not_stop_the_others(self):
+        """A page with a dead token would otherwise hold up every other
+        branch's leads."""
+        def flaky(settings_obj, **kwargs):
+            if settings_obj.pk == self.a.pk:
+                raise RuntimeError('Graph API exploded')
+            return self._ok()
+
+        with patch('leads.meta_integration.import_meta_leads', side_effect=flaky):
+            self.run_job()
+        self.a.refresh_from_db(); self.b.refresh_from_db()
+        self.assertFalse(self.a.last_sync_ok)
+        self.assertIn('exploded', self.a.last_sync_note)
+        self.assertTrue(self.b.last_sync_ok)
+
+    # ── The manual button ──
+    def test_sync_now_still_works(self):
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok(5, 0)):
+            r = self.client.post(f'/api/integration-settings/{self.a.pk}/sync/',
+                                 HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertEqual(r.json()['imported'], 5)
+
+    def test_sync_now_moves_the_automatic_clock_too(self):
+        """Otherwise pressing the button at ten o'clock would be followed by an
+        automatic sync minutes later."""
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()):
+            self.client.post(f'/api/integration-settings/{self.a.pk}/sync/',
+                             HTTP_AUTHORIZATION=token_for(self.admin))
+        self.a.refresh_from_db()
+        self.assertIsNotNone(self.a.last_synced_at)
+        self.assertFalse(self.a.sync_due)
+
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()) as call:
+            self.run_job()
+            self.assertEqual([c.args[0].pk for c in call.call_args_list], [self.b.pk])
+
+    def test_the_api_reports_the_sync_state(self):
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()):
+            self.run_job()
+        r = self.client.get('/api/integration-settings/', HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        payload = r.json()
+        rows = payload if isinstance(payload, list) else payload['results']
+        row = next(x for x in rows if x['id'] == self.a.pk)
+        self.assertTrue(row['last_sync_ok'])
+        self.assertIsNotNone(row['last_synced_at'])
+        self.assertIsNotNone(row['next_sync_due_at'])
+        self.assertEqual(row['sync_every_hours'], 12)
+
+    def test_saving_the_form_cannot_fake_a_sync(self):
+        """The stamps belong to the sync; a client editing a token must not be
+        able to write them."""
+        r = self.client.patch(f'/api/integration-settings/{self.a.pk}/',
+                              data={'last_sync_ok': True, 'last_sync_note': 'faked'},
+                              content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.a.refresh_from_db()
+        self.assertIsNone(self.a.last_sync_ok)
+        self.assertEqual(self.a.last_sync_note, '')
+
+    # ── The command ──
+    def test_the_command_reports_failures_with_a_non_zero_exit(self):
+        """A systemd timer only tells anyone if the job exits non-zero."""
+        from django.core.management import call_command
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._failed()):
+            with self.assertRaises(SystemExit):
+                call_command('sync_meta_leads', verbosity=0)
+
+    def test_the_command_is_quiet_when_all_is_well(self):
+        from django.core.management import call_command
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()):
+            call_command('sync_meta_leads', verbosity=0)   # must not raise
+        self.a.refresh_from_db()
+        self.assertTrue(self.a.last_sync_ok)
+
+    def test_a_dry_run_calls_nothing(self):
+        from django.core.management import call_command
+        with patch('leads.meta_integration.import_meta_leads') as call:
+            call_command('sync_meta_leads', dry_run=True, verbosity=0)
+            call.assert_not_called()
+        self.a.refresh_from_db()
+        self.assertIsNone(self.a.last_synced_at)
+
+
 class ReopenSiteVisitTests(TestCase):
     """A super admin unlocking a signed-off site visit.
 
@@ -8766,7 +8966,11 @@ class TrackingStagesTests(TestCase):
         self.upload_rf()
         step = self.step('kseb_registration')
         self.assertTrue(step['done'])
-        self.assertEqual(step['on'], timezone.now().date().isoformat())
+        # localdate, not now().date(): the tracker reports dates in the
+        # company's timezone, so comparing against the UTC date fails for the
+        # five and a half hours after midnight IST — which is exactly when a
+        # long suite run reaches this.
+        self.assertEqual(step['on'], timezone.localdate().isoformat())
 
     def test_the_plant_photo_alone_does_not_tick_it(self):
         """The two slots mean different things; only the RF image is the
@@ -8825,7 +9029,11 @@ class TrackingStagesTests(TestCase):
         self.sign_off_liasoning()
         step = self.step('commissioning')
         self.assertTrue(step['done'])
-        self.assertEqual(step['on'], timezone.now().date().isoformat())
+        # localdate, not now().date(): the tracker reports dates in the
+        # company's timezone, so comparing against the UTC date fails for the
+        # five and a half hours after midnight IST — which is exactly when a
+        # long suite run reaches this.
+        self.assertEqual(step['on'], timezone.localdate().isoformat())
 
     def test_the_photos_alone_do_not_commission_the_system(self):
         """They are what the tick waits on, not the tick itself."""

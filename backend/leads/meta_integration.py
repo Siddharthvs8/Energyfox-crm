@@ -4,6 +4,7 @@ import urllib.parse
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any
 
 from django.conf import settings
@@ -450,6 +451,83 @@ def _discover_leads_from_token(client: MetaGraphClient, lead_fields: str, limit:
         )
 
     return leads
+
+
+def sync_integration(settings_obj: IntegrationSettings, actor=None, page_id: str = "",
+                     form_id: str = "", limit: int = 100) -> MetaImportResult:
+    """Import an integration's leads and record that it happened.
+
+    The one entry point for both kinds of sync — the Sync Now button and the
+    twelve-hourly job — so the two cannot drift apart and both move the clock
+    that decides when the next automatic one is due.
+
+    A failure is recorded as loudly as a success. The previous behaviour left
+    `last_synced_at` untouched on an error, which read on screen as "never
+    synced" for an integration that had been failing every twelve hours for a
+    week.
+    """
+    result = import_meta_leads(settings_obj, actor=actor, page_id=page_id,
+                               form_id=form_id, limit=limit)
+
+    if result.errors:
+        ok = False
+        note = result.errors[0][:255]
+    else:
+        ok = True
+        note = f"{result.imported} imported, {result.skipped} already here"
+
+    settings_obj.last_synced_at = timezone.now()
+    settings_obj.last_sync_ok = ok
+    settings_obj.last_sync_note = note
+    settings_obj.save(update_fields=["last_synced_at", "last_sync_ok",
+                                     "last_sync_note", "updated_at"])
+    return result
+
+
+def sync_due_integrations(hours: int | None = None, force: bool = False,
+                          limit: int = 100) -> list[tuple[IntegrationSettings, MetaImportResult | None]]:
+    """Sync every integration whose twelve hours are up.
+
+    Due-ness is decided per integration rather than by the clock the job runs
+    on, which is what makes the schedule survive reality: the job can be run
+    hourly, or twice, or after the host was down for a day, and each page is
+    still pulled once every twelve hours. Returns `(integration, result)` pairs,
+    with `None` for the ones skipped as not yet due.
+
+    One integration's failure never stops the rest — a page with an expired
+    token would otherwise hold up every other branch's leads.
+    """
+    interval = hours if hours is not None else IntegrationSettings.SYNC_EVERY_HOURS
+    outcome: list[tuple[IntegrationSettings, MetaImportResult | None]] = []
+
+    for integration in IntegrationSettings.objects.all().order_by("id"):
+        if not integration.meta_access_token:
+            # Not connected yet: there is nothing to call, and recording a
+            # failure every twelve hours would bury the real ones.
+            outcome.append((integration, None))
+            continue
+
+        if not force:
+            due_at = (integration.last_synced_at + timedelta(hours=interval)
+                      if integration.last_synced_at else None)
+            if due_at and timezone.now() < due_at:
+                outcome.append((integration, None))
+                continue
+
+        try:
+            outcome.append((integration, sync_integration(integration, limit=limit)))
+        except Exception as exc:  # noqa: BLE001 - one bad page must not stop the others
+            logger.exception("Meta auto-sync failed for integration %s", integration.pk)
+            integration.last_synced_at = timezone.now()
+            integration.last_sync_ok = False
+            integration.last_sync_note = str(exc)[:255]
+            integration.save(update_fields=["last_synced_at", "last_sync_ok",
+                                            "last_sync_note", "updated_at"])
+            failed = MetaImportResult()
+            failed.errors.append(str(exc))
+            outcome.append((integration, failed))
+
+    return outcome
 
 
 def meta_summary() -> dict[str, Any]:
