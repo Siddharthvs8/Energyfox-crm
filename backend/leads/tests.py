@@ -4860,6 +4860,115 @@ class FixAdNamedLeadsFromCampaignTests(TestCase):
         self.assertEqual(lead.first_name, 'Kerala')
 
 
+class MetaDistrictOrderTests(TestCase):
+    """Which district a Meta lead is filed under.
+
+    In order: the answer to `which_district_are_you_from?`, then the city, then
+    none. Each is matched against the districts Settings configured, so a
+    garbled district answer falls through to a usable city instead of blocking
+    it — and a city that is not a district (Kochi) files under nothing.
+
+    CSV import is deliberately unchanged: this rule is for Meta leads only.
+    """
+
+    def setUp(self):
+        from .models import District
+        for name in ('Ernakulam', 'Kannur', 'Kollam', 'Malappuram', 'Palakkad', 'Thrissur'):
+            District.objects.get_or_create(name=name, defaults={'is_active': True})
+        self.seq = 0
+
+    def lead(self, *fields):
+        self.seq += 1
+        lead, _ = create_lead_from_meta_payload({
+            'id': f'9700{self.seq}',
+            'field_data': [{'name': 'full_name', 'values': [f'Customer {self.seq}']},
+                           {'name': 'phone_number', 'values': [f'+9198950{self.seq:05d}']},
+                           *[{'name': n, 'values': [v]} for n, v in fields]],
+        })
+        return lead
+
+    # ── The district question ──
+    def test_the_district_question_is_used(self):
+        """The field exactly as it arrives from EnergyFox's lead form."""
+        lead = self.lead(('which_district_are_you_from?', 'palakkad'))
+        self.assertEqual(lead.district, 'Palakkad')
+
+    def test_the_form_answers_arrive_lowercase_and_are_filed_properly(self):
+        """The real export is all lowercase — malappuram, thrissur — and the lead
+        is filed under the configured spelling."""
+        for answer, expected in (('malappuram', 'Malappuram'), ('thrissur', 'Thrissur'),
+                                 ('ernakulam', 'Ernakulam'), ('kollam', 'Kollam')):
+            self.assertEqual(self.lead(('which_district_are_you_from?', answer)).district, expected)
+
+    def test_the_district_question_wins_over_the_city(self):
+        lead = self.lead(('which_district_are_you_from?', 'kollam'), ('city', 'Thrissur'))
+        self.assertEqual(lead.district, 'Kollam')
+
+    def test_the_question_is_found_without_its_question_mark(self):
+        lead = self.lead(('which_district_are_you_from', 'ernakulam'))
+        self.assertEqual(lead.district, 'Ernakulam')
+
+    def test_a_form_worded_differently_still_reads_its_district_question(self):
+        """Another branch's form, asking the same question in other words."""
+        lead = self.lead(('select_your_district', 'kannur'))
+        self.assertEqual(lead.district, 'Kannur')
+
+    # ── Falling back to the city ──
+    def test_no_district_question_falls_back_to_the_city(self):
+        lead = self.lead(('city', 'Malappuram'))
+        self.assertEqual(lead.district, 'Malappuram')
+
+    def test_an_empty_district_answer_falls_back_to_the_city(self):
+        lead = self.lead(('which_district_are_you_from?', ''), ('city', 'Thrissur'))
+        self.assertEqual(lead.district, 'Thrissur')
+
+    def test_a_district_answer_naming_no_district_falls_back_to_the_city(self):
+        """The fall-through is on a usable answer, not merely a present one."""
+        lead = self.lead(('which_district_are_you_from?', 'Payyanur.kannur'), ('city', 'Kannur'))
+        self.assertEqual(lead.district, 'Kannur')
+
+    # ── No district at all ──
+    def test_a_city_that_is_not_a_district_files_under_nothing(self):
+        lead = self.lead(('city', 'Kochi'))
+        self.assertEqual(lead.district, '')
+
+    def test_neither_answer_usable_files_under_nothing(self):
+        lead = self.lead(('which_district_are_you_from?', 'somewhere'), ('city', 'Kochi'))
+        self.assertEqual(lead.district, '')
+
+    def test_no_district_question_and_no_city_files_under_nothing(self):
+        lead = self.lead()
+        self.assertEqual(lead.district, '')
+
+    # ── The webhook shape ──
+    def test_the_webhook_shape_reads_the_district_question(self):
+        """Webhook payloads can carry the fields on the payload itself."""
+        lead, _ = create_lead_from_meta_payload({
+            'id': '97099', 'full_name': 'Webhook Customer',
+            'which_district_are_you_from?': 'palakkad',
+        })
+        self.assertEqual(lead.district, 'Palakkad')
+
+    def test_the_webhook_shape_falls_back_to_the_city(self):
+        lead, _ = create_lead_from_meta_payload({
+            'id': '97098', 'full_name': 'Webhook Customer Two', 'city': 'Kollam',
+        })
+        self.assertEqual(lead.district, 'Kollam')
+
+    # ── CSV is not affected ──
+    def test_a_csv_city_column_is_still_not_a_district(self):
+        """This rule was asked for Meta imports. The CSV import keeps its own."""
+        admin = mk('mdo_admin', 'superadmin')
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        r = self.client.post(
+            '/api/leads/bulk_upload/',
+            data={'file': SimpleUploadedFile('leads.csv', b'first_name,phone,city\nAsha,9895271499,Kollam\n',
+                                             content_type='text/csv')},
+            HTTP_AUTHORIZATION=token_for(admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(Lead.objects.get(phone='9895271499').district, '')
+
+
 class LeadDistrictImportTests(TestCase):
     """District comes in from the CSV template and from Meta.
 
@@ -4943,7 +5052,10 @@ class LeadDistrictImportTests(TestCase):
         })
         self.assertEqual(lead.district, 'Ernakulam')
 
-    def test_a_meta_city_question_is_not_taken_as_the_district(self):
+    def test_a_meta_city_that_names_no_district_is_not_filed_as_one(self):
+        """City is only a fallback on Meta leads (see MetaDistrictOrderTests),
+        and even then it has to name a configured district. Kochi is a city in
+        Ernakulam, not a district, so it files under nothing."""
         lead, _ = create_lead_from_meta_payload({
             'id': '88002',
             'field_data': [{'name': 'full_name', 'values': ['Asha Devi']},

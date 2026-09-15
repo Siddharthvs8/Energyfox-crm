@@ -111,9 +111,20 @@ def normalize_meta_field_data(field_data: list[dict[str, Any]]) -> dict[str, str
     if full_name and not values.get("first_name") and " " in full_name:
         first_name, last_name = full_name.split(" ", 1)
 
-    # Only a question that actually asks for the district. Meta's built-in `city`
-    # is a different thing and is not filed as one.
-    district = values.get("district") or values.get("dist") or ""
+    # The district question, as the form actually words it. EnergyFox's lead
+    # forms ask `which_district_are_you_from?`; a plain `district` or `dist` is
+    # kept for older forms, and any other key naming a district covers a branch
+    # whose form words the same question differently.
+    district = (values.get("which_district_are_you_from?")
+                or values.get("which_district_are_you_from")
+                or values.get("district")
+                or values.get("dist")
+                or next((v for k, v in values.items() if "district" in k), "")
+                or "")
+    # Meta's built-in city field. Not a district in itself — it is only a
+    # fallback, used when the district question was left out or answered with
+    # something that names no district we have. See resolve_meta_district.
+    city = values.get("city") or ""
 
     return {
         "first_name": first_name[:100],
@@ -122,7 +133,20 @@ def normalize_meta_field_data(field_data: list[dict[str, Any]]) -> dict[str, str
         "phone": (values.get("phone_number") or values.get("phone") or values.get("mobile_number") or "")[:20],
         "company": (values.get("company_name") or values.get("company") or "")[:200],
         "district": district[:100],
+        "city": city[:100],
     }
+
+
+def resolve_meta_district(district_answer, city):
+    """The district a Meta lead is filed under.
+
+    In order: the answer to the district question; failing that, the city;
+    failing that, none. Each is matched against the districts Settings has
+    configured, so the fall-through happens on a *usable* answer, not merely a
+    present one — a district question answered "Payyanur.kannur" names no
+    district, and a city of "Kannur" beside it is still worth filing under.
+    """
+    return match_district(district_answer) or match_district(city) or ""
 
 
 def match_district(value):
@@ -251,7 +275,9 @@ def create_lead_from_meta_payload(
                 "email": (graph_data.get("email") or names["email"])[:254],
                 "phone": (graph_data.get("phone_number") or graph_data.get("phone") or names["phone"])[:20],
                 "company": (graph_data.get("company_name") or graph_data.get("company") or names["company"])[:200],
-                "district": (graph_data.get("district") or names["district"])[:100],
+                "district": (graph_data.get("which_district_are_you_from?")
+                             or graph_data.get("district") or names["district"])[:100],
+                "city": (graph_data.get("city") or names["city"])[:100],
             }
         )
     meta_campaign_id = str(graph_data.get("campaign_id") or lead_payload.get("campaign_id") or "").strip()
@@ -305,7 +331,7 @@ def create_lead_from_meta_payload(
             email=names["email"],
             phone=names["phone"],
             company=names["company"],
-            district=match_district(names["district"]),
+            district=resolve_meta_district(names["district"], names["city"]),
             source="meta_ads",
             status="new",
             meta_lead_id=meta_lead_id,
