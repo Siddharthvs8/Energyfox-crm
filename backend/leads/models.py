@@ -565,9 +565,9 @@ class IntegrationSettings(models.Model):
     # Leads arrive two ways: Meta pushes them to the webhook as they are filled,
     # and this pull catches anything the webhook missed — a delivery that failed,
     # a form added while the webhook was misconfigured, the backlog from before
-    # an integration was connected. Twelve hours is chosen to be well inside
-    # Meta's 90-day retention while costing only two calls a day per page.
-    SYNC_EVERY_HOURS = 12
+    # an integration was connected.
+    #
+    # When it runs is set in the CRM, not here — see MetaSyncSchedule.
 
     last_synced_at = models.DateTimeField(null=True, blank=True)
     # None until it has ever run, so "never synced" and "last sync failed" are
@@ -580,25 +580,26 @@ class IntegrationSettings(models.Model):
 
     @property
     def next_sync_due_at(self):
-        """When the scheduled sync will next pick this up, or None if it never has."""
-        if not self.last_synced_at:
-            return None
-        from datetime import timedelta
-        return self.last_synced_at + timedelta(hours=self.SYNC_EVERY_HOURS)
+        """The next scheduled moment this will be pulled, or None if nothing is
+        scheduled. The same for every integration — one schedule governs them."""
+        return MetaSyncSchedule.load().next_due_at()
 
     @property
     def sync_due(self):
-        """Whether the twelve hours are up.
+        """Whether a scheduled time has come round that this has not synced for.
 
-        A manual Sync Now counts: it stamps the same clock, so pressing it at
-        ten o'clock moves the automatic one to ten in the evening. "Every 12
-        hours" is really "never let more than 12 hours pass without a sync",
-        and a manual sync satisfies that.
+        Measured against the slot rather than against an interval, so the sync
+        lands at the time that was set. A manual Sync Now in between satisfies
+        the slot it falls after — pressing it at 09:05 does not cause a second
+        sync for the 09:00 slot — but it does not consume the evening one.
         """
-        from django.utils import timezone
-        if not self.last_synced_at:
-            return True
-        return timezone.now() >= self.next_sync_due_at
+        schedule = MetaSyncSchedule.load()
+        if not schedule.enabled:
+            return False
+        slot = schedule.last_due_at()
+        if slot is None:
+            return False
+        return self.last_synced_at is None or self.last_synced_at < slot
 
     class Meta:
         verbose_name = "Meta Integration"
@@ -607,6 +608,123 @@ class IntegrationSettings(models.Model):
 
     def __str__(self):
         return self.name or f"Meta Integration #{self.pk}"
+
+
+class MetaSyncSchedule(models.Model):
+    """When the Meta lead sync runs, set in the CRM rather than on the server.
+
+    One row (pk=1). The times are wall-clock times in `timezone` — "09:00 IST"
+    means nine in the morning in Kerala whatever the server's own clock is set
+    to, which is the only way a schedule someone typed stays the schedule they
+    meant after a host move or a DST change elsewhere.
+
+    How "exactly at that time" actually works: this app cannot wake itself up.
+    An OS timer runs `manage.py sync_meta_leads` on a short interval (every
+    minute — see deploy/energyfox-cron.md) and that command asks this model
+    whether a scheduled time has come round. So a sync lands within one tick of
+    the time set, and a tick that is missed entirely — host down, deploy — is
+    caught up on the next one rather than skipped.
+    """
+
+    DEFAULT_TIMEZONE = 'Asia/Kolkata'
+    # Twice a day, which is what the sync did before it became configurable.
+    DEFAULT_TIMES = ['09:00', '21:00']
+
+    enabled = models.BooleanField(default=True)
+    # ["09:00", "21:00"] — wall-clock times in `timezone`, 24-hour.
+    times = models.JSONField(default=list, blank=True)
+    timezone = models.CharField(max_length=64, default=DEFAULT_TIMEZONE,
+                                help_text="IANA name, e.g. Asia/Kolkata")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Meta sync schedule'
+        verbose_name_plural = 'Meta sync schedule'
+
+    def __str__(self):
+        return f"Meta sync at {', '.join(self.times) or 'no times'} ({self.timezone})"
+
+    # ── Reading it ──
+
+    @classmethod
+    def load(cls):
+        """The one row, created with the defaults the first time it is asked for."""
+        obj, _ = cls.objects.get_or_create(
+            pk=1, defaults={'times': list(cls.DEFAULT_TIMES), 'timezone': cls.DEFAULT_TIMEZONE})
+        return obj
+
+    @property
+    def tzinfo(self):
+        """The configured zone, falling back to the server's if it is unknown.
+
+        A zone name can stop resolving — a stale tzdata, a name typed straight
+        into the database — and refusing to sync at all would be a worse answer
+        than syncing on the server's own clock.
+        """
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        from django.conf import settings as django_settings
+        try:
+            return ZoneInfo(self.timezone or self.DEFAULT_TIMEZONE)
+        except (ZoneInfoNotFoundError, ValueError):
+            return ZoneInfo(django_settings.TIME_ZONE)
+
+    def parsed_times(self):
+        """The configured times as `datetime.time`, in order, ignoring rubbish."""
+        from datetime import time as dt_time
+        out = []
+        for raw in self.times or []:
+            try:
+                hh, mm = str(raw).strip().split(':')[:2]
+                out.append(dt_time(int(hh), int(mm)))
+            except (ValueError, TypeError):
+                continue
+        return sorted(set(out))
+
+    def last_due_at(self, now=None):
+        """The most recent scheduled moment at or before `now`, as an aware UTC datetime.
+
+        This is what due-ness is measured against: an integration is due when it
+        has not synced since this moment. Yesterday's last slot is used before
+        today's first one has come round, so a sync set for 21:00 still happens
+        when the machine is started at 02:00.
+        """
+        # datetime.timezone.utc, not django.utils.timezone.utc — that alias was
+        # removed in Django 5.0 and reading it raises at runtime, not on import.
+        from datetime import datetime, timedelta, timezone as dt_timezone
+        from django.utils import timezone as dj_timezone
+
+        times = self.parsed_times()
+        if not times:
+            return None
+
+        now = now or dj_timezone.now()
+        local_now = now.astimezone(self.tzinfo)
+        for day_offset in (0, 1):
+            day = (local_now - timedelta(days=day_offset)).date()
+            for slot in reversed(times):
+                candidate = datetime.combine(day, slot, tzinfo=self.tzinfo)
+                if candidate <= local_now:
+                    return candidate.astimezone(dt_timezone.utc)
+        return None
+
+    def next_due_at(self, now=None):
+        """The next scheduled moment after `now`, for the screen to show."""
+        from datetime import datetime, timedelta, timezone as dt_timezone
+        from django.utils import timezone as dj_timezone
+
+        times = self.parsed_times()
+        if not times or not self.enabled:
+            return None
+
+        now = now or dj_timezone.now()
+        local_now = now.astimezone(self.tzinfo)
+        for day_offset in (0, 1):
+            day = (local_now + timedelta(days=day_offset)).date()
+            for slot in times:
+                candidate = datetime.combine(day, slot, tzinfo=self.tzinfo)
+                if candidate > local_now:
+                    return candidate.astimezone(dt_timezone.utc)
+        return None
 
 
 class ActivityLog(models.Model):

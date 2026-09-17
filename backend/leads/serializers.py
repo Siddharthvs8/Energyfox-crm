@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.utils import timezone
-from .models import Lead, District, IntegrationSettings, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, LiasoningDocument, Warranty, WarrantyDocument, EmergencyService, EmergencyServiceDocument, PeriodicMaintenance, MaintenanceVisit, MaintenanceVisitDocument
+from .models import Lead, District, IntegrationSettings, MetaSyncSchedule, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, LiasoningDocument, Warranty, WarrantyDocument, EmergencyService, EmergencyServiceDocument, PeriodicMaintenance, MaintenanceVisit, MaintenanceVisitDocument
 from .document_kinds import SLOT_TO_KIND, SITE_VISIT_SHARED_SLOTS, DOC_STAGE1_SHARED_SLOTS, shared_doc_entries
 
 from users.serializers import UserSerializer
@@ -692,13 +692,51 @@ class LeadSerializer(serializers.ModelSerializer):
                         {"status": "Assign a BDE to this lead before marking it Converted."})
         return data
 
+class MetaSyncScheduleSerializer(serializers.ModelSerializer):
+    """When the Meta sync runs. One schedule, governing every integration."""
+    next_due_at = serializers.DateTimeField(read_only=True)
+
+    class Meta:
+        model = MetaSyncSchedule
+        fields = ['enabled', 'times', 'timezone', 'next_due_at', 'updated_at']
+        read_only_fields = ['updated_at']
+
+    def validate_timezone(self, value):
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        name = (value or '').strip() or MetaSyncSchedule.DEFAULT_TIMEZONE
+        try:
+            ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise serializers.ValidationError(f'{name} is not a timezone this server knows.')
+        return name
+
+    def validate_times(self, value):
+        """Times come back as clean, ordered, unique "HH:MM".
+
+        Checked here rather than left to the runner: a time typed wrongly would
+        otherwise be silently ignored twice a day, and the screen would go on
+        showing a schedule that never fires.
+        """
+        from datetime import time as dt_time
+        if not isinstance(value, list):
+            raise serializers.ValidationError('Times must be a list, e.g. ["09:00", "21:00"].')
+        cleaned = set()
+        for raw in value:
+            text = str(raw).strip()
+            try:
+                hh, mm = text.split(':')[:2]
+                cleaned.add(dt_time(int(hh), int(mm)))
+            except (ValueError, TypeError):
+                raise serializers.ValidationError(f'{text!r} is not a time. Use HH:MM, e.g. 09:00.')
+        return [t.strftime('%H:%M') for t in sorted(cleaned)]
+
+
 class IntegrationSettingsSerializer(serializers.ModelSerializer):
     lead_count = serializers.SerializerMethodField()
     connected = serializers.SerializerMethodField()
     # When the twelve-hourly job will next pull this page. Derived, so the screen
     # does not have to know the cadence.
     next_sync_due_at = serializers.DateTimeField(read_only=True)
-    sync_every_hours = serializers.SerializerMethodField()
 
     class Meta:
         model = IntegrationSettings
@@ -707,9 +745,6 @@ class IntegrationSettingsSerializer(serializers.ModelSerializer):
         # saving the form — otherwise editing a token would look like a sync.
         read_only_fields = ['created_at', 'updated_at', 'last_synced_at',
                             'last_sync_ok', 'last_sync_note']
-
-    def get_sync_every_hours(self, obj):
-        return IntegrationSettings.SYNC_EVERY_HOURS
 
     def get_lead_count(self, obj):
         return obj.leads.count()

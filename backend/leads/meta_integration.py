@@ -510,33 +510,44 @@ def sync_integration(settings_obj: IntegrationSettings, actor=None, page_id: str
     return result
 
 
-def sync_due_integrations(hours: int | None = None, force: bool = False,
-                          limit: int = 100) -> list[tuple[IntegrationSettings, MetaImportResult | None]]:
-    """Sync every integration whose twelve hours are up.
+def sync_due_integrations(force: bool = False, limit: int = 100,
+                          now=None) -> list[tuple[IntegrationSettings, MetaImportResult | None]]:
+    """Sync every integration a scheduled time has come round for.
 
-    Due-ness is decided per integration rather than by the clock the job runs
-    on, which is what makes the schedule survive reality: the job can be run
-    hourly, or twice, or after the host was down for a day, and each page is
-    still pulled once every twelve hours. Returns `(integration, result)` pairs,
-    with `None` for the ones skipped as not yet due.
+    Due-ness is measured against the schedule's own slot — the most recent
+    configured time that has passed — rather than against an interval since the
+    last run. That is what makes "sync at 09:00 IST" mean nine o'clock: the job
+    is polled frequently, does nothing until the slot passes, then syncs once
+    for it.
 
+    It also survives reality. The poll can run twice, or not at all for hours;
+    a slot that was missed is still the most recent one that has passed, so it
+    is caught up on the next poll rather than skipped until tomorrow.
+
+    Returns `(integration, result)` pairs, with `None` for the ones skipped.
     One integration's failure never stops the rest — a page with an expired
     token would otherwise hold up every other branch's leads.
     """
-    interval = hours if hours is not None else IntegrationSettings.SYNC_EVERY_HOURS
+    from leads.models import MetaSyncSchedule
+
+    schedule = MetaSyncSchedule.load()
+    slot = schedule.last_due_at(now) if schedule.enabled else None
     outcome: list[tuple[IntegrationSettings, MetaImportResult | None]] = []
 
     for integration in IntegrationSettings.objects.all().order_by("id"):
         if not integration.meta_access_token:
             # Not connected yet: there is nothing to call, and recording a
-            # failure every twelve hours would bury the real ones.
+            # failure at every scheduled time would bury the real ones.
             outcome.append((integration, None))
             continue
 
         if not force:
-            due_at = (integration.last_synced_at + timedelta(hours=interval)
-                      if integration.last_synced_at else None)
-            if due_at and timezone.now() < due_at:
+            if slot is None:
+                outcome.append((integration, None))
+                continue
+            if integration.last_synced_at is not None and integration.last_synced_at >= slot:
+                # Already synced for this slot — by the schedule, or by someone
+                # pressing Sync Now since it passed.
                 outcome.append((integration, None))
                 continue
 

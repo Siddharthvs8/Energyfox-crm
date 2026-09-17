@@ -1,35 +1,35 @@
 """
 Pulls Meta (Facebook/Instagram) Lead Ads leads for every configured integration.
 
-Run it on a schedule — see `deploy/energyfox-cron.md`:
+Run it on a short timer — every minute. See deploy/energyfox-cron.md:
 
     python manage.py sync_meta_leads
 
-Each integration is pulled at most once every twelve hours, and the command
-decides that per integration rather than trusting the clock it was run on. That
-is deliberate: the job can be run hourly, or twice by accident, or for the first
-time after the host was down all day, and every page is still pulled on its own
-twelve-hour cadence. It also means the Sync Now button and this command share
-one schedule instead of fighting over it.
+It does nothing until a time on the schedule set in the CRM (Meta Integration →
+Automatic sync) comes round, then syncs once for that time. That is what makes
+"sync at 09:00 IST" land at nine: this app cannot wake itself up, so it is
+polled often and checks the clock. Poll every minute and a sync is within a
+minute of the time that was set.
 
-    --hours 6        use a different cadence
-    --force          sync everything now, whatever the clock says
+A slot the poll missed entirely — host down, deploy, container restarting — is
+still the most recent one that has passed, so it is caught up on the next poll
+rather than skipped until tomorrow.
+
+    --force          sync everything now, whatever the schedule says
     --limit 200      leads per form per call (Meta caps this at 500)
     --dry-run        report what is due without calling Meta
 """
 from django.core.management.base import BaseCommand
 
-from leads.models import IntegrationSettings
+from leads.models import IntegrationSettings, MetaSyncSchedule
 
 
 class Command(BaseCommand):
-    help = "Import Meta Lead Ads leads for every integration whose sync is due (default every 12 hours)."
+    help = "Import Meta Lead Ads leads for every integration a scheduled sync time has come round for."
 
     def add_arguments(self, parser):
-        parser.add_argument("--hours", type=int, default=None,
-                            help=f"Hours between syncs (default {IntegrationSettings.SYNC_EVERY_HOURS}).")
         parser.add_argument("--force", action="store_true",
-                            help="Sync every integration now, ignoring when it last ran.")
+                            help="Sync every integration now, ignoring the schedule.")
         parser.add_argument("--limit", type=int, default=100,
                             help="Leads per form per call (default 100, Meta's ceiling is 500).")
         parser.add_argument("--dry-run", action="store_true",
@@ -39,10 +39,18 @@ class Command(BaseCommand):
         from django.utils import timezone
         from leads.meta_integration import sync_due_integrations
 
-        hours = options["hours"] if options["hours"] is not None else IntegrationSettings.SYNC_EVERY_HOURS
         force = options["force"]
+        schedule = MetaSyncSchedule.load()
 
         if options["dry_run"]:
+            times = ", ".join(schedule.times) or "no times set"
+            state = "" if schedule.enabled else " -- turned off"
+            self.stdout.write(f"Schedule: {times} ({schedule.timezone}){state}")
+            slot = schedule.last_due_at() if schedule.enabled else None
+            if slot:
+                self.stdout.write(
+                    f"Most recent time due: {timezone.localtime(slot).strftime('%d %b %H:%M')}")
+
             due = skipped = 0
             for integration in IntegrationSettings.objects.all().order_by("id"):
                 name = integration.name or f"#{integration.pk}"
@@ -55,13 +63,14 @@ class Command(BaseCommand):
                     self.stdout.write(f"  -> {name}: due (last synced {last})")
                     due += 1
                 else:
-                    nxt = timezone.localtime(integration.next_sync_due_at).strftime("%d %b %H:%M")
-                    self.stdout.write(f"  -- {name}: not due until {nxt}")
+                    nxt = integration.next_sync_due_at
+                    when = timezone.localtime(nxt).strftime("%d %b %H:%M") if nxt else "nothing scheduled"
+                    self.stdout.write(f"  -- {name}: not due until {when}")
                     skipped += 1
             self.stdout.write(self.style.SUCCESS(f"Dry run: {due} due, {skipped} skipped."))
             return
 
-        results = sync_due_integrations(hours=hours, force=force, limit=options["limit"])
+        results = sync_due_integrations(force=force, limit=options["limit"])
 
         synced = imported = skipped_leads = 0
         failures = []
@@ -80,11 +89,16 @@ class Command(BaseCommand):
             else:
                 self.stdout.write(f"  {name}: {result.imported} imported, {result.skipped} already here")
 
+        # Silent when there was nothing to do. This runs every minute, and a
+        # line of output on each one would bury the runs that mattered.
+        if not synced and not failures:
+            return
+
         summary = (f"Synced {synced} integration(s): {imported} new lead(s), "
                    f"{skipped_leads} already here. {not_due} not due.")
         if failures:
             # Non-zero exit so a systemd timer or cron mailer reports it rather
-            # than failing quietly twice a day for a week.
+            # than failing quietly at every scheduled time for a week.
             self.stderr.write(self.style.ERROR(f"{summary} {len(failures)} failed."))
             raise SystemExit(1)
         self.stdout.write(self.style.SUCCESS(summary))

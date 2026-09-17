@@ -6570,6 +6570,31 @@ class IntegrationSettingsViewSet(viewsets.ModelViewSet):
     permission_classes = [MetaIntegrationAccess]
     queryset = IntegrationSettings.objects.all()
 
+    @action(detail=False, methods=['get', 'put', 'patch'], url_path='sync-schedule')
+    def sync_schedule(self, request):
+        """When the automatic sync runs — read it, and set it.
+
+        One schedule for every integration: the times are the company's, not a
+        property of a particular Facebook page, and two pages syncing at
+        different minutes would only make the leads harder to account for.
+
+        It lives here rather than under org settings so that whoever runs this
+        screen can set it — the Meta module is open to the leads manager, who is
+        not an admin and cannot write org settings.
+        """
+        from .models import MetaSyncSchedule
+        from .serializers import MetaSyncScheduleSerializer
+
+        schedule = MetaSyncSchedule.load()
+        if request.method == 'GET':
+            return Response(MetaSyncScheduleSerializer(schedule).data)
+
+        serializer = MetaSyncScheduleSerializer(schedule, data=request.data,
+                                                partial=request.method == 'PATCH')
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(MetaSyncScheduleSerializer(schedule).data)
+
     @action(detail=False, methods=['get'])
     def meta_summary(self, request):
         from .meta_integration import meta_summary

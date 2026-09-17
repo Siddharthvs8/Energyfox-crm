@@ -3940,15 +3940,285 @@ class MaintenanceReminderTests(TestCase):
         self.assertEqual(r.status_code, 403)
 
 
+class MetaSyncScheduleTests(TestCase):
+    """When the Meta sync runs — the times set in the CRM, in the zone set with them.
+
+    The times are wall-clock times in the configured zone, so "09:00 Asia/Kolkata"
+    is nine in the morning in Kerala whatever the server's own clock says. Every
+    assertion here pins a real instant and asks what the schedule makes of it,
+    rather than trusting the machine this happens to run on.
+    """
+
+    def setUp(self):
+        from leads.models import MetaSyncSchedule
+        self.schedule = MetaSyncSchedule.load()
+        self.schedule.enabled = True
+        self.schedule.times = ['09:00', '21:00']
+        self.schedule.timezone = 'Asia/Kolkata'
+        self.schedule.save()
+
+    @staticmethod
+    def ist(y, m, d, hh, mm):
+        """A real instant, written in IST."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        return datetime(y, m, d, hh, mm, tzinfo=ZoneInfo('Asia/Kolkata'))
+
+    def local(self, moment):
+        from zoneinfo import ZoneInfo
+        return moment.astimezone(ZoneInfo('Asia/Kolkata'))
+
+    # ── Reading the schedule ──
+    def test_the_defaults_are_twice_a_day_in_ist(self):
+        """What the sync did before it became configurable, carried over."""
+        from leads.models import MetaSyncSchedule
+        MetaSyncSchedule.objects.all().delete()
+        fresh = MetaSyncSchedule.load()
+        self.assertEqual(fresh.times, ['09:00', '21:00'])
+        self.assertEqual(fresh.timezone, 'Asia/Kolkata')
+        self.assertTrue(fresh.enabled)
+
+    def test_the_slot_is_the_most_recent_time_that_has_passed(self):
+        at = self.ist(2026, 9, 17, 10, 30)
+        self.assertEqual(self.local(self.schedule.last_due_at(at)), self.ist(2026, 9, 17, 9, 0))
+
+    def test_before_the_first_time_it_is_yesterdays_last(self):
+        """A machine started at 02:00 has not missed the 21:00 sync."""
+        at = self.ist(2026, 9, 17, 2, 0)
+        self.assertEqual(self.local(self.schedule.last_due_at(at)), self.ist(2026, 9, 16, 21, 0))
+
+    def test_a_minute_before_the_time_the_slot_has_not_arrived(self):
+        at = self.ist(2026, 9, 17, 8, 59)
+        self.assertEqual(self.local(self.schedule.last_due_at(at)), self.ist(2026, 9, 16, 21, 0))
+
+    def test_exactly_on_the_time_the_slot_has_arrived(self):
+        at = self.ist(2026, 9, 17, 9, 0)
+        self.assertEqual(self.local(self.schedule.last_due_at(at)), self.ist(2026, 9, 17, 9, 0))
+
+    def test_the_next_time_is_reported_for_the_screen(self):
+        at = self.ist(2026, 9, 17, 10, 30)
+        self.assertEqual(self.local(self.schedule.next_due_at(at)), self.ist(2026, 9, 17, 21, 0))
+
+    def test_after_the_last_time_the_next_is_tomorrow_morning(self):
+        at = self.ist(2026, 9, 17, 22, 0)
+        self.assertEqual(self.local(self.schedule.next_due_at(at)), self.ist(2026, 9, 18, 9, 0))
+
+    def test_the_zone_is_the_one_set_not_the_servers(self):
+        """09:00 New York is a different instant from 09:00 Kolkata, and the
+        schedule has to mean the one that was chosen."""
+        from zoneinfo import ZoneInfo
+        self.schedule.timezone = 'America/New_York'
+        self.schedule.times = ['09:00']
+        self.schedule.save()
+        # 13:30 UTC is 09:30 in New York — the slot has just passed there.
+        from datetime import datetime, timezone as dt_timezone
+        at = datetime(2026, 9, 17, 13, 30, tzinfo=dt_timezone.utc)
+        slot = self.schedule.last_due_at(at)
+        self.assertEqual(slot.astimezone(ZoneInfo('America/New_York')).hour, 9)
+        # ...while in Kolkata that same instant is 19:00, well past 09:00 IST —
+        # so reading the slot in the wrong zone would have given the wrong day.
+        self.assertEqual(slot.astimezone(ZoneInfo('Asia/Kolkata')).hour, 18)
+
+    def test_an_unknown_zone_falls_back_rather_than_stopping_the_sync(self):
+        self.schedule.timezone = 'Mars/Olympus_Mons'
+        self.schedule.save()
+        self.assertIsNotNone(self.schedule.last_due_at(self.ist(2026, 9, 17, 23, 0)))
+
+    def test_no_times_means_nothing_is_ever_due(self):
+        self.schedule.times = []
+        self.schedule.save()
+        self.assertIsNone(self.schedule.last_due_at(self.ist(2026, 9, 17, 10, 0)))
+
+    def test_rubbish_times_are_ignored_rather_than_crashing_the_job(self):
+        self.schedule.times = ['09:00', 'tea time', '']
+        self.schedule.save()
+        self.assertEqual([t.strftime('%H:%M') for t in self.schedule.parsed_times()], ['09:00'])
+
+
+class MetaScheduledSyncRunTests(TestCase):
+    """The job the timer runs, against the schedule.
+
+    Nothing here calls Meta — `import_meta_leads` is stubbed. What is being
+    tested is when a sync fires, which is the whole point of a schedule.
+    """
+
+    def setUp(self):
+        from leads.models import IntegrationSettings, MetaSyncSchedule
+        self.admin = mk('sched_admin', 'admin')
+        self.schedule = MetaSyncSchedule.load()
+        self.schedule.enabled = True
+        self.schedule.times = ['09:00', '21:00']
+        self.schedule.timezone = 'Asia/Kolkata'
+        self.schedule.save()
+        self.integration = IntegrationSettings.objects.create(
+            name='Kochi', meta_page_id='111', meta_access_token='token-a')
+
+    @staticmethod
+    def ist(y, m, d, hh, mm):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        return datetime(y, m, d, hh, mm, tzinfo=ZoneInfo('Asia/Kolkata'))
+
+    @staticmethod
+    def _ok(imported=2, skipped=1):
+        from leads.meta_integration import MetaImportResult
+        r = MetaImportResult()
+        r.imported, r.skipped = imported, skipped
+        return r
+
+    def run_job(self, now=None, **kwargs):
+        from leads.meta_integration import sync_due_integrations
+        return sync_due_integrations(now=now, **kwargs)
+
+    def synced_at(self, moment):
+        from leads.models import IntegrationSettings
+        IntegrationSettings.objects.filter(pk=self.integration.pk).update(last_synced_at=moment)
+        self.integration.refresh_from_db()
+
+    # ── Firing at the time ──
+    def test_nothing_fires_before_the_time(self):
+        self.synced_at(self.ist(2026, 9, 17, 8, 0))
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()) as call:
+            self.run_job(now=self.ist(2026, 9, 17, 8, 59))
+            call.assert_not_called()
+
+    def test_it_fires_once_the_time_has_come(self):
+        self.synced_at(self.ist(2026, 9, 17, 8, 0))
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()) as call:
+            self.run_job(now=self.ist(2026, 9, 17, 9, 0))
+            self.assertEqual(call.call_count, 1)
+
+    def test_it_fires_only_once_for_a_time(self):
+        """The timer runs every minute; the sync must not run every minute."""
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()) as call:
+            self.run_job(now=self.ist(2026, 9, 17, 9, 0))
+            self.assertEqual(call.call_count, 1)
+            call.reset_mock()
+            for minute in (1, 2, 30):
+                self.run_job(now=self.ist(2026, 9, 17, 9, minute))
+            call.assert_not_called()
+
+    def test_the_evening_time_fires_as_well(self):
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()) as call:
+            self.run_job(now=self.ist(2026, 9, 17, 9, 0))
+            call.reset_mock()
+            self.run_job(now=self.ist(2026, 9, 17, 21, 0))
+            self.assertEqual(call.call_count, 1)
+
+    def test_a_missed_time_is_caught_up_not_skipped(self):
+        """Host down over 09:00: the next poll still syncs for it."""
+        self.synced_at(self.ist(2026, 9, 16, 21, 5))
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()) as call:
+            self.run_job(now=self.ist(2026, 9, 17, 11, 30))
+            self.assertEqual(call.call_count, 1)
+
+    def test_a_manual_sync_after_the_time_satisfies_that_slot(self):
+        """Pressing Sync Now at 09:05 must not be followed by the 09:00 sync."""
+        self.synced_at(self.ist(2026, 9, 17, 9, 5))
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()) as call:
+            self.run_job(now=self.ist(2026, 9, 17, 9, 6))
+            call.assert_not_called()
+
+    def test_a_manual_sync_does_not_consume_the_next_slot(self):
+        """...but the evening one still happens."""
+        self.synced_at(self.ist(2026, 9, 17, 9, 5))
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()) as call:
+            self.run_job(now=self.ist(2026, 9, 17, 21, 0))
+            self.assertEqual(call.call_count, 1)
+
+    def test_a_never_synced_integration_fires_at_the_first_time(self):
+        self.assertIsNone(self.integration.last_synced_at)
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()) as call:
+            self.run_job(now=self.ist(2026, 9, 17, 9, 0))
+            self.assertEqual(call.call_count, 1)
+
+    # ── Turning it off ──
+    def test_a_disabled_schedule_never_fires(self):
+        self.schedule.enabled = False
+        self.schedule.save()
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()) as call:
+            self.run_job(now=self.ist(2026, 9, 17, 9, 0))
+            call.assert_not_called()
+
+    def test_no_times_never_fires(self):
+        self.schedule.times = []
+        self.schedule.save()
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()) as call:
+            self.run_job(now=self.ist(2026, 9, 17, 9, 0))
+            call.assert_not_called()
+
+    def test_force_syncs_even_with_the_schedule_off(self):
+        """The manual path must not depend on the schedule being on."""
+        self.schedule.enabled = False
+        self.schedule.save()
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()) as call:
+            self.run_job(now=self.ist(2026, 9, 17, 9, 0), force=True)
+            self.assertEqual(call.call_count, 1)
+
+    # ── The API ──
+    def test_the_schedule_is_readable(self):
+        r = self.client.get('/api/integration-settings/sync-schedule/',
+                            HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertEqual(r.json()['times'], ['09:00', '21:00'])
+        self.assertEqual(r.json()['timezone'], 'Asia/Kolkata')
+        self.assertIsNotNone(r.json()['next_due_at'])
+
+    def test_the_schedule_can_be_set(self):
+        r = self.client.put('/api/integration-settings/sync-schedule/',
+                            data={'enabled': True, 'times': ['06:30', '18:45'],
+                                  'timezone': 'Asia/Kolkata'},
+                            content_type='application/json',
+                            HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.schedule.refresh_from_db()
+        self.assertEqual(self.schedule.times, ['06:30', '18:45'])
+
+    def test_times_come_back_ordered_and_deduplicated(self):
+        r = self.client.put('/api/integration-settings/sync-schedule/',
+                            data={'enabled': True, 'times': ['21:00', '09:00', '09:00'],
+                                  'timezone': 'Asia/Kolkata'},
+                            content_type='application/json',
+                            HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(r.json()['times'], ['09:00', '21:00'])
+
+    def test_a_time_that_is_not_a_time_is_refused(self):
+        """Silently ignoring it would leave the screen showing a schedule that
+        never fires."""
+        r = self.client.put('/api/integration-settings/sync-schedule/',
+                            data={'enabled': True, 'times': ['half past nine'],
+                                  'timezone': 'Asia/Kolkata'},
+                            content_type='application/json',
+                            HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('HH:MM', str(r.json()))
+
+    def test_a_zone_this_server_does_not_know_is_refused(self):
+        r = self.client.put('/api/integration-settings/sync-schedule/',
+                            data={'enabled': True, 'times': ['09:00'],
+                                  'timezone': 'Mars/Olympus_Mons'},
+                            content_type='application/json',
+                            HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('timezone', str(r.json()).lower())
+
+    def test_a_bde_cannot_read_or_set_the_schedule(self):
+        bde = mk('sched_bde', 'bde')
+        self.assertEqual(self.client.get('/api/integration-settings/sync-schedule/',
+                                         HTTP_AUTHORIZATION=token_for(bde)).status_code, 403)
+
+
 class MetaAutoSyncTests(TestCase):
-    """The twelve-hourly Meta pull, and the Sync Now button beside it.
+    """What a Meta sync records, and the Sync Now button beside it.
 
     Meta pushes leads to the webhook as they are filled; this pull is the safety
     net for the ones that never arrived — a failed delivery, a form added while
     the webhook was misconfigured, the backlog from before a page was connected.
 
-    Nothing here calls Meta: `import_meta_leads` is stubbed, because what is
-    being tested is when the sync runs and what it records, not the Graph API.
+    Nothing here calls Meta: `import_meta_leads` is stubbed. *When* it runs is
+    MetaSyncScheduleTests and MetaScheduledSyncRunTests; this is about what it
+    writes down afterwards.
     """
 
     def setUp(self):
@@ -3981,32 +4251,10 @@ class MetaAutoSyncTests(TestCase):
 
     # ── When it runs ──
     def test_an_integration_that_has_never_synced_is_due(self):
+        """A scheduled time has already gone by today, and it has not synced
+        for it. When that time is is MetaSyncScheduleTests' business."""
         self.assertTrue(self.a.sync_due)
-        self.assertIsNone(self.a.next_sync_due_at)
-
-    def test_a_sync_holds_it_off_for_twelve_hours(self):
-        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()):
-            self.run_job()
-        self.a.refresh_from_db()
-        self.assertFalse(self.a.sync_due)
-        self.assertEqual(self.a.next_sync_due_at,
-                         self.a.last_synced_at + timedelta(hours=12))
-
-    def test_it_comes_due_again_after_twelve_hours(self):
-        from leads.models import IntegrationSettings
-        IntegrationSettings.objects.filter(pk=self.a.pk).update(
-            last_synced_at=timezone.now() - timedelta(hours=12, minutes=1))
-        self.a.refresh_from_db()
-        self.assertTrue(self.a.sync_due)
-
-    def test_a_job_run_before_the_twelve_hours_does_nothing(self):
-        """The job is safe to run hourly — each page still goes once every 12h."""
-        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()) as call:
-            self.run_job()
-            self.assertEqual(call.call_count, 2)   # the two connected ones
-            call.reset_mock()
-            self.run_job()
-            self.assertEqual(call.call_count, 0)   # nothing is due yet
+        self.assertIsNotNone(self.a.next_sync_due_at)
 
     def test_force_syncs_whatever_the_clock_says(self):
         with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()) as call:
@@ -4014,16 +4262,6 @@ class MetaAutoSyncTests(TestCase):
             call.reset_mock()
             self.run_job(force=True)
             self.assertEqual(call.call_count, 2)
-
-    def test_the_cadence_can_be_overridden(self):
-        from leads.models import IntegrationSettings
-        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()):
-            self.run_job()
-        IntegrationSettings.objects.filter(pk=self.a.pk).update(
-            last_synced_at=timezone.now() - timedelta(hours=7))
-        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()) as call:
-            self.run_job(hours=6)
-            self.assertEqual(call.call_count, 1)
 
     def test_an_integration_with_no_token_is_left_alone(self):
         """There is nothing to call, and stamping a failure every twelve hours
@@ -4077,9 +4315,10 @@ class MetaAutoSyncTests(TestCase):
         self.assertEqual(r.status_code, 200, r.content[:200])
         self.assertEqual(r.json()['imported'], 5)
 
-    def test_sync_now_moves_the_automatic_clock_too(self):
-        """Otherwise pressing the button at ten o'clock would be followed by an
-        automatic sync minutes later."""
+    def test_sync_now_satisfies_the_time_it_follows(self):
+        """Otherwise pressing the button just after a scheduled time would be
+        followed by the automatic sync a minute later. The *next* scheduled
+        time still fires — see MetaScheduledSyncRunTests."""
         with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()):
             self.client.post(f'/api/integration-settings/{self.a.pk}/sync/',
                              HTTP_AUTHORIZATION=token_for(self.admin))
@@ -4101,8 +4340,8 @@ class MetaAutoSyncTests(TestCase):
         row = next(x for x in rows if x['id'] == self.a.pk)
         self.assertTrue(row['last_sync_ok'])
         self.assertIsNotNone(row['last_synced_at'])
+        # The next scheduled time, which the schedule decides, not an interval.
         self.assertIsNotNone(row['next_sync_due_at'])
-        self.assertEqual(row['sync_every_hours'], 12)
 
     def test_saving_the_form_cannot_fake_a_sync(self):
         """The stamps belong to the sync; a client editing a token must not be

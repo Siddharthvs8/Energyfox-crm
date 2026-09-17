@@ -42,7 +42,6 @@ type Integration = {
   last_sync_ok: boolean | null;
   last_sync_note: string;
   next_sync_due_at: string | null;
-  sync_every_hours: number;
 };
 
 /** "3h ago" / "in 9h" — close enough for a sync clock, and short enough for a row. */
@@ -62,6 +61,38 @@ function whenRelative(iso: string | null): string {
 
 type CurrentUser = { is_staff?: boolean; is_general_manager?: boolean; role?: string;
                      read_only?: boolean };
+
+/** When the automatic sync runs. One schedule, governing every integration. */
+type Schedule = {
+  enabled: boolean;
+  times: string[];          // "HH:MM", read in `timezone`
+  timezone: string;         // IANA name
+  next_due_at: string | null;
+};
+
+/* A short list rather than the full IANA set: these are the zones EnergyFox
+   actually operates in or reports against, and a 400-entry dropdown on a phone
+   is worse than no dropdown. */
+const TIMEZONES = [
+  { value: "Asia/Kolkata", label: "IST — India (Asia/Kolkata)" },
+  { value: "Asia/Dubai", label: "GST — Gulf (Asia/Dubai)" },
+  { value: "Asia/Singapore", label: "SGT — Singapore" },
+  { value: "Europe/London", label: "UK (Europe/London)" },
+  { value: "America/New_York", label: "US Eastern (America/New_York)" },
+  { value: "UTC", label: "UTC" },
+];
+
+/** A scheduled instant, written in the zone it was scheduled in. */
+function formatInZone(iso: string, timeZone: string): string {
+  try {
+    return new Date(iso).toLocaleString("en-IN", {
+      timeZone, day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: true,
+    });
+  } catch {
+    // An unknown zone must not take the page down with it.
+    return new Date(iso).toLocaleString("en-IN");
+  }
+}
 
 /** Mirrors MetaIntegrationAccess on the API: admins, plus the leads manager
  *  who owns where leads come from — and the spectator, who reads everything.
@@ -86,6 +117,12 @@ export default function MetaPage() {
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
+
+  const [schedule, setSchedule] = useState<Schedule>({
+    enabled: true, times: [], timezone: "Asia/Kolkata", next_due_at: null,
+  });
+  const [newTime, setNewTime] = useState("");
+  const [savingSchedule, setSavingSchedule] = useState(false);
 
   const [summary, setSummary] = useState<{
     connected: boolean;
@@ -118,6 +155,13 @@ export default function MetaPage() {
     } catch { /* ignore */ }
   }, [domain]);
 
+  const fetchSchedule = useCallback(async () => {
+    try {
+      const res = await fetch(`${getApiBase(domain)}/api/integration-settings/sync-schedule/`, { headers: authHeader() });
+      if (res.ok) setSchedule(await res.json());
+    } catch { /* keep page usable */ }
+  }, [domain]);
+
   // Auth guard: admins and the leads manager.
   useEffect(() => {
     const token = localStorage.getItem(`${domain}_access`);
@@ -137,11 +181,37 @@ export default function MetaPage() {
     setWebhookUrl(`${getApiBase(domain)}/api/webhooks/meta-leads/`);
     fetchIntegrations();
     fetchSummary();
-  }, [domain, authChecked, currentUser, fetchIntegrations, fetchSummary]);
+    fetchSchedule();
+  }, [domain, authChecked, currentUser, fetchIntegrations, fetchSummary, fetchSchedule]);
 
   const flash = (kind: "ok" | "err", text: string) => {
     setMsg({ kind, text });
     setTimeout(() => setMsg(null), 4000);
+  };
+
+  const saveSchedule = async () => {
+    setSavingSchedule(true);
+    try {
+      const res = await fetch(`${getApiBase(domain)}/api/integration-settings/sync-schedule/`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...authHeader() },
+        body: JSON.stringify({ enabled: schedule.enabled, times: schedule.times, timezone: schedule.timezone }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setSchedule(data);
+        // The rows show "next sync", which the schedule has just moved.
+        await fetchIntegrations();
+        flash("ok", schedule.enabled && schedule.times.length
+          ? `Saved. Syncing at ${schedule.times.join(", ")} ${schedule.timezone}.`
+          : "Saved.");
+      } else {
+        // The server is the authority on a bad time or zone; show what it said.
+        const detail = data?.times?.[0] || data?.timezone?.[0] || "Could not save the schedule.";
+        flash("err", String(detail));
+      }
+    } catch { flash("err", "Network error."); }
+    finally { setSavingSchedule(false); }
   };
 
   const updateField = (id: number, key: keyof Integration, value: string) => {
@@ -289,6 +359,101 @@ export default function MetaPage() {
           </div>
         </div>
 
+        {/* ── Automatic sync ── */}
+        {/* One schedule for every integration: the times belong to the company,
+            not to a particular Facebook page. */}
+        <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm">
+          <div className="flex items-start gap-3 mb-4">
+            <div className="w-8 h-8 bg-indigo-50 rounded-xl flex items-center justify-center text-indigo-600"><I.Sync /></div>
+            <div className="flex-1 min-w-0">
+              <h2 className="text-base font-bold text-slate-900">Automatic sync</h2>
+              <p className="text-xs text-slate-400">
+                Leads are pulled at these times, on top of the webhook. Applies to every integration.
+              </p>
+            </div>
+            <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 cursor-pointer flex-shrink-0">
+              <input
+                type="checkbox"
+                checked={schedule.enabled}
+                onChange={e => setSchedule({ ...schedule, enabled: e.target.checked })}
+                className="w-4 h-4 rounded accent-indigo-600"
+              />
+              {schedule.enabled ? "On" : "Off"}
+            </label>
+          </div>
+
+          <div className={schedule.enabled ? "" : "opacity-50 pointer-events-none"}>
+            <label className="block text-xs font-semibold text-slate-600 mb-1.5">Sync at</label>
+            <div className="flex flex-wrap items-center gap-2 mb-4">
+              {schedule.times.map(t => (
+                <span key={t} className="inline-flex items-center gap-2 bg-indigo-50 text-indigo-700 rounded-xl pl-3 pr-2 py-1.5 text-sm font-semibold">
+                  {t}
+                  <button
+                    onClick={() => setSchedule({ ...schedule, times: schedule.times.filter(x => x !== t) })}
+                    title={`Remove ${t}`}
+                    className="text-indigo-400 hover:text-red-500 font-bold leading-none"
+                  >
+                    ✕
+                  </button>
+                </span>
+              ))}
+              <input
+                type="time"
+                value={newTime}
+                onChange={e => setNewTime(e.target.value)}
+                className="border border-slate-200 rounded-xl px-3 py-1.5 text-sm outline-none focus:border-indigo-400"
+              />
+              <button
+                onClick={() => {
+                  if (!newTime || schedule.times.includes(newTime)) return;
+                  setSchedule({ ...schedule, times: [...schedule.times, newTime].sort() });
+                  setNewTime("");
+                }}
+                disabled={!newTime || schedule.times.includes(newTime)}
+                className="px-3 py-1.5 rounded-xl text-sm font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 disabled:opacity-40"
+              >
+                Add time
+              </button>
+            </div>
+
+            <div className="flex flex-col sm:flex-row sm:items-end gap-3">
+              <div className="flex-1">
+                <label className="block text-xs font-semibold text-slate-600 mb-1.5">Time zone</label>
+                <select
+                  value={schedule.timezone}
+                  onChange={e => setSchedule({ ...schedule, timezone: e.target.value })}
+                  className={inputCls}
+                >
+                  {TIMEZONES.map(tz => (
+                    <option key={tz.value} value={tz.value}>{tz.label}</option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-slate-400 mt-1.5">
+                  The times above are read in this zone, whatever the server's own clock says.
+                </p>
+              </div>
+              <button
+                onClick={saveSchedule}
+                disabled={savingSchedule}
+                className="flex items-center gap-1.5 px-4 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-all flex-shrink-0"
+              >
+                <I.Save /> {savingSchedule ? "Saving…" : "Save schedule"}
+              </button>
+            </div>
+
+            {schedule.times.length === 0 && (
+              <p className="text-xs font-semibold text-amber-600 mt-3">
+                No times set — nothing will sync automatically. Sync Now still works.
+              </p>
+            )}
+            {schedule.enabled && schedule.next_due_at && (
+              <p className="text-xs text-slate-500 mt-3">
+                Next automatic sync <b>{formatInZone(schedule.next_due_at, schedule.timezone)}</b>.
+              </p>
+            )}
+          </div>
+        </div>
+
         {/* ── Create new integration ── */}
         <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm">
           <div className="flex flex-col sm:flex-row sm:items-end gap-3">
@@ -381,12 +546,16 @@ export default function MetaPage() {
                         <span className="text-slate-400">
                           {it.last_sync_ok === false
                             ? it.last_sync_note
-                            : `auto every ${it.sync_every_hours}h · next ${whenRelative(it.next_sync_due_at)}`}
+                            : schedule.enabled && it.next_sync_due_at
+                              ? `next ${whenRelative(it.next_sync_due_at)}`
+                              : "automatic sync off"}
                         </span>
                       </>
                     ) : (
                       <span className="text-slate-400">
-                        Auto-syncs every {it.sync_every_hours}h · not run yet
+                        {schedule.enabled && schedule.times.length
+                          ? `Syncs at ${schedule.times.join(", ")} · not run yet`
+                          : "Automatic sync off · not run yet"}
                       </span>
                     )}
                   </p>
