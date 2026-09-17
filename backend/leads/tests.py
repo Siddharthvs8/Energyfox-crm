@@ -3940,6 +3940,138 @@ class MaintenanceReminderTests(TestCase):
         self.assertEqual(r.status_code, 403)
 
 
+class MetaSyncTickerTests(TestCase):
+    """The in-process ticker that makes the schedule fire.
+
+    It exists because a schedule set in the CRM that depends on a server timer
+    being configured to match it is a screen telling the truth about its intent
+    and a lie about what will happen. The app watches its own clock instead.
+
+    The thread itself is not started here — a background loop in a test suite is
+    a source of flakes, not of confidence. What is tested is the tick it runs.
+    """
+
+    def setUp(self):
+        from leads.models import IntegrationSettings, MetaSyncSchedule
+        self.schedule = MetaSyncSchedule.load()
+        self.schedule.enabled = True
+        self.schedule.times = ['09:00', '21:00']
+        self.schedule.timezone = 'Asia/Kolkata'
+        self.schedule.last_checked_at = None
+        self.schedule.save()
+        self.a = IntegrationSettings.objects.create(
+            name='Kochi', meta_page_id='111', meta_access_token='token-a')
+        self.b = IntegrationSettings.objects.create(
+            name='Calicut', meta_page_id='222', meta_access_token='token-b')
+
+    @staticmethod
+    def ist(y, m, d, hh, mm):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        return datetime(y, m, d, hh, mm, tzinfo=ZoneInfo('Asia/Kolkata'))
+
+    @staticmethod
+    def _ok():
+        from leads.meta_integration import MetaImportResult
+        r = MetaImportResult()
+        r.imported, r.skipped = 2, 1
+        return r
+
+    def synced_at(self, integration, moment):
+        from leads.models import IntegrationSettings
+        IntegrationSettings.objects.filter(pk=integration.pk).update(last_synced_at=moment)
+
+    # ── The tick ──
+    def test_a_tick_syncs_every_integration_when_the_time_comes(self):
+        """The whole ask: at the scheduled time, all of them import."""
+        from leads import scheduler
+        self.synced_at(self.a, self.ist(2026, 9, 17, 8, 0))
+        self.synced_at(self.b, self.ist(2026, 9, 17, 8, 0))
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()) as call:
+            ran = scheduler.run_due_syncs_once(now=self.ist(2026, 9, 17, 9, 0))
+        self.assertEqual(ran, 2)
+        self.assertEqual(call.call_count, 2)
+
+    def test_a_tick_before_the_time_does_nothing(self):
+        from leads import scheduler
+        self.synced_at(self.a, self.ist(2026, 9, 17, 8, 0))
+        self.synced_at(self.b, self.ist(2026, 9, 17, 8, 0))
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()) as call:
+            ran = scheduler.run_due_syncs_once(now=self.ist(2026, 9, 17, 8, 59))
+        self.assertEqual(ran, 0)
+        call.assert_not_called()
+
+    def test_a_disabled_schedule_ticks_but_never_syncs(self):
+        from leads import scheduler
+        self.schedule.enabled = False
+        self.schedule.save()
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()) as call:
+            self.assertEqual(scheduler.run_due_syncs_once(now=self.ist(2026, 9, 17, 9, 0)), 0)
+            call.assert_not_called()
+
+    # ── The heartbeat ──
+    def test_every_tick_records_that_it_looked(self):
+        """\"Nothing was due\" and \"nothing is watching the clock\" look identical
+        without this, and the second is the one worth knowing about."""
+        from leads import scheduler
+        from leads.models import MetaSyncSchedule
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()):
+            scheduler.run_due_syncs_once(now=self.ist(2026, 9, 17, 8, 59))
+        self.assertIsNotNone(MetaSyncSchedule.load().last_checked_at)
+
+    def test_the_heartbeat_reaches_the_api(self):
+        from leads import scheduler
+        admin = mk('tick_admin', 'admin')
+        with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()):
+            scheduler.run_due_syncs_once(now=self.ist(2026, 9, 17, 8, 59))
+        r = self.client.get('/api/integration-settings/sync-schedule/',
+                            HTTP_AUTHORIZATION=token_for(admin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertIsNotNone(r.json()['last_checked_at'])
+
+    def test_the_heartbeat_cannot_be_written_by_a_client(self):
+        admin = mk('tick_admin2', 'admin')
+        r = self.client.put('/api/integration-settings/sync-schedule/',
+                            data={'enabled': True, 'times': ['09:00'],
+                                  'timezone': 'Asia/Kolkata',
+                                  'last_checked_at': '2020-01-01T00:00:00Z'},
+                            content_type='application/json',
+                            HTTP_AUTHORIZATION=token_for(admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        from leads.models import MetaSyncSchedule
+        self.assertIsNone(MetaSyncSchedule.load().last_checked_at)
+
+    # ── Which processes run it ──
+    def test_the_ticker_stays_out_of_management_commands(self):
+        """A migration or a test run must not start syncing in the background."""
+        from leads import scheduler
+        for argv in (['manage.py', 'migrate'], ['manage.py', 'test'],
+                     ['manage.py', 'makemigrations'], ['manage.py', 'collectstatic'],
+                     ['manage.py', 'sync_meta_leads']):
+            with patch.object(scheduler.sys, 'argv', argv):
+                self.assertFalse(scheduler.should_start(), argv)
+
+    def test_the_ticker_runs_under_a_web_server(self):
+        from leads import scheduler
+        with patch.object(scheduler.sys, 'argv', ['gunicorn', 'config.wsgi:application']):
+            self.assertTrue(scheduler.should_start())
+
+    def test_the_ticker_can_be_turned_off_for_a_cron_setup(self):
+        """Anyone who would rather own the scheduling on the host can."""
+        from leads import scheduler
+        with patch.dict(scheduler.os.environ, {'META_SYNC_SCHEDULER': '0'}):
+            self.assertFalse(scheduler.should_start())
+
+    def test_the_autoreloader_only_ticks_in_one_process(self):
+        """`runserver` runs the app twice; ticking in both doubles every tick."""
+        from leads import scheduler
+        with patch.object(scheduler.sys, 'argv', ['manage.py', 'runserver']):
+            with patch.dict(scheduler.os.environ, {'RUN_MAIN': ''}):
+                self.assertFalse(scheduler.should_start())
+            with patch.dict(scheduler.os.environ, {'RUN_MAIN': 'true'}):
+                self.assertTrue(scheduler.should_start())
+
+
 class MetaSyncScheduleTests(TestCase):
     """When the Meta sync runs — the times set in the CRM, in the zone set with them.
 

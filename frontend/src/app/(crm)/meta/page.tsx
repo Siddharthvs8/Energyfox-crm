@@ -68,6 +68,8 @@ type Schedule = {
   times: string[];          // "HH:MM", read in `timezone`
   timezone: string;         // IANA name
   next_due_at: string | null;
+  /** Stamped every time the app looks at the clock — proof it is watching. */
+  last_checked_at: string | null;
 };
 
 /* A short list rather than the full IANA set: these are the zones EnergyFox
@@ -119,7 +121,7 @@ export default function MetaPage() {
   const [creating, setCreating] = useState(false);
 
   const [schedule, setSchedule] = useState<Schedule>({
-    enabled: true, times: [], timezone: "Asia/Kolkata", next_due_at: null,
+    enabled: true, times: [], timezone: "Asia/Kolkata", next_due_at: null, last_checked_at: null,
   });
   const [newTime, setNewTime] = useState("");
   const [savingSchedule, setSavingSchedule] = useState(false);
@@ -450,6 +452,23 @@ export default function MetaPage() {
               <p className="text-xs text-slate-500 mt-3">
                 Next automatic sync <b>{formatInZone(schedule.next_due_at, schedule.timezone)}</b>.
               </p>
+            )}
+
+            {/* Whether anything is actually watching the clock. Without this,
+                a schedule that never fires looks exactly like one with nothing
+                due yet, and the difference is the whole problem. */}
+            {schedule.enabled && (
+              schedule.last_checked_at && Date.now() - new Date(schedule.last_checked_at).getTime() < 5 * 60 * 1000 ? (
+                <p className="text-xs text-emerald-600 font-semibold mt-1">
+                  ● Running — last checked {whenRelative(schedule.last_checked_at)}.
+                </p>
+              ) : (
+                <p className="text-xs text-amber-600 font-semibold mt-1">
+                  ● Not running — the app has {schedule.last_checked_at
+                    ? `not checked since ${whenRelative(schedule.last_checked_at)}`
+                    : "never checked"}. Restart the backend, or check that META_SYNC_SCHEDULER is not set to 0.
+                </p>
+              )
             )}
           </div>
         </div>

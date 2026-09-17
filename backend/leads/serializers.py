@@ -698,8 +698,10 @@ class MetaSyncScheduleSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = MetaSyncSchedule
-        fields = ['enabled', 'times', 'timezone', 'next_due_at', 'updated_at']
-        read_only_fields = ['updated_at']
+        fields = ['enabled', 'times', 'timezone', 'next_due_at',
+                  'last_checked_at', 'updated_at']
+        # Written by the ticker, never by a client saving the form.
+        read_only_fields = ['updated_at', 'last_checked_at']
 
     def validate_timezone(self, value):
         from zoneinfo import ZoneInfo, ZoneInfoNotFoundError

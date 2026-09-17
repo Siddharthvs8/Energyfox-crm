@@ -6,7 +6,7 @@ the app EC2 instance via systemd timers (no extra service needed for 50 users).
 | Job | Command | Cadence | What it does |
 |-----|---------|---------|--------------|
 | Automation queue | `process_automation_queue` | every 5 min | resumes timed automation steps, flushes queued bulk WhatsApp, fires `lead_inactive`, purges 7-day-old Trash, trims automation logs >90 days |
-| Meta lead sync | `sync_meta_leads` | every minute | pulls Meta Lead Ads leads when a time on the schedule set in the CRM comes round — the safety net for leads the webhook never delivered |
+| Meta lead sync | `sync_meta_leads` | **not needed** — the app schedules itself | pulls Meta Lead Ads leads when a time on the schedule set in the CRM comes round. Only install this timer if you turn the in-app ticker off with `META_SYNC_SCHEDULER=0` |
 | Archive old leads | `archive_old_leads` | nightly 02:30 | archives terminal leads (lost / not interested / fully delivered) older than `ARCHIVE_AFTER_MONTHS` |
 | Database backup | `deploy/backup-db.sh` | nightly 03:00 | `pg_dump` of the CRM database, gzipped to `/var/backups/energyfox`, keeping 30 |
 | Certificate backup | `deploy/backup-certs.sh` | nightly 03:15 | snapshots `certbot/conf` (certs, private keys, ACME account key, renewal config) to `/var/backups/energyfox`, keeping 30 |
@@ -69,24 +69,35 @@ Persistent=true
 WantedBy=timers.target
 ```
 
-**The times are set in the CRM**, under Meta Integration → Automatic sync, with
-the zone they are meant in (IST by default). This timer only polls; the command
-does nothing until one of those times comes round, then syncs once for it.
+### You probably do not need this timer
 
-Run it **every minute**. That is what makes "09:00 IST" land at nine — the poll
-interval is the precision. It costs nothing on the minutes when nothing is due:
-the command reads one row, finds no time has passed, and exits without output.
-Poll every five minutes instead and a sync set for 09:00 happens by 09:05.
+**The backend schedules itself.** The times are set in the CRM, under Meta
+Integration → Automatic sync, with the zone they are meant in (IST by default),
+and a ticker inside the app checks the clock every 30 seconds and syncs when one
+of those times comes round. Nothing has to be configured on the host.
 
-A time the poll missed entirely — host down, deploy, container restarting — is
-still the most recent one that has passed, so it is caught up on the next poll
-rather than skipped until tomorrow. `Persistent=true` covers a host that was off
-at the moment itself.
+That is deliberate. A schedule set in the app that only fires if a server timer
+was separately installed is a screen telling the truth about its intent and a
+lie about what will happen — and the Meta page now shows a green "Running — last
+checked a moment ago" line so you can see at a glance that something really is
+watching.
 
-Pressing **Sync Now** in the CRM satisfies the time it follows, so a manual sync
-just after 09:00 is not followed a minute later by the automatic one — but the
-next scheduled time still fires. `--force` pulls everything regardless of the
-schedule; `--dry-run` prints what is due without calling Meta.
+Under gunicorn's several workers, one worker wins each tick by taking the
+schedule row with `SELECT … FOR UPDATE SKIP LOCKED`; the rest skip. A time
+missed entirely (host down, deploy, container restarting) is still the most
+recent one that has passed, so it is caught up on the next tick rather than
+skipped until tomorrow.
+
+### If you would rather drive it from the host
+
+Set `META_SYNC_SCHEDULER=0` on the backend to stop the in-app ticker, then
+install the units above and run the command **every minute** — the poll interval
+is the precision, so at five minutes a sync set for 09:00 happens by 09:05.
+
+Either way: pressing **Sync Now** in the CRM satisfies the time it follows, so a
+manual sync just after 09:00 is not followed a minute later by the automatic one
+— but the next scheduled time still fires. `--force` pulls everything regardless
+of the schedule; `--dry-run` prints what is due without calling Meta.
 
 `energyfox-archive.service`
 ```ini
@@ -168,8 +179,8 @@ WantedBy=timers.target
 
 ```bash
 sudo systemctl daemon-reload
+# energyfox-meta-sync.timer is only needed if META_SYNC_SCHEDULER=0 (see above).
 sudo systemctl enable --now energyfox-queue.timer energyfox-archive.timer \
-                            energyfox-meta-sync.timer \
                             energyfox-dbbackup.timer energyfox-certbackup.timer
 systemctl list-timers | grep energyfox      # confirm next run times
 ```

@@ -635,6 +635,11 @@ class MetaSyncSchedule(models.Model):
     times = models.JSONField(default=list, blank=True)
     timezone = models.CharField(max_length=64, default=DEFAULT_TIMEZONE,
                                 help_text="IANA name, e.g. Asia/Kolkata")
+    # Stamped on every tick of the ticker, whether or not anything was due.
+    # It is what lets the screen tell "nothing was due" apart from "nothing is
+    # watching the clock" — the two look identical otherwise, and the second is
+    # the one worth knowing about.
+    last_checked_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
