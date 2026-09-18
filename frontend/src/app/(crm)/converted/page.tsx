@@ -304,20 +304,22 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
 
       {/* ─── Header ───────────────────────────────────────────────────────── */}
       <div className="bg-white border-b border-slate-200/50 sticky-under-topbar z-30 shadow-sm">
-        <div className="max-w-[1440px] mx-auto px-4 sm:px-6 xl:px-8 h-[68px] flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-gradient-to-br from-emerald-400 to-teal-500 rounded-xl flex items-center justify-center text-white shadow-lg shadow-teal-500/20">
+        <div className="max-w-[1440px] mx-auto px-4 sm:px-6 xl:px-8 min-h-[68px] py-3 flex items-center justify-between gap-3 sm:gap-4">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+            <div className="w-9 h-9 sm:w-10 sm:h-10 bg-gradient-to-br from-emerald-400 to-teal-500 rounded-xl flex items-center justify-center text-white shadow-lg shadow-teal-500/20 flex-shrink-0">
               <I.Trophy />
             </div>
-            <div>
-              <h1 className="text-[17px] font-black text-slate-900 leading-none">Converted Leads</h1>
-              <p className="text-[11px] text-slate-400 mt-0.5">{leads.length} converted clients</p>
+            <div className="min-w-0">
+              <h1 className="text-[15px] sm:text-[17px] font-black text-slate-900 leading-tight truncate">Converted Leads</h1>
+              <p className="text-[11px] text-slate-400 mt-0.5 truncate">{leads.length} converted clients</p>
             </div>
           </div>
           {/* Search lives with the filters below — on a phone it was hidden here. */}
           <div className="flex items-center gap-3">
-            <button onClick={exportCSV} className="px-4 py-2 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl text-sm shadow-sm hover:bg-slate-50 transition-all text-[13px] flex items-center gap-2">
-              <I.Download /> Export Report
+            <button onClick={exportCSV} className="px-3 sm:px-4 py-2 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 transition-all text-[12px] sm:text-[13px] flex items-center gap-1.5 sm:gap-2 flex-shrink-0 whitespace-nowrap">
+              <I.Download />
+              <span className="hidden sm:inline">Export Report</span>
+              <span className="sm:hidden">Export</span>
             </button>
           </div>
         </div>
@@ -326,7 +328,7 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
       <div className="max-w-[1440px] mx-auto px-4 sm:px-6 xl:px-8 mt-7">
 
         {/* ─── KPI Grid ─────────────────────────────────────────────────── */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-5 mb-7">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-5 mb-7">
           {[
             // Won means closed — in accounts with money received. The badge says
             // so, because it sits next to a count of every converted lead and
@@ -336,14 +338,16 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
             { label: "Avg Time to Convert", value: `${data.avg_conversion_days}`, sub: "days", icon: <I.Clock />, color: "from-amber-400 to-orange-400", badge: "From Creation", badgeColor: "bg-amber-50 text-amber-600" },
             { label: "Top Source", value: data.top_sources[0]?.source ? getSourceLabel(data.top_sources[0].source) : "—", icon: <I.Target />, color: "from-fuchsia-400 to-pink-400", badge: data.top_sources[0]?.count ? `${data.top_sources[0].count} leads` : "No data", badgeColor: "bg-fuchsia-50 text-fuchsia-600" },
           ].map((c, i) => (
-            <div key={i} className="bg-white rounded-2xl p-5 border border-slate-100 shadow-[0_4px_20px_rgb(0,0,0,0.04)] relative overflow-hidden group hover:shadow-[0_8px_30px_rgb(0,0,0,0.08)] transition-shadow">
+            <div key={i} className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-100 shadow-[0_4px_20px_rgb(0,0,0,0.04)] relative overflow-hidden group hover:shadow-[0_8px_30px_rgb(0,0,0,0.08)] transition-shadow">
               <div className={`absolute inset-x-0 bottom-0 h-1 bg-gradient-to-r ${c.color}`} />
-              <div className="flex items-start justify-between mb-3">
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{c.label}</p>
-                <div className={`w-6 h-6 rounded-lg bg-gradient-to-br ${c.color} flex items-center justify-center text-white opacity-70`}>{c.icon}</div>
+              <div className="flex items-start justify-between gap-2 mb-2.5 sm:mb-3">
+                <p className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-wider sm:tracking-widest leading-tight">{c.label}</p>
+                <div className={`w-6 h-6 rounded-lg bg-gradient-to-br ${c.color} flex items-center justify-center text-white opacity-70 flex-shrink-0`}>{c.icon}</div>
               </div>
-              <p className="text-3xl font-black text-slate-900 leading-none">
-                {c.value} {c.sub && <span className="text-base text-slate-400 font-semibold">{c.sub}</span>}
+              {/* A won-revenue figure has no fixed length: it wraps rather than
+                  running past the card edge if it outgrows even this size. */}
+              <p className="text-[22px] leading-tight sm:text-3xl sm:leading-none font-black text-slate-900 break-words">
+                {c.value} {c.sub && <span className="text-sm sm:text-base text-slate-400 font-semibold">{c.sub}</span>}
               </p>
               <span className={`inline-block mt-3 text-[10px] font-bold px-2 py-0.5 rounded-md ${c.badgeColor}`}>{c.badge}</span>
             </div>
