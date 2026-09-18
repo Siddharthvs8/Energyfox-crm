@@ -463,7 +463,7 @@ export default function EmergencyServicePage() {
                 {rows.map(s => (
                   <tr key={s.id} className="border-b border-slate-50 hover:bg-slate-50/60 align-top">
                     <td className="px-4 py-3 font-semibold text-slate-800">{s.customer_name || "—"}</td>
-                    <td className="px-4 py-3 text-slate-600 max-w-[220px]"><span className="line-clamp-2">{s.service || "—"}</span></td>
+                    <td className="px-4 py-3 text-slate-600 min-w-[200px] max-w-[220px]"><span className="line-clamp-2">{s.service || "—"}</span></td>
                     {/* Floating voltage sits under the DC reading rather than
                         claiming a column of its own. */}
                     <td className="px-4 py-3 text-slate-600">
@@ -516,7 +516,7 @@ export default function EmergencyServicePage() {
                       })()}
                     </td>
                     <td className="px-4 py-3 text-slate-600">{s.monthly_production || "—"}</td>
-                    <td className="px-4 py-3 text-slate-600 max-w-[180px]"><span className="line-clamp-2">{s.remarks || "—"}</span></td>
+                    <td className="px-4 py-3 text-slate-600 min-w-[180px] max-w-[180px]"><span className="line-clamp-2">{s.remarks || "—"}</span></td>
                     <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{s.created_at ? new Date(s.created_at).toLocaleDateString("en-IN") : "—"}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-3">

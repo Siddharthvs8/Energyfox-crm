@@ -1035,7 +1035,7 @@ export default function LeadDetailPage({
                     setManualCallForm({ outcome: "connected", duration_seconds: "0", notes: "", recording_url: "" });
                     setShowManualCallModal(true);
                   }}
-                  className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 transition-colors"
+                  className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 transition-colors whitespace-nowrap flex-shrink-0"
                 >
                   + Log Call
                 </button>

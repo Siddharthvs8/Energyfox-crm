@@ -123,14 +123,16 @@ export default function OverdueProjectsPage() {
               className="block bg-white border border-rose-200 rounded-2xl shadow-sm px-5 py-4 hover:bg-rose-50/40 transition-colors">
               <div className="flex items-center justify-between gap-4">
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2">
+                  {/* Wraps on a phone: name, tag, badge and deadline do not
+                      fit on one 390px line. */}
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                     <p className="text-sm font-bold text-slate-900 truncate">{l.first_name} {l.last_name}</p>
                     <BdeTag name={l.bde_name} />
                     {l.lead_deleted && <DeletedLeadBadge />}
-                    <span className="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-rose-50 text-rose-700">
+                    <span className="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 whitespace-nowrap flex-shrink-0">
                       Overdue
                     </span>
-                    <span className="text-[10px] font-semibold text-rose-600">{deadlineNote(l)}</span>
+                    <span className="text-[10px] font-semibold text-rose-600 whitespace-nowrap flex-shrink-0">{deadlineNote(l)}</span>
                   </div>
                   <p className="text-xs text-slate-500 mt-0.5 truncate">
                     {l.phone || "—"} · {l.location || "No location"}{l.product_name ? ` · ${l.product_name}` : ""}

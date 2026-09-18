@@ -311,7 +311,7 @@ export default function ProjectsPage() {
         <input value={search} onChange={e => setSearch(e.target.value)}
           placeholder="Search projects by name, type or capacity…"
           className="flex-1 min-w-[240px] max-w-md bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition" />
-        <span className="text-xs font-semibold text-slate-400">
+        <span className="text-xs font-semibold text-slate-400 whitespace-nowrap flex-shrink-0">
           {shown.length} project{shown.length === 1 ? "" : "s"}
           {search.trim() && projects.length !== shown.length ? ` of ${projects.length}` : ""}
         </span>

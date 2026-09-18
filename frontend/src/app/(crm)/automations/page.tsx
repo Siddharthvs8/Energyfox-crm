@@ -324,7 +324,10 @@ export default function AutomationsPage({ params: paramsPromise }: { params: Pro
                       isActive ? "border-white/[0.08] shadow-lg shadow-black/20" : "border-white/[0.03] opacity-60 hover:opacity-100"
                     }`}
                   >
-                    <div className="flex items-center p-6 gap-6">
+                    {/* Desktop reads this as one row; a phone has room for
+                        about one of its four parts, so it wraps instead of
+                        squeezing every part down to nothing. */}
+                    <div className="flex flex-wrap items-center p-4 sm:p-6 gap-4 sm:gap-6">
                       
                       {/* Toggle */}
                       <button
@@ -340,7 +343,7 @@ export default function AutomationsPage({ params: paramsPromise }: { params: Pro
                       </button>
 
                       {/* Info core */}
-                      <div className="flex-1 min-w-0 pr-6 border-r border-white/5">
+                      <div className="flex-1 min-w-[60%] sm:min-w-0 pr-0 sm:pr-6 border-r-0 sm:border-r border-white/5">
                         <div className="flex items-center gap-3 mb-2">
                            <span className="text-xl opacity-80 filter drop-shadow-[0_0_8px_rgba(255,255,255,0.3)]">
                              {TRIGGER_ICONS[rule.trigger_event] || "⚡"}
@@ -351,7 +354,7 @@ export default function AutomationsPage({ params: paramsPromise }: { params: Pro
                            >
                             {rule.name}
                            </h3>
-                           <div className={`px-2.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider border ${pr.color} ${pr.border}`}>
+                           <div className={`px-2.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider border flex-shrink-0 whitespace-nowrap ${pr.color} ${pr.border}`}>
                              {pr.label}
                            </div>
                         </div>
@@ -360,7 +363,7 @@ export default function AutomationsPage({ params: paramsPromise }: { params: Pro
                         )}
                         
                         {/* Pipeline visualizer preview */}
-                        <div className="flex items-center text-xs font-semibold text-slate-500">
+                        <div className="flex flex-wrap items-center gap-y-2 text-xs font-semibold text-slate-500">
                           <span className="bg-white/5 px-2.5 py-1 rounded-md text-slate-300 border border-white/5 flex items-center gap-2">
                              <div className="w-1.5 h-1.5 rounded-full bg-blue-500"></div> Trigger
                           </span>
@@ -376,7 +379,7 @@ export default function AutomationsPage({ params: paramsPromise }: { params: Pro
                       </div>
 
                       {/* Performance Metrics */}
-                      <div className="flex items-center gap-8 pl-4 flex-shrink-0">
+                      <div className="flex flex-wrap items-center gap-x-6 gap-y-3 sm:gap-8 pl-0 sm:pl-4 flex-shrink-0">
                          <div className="flex flex-col items-center">
                             <span className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1">Runs</span>
                             <span className="text-lg font-black text-white">{rule.execution_count}</span>

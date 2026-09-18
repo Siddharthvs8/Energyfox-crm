@@ -309,10 +309,10 @@ function TeamPageInner() {
       <div className="bg-white border-b border-slate-200/60 sticky-under-topbar z-20">
         <div className="max-w-[1200px] mx-auto px-4 sm:px-6 xl:px-8 py-3 sm:py-0 min-h-[4rem] flex justify-center flex-col">
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-            <div className="flex items-center gap-6">
-              <div>
+            <div className="flex items-center gap-3 sm:gap-6 min-w-0">
+              <div className="flex-shrink-0">
                 <h1 className="text-lg font-bold text-slate-900">{isB2B ? "B2B Team" : isAdminOrGM ? "Team" : "My Team"}</h1>
-                <p className="text-[11px] text-slate-400 mt-0.5">{team.length} members</p>
+                <p className="text-[11px] text-slate-400 mt-0.5 whitespace-nowrap">{team.length} members</p>
               </div>
               {/* Tabs - only show for admin/GM. Workspace teams are a sales-side
                   concept, so the wholesale roster is a flat member list. */}
@@ -382,8 +382,10 @@ function TeamPageInner() {
               const teamName = workspaceTeams.find(t => t.id === member.team)?.name;
               return (
                 <div key={member.id} className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all group">
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="flex items-center gap-3">
+                  <div className="flex items-start justify-between mb-4 gap-2">
+                    {/* min-w-0: without it this row keeps the full width of the
+                        longest email and pushes the card off a phone screen. */}
+                    <div className="flex items-center gap-3 min-w-0">
                       <Avatar name={member.first_name || member.username} url={member.avatar_url}
                         size={44} className="shadow-sm" textClass="text-sm" />
                       <div className="min-w-0">

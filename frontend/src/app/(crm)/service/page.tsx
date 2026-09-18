@@ -118,7 +118,10 @@ export default function ServicePage() {
         ) : rows.length === 0 ? (
           <div className="py-12 text-center text-sm text-slate-400">No service entries yet.</div>
         ) : (
-          <table className="w-full text-sm">
+          /* Phone: the five columns do not fit, so the table scrolls as one
+             piece inside the card instead of widening the page. */
+          <div className="overflow-x-auto">
+          <table className="w-full text-sm min-w-[640px]">
             <thead>
               <tr className="text-left text-[10px] font-bold text-slate-400 uppercase tracking-wide border-b border-slate-100">
                 <th className="px-5 py-3">Customer Name</th>
@@ -145,6 +148,7 @@ export default function ServicePage() {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
     </div>

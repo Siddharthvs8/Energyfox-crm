@@ -415,7 +415,11 @@ export function DataTable({ columns, rows, empty, minWidth = 720, onRowClick, ro
                 title={onRowClick ? rowTitle : undefined}
                 className={`hover:bg-slate-50/50 transition-colors ${onRowClick ? "cursor-pointer" : ""}`}>
                 {row.map((c, ci) => (
-                  <td key={ci} className={`${cell} text-sm text-slate-700 ${align(cols[ci]?.align)}`}>{c}</td>
+                  /* nowrap: the columns share `minWidth` between them, and on a
+                     phone that left a phone number three characters wide. The
+                     table is in a sideways scroller, so it may be as wide as
+                     its values need. */
+                  <td key={ci} className={`${cell} text-sm text-slate-700 whitespace-nowrap ${align(cols[ci]?.align)}`}>{c}</td>
                 ))}
               </tr>
             ))}
