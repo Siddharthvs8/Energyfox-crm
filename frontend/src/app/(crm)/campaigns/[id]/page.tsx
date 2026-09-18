@@ -151,14 +151,14 @@ export default function CampaignDetailsPage({ params: paramsPromise }: { params:
   return (
     <div className="min-h-screen bg-[#060608] text-slate-200 font-sans selection:bg-indigo-500/30 relative">
       {/* Background layer */}
-      <div className="absolute inset-0 z-0">
+      <div className="absolute inset-0 z-0 overflow-hidden">
          <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyMCIgaGVpZ2h0PSIyMCI+CiAgPGNpcmNsZSBjeD0iMiIgY3k9IjIiIHI9IjEiIGZpbGw9IiNmZmYiIGZpbGwtb3BhY2l0eT0iMC4wNSIvPgo8L3N2Zz4=')] opacity-50"></div>
          <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-indigo-600/10 blur-[120px] rounded-full mix-blend-screen pointer-events-none"></div>
       </div>
 
       <div className="relative z-10">
         <header className="border-b border-white/10 bg-[#060608]/80 backdrop-blur-xl sticky-under-topbar z-20">
-          <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 h-20 flex items-center justify-between">
             <div className="flex items-center gap-6">
               <button onClick={() => router.push(`/campaigns`)} className="p-2.5 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 transition-colors">
                 <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
@@ -185,7 +185,7 @@ export default function CampaignDetailsPage({ params: paramsPromise }: { params:
           </div>
         </header>
 
-        <main className="max-w-7xl mx-auto px-6 py-10">
+        <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
             <div className="lg:col-span-2 space-y-8">
               <div className="bg-[#111116]/80 backdrop-blur-2xl rounded-3xl border border-white/10 p-8 relative overflow-hidden shadow-2xl">

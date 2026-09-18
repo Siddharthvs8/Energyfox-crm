@@ -17,6 +17,7 @@ import { getApiBase, formatCurrency, getSourceLabel } from "@/lib/mock-data";
 
 import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import FilterBar, { FilterField } from "@/components/FilterBar";
 
 type Deal = {
   id: number;
@@ -76,8 +77,6 @@ const PERIODS = [
   { key: "all", label: "All time" },
   { key: "custom", label: "Custom" },
 ];
-
-const LABEL = "block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5";
 
 function Tile({ label, value, tone = "slate" }: { label: string; value: string; tone?: string }) {
   const tones: Record<string, string> = {
@@ -159,6 +158,11 @@ export default function ClosedDealsPage() {
     setPeriod("all"); setFrom(""); setTo("");
   };
 
+  // The phone sheet holds three of them. Search has its own box on the page and
+  // the period strip stays where it is, so neither is counted or cleared here.
+  const sheetFilters = [payment, teleCaller, bde].filter(Boolean).length;
+  const clearSheetFilters = () => { setPayment(""); setTeleCaller(""); setBde(""); };
+
   if (denied) {
     return (
       <div className="min-h-screen bg-[#f4f6fa] flex items-center justify-center px-6">
@@ -229,54 +233,63 @@ export default function ClosedDealsPage() {
         </div>
 
         {/* Filters — the same set the Converted Leads board carries. */}
-        <div className="bg-white rounded-2xl border border-slate-100 shadow-[0_4px_20px_rgb(0,0,0,0.04)] p-4 mb-5 flex flex-wrap items-end gap-4">
-          <div className="min-w-[200px] flex-1 max-w-xs">
-            <label className={LABEL}>Search</label>
-            <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"><I.Search /></span>
-              <input value={search} onChange={e => setSearch(e.target.value)}
-                placeholder="Name, phone, email, place…" className={`${SELECT} pl-9`} />
-            </div>
-          </div>
-          <div className="min-w-[160px]">
-            <label className={LABEL}>Payment</label>
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-[0_4px_20px_rgb(0,0,0,0.04)] p-4 mb-5">
+          <FilterBar
+            labelled
+            activeCount={sheetFilters}
+            onClear={clearSheetFilters}
+            resultCount={deals.length}
+            search={
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"><I.Search /></span>
+                <input value={search} onChange={e => setSearch(e.target.value)}
+                  placeholder="Name, phone, email, place…" className={`${SELECT} pl-9`} />
+              </div>
+            }
+          >
             {/* Only the two a closed deal can be: the money has landed, so
                 "converted, nothing yet" and "lost" cannot appear here. */}
-            <select value={payment} onChange={e => setPayment(e.target.value)} className={SELECT}>
-              <option value="">All payments</option>
-              <option value="partially_paid">Partially Paid{s ? ` (${s.partially_paid})` : ""}</option>
-              <option value="fully_paid">Fully Paid{s ? ` (${s.fully_paid})` : ""}</option>
-            </select>
-          </div>
-          {/* Shown whenever there is anyone to pick, not only when there are
-              several: hiding the control on a one-person board makes the page
-              look as though it cannot filter by owner at all. Labelled Owner to
-              match the column — it is the tele caller who worked the deal,
-              falling back to the current assignee. */}
-          {pickers.tele_callers.length > 0 && (
-            <div className="min-w-[160px]">
-              <label className={LABEL}>Owner</label>
-              <select value={teleCaller} onChange={e => setTeleCaller(e.target.value)} className={SELECT}>
-                <option value="">All owners</option>
-                {pickers.tele_callers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
-            </div>
-          )}
-          {pickers.bdes.length > 0 && (
-            <div className="min-w-[160px]">
-              <label className={LABEL}>BDE</label>
-              <select value={bde} onChange={e => setBde(e.target.value)} className={SELECT}>
-                <option value="">All BDEs</option>
-                {pickers.bdes.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
-            </div>
-          )}
-          {activeFilters > 0 && (
-            <button onClick={clearFilters}
-              className="ml-auto flex items-center gap-1.5 px-4 py-2 text-sm font-bold text-slate-500 hover:text-slate-700 bg-slate-50 hover:bg-slate-100 rounded-xl transition-colors">
-              <I.X /> Clear ({activeFilters})
-            </button>
-          )}
+            <FilterField label="Payment">
+              <div className="min-w-[160px]">
+                <select value={payment} onChange={e => setPayment(e.target.value)} className={SELECT}>
+                  <option value="">All payments</option>
+                  <option value="partially_paid">Partially Paid{s ? ` (${s.partially_paid})` : ""}</option>
+                  <option value="fully_paid">Fully Paid{s ? ` (${s.fully_paid})` : ""}</option>
+                </select>
+              </div>
+            </FilterField>
+            {/* Shown whenever there is anyone to pick, not only when there are
+                several: hiding the control on a one-person board makes the page
+                look as though it cannot filter by owner at all. Labelled Owner to
+                match the column — it is the tele caller who worked the deal,
+                falling back to the current assignee. */}
+            {pickers.tele_callers.length > 0 && (
+              <FilterField label="Owner">
+                <div className="min-w-[160px]">
+                  <select value={teleCaller} onChange={e => setTeleCaller(e.target.value)} className={SELECT}>
+                    <option value="">All owners</option>
+                    {pickers.tele_callers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+              </FilterField>
+            )}
+            {pickers.bdes.length > 0 && (
+              <FilterField label="BDE">
+                <div className="min-w-[160px]">
+                  <select value={bde} onChange={e => setBde(e.target.value)} className={SELECT}>
+                    <option value="">All BDEs</option>
+                    {pickers.bdes.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+              </FilterField>
+            )}
+            {activeFilters > 0 && (
+              <button onClick={clearFilters}
+                className="hidden lg:flex items-center gap-1.5 px-4 py-2 text-sm font-bold text-slate-500 hover:text-slate-700 bg-slate-50 hover:bg-slate-100 rounded-xl transition-colors">
+                <I.X /> Clear ({activeFilters})
+              </button>
+            )}
+          </FilterBar>
         </div>
 
         <div className="bg-white rounded-2xl border border-slate-100 shadow-[0_4px_20px_rgb(0,0,0,0.04)] overflow-hidden">

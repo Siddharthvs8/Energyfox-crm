@@ -82,7 +82,7 @@ export default function CampaignsPage({ params: paramsPromise }: { params: Promi
           over-scroll, so the light app background never shows through. */}
       <div className="fixed inset-0 bg-[#060608] -z-10 pointer-events-none" />
       {/* Background layer */}
-      <div className="absolute inset-0 z-0">
+      <div className="absolute inset-0 z-0 overflow-hidden">
          <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyMCIgaGVpZ2h0PSIyMCI+CiAgPGNpcmNsZSBjeD0iMiIgY3k9IjIiIHI9IjEiIGZpbGw9IiNmZmYiIGZpbGwtb3BhY2l0eT0iMC4wNSIvPgo8L3N2Zz4=')] opacity-50"></div>
          <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-indigo-600/20 blur-[120px] rounded-full mix-blend-screen"></div>
          <div className="absolute bottom-[-10%] right-[-10%] w-[30%] h-[30%] bg-purple-600/10 blur-[120px] rounded-full mix-blend-screen"></div>
@@ -90,7 +90,7 @@ export default function CampaignsPage({ params: paramsPromise }: { params: Promi
 
       <div className="relative z-10">
         <header className="border-b border-white/10 bg-[#060608]/80 backdrop-blur-xl sticky-under-topbar z-20">
-          <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 h-20 flex items-center justify-between">
             <div>
               <h1 className="text-2xl font-black text-white tracking-tight flex items-center gap-3">
                  <span className="text-3xl">📢</span> Campaigns
@@ -107,7 +107,7 @@ export default function CampaignsPage({ params: paramsPromise }: { params: Promi
           </div>
         </header>
 
-        <main className="max-w-7xl mx-auto px-6 py-10">
+        <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
           {loading ? (
             <div className="flex justify-center py-32">
               <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-500"></div>

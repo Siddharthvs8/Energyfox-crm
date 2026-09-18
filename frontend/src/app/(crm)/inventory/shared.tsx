@@ -204,7 +204,7 @@ export function StockPage({ title, subtitle, action, loading, denied, children }
   );
 
   if (denied) return (
-    <div className="max-w-2xl mx-auto p-8">
+    <div className="max-w-2xl mx-auto p-4 sm:p-8">
       <div className="bg-white border border-slate-200 rounded-2xl p-8 text-center">
         <div className="w-12 h-12 mx-auto rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center mb-3"><I.Alert /></div>
         <h1 className="text-lg font-bold text-slate-900">{title}</h1>

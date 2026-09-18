@@ -258,7 +258,7 @@ export default function ProjectsPage() {
   };
 
   if (loading) return (
-    <div className="max-w-6xl mx-auto p-8">
+    <div className="max-w-6xl mx-auto p-4 sm:p-8">
       <div className="animate-pulse space-y-4">
         <div className="h-8 w-48 bg-slate-200 rounded" />
         <div className="h-64 bg-slate-200 rounded-2xl" />

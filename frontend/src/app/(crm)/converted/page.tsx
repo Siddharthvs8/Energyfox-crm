@@ -4,6 +4,7 @@ import { getApiBase } from "@/lib/mock-data";
 import { useLeadStatuses } from "@/hooks/useLeadStatuses";
 import { FALLBACK_STATUS_META } from "@/lib/lead-statuses";
 import { StageTag } from "@/lib/pipeline-stages";
+import FilterBar, { FilterField } from "@/components/FilterBar";
 
 import React, { useState, useEffect, use, useRef } from "react";
 import { formatCurrency, getSourceLabel } from "@/lib/mock-data";
@@ -303,7 +304,7 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
 
       {/* ─── Header ───────────────────────────────────────────────────────── */}
       <div className="bg-white border-b border-slate-200/50 sticky-under-topbar z-30 shadow-sm">
-        <div className="max-w-[1440px] mx-auto px-6 xl:px-8 h-[68px] flex items-center justify-between gap-4">
+        <div className="max-w-[1440px] mx-auto px-4 sm:px-6 xl:px-8 h-[68px] flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-gradient-to-br from-emerald-400 to-teal-500 rounded-xl flex items-center justify-center text-white shadow-lg shadow-teal-500/20">
               <I.Trophy />
@@ -313,16 +314,8 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
               <p className="text-[11px] text-slate-400 mt-0.5">{leads.length} converted clients</p>
             </div>
           </div>
-          {/* Search */}
+          {/* Search lives with the filters below — on a phone it was hidden here. */}
           <div className="flex items-center gap-3">
-            <div className="relative hidden sm:block">
-              <svg className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
-              <input
-                value={search} onChange={e => setSearch(e.target.value)}
-                placeholder="Search clients…"
-                className="pl-9 pr-4 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all w-[220px]"
-              />
-            </div>
             <button onClick={exportCSV} className="px-4 py-2 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl text-sm shadow-sm hover:bg-slate-50 transition-all text-[13px] flex items-center gap-2">
               <I.Download /> Export Report
             </button>
@@ -330,7 +323,7 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
         </div>
       </div>
 
-      <div className="max-w-[1440px] mx-auto px-6 xl:px-8 mt-7">
+      <div className="max-w-[1440px] mx-auto px-4 sm:px-6 xl:px-8 mt-7">
 
         {/* ─── KPI Grid ─────────────────────────────────────────────────── */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-5 mb-7">
@@ -380,45 +373,65 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
         )}
 
         {/* ─── Filters (combinable) ──────────────────────────────────────── */}
-        <div className="bg-white rounded-2xl border border-slate-100 shadow-[0_4px_20px_rgb(0,0,0,0.04)] p-4 mb-5 flex flex-wrap items-end gap-4">
-          <div className="min-w-[160px]">
-            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">Stage</label>
-            <select value={stageFilter} onChange={e => setStageFilter(e.target.value)}
-              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all">
-              <option value="">All stages</option>
-              <option value="converted">Converted</option>
-              <option value="closed_deal">Closed Deal</option>
-              <option value="partially_paid">Partially Paid</option>
-              <option value="fully_paid">Fully Paid</option>
-              <option value="lost">Lost</option>
-            </select>
-          </div>
-          {isManagerOrAdmin && (
-            <div className="min-w-[160px]">
-              <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">Tele Caller</label>
-              <select value={telecallerFilter} onChange={e => setTelecallerFilter(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all">
-                <option value="">All tele callers</option>
-                {telecallerOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
-              </select>
-            </div>
-          )}
-          {isManagerOrAdmin && (
-            <div className="min-w-[160px]">
-              <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">BDE</label>
-              <select value={bdeFilter} onChange={e => setBdeFilter(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all">
-                <option value="">All BDEs</option>
-                {bdeOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
-              </select>
-            </div>
-          )}
-          {activeFilterCount > 0 && (
-            <button onClick={clearFilters}
-              className="ml-auto px-4 py-2 text-sm font-bold text-slate-500 hover:text-slate-700 bg-slate-50 hover:bg-slate-100 rounded-xl transition-colors">
-              Clear filters ({activeFilterCount})
-            </button>
-          )}
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-[0_4px_20px_rgb(0,0,0,0.04)] p-4 mb-5">
+          <FilterBar
+            labelled
+            activeCount={activeFilterCount}
+            onClear={clearFilters}
+            resultCount={filtered.length}
+            search={
+              <div className="relative">
+                <svg className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+                <input
+                  value={search} onChange={e => setSearch(e.target.value)}
+                  placeholder="Search clients…"
+                  className="w-full pl-9 pr-4 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all"
+                />
+              </div>
+            }
+          >
+            <FilterField label="Stage">
+              <div className="min-w-[160px]">
+                <select value={stageFilter} onChange={e => setStageFilter(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all">
+                  <option value="">All stages</option>
+                  <option value="converted">Converted</option>
+                  <option value="closed_deal">Closed Deal</option>
+                  <option value="partially_paid">Partially Paid</option>
+                  <option value="fully_paid">Fully Paid</option>
+                  <option value="lost">Lost</option>
+                </select>
+              </div>
+            </FilterField>
+            {isManagerOrAdmin && (
+              <FilterField label="Tele Caller">
+                <div className="min-w-[160px]">
+                  <select value={telecallerFilter} onChange={e => setTelecallerFilter(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all">
+                    <option value="">All tele callers</option>
+                    {telecallerOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+                  </select>
+                </div>
+              </FilterField>
+            )}
+            {isManagerOrAdmin && (
+              <FilterField label="BDE">
+                <div className="min-w-[160px]">
+                  <select value={bdeFilter} onChange={e => setBdeFilter(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all">
+                    <option value="">All BDEs</option>
+                    {bdeOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+                  </select>
+                </div>
+              </FilterField>
+            )}
+            {activeFilterCount > 0 && (
+              <button onClick={clearFilters}
+                className="hidden lg:block px-4 py-2 text-sm font-bold text-slate-500 hover:text-slate-700 bg-slate-50 hover:bg-slate-100 rounded-xl transition-colors">
+                Clear filters ({activeFilterCount})
+              </button>
+            )}
+          </FilterBar>
         </div>
 
         {/* ─── Client Table ──────────────────────────────────────────────── */}

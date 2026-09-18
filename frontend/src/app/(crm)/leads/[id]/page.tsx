@@ -820,8 +820,14 @@ export default function LeadDetailPage({
       </div>
 
       <div className="grid lg:grid-cols-3 gap-4 sm:gap-6">
-        {/* Left Column: Details */}
-        <div className="lg:col-span-2 space-y-6">
+        {/* Left Column: Details.
+            `min-w-0` on both columns: a grid track is `auto`, which means at
+            least as wide as the widest thing in it, and a grid item is then
+            stretched to its track. One intrinsically wide child — the call
+            recording's audio player, which a browser gives a ~300px minimum —
+            was enough to push both columns, and so every card in them, past the
+            right edge of a phone. */}
+        <div className="lg:col-span-2 space-y-6 min-w-0">
           {/* Contact Info */}
           <div className="bg-white rounded-2xl border border-slate-100 p-4 sm:p-6 animate-fade-in-up delay-100">
             <h2 className="font-semibold text-slate-900 mb-4">Contact Information</h2>
@@ -1117,7 +1123,7 @@ export default function LeadDetailPage({
                           <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">
                             ⏺️ Call Recording
                           </p>
-                          <audio src={getRecordingUrl(call.recording_url, call.id)} controls className="w-full h-8 scale-95 origin-left" />
+                          <audio src={getRecordingUrl(call.recording_url, call.id)} controls className="w-full max-w-full min-w-0 h-8 scale-95 origin-left" />
                         </div>
                       ) : (
                         <div className="pt-1 text-[10px] text-slate-400 italic">No recording available</div>
@@ -1134,7 +1140,7 @@ export default function LeadDetailPage({
         </div>
 
         {/* Right Column: Sidebar */}
-        <div className="space-y-6">
+        <div className="space-y-6 min-w-0">
           {/* Quick Stats */}
           <div className="bg-white rounded-2xl border border-slate-100 p-4 sm:p-6 animate-fade-in-up delay-100">
             <h2 className="font-semibold text-slate-900 mb-4">Quick Stats</h2>

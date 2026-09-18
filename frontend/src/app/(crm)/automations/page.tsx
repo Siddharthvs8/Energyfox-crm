@@ -258,7 +258,7 @@ export default function AutomationsPage({ params: paramsPromise }: { params: Pro
           </div>
         </header>
 
-        <main className="flex-1 overflow-y-auto w-full max-w-[1600px] mx-auto px-6 py-10 scrollbar-hide">
+        <main className="flex-1 overflow-y-auto w-full max-w-[1600px] mx-auto px-4 sm:px-6 py-6 sm:py-10 scrollbar-hide">
           {/* Stats Row */}
           {!loading && rules.length > 0 && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-10">

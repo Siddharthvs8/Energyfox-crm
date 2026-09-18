@@ -17,6 +17,7 @@ import { fetchProposal, proposalFileName, saveBlob } from "@/lib/quotationPropos
 import QuotationFormModal, { VARIANTS, money, type Quotation }
   from "@/components/QuotationFormModal";
 import QuotationPreviewModal from "@/components/QuotationPreviewModal";
+import FilterBar, { FilterField } from "@/components/FilterBar";
 
 const STATUS_STYLE: Record<string, string> = {
   draft: "bg-slate-100 text-slate-600",
@@ -154,39 +155,51 @@ export default function QuotationsPage({ scope = "open" }: { scope?: "open" | "o
         )}
       </div>
 
-      <div className="flex flex-wrap gap-3 mb-5">
-        <input value={search} onChange={e => setSearch(e.target.value)}
-          placeholder="Search by number, customer or project…"
-          className={`${inputCls} flex-1 min-w-[240px] max-w-md`} />
-        {/* Only offers have a status worth filtering: an order is by definition
-            one that was accepted and paid. */}
-        {!isOrders && (
-          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
-            className={`${inputCls} w-[180px]`}>
-            <option value="all">All statuses</option>
-            <option value="draft">Draft</option>
-            <option value="sent">Sent</option>
-            <option value="accepted">Accepted</option>
-            <option value="declined">Declined</option>
-          </select>
-        )}
-        {/* Raised between. Labelled, because two bare date boxes side by side
-            do not say which end is which. */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Raised</span>
-          <input type="date" value={createdFrom} max={createdTo || undefined}
-            onChange={e => setCreatedFrom(e.target.value)}
-            title="From this date" className={`${inputCls} w-[150px] max-w-[45vw]`} />
-          <span className="text-xs text-slate-400">to</span>
-          <input type="date" value={createdTo} min={createdFrom || undefined}
-            onChange={e => setCreatedTo(e.target.value)}
-            title="Up to this date" className={`${inputCls} w-[150px] max-w-[45vw]`} />
-          {(createdFrom || createdTo) && (
-            <button onClick={() => { setCreatedFrom(""); setCreatedTo(""); }}
-              className="text-xs font-bold text-slate-400 hover:text-slate-700 transition px-1"
-              title="Clear the date range">Clear</button>
+      <div className="mb-5">
+        <FilterBar
+          activeCount={(statusFilter !== "all" && !isOrders ? 1 : 0) + (createdFrom || createdTo ? 1 : 0)}
+          onClear={() => { setStatusFilter("all"); setCreatedFrom(""); setCreatedTo(""); }}
+          resultCount={shown.length}
+          search={
+            <input value={search} onChange={e => setSearch(e.target.value)}
+              placeholder="Search by number, customer or project…"
+              className={`${inputCls} w-full lg:max-w-md`} />
+          }
+        >
+          {/* Only offers have a status worth filtering: an order is by definition
+              one that was accepted and paid. */}
+          {!isOrders && (
+            <FilterField label="Status">
+              <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+                className={`${inputCls} lg:w-[180px]`}>
+                <option value="all">All statuses</option>
+                <option value="draft">Draft</option>
+                <option value="sent">Sent</option>
+                <option value="accepted">Accepted</option>
+                <option value="declined">Declined</option>
+              </select>
+            </FilterField>
           )}
-        </div>
+          {/* Raised between. Labelled, because two bare date boxes side by side
+              do not say which end is which. */}
+          <FilterField label="Raised">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="hidden lg:inline text-[11px] font-bold text-slate-400 uppercase tracking-wider">Raised</span>
+              <input type="date" value={createdFrom} max={createdTo || undefined}
+                onChange={e => setCreatedFrom(e.target.value)}
+                title="From this date" className={`${inputCls} flex-1 min-w-0 lg:flex-none lg:w-[150px]`} />
+              <span className="text-xs text-slate-400">to</span>
+              <input type="date" value={createdTo} min={createdFrom || undefined}
+                onChange={e => setCreatedTo(e.target.value)}
+                title="Up to this date" className={`${inputCls} flex-1 min-w-0 lg:flex-none lg:w-[150px]`} />
+              {(createdFrom || createdTo) && (
+                <button onClick={() => { setCreatedFrom(""); setCreatedTo(""); }}
+                  className="text-xs font-bold text-slate-400 hover:text-slate-700 transition px-1 flex-shrink-0"
+                  title="Clear the date range">Clear</button>
+              )}
+            </div>
+          </FilterField>
+        </FilterBar>
       </div>
 
       <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
