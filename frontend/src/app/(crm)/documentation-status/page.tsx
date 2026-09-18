@@ -6,6 +6,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCleanup";
+import { PageSkeleton } from "@/components/Skeleton";
 type Row = {
   id: number;
   // Set when the lead behind this row has been deleted; the row is then
@@ -88,10 +89,10 @@ export default function DocumentationStatusPage() {
     not_started: rows.filter(r => r.stage1_status === "not_started").length,
   }), [rows]);
 
-  if (loading) return <div className="flex items-center justify-center min-h-[60vh]"><div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" /></div>;
+  if (loading) return <PageSkeleton />;
 
   return (
-    <div className="p-6 lg:p-8 max-w-[1200px]">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-[1200px]">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-slate-900">Documentation</h1>
         <p className="text-sm text-slate-500 mt-0.5">Track every lead currently in the documentation process and its stage status.</p>

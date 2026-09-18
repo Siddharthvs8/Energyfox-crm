@@ -4,6 +4,7 @@ import { getApiBase } from "@/lib/mock-data";
 
 import React, { useState, useEffect, useRef } from "react";
 import { DragDropContext, Droppable, Draggable } from "@hello-pangea/dnd";
+import { Skeleton, SkeletonRegion, Spinner } from "@/components/Skeleton";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Task {
@@ -185,6 +186,17 @@ export default function TasksPage({ params: paramsPromise }: { params: Promise<{
 
   const [tasks, setTasks] = useState<Task[]>([]);
   const [view, setView] = useState<"kanban" | "list" | "table" | "calendar">("kanban");
+  // A four-column drag-and-drop board is not what a phone is for: the list is
+  // the same tasks, readable and tappable. Only the initial view is chosen —
+  // switching to the board afterwards still works if that is what is wanted.
+  // Read after hydration, not in the initial state: the server has no viewport
+  // and a different first render on the client is a hydration mismatch.
+  const viewPicked = useRef(false);
+  useEffect(() => {
+    if (viewPicked.current) return;
+    viewPicked.current = true;
+    if (window.innerWidth < 1024) setView("list");
+  }, []);
   const [showModal, setShowModal] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [filterPriority, setFilterPriority] = useState("all");
@@ -300,10 +312,16 @@ export default function TasksPage({ params: paramsPromise }: { params: Promise<{
     if (!result.destination) return;
     moveTask(parseInt(result.draggableId), result.destination.droppableId as Task["status"]);
   };
+  // Saving is a network round trip; the button says so, and a second tap while
+  // it is in flight would create the task twice.
+  const [saving, setSaving] = useState(false);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (saving) return;
     const token = localStorage.getItem(`${domain}_access`);
     if (!token) return;
+    setSaving(true);
     const member = teamMembers.find(m => m.name === form.assignee);
     const lead = leadsList.find(l => l.name === form.leadName);
     const payload = { title: form.title, description: form.description, status: form.status, priority: form.priority, assignee: member?.id || null, lead: lead?.id || null, due_date: form.dueDate || null, due_time: form.dueTime || null, tags: form.tags.split(",").map(t => t.trim()).filter(Boolean) };
@@ -313,6 +331,7 @@ export default function TasksPage({ params: paramsPromise }: { params: Promise<{
       const res = await fetch(url, { method, headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) });
       if (res.ok) { setShowModal(false); fetchTasks(); }
     } catch (e) { console.error(e); }
+    finally { setSaving(false); }
   };
 
   const filtered = tasks.filter(t => {
@@ -345,16 +364,35 @@ export default function TasksPage({ params: paramsPromise }: { params: Promise<{
 
   // ─────────────────────────── KANBAN ────────────────────────────────────────
   const KanbanView = () => {
-    if (!hasMounted) return <div className="flex items-center justify-center py-24 text-slate-400 text-sm">Preparing board...</div>;
+    if (!hasMounted) return (
+      <SkeletonRegion label="Preparing board">
+        <div className="flex gap-4 overflow-hidden sm:grid sm:grid-cols-2 xl:grid-cols-4">
+          {columns.map(col => (
+            <div key={col.key} className="flex flex-col w-[78vw] max-w-[300px] sm:w-auto sm:max-w-none flex-shrink-0">
+              <Skeleton className="h-9 w-full rounded-xl mb-2" />
+              <div className="space-y-2.5">
+                {Array.from({ length: 2 }).map((_, i) => (
+                  <div key={i} className="bg-white border border-slate-100 rounded-xl p-4 space-y-2.5">
+                    <Skeleton className="h-5 w-16 rounded-full" />
+                    <Skeleton className="h-3.5 w-3/4 rounded-md" />
+                    <Skeleton className="h-2.5 w-1/2 rounded-full" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </SkeletonRegion>
+    );
     return (
       <DragDropContext onDragEnd={onDragEnd}>
         <div className="overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0 pb-4">
-          <div className="flex gap-4 min-w-[760px] sm:min-w-0 sm:grid sm:grid-cols-2 xl:grid-cols-4">
+          <div className="flex gap-4 min-w-max sm:min-w-0 sm:grid sm:grid-cols-2 xl:grid-cols-4">
             {columns.map(col => {
               const colTasks = filtered.filter(t => t.status === col.key);
               const sm = statusMap[col.key];
               return (
-                <div key={col.key} className="flex flex-col min-w-[220px]">
+                <div key={col.key} className="flex flex-col w-[78vw] max-w-[300px] sm:w-auto sm:max-w-none sm:min-w-[220px]">
                   {/* Column header */}
                   <div className="flex items-center justify-between px-3 py-2 mb-2 rounded-xl" style={{ backgroundColor: col.headerBg }}>
                     <div className="flex items-center gap-2">
@@ -463,7 +501,7 @@ export default function TasksPage({ params: paramsPromise }: { params: Promise<{
               </div>
             </div>
             {/* Right */}
-            <div className="flex items-center gap-2.5 ml-4 flex-shrink-0">
+            <div className="flex items-center gap-2.5 sm:ml-4 flex-shrink-0 flex-wrap">
               <PriorityBadge priority={task.priority} />
               <StatusBadge status={task.status} />
               <Avatar name={task.assignee} size={7} className="hidden md:flex" />
@@ -574,6 +612,10 @@ export default function TasksPage({ params: paramsPromise }: { params: Promise<{
           </div>
         </div>
 
+        {/* A month grid needs ~620px before the day cells stop holding a task
+            title; below that it scrolls sideways as one piece. */}
+        <div className="overflow-x-auto">
+        <div className="min-w-[620px] sm:min-w-0">
         {/* Day headers */}
         <div className="grid grid-cols-7 border-b border-slate-100">
           {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(d => (
@@ -614,6 +656,8 @@ export default function TasksPage({ params: paramsPromise }: { params: Promise<{
             );
           })}
         </div>
+        </div>
+        </div>
       </div>
     );
   };
@@ -633,13 +677,52 @@ export default function TasksPage({ params: paramsPromise }: { params: Promise<{
   );
 
   // ─────────────────────────── LOADING ──────────────────────────────────────
+  // Header, toolbar and a list of task cards — the view the page opens on for
+  // whoever is on a phone, and close enough to the board above `lg`.
   if (loading) return (
-    <div className="flex items-center justify-center min-h-[60vh]">
-      <div className="text-center">
-        <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-500 animate-spin mx-auto mb-4 opacity-80" style={{ borderRadius: "30% 70% 70% 30% / 30% 30% 70% 70%" }} />
-        <p className="text-sm text-slate-400">Loading tasks...</p>
+    <SkeletonRegion label="Loading tasks">
+      <div className="min-h-screen bg-[#f5f7fb]">
+        <div className="bg-white border-b border-slate-200/60">
+          <div className="max-w-[1400px] mx-auto px-4 sm:px-6 xl:px-8">
+            <div className="flex items-center justify-between gap-2 h-16">
+              <div className="space-y-2">
+                <Skeleton className="h-4 w-20 rounded-md" />
+                <Skeleton className="h-2.5 w-24 rounded-full" />
+              </div>
+              <div className="flex items-center gap-2 sm:gap-3">
+                <Skeleton className="h-10 w-44 rounded-xl" />
+                <Skeleton className="h-10 w-10 sm:w-28 rounded-xl" />
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="max-w-[1400px] mx-auto px-4 sm:px-6 xl:px-8 pt-5 pb-4 space-y-3">
+          <Skeleton className="h-11 w-full rounded-xl" />
+          <div className="flex gap-2 overflow-hidden">
+            {[150, 150, 130, 220].map((w, i) => (
+              <div key={i} className="skeleton h-11 rounded-xl flex-shrink-0" style={{ width: w }} aria-hidden="true" />
+            ))}
+          </div>
+        </div>
+        <div className="max-w-[1400px] mx-auto px-4 sm:px-6 xl:px-8 pb-12 space-y-2">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="bg-white border border-slate-100 rounded-xl px-4 py-3.5 flex flex-col sm:flex-row sm:items-center gap-3">
+              <div className="flex items-center gap-3 flex-1 min-w-0">
+                <Skeleton className="w-1 h-10 rounded-full flex-shrink-0" />
+                <div className="flex-1 space-y-2">
+                  <Skeleton className="h-3.5 w-2/5 rounded-md" />
+                  <Skeleton className="h-2.5 w-3/5 rounded-full" />
+                </div>
+              </div>
+              <div className="flex items-center gap-2.5 sm:ml-4 flex-shrink-0">
+                <Skeleton className="h-6 w-16 rounded-full" />
+                <Skeleton className="h-6 w-20 rounded-full" />
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
-    </div>
+    </SkeletonRegion>
   );
 
   const views = [
@@ -654,9 +737,9 @@ export default function TasksPage({ params: paramsPromise }: { params: Promise<{
     <div className="min-h-screen bg-[#f5f7fb]">
 
       {/* ── Page Header ─────────────────────────────────────────────────── */}
-      <div className="bg-white border-b border-slate-200/60 sticky top-0 z-20">
+      <div className="bg-white border-b border-slate-200/60 sticky-under-topbar z-20">
         <div className="max-w-[1400px] mx-auto px-4 sm:px-6 xl:px-8">
-          <div className="flex items-center justify-between h-16">
+          <div className="flex items-center justify-between gap-2 h-16">
             {/* Title + count */}
             <div className="flex items-center gap-4">
               <div>
@@ -666,15 +749,15 @@ export default function TasksPage({ params: paramsPromise }: { params: Promise<{
             </div>
 
             {/* View tabs + New Task */}
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 sm:gap-3 min-w-0">
               {/* View switcher — hidden labels on xs */}
-              <div className="flex items-center bg-slate-100 rounded-xl p-1 gap-0.5">
+              <div className="flex items-center bg-slate-100 rounded-xl p-1 gap-0.5 overflow-x-auto no-scrollbar">
                 {views.map(v => (
                   <button
                     key={v.id}
                     onClick={() => setView(v.id as any)}
                     title={v.label}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${view === v.id ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+                    className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-2 rounded-lg text-xs font-semibold transition-all flex-shrink-0 ${view === v.id ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
                   >
                     <v.Icon />
                     <span className="hidden sm:inline">{v.label}</span>
@@ -684,7 +767,8 @@ export default function TasksPage({ params: paramsPromise }: { params: Promise<{
 
               <button
                 onClick={() => openAdd()}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 active:scale-95 transition-all shadow-sm"
+                className="flex items-center justify-center gap-2 w-10 h-10 sm:w-auto sm:h-auto sm:px-4 sm:py-2 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 active:scale-95 transition-all shadow-sm flex-shrink-0"
+                aria-label="New task"
               >
                 <Icon.Plus />
                 <span className="hidden sm:inline">New Task</span>
@@ -696,7 +780,7 @@ export default function TasksPage({ params: paramsPromise }: { params: Promise<{
 
       {/* ── Toolbar ─────────────────────────────────────────────────────── */}
       <div className="max-w-[1400px] mx-auto px-4 sm:px-6 xl:px-8 pt-5 pb-4">
-        <div className="flex flex-col sm:flex-row flex-wrap gap-3">
+        <div className="flex flex-col lg:flex-row lg:flex-wrap gap-3">
           {/* Search */}
           <div className="relative flex-1">
             <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
@@ -717,8 +801,8 @@ export default function TasksPage({ params: paramsPromise }: { params: Promise<{
             )}
           </div>
 
-          {/* Filters */}
-          <div className="flex flex-wrap gap-2 flex-shrink-0">
+          {/* Filters — a row that scrolls on a phone; wrapped on a desktop. */}
+          <div className="flex gap-2 flex-shrink-0 overflow-x-auto no-scrollbar pb-1 lg:flex-wrap lg:overflow-visible lg:pb-0 [&>*]:flex-shrink-0">
             <div className="relative">
               <select
                 value={filterPriority}
@@ -745,12 +829,12 @@ export default function TasksPage({ params: paramsPromise }: { params: Promise<{
               <div className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"><Icon.ChevronDown /></div>
             </div>
             {/* Multi-select Status/Timeline */}
-            <div className="relative group">
-              <button className="flex items-center gap-1.5 appearance-none bg-white border border-slate-200 rounded-xl pl-3.5 pr-2.5 py-2.5 text-sm font-medium text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all">
+            <div className="relative group" tabIndex={0}>
+              <button className="flex items-center gap-1.5 appearance-none bg-white border border-slate-200 rounded-xl pl-3.5 pr-2.5 py-2.5 text-sm font-medium text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all whitespace-nowrap">
                 {filterTimeline.length === 0 ? "All Status" : `Status (${filterTimeline.length})`}
                 <Icon.ChevronDown />
               </button>
-              <div className="absolute top-full mt-1.5 left-0 w-44 bg-white border border-slate-200 rounded-xl shadow-lg shadow-slate-200/50 p-2 z-30 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all flex flex-col gap-1">
+              <div className="absolute top-full mt-1.5 left-0 w-44 bg-white border border-slate-200 rounded-xl shadow-lg shadow-slate-200/50 p-2 z-30 opacity-0 invisible group-hover:opacity-100 group-hover:visible group-focus-within:opacity-100 group-focus-within:visible transition-all flex flex-col gap-1">
                 {[
                   { id: "pending", label: "Pending" },
                   { id: "overdue", label: "Overdue" },
@@ -780,14 +864,14 @@ export default function TasksPage({ params: paramsPromise }: { params: Promise<{
                 type="date" 
                 value={filterDateFrom} 
                 onChange={e => setFilterDateFrom(e.target.value)} 
-                className="appearance-none bg-transparent text-xs font-medium text-slate-700 outline-none w-[110px] cursor-pointer" 
+                className="appearance-none bg-transparent text-xs font-medium text-slate-700 outline-none w-[124px] cursor-pointer" 
               />
               <span className="text-slate-300">-</span>
               <input 
                 type="date" 
                 value={filterDateTo} 
                 onChange={e => setFilterDateTo(e.target.value)} 
-                className="appearance-none bg-transparent text-xs font-medium text-slate-700 outline-none w-[110px] cursor-pointer" 
+                className="appearance-none bg-transparent text-xs font-medium text-slate-700 outline-none w-[124px] cursor-pointer" 
               />
               {(filterDateFrom || filterDateTo) && (
                 <button 
@@ -991,9 +1075,11 @@ export default function TasksPage({ params: paramsPromise }: { params: Promise<{
                 type="submit"
                 form="task-form-hidden"
                 onClick={handleSubmit}
-                className="flex-1 py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 active:scale-[0.98] transition-all shadow-sm shadow-indigo-200"
+                disabled={saving}
+                className="flex-1 py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 active:scale-[0.98] transition-all shadow-sm shadow-indigo-200 disabled:opacity-60 flex items-center justify-center gap-2"
               >
-                {editingTask ? "Save Changes" : "Create Task"}
+                {saving && <Spinner />}
+                {saving ? "Saving…" : editingTask ? "Save Changes" : "Create Task"}
               </button>
             </div>
           </div>

@@ -178,7 +178,7 @@ export default function BranchesPage() {
   const activeCount = branches.filter(b => b.is_active).length;
 
   return (
-    <div className="p-6 lg:p-8 max-w-[1200px]">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-[1200px]">
       <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Branches</h1>

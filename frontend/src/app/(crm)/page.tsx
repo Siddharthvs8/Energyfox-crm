@@ -6,6 +6,7 @@ import Link from "next/link";
 import dynamic from "next/dynamic";
 import { getApiBase } from "@/lib/mock-data";
 import { useLeadStatuses } from "@/hooks/useLeadStatuses";
+import { Skeleton, SkeletonRegion, StatCardsSkeleton, ChartSkeleton, FeedSkeleton } from "@/components/Skeleton";
 
 const ModernDashboardCharts = dynamic(() => import("./DashboardCharts"), { ssr: false });
 const PipelineChart = dynamic(() => import("./PipelineChart"), { ssr: false });
@@ -33,8 +34,8 @@ function AnimatedNumber({ value, prefix = "", suffix = "", isCurrency = false }:
 // ─── Stat Card ────────────────────────────────────────────────────────────────
 function StatCard({ label, value, prefix = "", isCurrency = false, icon, accent, sub }: any) {
   return (
-    <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm hover:shadow-md transition-shadow">
-      <div className="flex items-start justify-between mb-4">
+    <div className="bg-white border border-slate-100 rounded-2xl p-4 sm:p-5 shadow-sm hover:shadow-md transition-shadow">
+      <div className="flex items-start justify-between mb-3 sm:mb-4">
         <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ backgroundColor: accent + "15" }}>
           <span style={{ color: accent }}>{icon}</span>
         </div>
@@ -107,13 +108,33 @@ export default function DashboardPage({ params: paramsPromise }: { params: Promi
     } catch (e) { console.error(e); } finally { setModalLoading(false); }
   };
 
+  // The dashboard's own shape while its numbers are in flight — greeting,
+  // actions, the four metrics, then the pipeline and the feed. Nothing moves
+  // when the data lands, because everything is already where it will be.
   if (loading) return (
-    <div className="flex items-center justify-center min-h-[60vh]">
-      <div className="text-center">
-        <div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-        <p className="text-sm text-slate-400">Loading dashboard...</p>
+    <SkeletonRegion label="Loading dashboard">
+      <div className="p-4 sm:p-6 lg:p-8 max-w-[1400px]">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 sm:mb-8">
+          <div className="space-y-2.5">
+            <Skeleton className="h-7 w-56 rounded-lg" />
+            <Skeleton className="h-3 w-36 rounded-full" />
+          </div>
+          <div className="flex gap-2 sm:gap-3">
+            <Skeleton className="h-11 flex-1 sm:w-32 rounded-xl" />
+            <Skeleton className="h-11 flex-1 sm:w-32 rounded-xl" />
+          </div>
+        </div>
+        <div className="mb-6 sm:mb-8"><StatCardsSkeleton /></div>
+        <div className="grid lg:grid-cols-5 gap-4 sm:gap-5 mb-6 sm:mb-8">
+          <ChartSkeleton className="lg:col-span-3" />
+          <FeedSkeleton className="lg:col-span-2" rows={4} />
+        </div>
+        <div className="grid lg:grid-cols-2 gap-4 sm:gap-5">
+          <ChartSkeleton bars={6} />
+          <ChartSkeleton bars={6} />
+        </div>
       </div>
-    </div>
+    </SkeletonRegion>
   );
 
   // All statuses with display labels + colours dynamically resolved from useLeadStatuses hook
@@ -157,19 +178,19 @@ export default function DashboardPage({ params: paramsPromise }: { params: Promi
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-[1400px]">
       {/* ── Header ── */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 sm:mb-8">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">{greeting}, <span className="capitalize">{userName}</span></h1>
           <p className="text-sm text-slate-500 mt-0.5">
             {subscription?.name || "Workspace"} &middot; {subscription?.status === "active" ? <span className="text-emerald-600 font-medium">Active</span> : subscription?.status}
           </p>
         </div>
-        <div className="flex gap-3">
-          <Link href={`/leads`} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-all">
+        <div className="flex gap-2 sm:gap-3">
+          <Link href={`/leads`} className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-50 active:scale-[0.98] transition-all">
             <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 00-3-3.87" /><path d="M16 3.13a4 4 0 010 7.75" /></svg>
             All Leads
           </Link>
-          <Link href={`/tasks`} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 transition-all shadow-sm shadow-indigo-200">
+          <Link href={`/tasks`} className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 active:scale-[0.98] transition-all shadow-sm shadow-indigo-200">
             <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>
             New Task
           </Link>
@@ -211,7 +232,7 @@ export default function DashboardPage({ params: paramsPromise }: { params: Promi
       )}
 
       {/* ── Stats Grid ── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6 sm:mb-8">
         <StatCard
           label="Total Leads" value={stats?.total_leads || 0} sub="All time"
           accent="#6366f1"
@@ -235,9 +256,9 @@ export default function DashboardPage({ params: paramsPromise }: { params: Promi
       </div>
 
       {/* ── Middle: Pipeline + Activity ── */}
-      <div className="grid lg:grid-cols-5 gap-5 mb-8">
+      <div className="grid lg:grid-cols-5 gap-4 sm:gap-5 mb-6 sm:mb-8">
         {/* Pipeline Chart */}
-        <div className="lg:col-span-3 bg-white border border-slate-100 rounded-2xl p-6 shadow-sm flex flex-col min-w-0">
+        <div className="lg:col-span-3 bg-white border border-slate-100 rounded-2xl p-4 sm:p-6 shadow-sm flex flex-col min-w-0">
           <div className="flex items-center justify-between mb-6">
             <div>
               <h2 className="text-base font-bold text-slate-900">Lead Pipeline</h2>
@@ -253,7 +274,7 @@ export default function DashboardPage({ params: paramsPromise }: { params: Promi
         </div>
 
         {/* Activity Feed */}
-        <div className="lg:col-span-2 bg-white border border-slate-100 rounded-2xl p-6 shadow-sm flex flex-col">
+        <div className="lg:col-span-2 bg-white border border-slate-100 rounded-2xl p-4 sm:p-6 shadow-sm flex flex-col min-w-0">
           <div className="flex items-center justify-between mb-5">
             <div>
               <h2 className="text-base font-bold text-slate-900">Recent Activity</h2>

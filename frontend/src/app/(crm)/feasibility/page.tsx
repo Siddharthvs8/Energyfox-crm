@@ -87,7 +87,7 @@ export default function FeasibilityPage() {
   };
 
   return (
-    <div className="p-6 lg:p-8 max-w-[1100px]">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-[1100px]">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-slate-900">KSEB Feasibility</h1>
         <p className="text-sm text-slate-500 mt-1">Leads with a signed PO, plus anything pushed to documentation. Take the KSEB feasibility within 2 days of the PO date; completing it sends the dates to accounts.</p>

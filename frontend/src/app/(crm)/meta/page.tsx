@@ -5,6 +5,7 @@ import { getApiBase } from "@/lib/mock-data";
 import React, { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { isSpectator } from "@/lib/spectator";
+import { PageSkeleton } from "@/components/Skeleton";
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 const I = {
@@ -287,11 +288,7 @@ export default function MetaPage() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  if (!authChecked) return (
-    <div className="flex items-center justify-center min-h-[60vh]">
-      <div className="text-center"><div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" /><p className="text-sm text-slate-400">Loading...</p></div>
-    </div>
-  );
+  if (!authChecked) return <PageSkeleton />;
   if (!canOpenMeta(currentUser)) return null;
 
   const connectedCount = integrations.filter(i => i.connected).length;
@@ -299,7 +296,7 @@ export default function MetaPage() {
   return (
     <div className="min-h-screen bg-[#f5f7fb]">
       {/* ── Header ── */}
-      <div className="bg-white border-b border-slate-200/60 sticky top-0 z-20">
+      <div className="bg-white border-b border-slate-200/60 sticky-under-topbar z-20">
         <div className="max-w-[1400px] mx-auto px-4 sm:px-6 xl:px-8">
           <div className="flex items-center justify-between h-16">
             <div>

@@ -157,7 +157,7 @@ export default function CampaignDetailsPage({ params: paramsPromise }: { params:
       </div>
 
       <div className="relative z-10">
-        <header className="border-b border-white/10 bg-[#060608]/80 backdrop-blur-xl sticky top-0 z-20">
+        <header className="border-b border-white/10 bg-[#060608]/80 backdrop-blur-xl sticky-under-topbar z-20">
           <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
             <div className="flex items-center gap-6">
               <button onClick={() => router.push(`/campaigns`)} className="p-2.5 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 transition-colors">

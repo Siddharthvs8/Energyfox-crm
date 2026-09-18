@@ -302,7 +302,7 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
     <div className="min-h-screen bg-[#f4f6fa] font-sans pb-24">
 
       {/* ─── Header ───────────────────────────────────────────────────────── */}
-      <div className="bg-white border-b border-slate-200/50 sticky top-0 z-30 shadow-sm">
+      <div className="bg-white border-b border-slate-200/50 sticky-under-topbar z-30 shadow-sm">
         <div className="max-w-[1440px] mx-auto px-6 xl:px-8 h-[68px] flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-gradient-to-br from-emerald-400 to-teal-500 rounded-xl flex items-center justify-center text-white shadow-lg shadow-teal-500/20">

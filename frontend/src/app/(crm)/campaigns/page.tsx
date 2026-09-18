@@ -89,7 +89,7 @@ export default function CampaignsPage({ params: paramsPromise }: { params: Promi
       </div>
 
       <div className="relative z-10">
-        <header className="border-b border-white/10 bg-[#060608]/80 backdrop-blur-xl sticky top-0 z-20">
+        <header className="border-b border-white/10 bg-[#060608]/80 backdrop-blur-xl sticky-under-topbar z-20">
           <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
             <div>
               <h1 className="text-2xl font-black text-white tracking-tight flex items-center gap-3">

@@ -6,6 +6,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import WarrantySection from "./WarrantySection";
+import { DetailSkeleton } from "@/components/Skeleton";
 
 type WarrantyDetail = {
   id: number;
@@ -49,16 +50,16 @@ export default function WarrantyDetailPage({ params: paramsPromise }: { params: 
 
   useEffect(() => { load(); }, [load]);
 
-  if (loading) return <div className="flex items-center justify-center min-h-[60vh]"><div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" /></div>;
+  if (loading) return <DetailSkeleton />;
   if (error || !data) return (
-    <div className="p-6 lg:p-8 max-w-[900px]">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-[900px]">
       <Link href="/warranty" className="text-sm text-indigo-600 hover:underline">← Back to Warranty</Link>
       <p className="mt-6 text-sm text-rose-600">{error || "Not found."}</p>
     </div>
   );
 
   return (
-    <div className="p-6 lg:p-8 max-w-[1100px]">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-[1100px]">
       <Link href="/warranty" className="text-sm text-indigo-600 hover:underline">← Back to Warranty</Link>
 
       <div className="mt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">

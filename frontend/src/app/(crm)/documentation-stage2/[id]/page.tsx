@@ -8,6 +8,7 @@ import Link from "next/link";
 import DocumentationStage2Section from "./DocumentationStage2Section";
 
 import ActivityTimeline from "@/components/ActivityTimeline";
+import { DetailSkeleton } from "@/components/Skeleton";
 type Stage2Detail = {
   id: number;
   first_name: string; last_name: string | null;
@@ -90,16 +91,16 @@ export default function DocumentationStage2DetailPage({ params: paramsPromise }:
     finally { setAssigning(false); }
   };
 
-  if (loading) return <div className="flex items-center justify-center min-h-[60vh]"><div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" /></div>;
+  if (loading) return <DetailSkeleton />;
   if (error || !data) return (
-    <div className="p-6 lg:p-8 max-w-[900px]">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-[900px]">
       <Link href="/documentation-stage2" className="text-sm text-indigo-600 hover:underline">← Back to Documentation Stage 2</Link>
       <p className="mt-6 text-sm text-rose-600">{error || "Not found."}</p>
     </div>
   );
 
   return (
-    <div className="p-6 lg:p-8 max-w-[1100px]">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-[1100px]">
       <div className="flex items-center justify-between gap-3">
         <Link href="/documentation-stage2" className="text-sm text-indigo-600 hover:underline">← Back to Documentation Stage 2</Link>
         <ActivityTimeline leadId={params.id} />

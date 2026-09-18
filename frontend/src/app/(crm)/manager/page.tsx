@@ -9,6 +9,7 @@ import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import * as htmlToImage from "html-to-image";
 import { isSpectator } from "@/lib/spectator";
+import { PageSkeleton } from "@/components/Skeleton";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 interface User { id: number; username: string; first_name: string; last_name: string; email: string; is_staff: boolean; is_manager: boolean; is_general_manager: boolean; read_only?: boolean; team: number | null; }
@@ -598,7 +599,7 @@ export default function ManagerPage({ params: paramsPromise }: { params: Promise
     return () => clearInterval(id);
   }, [activeTab, paramsDate, refreshParamsAchieved]);
 
-  if (loading) return <div className="flex items-center justify-center min-h-screen"><div className="w-8 h-8 border-4 border-indigo-600/30 border-t-indigo-600 rounded-full animate-spin" /></div>;
+  if (loading) return <PageSkeleton />;
 
   const role = currentUser?.read_only ? "Spectator" : currentUser?.is_staff ? "Admin" : currentUser?.is_general_manager ? "General Manager" : "Manager";
   const roleGradient = currentUser?.read_only ? "from-slate-500 to-slate-600" : currentUser?.is_staff ? "from-rose-500 to-pink-600" : currentUser?.is_general_manager ? "from-violet-500 to-purple-600" : "from-indigo-500 to-blue-600";
@@ -720,7 +721,7 @@ export default function ManagerPage({ params: paramsPromise }: { params: Promise
           </div>
 
           {/* Stats Row */}
-          <div className="grid grid-cols-3 gap-4 mt-6">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-6">
             {[
               { label: "Total Members", value: totalAgents, sub: "in scope" },
               { label: "With Targets", value: agentsWithTarget, sub: `of ${totalAgents}` },
@@ -737,8 +738,8 @@ export default function ManagerPage({ params: paramsPromise }: { params: Promise
       </div>
 
       {/* ── Tabs ── */}
-      <div className="max-w-7xl mx-auto px-8">
-        <div className="flex gap-1 bg-white rounded-2xl shadow-sm border border-slate-100 p-1.5 mt-6 w-fit">
+      <div className="max-w-7xl mx-auto px-4 sm:px-8">
+        <div className="flex gap-1 bg-white rounded-2xl shadow-sm border border-slate-100 p-1.5 mt-6 w-fit max-w-full overflow-x-auto no-scrollbar [&>*]:flex-shrink-0">
           {tabs.map(t => (
             <button key={t.id} onClick={() => { setActiveTab(t.id as any); if (t.id !== "report") setSelectedAgent(null); }}
               className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all ${activeTab === t.id ? "bg-indigo-600 text-white shadow-md shadow-indigo-200" : "text-slate-500 hover:text-slate-700 hover:bg-slate-50"}`}>

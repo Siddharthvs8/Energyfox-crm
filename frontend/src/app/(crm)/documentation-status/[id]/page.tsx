@@ -5,6 +5,7 @@ import { getApiBase, formatCurrency } from "@/lib/mock-data";
 import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { DetailSkeleton } from "@/components/Skeleton";
 
 type HistoryItem = { id: number; type: string; description: string; actor: string | null; auto_generated?: boolean; timestamp: string };
 type Detail = {
@@ -109,9 +110,9 @@ export default function DocumentationStatusDetail({ params: paramsPromise }: { p
 
   useEffect(() => { load(); }, [load]);
 
-  if (loading) return <div className="flex items-center justify-center min-h-[60vh]"><div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" /></div>;
+  if (loading) return <DetailSkeleton />;
   if (error || !data) return (
-    <div className="p-6 lg:p-8 max-w-[1000px]">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-[1000px]">
       <Link href="/documentation-status" className="text-sm text-indigo-600 hover:underline">← Back to Documentation</Link>
       <p className="mt-6 text-sm text-rose-600">{error || "Not found."}</p>
     </div>
@@ -127,7 +128,7 @@ export default function DocumentationStatusDetail({ params: paramsPromise }: { p
     : [];
 
   return (
-    <div className="p-6 lg:p-8 max-w-[1000px]">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-[1000px]">
       <Link href="/documentation-status" className="text-sm text-indigo-600 hover:underline">← Back to Documentation</Link>
 
       {/* Header */}

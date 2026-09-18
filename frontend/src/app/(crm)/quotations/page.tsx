@@ -134,7 +134,7 @@ export default function QuotationsPage({ scope = "open" }: { scope?: "open" | "o
   });
 
   return (
-    <div className="p-6 lg:p-8 max-w-[1500px] mx-auto">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-[1500px] mx-auto">
       <div className="flex flex-wrap items-start justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-black text-slate-900">
@@ -172,15 +172,15 @@ export default function QuotationsPage({ scope = "open" }: { scope?: "open" | "o
         )}
         {/* Raised between. Labelled, because two bare date boxes side by side
             do not say which end is which. */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Raised</span>
           <input type="date" value={createdFrom} max={createdTo || undefined}
             onChange={e => setCreatedFrom(e.target.value)}
-            title="From this date" className={`${inputCls} w-[150px]`} />
+            title="From this date" className={`${inputCls} w-[150px] max-w-[45vw]`} />
           <span className="text-xs text-slate-400">to</span>
           <input type="date" value={createdTo} min={createdFrom || undefined}
             onChange={e => setCreatedTo(e.target.value)}
-            title="Up to this date" className={`${inputCls} w-[150px]`} />
+            title="Up to this date" className={`${inputCls} w-[150px] max-w-[45vw]`} />
           {(createdFrom || createdTo) && (
             <button onClick={() => { setCreatedFrom(""); setCreatedTo(""); }}
               className="text-xs font-bold text-slate-400 hover:text-slate-700 transition px-1"

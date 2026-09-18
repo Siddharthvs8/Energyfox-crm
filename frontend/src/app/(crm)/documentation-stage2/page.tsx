@@ -111,7 +111,7 @@ export default function DocumentationStage2Page() {
   const filtered = found.filter(l => bucketOf(l) === bucket);
 
   return (
-    <div className="p-6 lg:p-8 max-w-[1200px]">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-[1200px]">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-slate-900">Documentation Stage 2</h1>
         <p className="text-sm text-slate-500 mt-1">Customers whose installation is complete, now in the second documentation stage.</p>

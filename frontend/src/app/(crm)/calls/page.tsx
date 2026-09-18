@@ -5,6 +5,7 @@ import { getApiBase } from "@/lib/mock-data";
 import React, { useState, useEffect } from "react";
 import { use } from "react";
 import Link from "next/link";
+import { Skeleton, SkeletonRegion } from "@/components/Skeleton";
 
 const I = {
   Phone: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l2.27-2.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z" /></svg>,
@@ -170,7 +171,7 @@ export default function CallsPage({ params: paramsPromise }: { params: Promise<{
   };
 
   return (
-    <div className="p-6 lg:p-10 space-y-8 animate-[fadeIn_0.4s_ease-out]">
+    <div className="p-4 sm:p-6 lg:p-10 space-y-5 sm:space-y-8 animate-[fadeIn_0.4s_ease-out]">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -193,8 +194,10 @@ export default function CallsPage({ params: paramsPromise }: { params: Promise<{
       </div>
 
       {/* Filter Bar */}
-      <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm p-5">
-        <div className="flex items-center gap-3 flex-wrap">
+      <div className="bg-white rounded-3xl sm:rounded-[2rem] border border-slate-100 shadow-sm p-3.5 sm:p-5">
+        {/* Six controls wrap to five rows on a phone, so below `lg` they are one
+            row that scrolls — the filters stay one thumb-swipe apart. */}
+        <div className="flex items-center gap-3 overflow-x-auto no-scrollbar pb-1 lg:flex-wrap lg:overflow-visible lg:pb-0 [&>*]:flex-shrink-0">
           {/* User Filter — only visible to Admin, GM, Manager */}
           {canFilterByUser && (
             <select 
@@ -273,7 +276,7 @@ export default function CallsPage({ params: paramsPromise }: { params: Promise<{
           </div>
 
           {/* Search */}
-          <div className="relative group flex-1 min-w-[180px]">
+          <div className="relative group flex-1 !flex-shrink w-[200px] min-w-[180px]">
              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-indigo-500 transition-colors">
                <I.Search />
              </span>
@@ -337,27 +340,59 @@ export default function CallsPage({ params: paramsPromise }: { params: Promise<{
       </div>
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-6">
         {[
           { label: "Connected", val: calls.filter(c => c.outcome === 'connected' || c.outcome === 'completed').length, color: "emerald" },
           { label: "RNR", val: calls.filter(c => c.outcome === 'rnr' || c.outcome === 'no-answer').length, color: "orange" },
           { label: "Busy", val: calls.filter(c => c.outcome === 'busy' || c.outcome === 'rejected' || c.outcome === 'failed').length, color: "blue" },
           { label: "Cancelled", val: calls.filter(c => c.outcome === 'cancelled' || c.outcome === 'canceled').length, color: "rose" },
         ].map((s, idx) => (
-          <div key={idx} className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm hover:shadow-xl hover:shadow-indigo-500/5 transition-all group">
+          <div key={idx} className="bg-white p-4 sm:p-6 rounded-3xl sm:rounded-[2rem] border border-slate-100 shadow-sm hover:shadow-xl hover:shadow-indigo-500/5 transition-all group">
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1 group-hover:text-indigo-500 transition-colors">{s.label}</p>
-            <p className="text-3xl font-black text-slate-800 tracking-tighter">{s.val}</p>
+            <p className="text-2xl sm:text-3xl font-black text-slate-800 tracking-tighter">{s.val}</p>
           </div>
         ))}
       </div>
 
       {/* Table */}
-      <div className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm overflow-hidden min-h-[400px]">
+      <div className="bg-white rounded-3xl sm:rounded-[2.5rem] border border-slate-100 shadow-sm overflow-hidden min-h-[400px]">
         {loading ? (
-          <div className="flex flex-col items-center justify-center py-32 space-y-4">
-            <div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-            <p className="text-slate-400 text-xs font-bold uppercase tracking-widest">Fetching call logs...</p>
-          </div>
+          <SkeletonRegion label="Loading call logs">
+            {/* Phone: the same card, recording player included. */}
+            <div className="lg:hidden p-3 space-y-2.5">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className="record-card">
+                  <div className="flex items-start gap-3">
+                    <Skeleton className="w-10 h-10 rounded-2xl flex-shrink-0" />
+                    <div className="flex-1 space-y-2">
+                      <Skeleton className="h-3.5 w-1/2 rounded-md" />
+                      <Skeleton className="h-2.5 w-1/3 rounded-full" />
+                    </div>
+                    <Skeleton className="h-8 w-14 rounded-md flex-shrink-0" />
+                  </div>
+                  <div className="flex gap-1.5 mt-2.5">
+                    <Skeleton className="h-5 w-24 rounded-full" />
+                    <Skeleton className="h-5 w-20 rounded-full" />
+                  </div>
+                  {i % 2 === 0 && <Skeleton className="h-9 w-full rounded-lg mt-2.5" />}
+                </div>
+              ))}
+            </div>
+            <div className="hidden lg:block">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className="flex items-center gap-6 px-6 py-5 border-b border-slate-50">
+                  <div className="flex items-center gap-3 w-56 flex-shrink-0">
+                    <Skeleton className="w-10 h-10 rounded-2xl flex-shrink-0" />
+                    <div className="flex-1 space-y-2">
+                      <Skeleton className="h-3 w-full rounded-md" />
+                      <Skeleton className="h-2 w-2/3 rounded-full" />
+                    </div>
+                  </div>
+                  {Array.from({ length: 5 }).map((_, c) => <Skeleton key={c} className="h-4 flex-1 rounded-md" />)}
+                </div>
+              ))}
+            </div>
+          </SkeletonRegion>
         ) : filteredCalls.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-32 text-center">
             <div className="w-16 h-16 bg-slate-50 flex items-center justify-center rounded-3xl text-slate-300 mb-4 ring-8 ring-slate-50/50">
@@ -371,7 +406,69 @@ export default function CallsPage({ params: paramsPromise }: { params: Promise<{
             </p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+          {/* ── Mobile: one card per call ──
+              Six columns do not fit a phone, and the recording player was the
+              first thing to fall off the right edge. Stacked, it is the widest
+              control on the card. */}
+          <div className="lg:hidden p-3 space-y-2.5">
+            {filteredCalls.map(call => {
+              const isAutoCreatedInbound = call.lead_source === 'inbound_call' || (!call.lead && call.direction === 'inbound');
+              const named = call.lead && !isAutoCreatedInbound;
+              const Body = (
+                <>
+                  <div className="flex items-start gap-3">
+                    <div className={`w-10 h-10 rounded-2xl flex items-center justify-center flex-shrink-0 ${named ? "bg-indigo-50 text-indigo-600" : "bg-teal-50 text-teal-600"}`}>
+                      {named ? <I.User /> : <I.Phone />}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-bold text-slate-800 truncate">
+                        {named ? call.lead_name : (call.lead_phone || call.lead_name || 'Unknown Caller')}
+                      </p>
+                      <p className="text-[10px] text-slate-400 font-medium truncate">
+                        {named
+                          ? `Logged by ${call.user_name}`
+                          : `${call.direction === 'inbound' ? 'Inbound call' : 'Logged by'} ${call.user_name}`}
+                      </p>
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      <p className="text-[11px] font-bold text-slate-700">
+                        {new Date(call.created_at).toLocaleDateString("en-IN", { day: '2-digit', month: 'short' })}
+                      </p>
+                      <p className="text-[10px] text-slate-400">
+                        {new Date(call.created_at).toLocaleTimeString("en-IN", { hour: '2-digit', minute: '2-digit' })}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
+                    <span className={`px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase border tracking-widest ${getStatusColor(call.outcome)}`}>
+                      {getOutcomeLabel(call.outcome)}
+                    </span>
+                    <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase border ${call.direction === 'inbound' ? "bg-teal-50 text-teal-600 border-teal-100" : "bg-indigo-50 text-indigo-600 border-indigo-100"}`}>
+                      {call.direction === 'inbound' ? 'Inbound' : 'Outbound'}
+                    </span>
+                    <span className="flex items-center gap-1 text-slate-500 font-mono text-[11px] ml-auto">
+                      <I.Clock />{formatDuration(call.duration_seconds)}
+                    </span>
+                  </div>
+
+                  {call.recording_url && (
+                    <audio controls className="w-full h-9 mt-2.5" src={getRecordingUrl(call.recording_url, call.id)}>
+                      Your browser does not support the audio element.
+                    </audio>
+                  )}
+                </>
+              );
+              return named ? (
+                <Link key={call.id} href={`/leads/${call.lead}`} className="record-card block">{Body}</Link>
+              ) : (
+                <div key={call.id} className="record-card">{Body}</div>
+              );
+            })}
+          </div>
+
+          <div className="hidden lg:block overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="bg-slate-50/50 border-b border-slate-100">
@@ -463,6 +560,7 @@ export default function CallsPage({ params: paramsPromise }: { params: Promise<{
               </tbody>
             </table>
           </div>
+          </>
         )}
       </div>
 
