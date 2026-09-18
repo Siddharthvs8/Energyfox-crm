@@ -816,13 +816,19 @@ class PurchaseQueueTests(TestCase):
                                    status='converted', bde=self.bde, value=Decimal(value),
                                    pushed_to_accounts=True)
         # Accounts refuses to verify a payment while KSEB feasibility is pending
-        # (see AccountsNeedsFeasibilityTests). These tests are about the payment
+        # (see AccountsPushToPurchaseTests). These tests are about the payment
         # buckets, so the sanction is already in hand.
         SiteVisit.objects.create(lead=lead, kseb_feasibility_complete=True)
         return lead
 
     def verify(self, lead, received, discount=0):
-        """Run the real accounts flow so the hand-off fires as it does live."""
+        """Run the real accounts flow so the hand-off happens as it does live.
+
+        Two steps now, not one: verifying records the money, and a separate push
+        hands the customer to purchase once KSEB has sanctioned the capacity —
+        see AccountsPushToPurchaseTests. `make_lead` grants the sanction, because
+        these tests are about the queue rather than the gate.
+        """
         from decimal import Decimal
         from .models import PaymentVerification
         pv, _ = PaymentVerification.objects.get_or_create(lead=lead)
@@ -836,6 +842,11 @@ class PurchaseQueueTests(TestCase):
         # Assert here: a wrong URL would 404 and every assertion below would then
         # be testing nothing.
         self.assertEqual(r.status_code, 200, r.content[:200])
+        if Decimal(str(received)) > 0:
+            push = self.client.post(f'/api/leads/{lead.id}/push-to-purchase/',
+                                    HTTP_AUTHORIZATION=token_for(self.admin))
+            self.assertEqual(push.status_code, 200, push.content[:200])
+            return push
         return r
 
     def queue(self, actor=None, query=''):
@@ -912,20 +923,24 @@ class PurchaseQueueTests(TestCase):
 
 
 
-class AccountsNeedsFeasibilityTests(TestCase):
-    """Verifying the payment is what hands the customer to purchase.
+class AccountsPushToPurchaseTests(TestCase):
+    """Verifying the payment and pushing to purchase are two different acts.
 
-    Procurement orders against the sanctioned capacity, so panels must not be
-    ordered for a size KSEB has not sanctioned. The gate sits here rather than
-    at the documentation hand-over, which is a step earlier and does not spend
-    any money.
+    Verifying says money arrived — true whatever KSEB has done, and accounts
+    must be able to record it the day it lands. Pushing says procurement may
+    start spending it, and that waits on the sanction: panels must not be
+    ordered for a capacity the board has not approved. The two are often days
+    apart, which is the whole reason they are separate buttons.
+
+    This replaces the earlier rule, where verifying was itself the hand-off and
+    was therefore blocked until the sanction came in.
     """
 
     def setUp(self):
         from .models import PaymentVerification, SiteVisit
-        self.accountant = mk('acc_feas', 'accounts_staff')
+        self.accountant = mk('acc_push', 'accounts_staff')
         self.lead = Lead.objects.create(
-            first_name='Acc', last_name='Feas', phone='9994100002',
+            first_name='Acc', last_name='Push', phone='9994100002',
             status='converted', value=200000,
             pushed_to_accounts=True, pushed_to_accounts_at=timezone.now(),
             accounts_staff=self.accountant)
@@ -938,57 +953,143 @@ class AccountsNeedsFeasibilityTests(TestCase):
             f'/api/leads/{self.lead.id}/complete-payment-verification/',
             HTTP_AUTHORIZATION=token_for(self.accountant))
 
+    def push(self, user=None):
+        return self.client.post(
+            f'/api/leads/{self.lead.id}/push-to-purchase/',
+            HTTP_AUTHORIZATION=token_for(user or self.accountant))
+
+    def payload(self):
+        r = self.client.get(f'/api/leads/{self.lead.id}/accounts-detail/',
+                            HTTP_AUTHORIZATION=token_for(self.accountant))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return r.json()
+
     def feasibility_done(self):
         self.sv.kseb_feasibility_complete = True
         self.sv.save(update_fields=['kseb_feasibility_complete'])
 
-    def test_verification_is_refused_while_feasibility_is_pending(self):
-        r = self.verify()
-        self.assertEqual(r.status_code, 400, r.content[:300])
-        self.assertTrue(r.json().get('kseb_feasibility_pending'))
-        self.pv.refresh_from_db(); self.lead.refresh_from_db()
-        self.assertFalse(self.pv.is_complete)
-        self.assertFalse(self.lead.pushed_to_purchase)
-
-    def test_verification_works_once_feasibility_is_complete(self):
-        self.feasibility_done()
+    # ── Verifying no longer waits on KSEB ──
+    def test_the_payment_can_be_verified_while_feasibility_is_pending(self):
+        """The money has arrived; recording that is not procurement's business."""
         r = self.verify()
         self.assertEqual(r.status_code, 200, r.content[:300])
-        self.pv.refresh_from_db(); self.lead.refresh_from_db()
+        self.pv.refresh_from_db()
         self.assertTrue(self.pv.is_complete)
-        self.assertTrue(self.lead.pushed_to_purchase)
 
-    def test_a_lead_with_no_site_visit_at_all_is_refused(self):
+    def test_verifying_does_not_push_to_purchase_by_itself(self):
+        """Even with the sanction in, the hand-off is a deliberate act now."""
+        self.feasibility_done()
+        self.assertEqual(self.verify().status_code, 200)
+        self.lead.refresh_from_db()
+        self.assertFalse(self.lead.pushed_to_purchase)
+
+    def test_a_lead_with_no_site_visit_can_still_be_verified(self):
         self.sv.delete()
-        r = self.verify()
-        self.assertEqual(r.status_code, 400)
-        self.assertTrue(r.json().get('kseb_feasibility_pending'))
+        self.assertEqual(self.verify().status_code, 200)
 
-    def test_the_payment_mode_gate_still_comes_first(self):
-        """A missing payment mode is reported as such, not as a feasibility
-        problem — otherwise the accountant is sent to the wrong module."""
+    def test_the_payment_mode_gate_still_applies_to_verifying(self):
         self.pv.payment_mode = ''
         self.pv.save(update_fields=['payment_mode'])
         r = self.verify()
         self.assertEqual(r.status_code, 400)
         self.assertIn('missing', r.json())
-        self.assertNotIn('kseb_feasibility_pending', r.json())
 
-    def test_nothing_reaches_purchase_while_it_is_pending(self):
-        """The whole point of the gate: no procurement without the sanction."""
+    # ── Pushing waits on KSEB ──
+    def test_pushing_is_refused_while_feasibility_is_pending(self):
         self.verify()
-        from .models import PurchaseLogistics
-        self.assertFalse(PurchaseLogistics.objects.filter(lead=self.lead).exists())
+        r = self.push()
+        self.assertEqual(r.status_code, 400, r.content[:300])
+        self.assertTrue(r.json().get('kseb_feasibility_pending'))
+        self.lead.refresh_from_db()
+        self.assertFalse(self.lead.pushed_to_purchase)
 
-    def test_the_accounts_screen_says_where_feasibility_stands(self):
-        r = self.client.get(f'/api/leads/{self.lead.id}/accounts-detail/',
-                            HTTP_AUTHORIZATION=token_for(self.accountant))
-        self.assertEqual(r.status_code, 200, r.content[:300])
-        self.assertIs(r.json()['kseb_feasibility_complete'], False)
+    def test_pushing_works_once_feasibility_is_complete(self):
+        self.verify()
         self.feasibility_done()
-        r = self.client.get(f'/api/leads/{self.lead.id}/accounts-detail/',
-                            HTTP_AUTHORIZATION=token_for(self.accountant))
-        self.assertIs(r.json()['kseb_feasibility_complete'], True)
+        r = self.push()
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.lead.refresh_from_db()
+        self.assertTrue(self.lead.pushed_to_purchase)
+        self.assertIsNotNone(self.lead.pushed_to_purchase_at)
+
+    def test_a_lead_with_no_site_visit_cannot_be_pushed(self):
+        self.verify()
+        self.sv.delete()
+        r = self.push()
+        self.assertEqual(r.status_code, 400)
+        self.assertTrue(r.json().get('kseb_feasibility_pending'))
+
+    def test_pushing_before_verifying_is_refused(self):
+        """The order matters: procurement should not start on money nobody has
+        checked."""
+        self.feasibility_done()
+        r = self.push()
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('Verify the payment first', r.json()['error'])
+
+    def test_pushing_with_no_money_received_is_refused(self):
+        self.pv.amount_received = 0
+        self.pv.save(update_fields=['amount_received'])
+        self.verify()
+        self.feasibility_done()
+        r = self.push()
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('No money', r.json()['error'])
+
+    def test_pushing_twice_says_it_has_already_gone(self):
+        self.verify()
+        self.feasibility_done()
+        self.assertEqual(self.push().status_code, 200)
+        r = self.push()
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('already', r.json()['error'])
+
+    def test_someone_without_accounts_rights_cannot_push(self):
+        """Documentation staff rather than a BDE: a BDE cannot see this lead at
+        all, so it would 404 before the permission was ever consulted."""
+        docstaff = mk('acc_push_doc', 'documentation_staff')
+        self.verify()
+        self.feasibility_done()
+        self.assertEqual(self.push(user=docstaff).status_code, 403)
+        self.lead.refresh_from_db()
+        self.assertFalse(self.lead.pushed_to_purchase)
+
+    # ── What the screen is told ──
+    def test_the_screen_is_told_when_the_button_may_be_used(self):
+        """The rule lives on the server; the screen asks rather than re-deriving."""
+        d = self.payload()
+        self.assertFalse(d['can_push_to_purchase'])   # not verified yet
+        self.assertFalse(d['pushed_to_purchase'])
+
+        self.verify()
+        self.assertFalse(self.payload()['can_push_to_purchase'])   # no sanction
+
+        self.feasibility_done()
+        self.assertTrue(self.payload()['can_push_to_purchase'])
+
+        self.push()
+        d = self.payload()
+        self.assertTrue(d['pushed_to_purchase'])
+        self.assertFalse(d['can_push_to_purchase'])   # nothing left to do
+
+    # ── What verification still does ──
+    def test_verifying_still_turns_accepted_quotations_into_orders(self):
+        """That is a fact about the customer's payment, not about procurement,
+        so it must not have moved with the hand-off."""
+        from inventory.models import Quotation
+        q = Quotation.objects.create(lead=self.lead, package_amount=200000, status='accepted')
+        self.verify()
+        q.refresh_from_db()
+        self.assertIsNotNone(q.order_converted_at)
+
+    def test_a_pushed_customer_reaches_the_purchase_queue(self):
+        self.verify()
+        self.feasibility_done()
+        self.push()
+        admin = mk('acc_push_admin', 'admin')
+        r = self.client.get('/api/leads/purchase/', HTTP_AUTHORIZATION=token_for(admin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertIn(self.lead.id, [row['id'] for row in r.json()])
 
 
 class Stage1DoesNotWaitForFeasibilityTests(TestCase):
@@ -4220,20 +4321,31 @@ class MetaScheduledSyncRunTests(TestCase):
             self.run_job(now=self.ist(2026, 9, 17, 9, 0))
             self.assertEqual(call.call_count, 1)
 
+    # A note for whoever edits the two below. `now=` simulates the clock the
+    # schedule is read against, but a real sync stamps `last_synced_at` with the
+    # actual wall clock. So a test must never let one simulated run set up the
+    # next — at 23:00 the stamp lands after a simulated 21:00 slot and the second
+    # run finds nothing due. Both of these therefore set the stamp explicitly.
+
     def test_it_fires_only_once_for_a_time(self):
         """The timer runs every minute; the sync must not run every minute."""
+        self.synced_at(self.ist(2026, 9, 17, 8, 0))
         with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()) as call:
             self.run_job(now=self.ist(2026, 9, 17, 9, 0))
             self.assertEqual(call.call_count, 1)
+            # Satisfied for the 09:00 slot, as a real sync would have left it.
+            self.synced_at(self.ist(2026, 9, 17, 9, 0))
             call.reset_mock()
             for minute in (1, 2, 30):
                 self.run_job(now=self.ist(2026, 9, 17, 9, minute))
             call.assert_not_called()
 
     def test_the_evening_time_fires_as_well(self):
+        """The morning slot being satisfied must not swallow the evening one."""
+        self.synced_at(self.ist(2026, 9, 17, 9, 1))
         with patch('leads.meta_integration.import_meta_leads', return_value=self._ok()) as call:
-            self.run_job(now=self.ist(2026, 9, 17, 9, 0))
-            call.reset_mock()
+            self.run_job(now=self.ist(2026, 9, 17, 20, 59))
+            call.assert_not_called()
             self.run_job(now=self.ist(2026, 9, 17, 21, 0))
             self.assertEqual(call.call_count, 1)
 

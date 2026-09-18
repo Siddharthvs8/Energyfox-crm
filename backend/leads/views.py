@@ -1552,12 +1552,23 @@ class LeadViewSet(viewsets.ModelViewSet):
             'can_edit_payment': can_edit_payment_verification(request.user, lead),
             'can_assign': can_assign_accounts(request.user),
             'can_reopen_payment': can_assign_accounts(request.user),
-            # Verifying the payment starts procurement, which orders against the
-            # sanctioned capacity — so the screen shows where the sanction
-            # stands rather than only refusing at the last step.
+            # The purchase hand-off is its own button, and it waits on the KSEB
+            # sanction — procurement orders against the sanctioned capacity. The
+            # screen shows where that stands rather than only refusing at the
+            # last step.
             'kseb_feasibility_complete': bool(sv and sv.kseb_feasibility_complete),
             'kseb_feasibility_date': sv.kseb_feasibility_date if sv else None,
             'feasibility_due_date': sv.kseb_feasibility_due_date if sv else None,
+            'pushed_to_purchase': lead.pushed_to_purchase,
+            'pushed_to_purchase_at': lead.pushed_to_purchase_at,
+            # Everything the button needs, decided here so the screen does not
+            # have to re-derive a rule the server owns.
+            'can_push_to_purchase': bool(
+                can_edit_payment_verification(request.user, lead)
+                and not lead.pushed_to_purchase
+                and pv and pv.is_complete and (pv.amount_received or 0) > 0
+                and sv and sv.kseb_feasibility_complete
+            ),
         }
 
     @action(detail=False, methods=['get'], url_path='accounts')
@@ -1737,18 +1748,11 @@ class LeadViewSet(viewsets.ModelViewSet):
         if missing:
             return Response({'error': 'Select a payment mode (and UTR details for non-cash payments) first.',
                              'missing': missing}, status=status.HTTP_400_BAD_REQUEST)
-        # Completing this is what hands the customer to purchase & logistics, and
-        # procurement orders against the sanctioned capacity. Ordering panels for
-        # a capacity KSEB has not sanctioned is stock bought for a job that may
-        # not be built that size — so the sanction comes first.
-        sv = getattr(lead, 'site_visit', None)
-        if not (sv and sv.kseb_feasibility_complete):
-            return Response(
-                {'error': 'KSEB feasibility is still pending. The BDE must complete it '
-                          'in the KSEB Feasibility module before this customer can be '
-                          'pushed to purchase.',
-                 'kseb_feasibility_pending': True},
-                status=status.HTTP_400_BAD_REQUEST)
+        # Deliberately not gated on KSEB feasibility. Verifying a payment is a
+        # statement about money that has arrived, and it is true whether or not
+        # the board has sanctioned anything. The sanction gates the *purchase*
+        # hand-off instead — see push_to_purchase — which is the step that
+        # actually spends money on panels.
         pv.is_complete = True
         pv.completed_at = timezone.now()
         pv.completed_by = request.user if request.user.is_authenticated else None
@@ -1768,9 +1772,10 @@ class LeadViewSet(viewsets.ModelViewSet):
                       payment_mode=pv.get_payment_mode_display() if pv.payment_mode else '',
                       is_initial=True,
                       created_by=request.user if request.user.is_authenticated else None)
-        # Hand off to purchase & logistics as soon as money has come in —
-        # procurement starts on a part payment; the balance is chased in parallel
-        # rather than holding the order up.
+        # The hand-off to purchase is a separate, deliberate step now (see
+        # push_to_purchase): it waits on the KSEB sanction, which can land days
+        # after the money does, and accounts should not be blocked from
+        # recording the payment in the meantime.
         if (pv.amount_received or 0) > 0:
             # The customer has paid against what they accepted, so their
             # accepted quotations stop being offers and become orders. Imported
@@ -1787,9 +1792,50 @@ class LeadViewSet(viewsets.ModelViewSet):
                     actor=request.user if request.user.is_authenticated else None,
                     description=f'{quotation.number} became an order on payment.',
                     extra={'auto_generated': True, 'quotation': quotation.number})
-            self._push_to_purchase(lead, request)
         else:
             fire_automation('payment_partially_paid', lead, {'balance_amount': float(pv.balance_amount)})
+        return Response(self._accounts_payload(lead, request))
+
+    @action(detail=True, methods=['post'], url_path='push-to-purchase')
+    def push_to_purchase(self, request, pk=None):
+        """Hand a paid customer to purchase & logistics.
+
+        Its own step rather than a consequence of verifying the payment. The two
+        answer different questions: verification says the money arrived, and this
+        says procurement may start spending it. They are often days apart,
+        because this one waits on KSEB.
+
+        The sanction is what it waits on. Procurement orders against the
+        sanctioned capacity, so panels must not be bought for a size the board
+        has not approved.
+        """
+        from .access import can_edit_payment_verification
+        lead = self.get_object()
+        if not can_edit_payment_verification(request.user, lead):
+            return Response({'error': 'You do not have permission to push this customer to purchase.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        if lead.pushed_to_purchase:
+            return Response({'error': 'This customer is already with purchase & logistics.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        pv = getattr(lead, 'payment_verification', None)
+        if not (pv and pv.is_complete):
+            return Response({'error': 'Verify the payment first.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if (pv.amount_received or 0) <= 0:
+            return Response({'error': 'No money has been received against this customer yet.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        sv = getattr(lead, 'site_visit', None)
+        if not (sv and sv.kseb_feasibility_complete):
+            return Response(
+                {'error': 'KSEB feasibility is still pending. The BDE must complete it '
+                          'in the KSEB Feasibility module before this customer can be '
+                          'pushed to purchase.',
+                 'kseb_feasibility_pending': True},
+                status=status.HTTP_400_BAD_REQUEST)
+
+        self._push_to_purchase(lead, request)
         return Response(self._accounts_payload(lead, request))
 
     @action(detail=True, methods=['post'], url_path='reopen-payment-verification')

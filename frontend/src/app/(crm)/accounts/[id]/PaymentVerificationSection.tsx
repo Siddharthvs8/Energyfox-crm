@@ -27,19 +27,25 @@ const toNum = (v: any) => {
 export default function PaymentVerificationSection({ leadId, canEdit, canReopen, dealValue,
                                                      customerEmail, customerPhone, onChanged,
                                                      feasibilityDone = true, feasibilityDate,
-                                                     feasibilityDue }: {
+                                                     feasibilityDue, pushedToPurchase = false,
+                                                     canPushToPurchase = false }: {
   leadId: number | string; canEdit: boolean; canReopen?: boolean; dealValue: number;
   customerEmail?: string | null; customerPhone?: string | null; onChanged?: () => void;
-  /** Verifying the payment starts procurement, and procurement orders against
-   *  the sanctioned capacity — so the sanction has to be in first. */
+  /** The KSEB sanction. It no longer gates verifying the payment — money that
+   *  has arrived is recorded whatever the board has done — it gates the push to
+   *  purchase, which is the step that spends money on panels. */
   feasibilityDone?: boolean;
   feasibilityDate?: string | null;
   feasibilityDue?: string | null;
+  pushedToPurchase?: boolean;
+  /** The server's answer, not ours: verified, money in, and sanction granted. */
+  canPushToPurchase?: boolean;
 }) {
   const apiBase = getApiBase(APP_SLUG);
   const url = `${apiBase}/api/leads/${leadId}/payment-verification/`;
   const authHeader = () => ({ Authorization: `Bearer ${localStorage.getItem(`${APP_SLUG}_access`)}` });
 
+  const [pushing, setPushing] = useState(false);
   const [amountReceived, setAmountReceived] = useState("");
   const [discountValue, setDiscountValue] = useState("");
   const [paymentMode, setPaymentMode] = useState("");
@@ -113,6 +119,22 @@ export default function PaymentVerificationSection({ leadId, canEdit, canReopen,
       if (latest) { load(latest); setSaved(true); onChanged?.(); }
     } catch { alert("Network error while saving."); }
     finally { setSaving(false); }
+  };
+
+  const pushToPurchase = async () => {
+    setPushing(true);
+    try {
+      const r = await fetch(`${apiBase}/api/leads/${leadId}/push-to-purchase/`,
+                            { method: "POST", headers: authHeader() });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) {
+        onChanged?.();
+        alert("Sent to purchase & logistics.");
+      } else {
+        alert(d.error || "Could not push this customer to purchase.");
+      }
+    } catch { alert("Network error while pushing to purchase."); }
+    finally { setPushing(false); }
   };
 
   const complete = async () => {
@@ -288,7 +310,7 @@ export default function PaymentVerificationSection({ leadId, canEdit, canReopen,
 
       {/* KSEB feasibility — mirrored read-only from the BDE's own section, since
           verifying the payment is what hands the customer to purchase. */}
-      {canEdit && !isComplete && (
+      {canEdit && !pushedToPurchase && (
         <div className="mt-6 mb-4 bg-white border border-slate-200 rounded-2xl px-5 py-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -306,8 +328,40 @@ export default function PaymentVerificationSection({ leadId, canEdit, canReopen,
           <p className="text-[11px] text-slate-400 mt-2">
             {feasibilityDone
               ? <>Taken on <b className="text-slate-600">{feasibilityDate ? new Date(feasibilityDate).toLocaleDateString("en-IN") : "—"}</b>.</>
-              : <>The customer can only be pushed to purchase once this is completed
+              : <>The payment can still be verified. Only the push to purchase waits on this
                   {feasibilityDue ? <> · due {new Date(feasibilityDue).toLocaleDateString("en-IN")}</> : null}.</>}
+          </p>
+
+          {/* The hand-off itself. Its own button because it answers a different
+              question from the money: procurement may now start spending it. */}
+          {isComplete && (
+            <div className="mt-4 pt-4 border-t border-slate-100 flex flex-wrap items-center gap-3">
+              <button onClick={pushToPurchase} disabled={pushing || !canPushToPurchase}
+                title={!feasibilityDone ? "KSEB feasibility is still pending"
+                                        : !canPushToPurchase ? "No money has been received yet" : ""}
+                className="px-5 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition">
+                {pushing ? "Pushing…" : "Push to Purchase"}
+              </button>
+              {!feasibilityDone && (
+                <span className="text-xs text-amber-600">
+                  Waiting on the BDE&apos;s KSEB feasibility.
+                </span>
+              )}
+              {feasibilityDone && !canPushToPurchase && (
+                <span className="text-xs text-slate-400">
+                  Needs a verified payment with money received.
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Already gone. Say so rather than offering the button again. */}
+      {canEdit && pushedToPurchase && (
+        <div className="mt-6 mb-4 bg-emerald-50 border border-emerald-200 rounded-2xl px-5 py-3">
+          <p className="text-xs font-semibold text-emerald-700">
+            ✓ With purchase &amp; logistics.
           </p>
         </div>
       )}
@@ -319,19 +373,14 @@ export default function PaymentVerificationSection({ leadId, canEdit, canReopen,
             className="px-5 py-2.5 bg-slate-800 text-white rounded-xl text-sm font-semibold hover:bg-slate-900 disabled:opacity-50 disabled:cursor-not-allowed transition">
             {saving ? "Saving…" : saved ? "Saved ✓" : "Save"}
           </button>
-          {/* Save stays available without the sanction — the money has come in
-              either way and should be recorded. Only the verification, which
-              starts procurement, waits. */}
-          <button onClick={complete} disabled={completing || saving || !ready || !feasibilityDone}
-            title={!ready ? "Select a payment mode (and UTR for non-cash) first"
-                          : !feasibilityDone ? "KSEB feasibility is still pending" : ""}
+          {/* Verifying says the money arrived, which is true whatever KSEB has
+              done. The sanction gates the push to purchase instead. */}
+          <button onClick={complete} disabled={completing || saving || !ready}
+            title={!ready ? "Select a payment mode (and UTR for non-cash) first" : ""}
             className="px-5 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition">
             {completing ? "Completing…" : "Payment Verified"}
           </button>
           {!ready && <span className="text-xs text-slate-400">Select a payment mode (and UTR for non-cash) to verify.</span>}
-          {ready && !feasibilityDone && (
-            <span className="text-xs text-amber-600">KSEB feasibility is still pending.</span>
-          )}
         </div>
       )}
     </div>

@@ -70,6 +70,10 @@ type Schedule = {
   next_due_at: string | null;
   /** Stamped every time the app looks at the clock — proof it is watching. */
   last_checked_at: string | null;
+  /** Whether the backend answering this request has a ticker running. */
+  ticker_running?: boolean;
+  /** What its last tick failed with, if anything. */
+  ticker_last_error?: string;
 };
 
 /* A short list rather than the full IANA set: these are the zones EnergyFox
@@ -123,6 +127,12 @@ export default function MetaPage() {
   const [schedule, setSchedule] = useState<Schedule>({
     enabled: true, times: [], timezone: "Asia/Kolkata", next_due_at: null, last_checked_at: null,
   });
+  /* The API only reports ticker_running from this release onwards. Absent means
+     the backend is older than the frontend — which is itself the answer. */
+  const tickerKnown = schedule.ticker_running !== undefined;
+  const checkedRecently =
+    !!schedule.last_checked_at &&
+    Date.now() - new Date(schedule.last_checked_at).getTime() < 5 * 60 * 1000;
   const [newTime, setNewTime] = useState("");
   const [savingSchedule, setSavingSchedule] = useState(false);
 
@@ -454,19 +464,25 @@ export default function MetaPage() {
               </p>
             )}
 
-            {/* Whether anything is actually watching the clock. Without this,
-                a schedule that never fires looks exactly like one with nothing
-                due yet, and the difference is the whole problem. */}
+            {/* Whether anything is actually watching the clock — and if not,
+                which of the three reasons it is, because "not running" on its
+                own sends you looking in the wrong place. */}
             {schedule.enabled && (
-              schedule.last_checked_at && Date.now() - new Date(schedule.last_checked_at).getTime() < 5 * 60 * 1000 ? (
+              checkedRecently ? (
                 <p className="text-xs text-emerald-600 font-semibold mt-1">
-                  ● Running — last checked {whenRelative(schedule.last_checked_at)}.
+                  ● Running — last checked {whenRelative(schedule.last_checked_at!)}.
+                </p>
+              ) : !tickerKnown ? (
+                <p className="text-xs text-amber-600 font-semibold mt-1">
+                  ● The backend is running older code than this page. Deploy the backend and restart it.
+                </p>
+              ) : !schedule.ticker_running ? (
+                <p className="text-xs text-amber-600 font-semibold mt-1">
+                  ● Not running in this backend process. Restart the backend, and check META_SYNC_SCHEDULER is not set to 0.
                 </p>
               ) : (
                 <p className="text-xs text-amber-600 font-semibold mt-1">
-                  ● Not running — the app has {schedule.last_checked_at
-                    ? `not checked since ${whenRelative(schedule.last_checked_at)}`
-                    : "never checked"}. Restart the backend, or check that META_SYNC_SCHEDULER is not set to 0.
+                  ● Started, but its last check failed{schedule.ticker_last_error ? `: ${schedule.ticker_last_error}` : "."} Run the pending migrations and restart.
                 </p>
               )
             )}

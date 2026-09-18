@@ -25,6 +25,41 @@ type AccountLead = {
   value: number;
   accounts_staff_name: string | null;
   payment_complete: boolean;
+  kseb_feasibility_complete?: boolean;
+  pushed_to_purchase?: boolean;
+};
+
+/* The stages a customer passes through here, in the order they pass through
+   them. `kseb` is deliberately a lens rather than a stage — it overlaps the
+   others and answers a different question: who is waiting on the BDE. */
+type Tab = "all" | "verified" | "pending" | "kseb" | "completed";
+
+const TAB_LABEL: Record<Tab, string> = {
+  verified: "Verified",
+  pending: "Pending",
+  kseb: "KSEB pending",
+  completed: "Completed",
+  all: "All",
+};
+
+const TAB_KEYS: Tab[] = ["verified", "pending", "kseb", "completed", "all"];
+
+const inTab = (l: AccountLead, tab: Tab) => {
+  switch (tab) {
+    case "all":
+      return true;
+    // Gone to purchase — finished as far as accounts is concerned.
+    case "completed":
+      return !!l.pushed_to_purchase;
+    case "pending":
+      return !l.pushed_to_purchase && !l.payment_complete;
+    case "verified":
+      return !l.pushed_to_purchase && l.payment_complete;
+    // Anything still here that cannot be pushed yet, verified or not: the
+    // sanction is the BDE's job, so this is the chase list.
+    case "kseb":
+      return !l.pushed_to_purchase && !l.kseb_feasibility_complete;
+  }
 };
 
 export default function AccountsPage() {
@@ -35,6 +70,8 @@ export default function AccountsPage() {
   const [leads, setLeads] = useState<AccountLead[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  // Opens on All, so the page shows what it always showed until a tab is picked.
+  const [tab, setTab] = useState<Tab>("all");
 
   const token = () => localStorage.getItem(`${domain}_access`);
 
@@ -68,19 +105,42 @@ export default function AccountsPage() {
   );
   if (!allowed) return null;
 
-  const filtered = leads.filter(l => {
+  const matchesSearch = (l: AccountLead) => {
     const q = search.trim().toLowerCase();
     if (!q) return true;
     return (`${l.first_name} ${l.last_name || ""}`.toLowerCase().includes(q)
       || (l.phone || "").toLowerCase().includes(q)
       || (l.location || "").toLowerCase().includes(q));
-  });
+  };
+
+  // Counted after the search, so a tab's number always matches the list under
+  // it rather than a total that disagrees.
+  const found = leads.filter(matchesSearch);
+  const counts = TAB_KEYS.reduce(
+    (acc, key) => ({ ...acc, [key]: found.filter(l => inTab(l, key)).length }),
+    {} as Record<Tab, number>,
+  );
+  const filtered = found.filter(l => inTab(l, tab));
 
   return (
     <div className="p-6 lg:p-8 max-w-[1200px]">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-slate-900">Accounts</h1>
         <p className="text-sm text-slate-500 mt-1">Customers ready for payment verification (Documentation Stage 1 complete). Open one to verify the payment.</p>
+      </div>
+
+      <div className="flex gap-1 mb-5 border-b border-slate-200 overflow-x-auto no-scrollbar">
+        {TAB_KEYS.map(key => (
+          <button key={key} onClick={() => setTab(key)}
+            className={`flex items-center gap-2 px-4 py-2.5 text-sm font-semibold whitespace-nowrap border-b-2 -mb-px transition-colors ${
+              tab === key ? "border-indigo-600 text-indigo-600" : "border-transparent text-slate-500 hover:text-slate-800"}`}>
+            {TAB_LABEL[key]}
+            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+              tab === key ? "bg-indigo-50 text-indigo-700" : "bg-slate-100 text-slate-500"}`}>
+              {counts[key]}
+            </span>
+          </button>
+        ))}
       </div>
 
       <div className="mb-5 flex items-center gap-3">
@@ -97,7 +157,11 @@ export default function AccountsPage() {
         <div className="py-16 text-center text-sm text-slate-400">Loading…</div>
       ) : filtered.length === 0 ? (
         <div className="bg-white border border-dashed border-slate-200 rounded-2xl p-12 text-center text-sm text-slate-400">
-          No customers in accounts yet.
+          {leads.length === 0
+            ? "No customers in accounts yet."
+            : found.length === 0
+              ? "No customers match your search."
+              : `No ${TAB_LABEL[tab].toLowerCase()} customers here.`}
         </div>
       ) : (
         <div className="space-y-4">
@@ -109,9 +173,18 @@ export default function AccountsPage() {
                     <p className="text-sm font-bold text-slate-900 truncate">{l.first_name} {l.last_name}</p>
                     <BdeTag name={l.bde_name} />
                     {l.lead_deleted && <DeletedLeadBadge />}
-                    <span className={`text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${l.payment_complete ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
-                      {l.payment_complete ? "Verified" : "Pending"}
+                    <span className={`text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${
+                      l.pushed_to_purchase ? "bg-indigo-50 text-indigo-700"
+                        : l.payment_complete ? "bg-emerald-50 text-emerald-700"
+                        : "bg-amber-50 text-amber-700"}`}>
+                      {l.pushed_to_purchase ? "Completed" : l.payment_complete ? "Verified" : "Pending"}
                     </span>
+                    {/* Why a verified customer is still sitting here. */}
+                    {!l.pushed_to_purchase && !l.kseb_feasibility_complete && (
+                      <span className="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                        KSEB pending
+                      </span>
+                    )}
                   </div>
                   <p className="text-xs text-slate-500 mt-0.5 truncate">{l.phone || "—"} · {l.location || "No location"}{l.product_name ? ` · ${l.product_name}` : ""}</p>
                 </div>

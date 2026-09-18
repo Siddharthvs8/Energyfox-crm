@@ -27,6 +27,9 @@ type AccountsDetail = {
   // orders against the sanctioned capacity — so the screen shows where the
   // KSEB sanction stands.
   kseb_feasibility_complete?: boolean;
+  pushed_to_purchase?: boolean;
+  /** Decided by the server: verified, money in, and the sanction granted. */
+  can_push_to_purchase?: boolean;
   kseb_feasibility_date?: string | null;
   feasibility_due_date?: string | null;
   can_assign: boolean;
@@ -157,6 +160,8 @@ export default function AccountsDetailPage({ params: paramsPromise }: { params: 
         feasibilityDone={!!data.kseb_feasibility_complete}
         feasibilityDate={data.kseb_feasibility_date}
         feasibilityDue={data.feasibility_due_date}
+        pushedToPurchase={!!data.pushed_to_purchase}
+        canPushToPurchase={!!data.can_push_to_purchase}
       />
 
       {/* Balance collection (partially / fully paid) — once payment is verified */}
