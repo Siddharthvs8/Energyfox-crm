@@ -7,6 +7,7 @@ import { FALLBACK_STATUS_META, getLatestNote } from "@/lib/lead-statuses";
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
+import { DetailSkeleton } from "@/components/Skeleton";
 import { getSourceLabel, formatCurrency } from "@/lib/mock-data";
 import SiteVisitSection from "./SiteVisitSection";
 import LeadQuotationsPanel from "@/components/LeadQuotationsPanel";
@@ -699,7 +700,7 @@ export default function LeadDetailPage({
   };
 
   if (loading) {
-    return <div className="p-8 text-center text-slate-500">Loading lead details...</div>;
+    return <DetailSkeleton />;
   }
 
   if (!lead) {
@@ -739,7 +740,7 @@ export default function LeadDetailPage({
   };
 
   return (
-    <div className="p-6 lg:p-8 max-w-[1200px]">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-[1200px]">
       {/* Breadcrumb */}
       <div className="flex items-center gap-2 text-sm text-slate-400 mb-6">
         <Link href={`/leads`} className="hover:text-indigo-600 transition-colors">Leads</Link>
@@ -748,16 +749,16 @@ export default function LeadDetailPage({
       </div>
 
       {/* Header */}
-      <div className="bg-white rounded-2xl border border-slate-100 p-6 mb-6 animate-fade-in-up">
+      <div className="bg-white rounded-2xl border border-slate-100 p-4 sm:p-6 mb-5 sm:mb-6 animate-fade-in-up">
         <div className="flex flex-col md:flex-row justify-between gap-4">
-          <div className="flex items-center gap-4">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500 to-cyan-400 flex items-center justify-center text-2xl font-bold text-white shadow-lg shadow-indigo-500/20">
+          <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+            <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-gradient-to-br from-indigo-500 to-cyan-400 flex items-center justify-center text-xl sm:text-2xl font-bold text-white shadow-lg shadow-indigo-500/20 flex-shrink-0">
               {lead.first_name?.[0] || ""}{lead.last_name?.[0] || ""}
             </div>
-            <div>
-              <h1 className="text-2xl font-bold text-slate-900">{lead.first_name} {lead.last_name}</h1>
-              <p className="text-sm text-slate-500">{lead.company}</p>
-              <div className="flex items-center gap-2 mt-2">
+            <div className="min-w-0">
+              <h1 className="text-xl sm:text-2xl font-bold text-slate-900 break-words">{lead.first_name} {lead.last_name}</h1>
+              <p className="text-sm text-slate-500 truncate">{lead.company}</p>
+              <div className="flex flex-wrap items-center gap-2 mt-2">
                 <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold ${smColors.bg} ${smColors.text}`}>
                   <span className={`w-1.5 h-1.5 rounded-full ${smColors.dot}`} />
                   {smColors.label}
@@ -773,7 +774,7 @@ export default function LeadDetailPage({
               </div>
             </div>
           </div>
-          <div className="flex gap-3 items-start">
+          <div className="flex flex-wrap gap-2 sm:gap-3 items-start [&>*]:flex-shrink-0">
             <Link href={`/leads`} className="btn btn-secondary btn-sm">
               ← Back
             </Link>
@@ -818,11 +819,11 @@ export default function LeadDetailPage({
         </div>
       </div>
 
-      <div className="grid lg:grid-cols-3 gap-6">
+      <div className="grid lg:grid-cols-3 gap-4 sm:gap-6">
         {/* Left Column: Details */}
         <div className="lg:col-span-2 space-y-6">
           {/* Contact Info */}
-          <div className="bg-white rounded-2xl border border-slate-100 p-6 animate-fade-in-up delay-100">
+          <div className="bg-white rounded-2xl border border-slate-100 p-4 sm:p-6 animate-fade-in-up delay-100">
             <h2 className="font-semibold text-slate-900 mb-4">Contact Information</h2>
             <div className="grid sm:grid-cols-2 gap-4">
               <div>
@@ -849,7 +850,7 @@ export default function LeadDetailPage({
           </div>
 
           {/* Notes */}
-          <div className="bg-white rounded-2xl border border-slate-100 p-6 animate-fade-in-up delay-200">
+          <div className="bg-white rounded-2xl border border-slate-100 p-4 sm:p-6 animate-fade-in-up delay-200">
             <div className="flex items-center justify-between mb-4">
               <h2 className="font-semibold text-slate-900">Notes</h2>
               {noteList.length > 0 && (
@@ -927,7 +928,7 @@ export default function LeadDetailPage({
           </div>
 
           {/* WhatsApp Conversation */}
-          <div className="bg-white rounded-2xl border border-slate-100 p-6 animate-fade-in-up delay-300">
+          <div className="bg-white rounded-2xl border border-slate-100 p-4 sm:p-6 animate-fade-in-up delay-300">
             <div className="flex justify-between items-center mb-4">
               <h2 className="font-semibold text-slate-900 flex items-center gap-2"><span>💬</span> WhatsApp</h2>
               {waMessages.length > 0 && <span className="text-xs text-slate-400">{waMessages.length} message{waMessages.length !== 1 ? "s" : ""}</span>}
@@ -957,7 +958,7 @@ export default function LeadDetailPage({
           </div>
 
           {/* Related Tasks */}
-          <div className="bg-white rounded-2xl border border-slate-100 p-6 animate-fade-in-up delay-300">
+          <div className="bg-white rounded-2xl border border-slate-100 p-4 sm:p-6 animate-fade-in-up delay-300">
             <div className="flex justify-between items-center mb-4">
               <h2 className="font-semibold text-slate-900">Related Tasks</h2>
               <Link href={`/tasks`} className="text-sm text-indigo-600 font-medium">View All</Link>
@@ -1007,7 +1008,7 @@ export default function LeadDetailPage({
           </div>
 
           {/* Call History & Recording Details */}
-          <div className="bg-white rounded-2xl border border-slate-100 p-6 animate-fade-in-up delay-[350ms]">
+          <div className="bg-white rounded-2xl border border-slate-100 p-4 sm:p-6 animate-fade-in-up delay-[350ms]">
             <div className="flex justify-between items-center mb-4">
               <div>
                 <h2 className="font-semibold text-slate-900">Call History & Recordings</h2>
@@ -1135,7 +1136,7 @@ export default function LeadDetailPage({
         {/* Right Column: Sidebar */}
         <div className="space-y-6">
           {/* Quick Stats */}
-          <div className="bg-white rounded-2xl border border-slate-100 p-6 animate-fade-in-up delay-100">
+          <div className="bg-white rounded-2xl border border-slate-100 p-4 sm:p-6 animate-fade-in-up delay-100">
             <h2 className="font-semibold text-slate-900 mb-4">Quick Stats</h2>
             <div className="space-y-4">
               <div>
@@ -1184,7 +1185,7 @@ export default function LeadDetailPage({
           <LeadQuotationsPanel leadId={params.id} customerEmail={lead?.email} />
 
           {/* Attachments UI Card */}
-          <div className="bg-white rounded-2xl border border-slate-100 p-6 animate-fade-in-up delay-[150ms]">
+          <div className="bg-white rounded-2xl border border-slate-100 p-4 sm:p-6 animate-fade-in-up delay-[150ms]">
             <div className="flex justify-between items-center mb-4">
               <h2 className="font-semibold text-slate-900">Attachments</h2>
               <button 
@@ -1255,7 +1256,7 @@ export default function LeadDetailPage({
           </div>
 
           {/* Activity Timeline */}
-          <div className="bg-white rounded-2xl border border-slate-100 p-6 animate-fade-in-up delay-200">
+          <div className="bg-white rounded-2xl border border-slate-100 p-4 sm:p-6 animate-fade-in-up delay-200">
             <h2 className="font-semibold text-slate-900 mb-4">Activity Timeline</h2>
             {historyLoading ? (
               <div className="flex justify-center py-8">

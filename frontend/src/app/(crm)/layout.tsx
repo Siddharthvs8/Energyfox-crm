@@ -244,6 +244,14 @@ const CLOSED_DEALS_ROLES = [
   "branch_manager", "bde", "tele_caller",
 ];
 
+// The four modules a field user touches every day. On a phone they are the
+// bottom tab bar and everything else stays behind the hamburger, so the work a
+// BDE actually does is one thumb-reach away. Order is the order of the tabs.
+// Each href must exist in `allNavItems` below — the tabs are filtered through
+// the same role rules as the sidebar, so a role without Calls gets three tabs
+// rather than one that answers 403.
+const TAB_BAR_HREFS = ["/", "/leads", "/calls", "/tasks"];
+
 const MODULE_LABELS: Record<string, string> = {
   "leads": "Leads",
   "documentation": "Documentation Stage 1",
@@ -643,6 +651,17 @@ export default function DashboardLayout({
 
 
 
+  // The drawer scrolls its own list; the page behind it must stay put, or the
+  // body scrolls under the overlay and the user loses their place on close.
+  useEffect(() => {
+    document.documentElement.classList.toggle("drawer-open", sidebarOpen);
+    return () => document.documentElement.classList.remove("drawer-open");
+  }, [sidebarOpen]);
+
+  // Any navigation closes the drawer — including a back gesture, which no
+  // onClick on a link would catch.
+  useEffect(() => { setSidebarOpen(false); }, [pathname]);
+
   // Auto-dismiss toasts
   useEffect(() => {
     if (toasts.length === 0) return;
@@ -863,6 +882,14 @@ export default function DashboardLayout({
     return true;
   });
 
+  // ── Mobile tab bar ──
+  // Built from the already-filtered sidebar list, in TAB_BAR_HREFS order, so a
+  // role that cannot see a module never gets a tab for it. Nothing is added
+  // that the sidebar does not also show.
+  const tabItems = TAB_BAR_HREFS
+    .map(href => navItems.find(i => i.href === href && !i.inventoryGroup))
+    .filter(Boolean);
+
   // Match on whole path segments so a sibling route like /documentation-stage2
   // doesn't also light up /documentation (which is only a string prefix).
   const isActive = (href: string, exact?: boolean) =>
@@ -912,6 +939,16 @@ export default function DashboardLayout({
   const inventoryActive = inventoryItems.some(i => pathname.startsWith(i.href));
   const inventoryExpanded = inventoryOpen || inventoryActive;
 
+  // What the mobile top bar calls the page. Longest matching href wins, so
+  // /inventory/items beats /inventory; a detail route keeps its module's name.
+  const pageTitle = (() => {
+    if (pathname === "/") return "Dashboard";
+    const match = [...navItems.filter(i => i.href), ...inventoryItems]
+      .filter(i => pathname === i.href || pathname.startsWith(i.href + "/"))
+      .sort((a, b) => b.href.length - a.href.length)[0];
+    return match?.label || subscription?.name || domain;
+  })();
+
 
   const isLoginPage = pathname.endsWith("/login");
   if (isLoginPage) {
@@ -924,13 +961,23 @@ export default function DashboardLayout({
 
   return (
     <div className="min-h-screen flex bg-[#f5f7fb]" style={{ fontFamily: "'Inter', sans-serif" }}>
-      {/* Mobile overlay */}
+      {/* Mobile overlay. z-45: above the bottom tab bar (z-40), so the drawer's
+          scrim covers that too, and below the drawer itself (z-50). */}
       {sidebarOpen && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-40 lg:hidden" onClick={() => setSidebarOpen(false)} />
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[45] lg:hidden" onClick={() => setSidebarOpen(false)} aria-hidden="true" />
       )}
 
-      {/* ── Sidebar ── */}
-      <aside className={`accent-transition w-60 bg-[#0f1629] flex flex-col fixed inset-y-0 left-0 z-50 transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${sidebarOpen ? "translate-x-0" : "-translate-x-full"} lg:translate-x-0`}>
+      {/* ── Sidebar ──
+          On a phone this is the hamburger drawer and holds every module that is
+          not one of the four tabs at the bottom; from `lg` up it is the
+          permanent sidebar it has always been. */}
+      <aside
+        id="app-drawer"
+        aria-label="All modules"
+        aria-hidden={!sidebarOpen ? undefined : false}
+        className={`accent-transition w-[82vw] max-w-[272px] lg:w-60 lg:max-w-none bg-[#0f1629] flex flex-col fixed inset-y-0 left-0 z-50 shadow-2xl shadow-black/40 lg:shadow-none transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${sidebarOpen ? "translate-x-0" : "-translate-x-full"} lg:translate-x-0`}
+        style={{ paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
+      >
         {/* Logo */}
         <div className="h-16 flex items-center justify-between px-5 border-b border-white/5 flex-shrink-0">
           <div className="flex items-center gap-3 min-w-0">
@@ -972,7 +1019,7 @@ export default function DashboardLayout({
         )}
 
         {/* Nav items */}
-        <nav className="flex-1 py-3 px-2.5 space-y-0.5 overflow-y-auto">
+        <nav className="drawer-scroll flex-1 py-3 px-2.5 space-y-0.5 overflow-y-auto">
           {navItems.map(item => {
             if (item.inventoryGroup) {
               if (!canSeeInventory) return null;
@@ -1119,28 +1166,57 @@ export default function DashboardLayout({
           main past the viewport and the whole page scrolls sideways, taking
           the sidebar and header with it. */}
       <main className="flex-1 min-w-0 lg:ml-60 flex flex-col min-h-screen">
-        {/* Mobile topbar */}
-        <header className="lg:hidden h-14 bg-white border-b border-slate-200/60 px-4 flex items-center justify-between sticky top-0 z-30 flex-shrink-0">
-          <button onClick={() => setSidebarOpen(true)} className="p-2 rounded-xl hover:bg-slate-100 text-slate-600 transition-colors">
+        {/* Mobile topbar — hamburger (everything else), the page's own name, and
+            the two controls that belong at the top of an app: alerts and you. */}
+        <header
+          className="lg:hidden bg-white border-b border-slate-200/60 px-2 flex items-center gap-1 sticky top-0 z-30 flex-shrink-0"
+          style={{ paddingTop: "env(safe-area-inset-top, 0px)", height: "calc(56px + env(safe-area-inset-top, 0px))" }}
+        >
+          <button
+            onClick={() => setSidebarOpen(true)}
+            aria-label="Open menu"
+            aria-controls="app-drawer"
+            aria-expanded={sidebarOpen}
+            className="w-10 h-10 flex items-center justify-center rounded-xl hover:bg-slate-100 active:bg-slate-200 text-slate-600 transition-colors flex-shrink-0"
+          >
             <Nav.Menu />
           </button>
-          <div className="flex items-center gap-2">
-            <img src="/energyfox-mark.png" alt="Energyfox" className="w-7 h-7 object-contain" />
-            <span className="text-sm font-bold text-slate-900 capitalize">{subscription?.name || domain}</span>
+
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <img src="/energyfox-mark.png" alt="" className="w-7 h-7 object-contain flex-shrink-0" />
+            <div className="min-w-0">
+              <div className="text-[15px] font-bold text-slate-900 leading-tight truncate">{pageTitle}</div>
+              <div className="text-[10px] text-slate-400 leading-tight capitalize truncate">{subscription?.name || domain}</div>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
+
+          <div className="flex items-center gap-0.5 flex-shrink-0">
             <button onClick={toggleNight} aria-pressed={night}
-              className="text-slate-400 hover:text-slate-700 p-1.5 transition-colors"
+              className="w-10 h-10 flex items-center justify-center rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
               title={night ? "Switch to day mode" : "Switch to night mode"}>
               {night ? <Nav.Sun /> : <Nav.Moon />}
             </button>
-            <Link href={`/team?edit=me`}>
+            <button
+              onClick={() => setShowNotifDropdown(v => !v)}
+              aria-label={unreadCount > 0 ? `Notifications, ${unreadCount} unread` : "Notifications"}
+              className="relative w-10 h-10 flex items-center justify-center rounded-xl text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors"
+            >
+              <Nav.Bell />
+              {unreadCount > 0 && (
+                <span className="absolute top-1.5 right-1.5 min-w-[16px] h-4 px-1 bg-rose-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center ring-2 ring-white">
+                  {unreadCount > 9 ? "9+" : unreadCount}
+                </span>
+              )}
+            </button>
+            <Link href={`/team?edit=me`} className="ml-0.5 flex-shrink-0" aria-label="Your profile">
               <Avatar name={userName} url={currentUser?.avatar_url} size={32} />
             </Link>
           </div>
         </header>
 
-        <div key={pathname} className="flex-1 page-enter">{children}</div>
+        {/* pb-tabbar: the bottom tab bar is fixed, so the page keeps its own
+            height clear of it (and of the home indicator below it). */}
+        <div key={pathname} className="flex-1 page-enter pb-tabbar">{children}</div>
 
         {/* ── Notification Toasts ── */}
         <div className="toast-container">
@@ -1170,11 +1246,37 @@ export default function DashboardLayout({
 
       </main>
 
+      {/* ── Mobile bottom tab bar ──
+          The four modules the sales floor lives in. Everything else is one tap
+          away in the drawer; these four are always one tap away, full stop. */}
+      {tabItems.length > 0 && (
+        <nav className="tabbar lg:hidden" aria-label="Primary">
+          {tabItems.map((item: any) => {
+            const active = isActive(item.href, item.exact);
+            const n = moduleCounts[item.href.replace(/^\//, "")] || 0;
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                aria-current={active ? "page" : undefined}
+                className={`tabbar-item ${active ? "active" : ""}`}
+              >
+                <span className="tabbar-icon"><item.Icon /></span>
+                <span className="tabbar-label">{item.label}</span>
+                {n > 0 && <span className="tabbar-badge">{n > 99 ? "99+" : n}</span>}
+              </Link>
+            );
+          })}
+        </nav>
+      )}
+
       {/* ── Notification Dropdown ── */}
       {showNotifDropdown && (
         <div className="fixed inset-0 z-[60]" onClick={() => setShowNotifDropdown(false)}>
+          {/* Anchored to the sidebar's bell on a desktop; on a phone the bell is
+              in the top bar, so it drops from there and spans the screen. */}
           <div
-            className="notif-dropdown absolute left-60 bottom-20 w-[340px] max-h-[440px] flex flex-col"
+            className="notif-dropdown absolute inset-x-3 top-[calc(60px+env(safe-area-inset-top,0px))] max-h-[70vh] lg:inset-x-auto lg:top-auto lg:left-60 lg:bottom-20 lg:w-[340px] lg:max-h-[440px] flex flex-col"
             onClick={e => e.stopPropagation()}
           >
             <div className="notif-dropdown-header">

@@ -225,7 +225,7 @@ export default function LiasoningPage() {
   });
 
   return (
-    <div className="p-6 lg:p-8 max-w-[1200px]">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-[1200px]">
       <div className="mb-5">
         <h1 className="text-2xl font-bold text-slate-900">Liasoning</h1>
         <p className="text-sm text-slate-500 mt-1">Annexure 3 — completion doc submission for each customer in liasoning.</p>

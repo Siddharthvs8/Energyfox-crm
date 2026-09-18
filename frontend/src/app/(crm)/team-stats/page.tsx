@@ -64,7 +64,7 @@ export default function TeamStatsPage() {
   if (!allowed) return null;
 
   return (
-    <div className="p-6 lg:p-8 max-w-[1100px]">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-[1100px]">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-slate-900">Team Stats</h1>
         <p className="text-sm text-slate-500 mt-1">Monthly work completion for the structure and electrical teams (from project work dates).</p>

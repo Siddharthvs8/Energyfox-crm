@@ -224,30 +224,30 @@ export default function AutomationsPage({ params: paramsPromise }: { params: Pro
       <div className="relative z-10 flex flex-col h-screen overflow-hidden">
         {/* Header */}
         <header className="flex-shrink-0 border-b border-white/5 bg-black/40 backdrop-blur-xl">
-          <div className="max-w-[1600px] mx-auto px-6 h-24 flex items-center justify-between">
+          <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-4 lg:h-24 lg:py-0 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
             <div className="flex flex-col gap-1">
-              <h1 className="text-3xl font-extrabold tracking-tight text-white flex items-center gap-3">
+              <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white flex items-center gap-3">
                 <span className="p-2 bg-gradient-to-br from-indigo-500/20 to-violet-500/20 text-indigo-400 rounded-xl border border-indigo-500/20 shadow-[0_0_15px_rgba(99,102,241,0.2)]">
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
                 </span>
                 Automations
               </h1>
-              <p className="text-sm font-medium text-slate-400 pl-14">
+              <p className="hidden sm:block text-sm font-medium text-slate-400 pl-14">
                 Design and deploy intelligent event-driven workflows.
               </p>
             </div>
             
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 sm:gap-3 [&>*]:flex-shrink-0">
             <button
               onClick={() => setShowTemplates(true)}
-              className="flex items-center gap-2 px-5 py-3 bg-white/5 border border-white/10 text-white rounded-xl font-bold transition-all hover:bg-white/10 active:scale-95"
+              className="flex items-center gap-2 px-3.5 sm:px-5 py-3 bg-white/5 border border-white/10 text-white rounded-xl font-bold transition-all hover:bg-white/10 active:scale-95"
             >
               <span className="text-base">✨</span>
               <span className="tracking-wide text-xs font-extrabold uppercase">Templates</span>
             </button>
             <button
               onClick={() => { setEditingRule(null); setShowBuilder(true); }}
-              className="group relative flex items-center gap-2 px-6 py-3 bg-white text-black rounded-xl font-bold transition-all hover:scale-[1.02] active:scale-95 overflow-hidden shadow-[0_0_20px_rgba(255,255,255,0.15)]"
+              className="group relative flex items-center gap-2 px-4 sm:px-6 py-3 bg-white text-black rounded-xl font-bold transition-all hover:scale-[1.02] active:scale-95 overflow-hidden shadow-[0_0_20px_rgba(255,255,255,0.15)]"
             >
               <div className="absolute inset-0 bg-gradient-to-r from-red-200 via-violet-200 to-indigo-200 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
               <div className="absolute inset-0 opacity-0 group-hover:opacity-20 transition-opacity duration-300 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4IiBoZWlnaHQ9IjgiPgoJPHJlY3Qgd2lkdGg9IjgiIGhlaWdodD0iOCIgZmlsbD0iI2ZmZiIgZmlsbC1vcGFjaXR5PSIwLjI1Ii8+Cjwvc3ZnPg==')]" />

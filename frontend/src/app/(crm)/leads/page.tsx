@@ -10,6 +10,7 @@ import React, { useState, useEffect, useRef, Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getSourceLabel, formatCurrency } from "@/lib/mock-data";
+import { Skeleton, SkeletonRegion, Spinner } from "@/components/Skeleton";
 
 function formatRelativeTime(dateStr: string) {
   if (!dateStr) return "";
@@ -147,6 +148,66 @@ function TaskTag({ task }: { task: { title?: string; due_date: string; state: st
   );
 }
 
+// ─── Loading placeholder ──────────────────────────────────────────────────────
+// Mirrors the two layouts below: the mobile card (identity, chips, status row,
+// action strip) and the eight-column table.
+function LeadRowsSkeleton({ rows = 6 }: { rows?: number }) {
+  return (
+    <>
+      <div className="lg:hidden p-3 space-y-2.5">
+        {Array.from({ length: rows }).map((_, i) => (
+          <div key={i} className="record-card">
+            <div className="flex items-start gap-3">
+              <Skeleton className="w-4 h-4 rounded-[5px] mt-1 flex-shrink-0" />
+              <Skeleton className="w-9 h-9 rounded-xl flex-shrink-0" />
+              <div className="flex-1 space-y-2 min-w-0">
+                <Skeleton className="h-3.5 w-1/2 rounded-md" />
+                <Skeleton className="h-2.5 w-2/5 rounded-full" />
+              </div>
+              <Skeleton className="h-4 w-16 rounded-md flex-shrink-0" />
+            </div>
+            <div className="flex gap-1.5 mt-2.5">
+              <Skeleton className="h-5 w-16 rounded-md" />
+              <Skeleton className="h-5 w-20 rounded-md" />
+            </div>
+            <div className="flex items-center gap-2 mt-2.5">
+              <Skeleton className="h-9 flex-1 rounded-xl" />
+              <Skeleton className="h-9 w-24 rounded-xl flex-shrink-0" />
+            </div>
+            <div className="flex items-center gap-1.5 mt-3 pt-2.5 border-t border-slate-100">
+              <Skeleton className="h-9 w-24 rounded-xl" />
+              <Skeleton className="h-9 w-9 rounded-xl" />
+              <div className="flex-1" />
+              <Skeleton className="h-9 w-9 rounded-xl" />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="hidden lg:block">
+        <div className="flex items-center gap-4 px-4 py-3 border-b border-slate-100 bg-slate-50/80">
+          <Skeleton className="w-4 h-4 rounded-[5px] flex-shrink-0" />
+          <Skeleton className="h-2.5 w-44 rounded-full" />
+          {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-2.5 flex-1 rounded-full" />)}
+        </div>
+        {Array.from({ length: rows }).map((_, i) => (
+          <div key={i} className="flex items-center gap-4 px-4 py-4 border-b border-slate-50">
+            <Skeleton className="w-4 h-4 rounded-[5px] flex-shrink-0" />
+            <div className="flex items-center gap-3 w-44 flex-shrink-0">
+              <Skeleton className="w-8 h-8 rounded-lg flex-shrink-0" />
+              <div className="flex-1 space-y-1.5">
+                <Skeleton className="h-3 w-full rounded-md" />
+                <Skeleton className="h-2 w-2/3 rounded-full" />
+              </div>
+            </div>
+            {Array.from({ length: 5 }).map((_, c) => <Skeleton key={c} className="h-4 flex-1 rounded-md" />)}
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 export default function LeadsPage({ params: paramsPromise }: { params: Promise<{ domain: string }> }) {
   return (
@@ -219,6 +280,8 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   const [archivedCount, setArchivedCount] = useState(0);
   const [showModal,      setShowModal]      = useState(false);
   const [savingLead,     setSavingLead]     = useState(false);
+  // Leads whose status change is still in flight — the row's dropdown dims.
+  const [savingStatusIds, setSavingStatusIds] = useState<number[]>([]);
   const [editingLead,    setEditingLead]    = useState<any>(null);
   const [teamMembers,    setTeamMembers]    = useState<{ id: number; name: string }[]>([]);
   const [selectedIds,    setSelectedIds]    = useState<number[]>([]);
@@ -619,11 +682,26 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
         return;
       }
     }
+    // Paint the new status straight away and mark the row busy: on a phone the
+    // round trip plus the list refetch is a second of the dropdown showing the
+    // old value, which reads as a tap that did not take. The server is still
+    // the authority — a refusal puts the old value back.
+    const previous = leads.find(l => l.id === id)?.status;
+    setLeads(prev => prev.map(l => (l.id === id ? { ...l, status } : l)));
+    setSavingStatusIds(prev => [...prev, id]);
     const token = localStorage.getItem(`${domain}_access`);
-    const r = await fetch(`${getApiBase(domain)}/api/leads/${id}/`, { method: "PATCH", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ status }) });
-    if (!r.ok) {
+    try {
+      const r = await fetch(`${getApiBase(domain)}/api/leads/${id}/`, { method: "PATCH", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ status }) });
+      if (!r.ok) {
         const err = await r.json().catch(() => ({}));
+        if (previous) setLeads(prev => prev.map(l => (l.id === id ? { ...l, status: previous } : l)));
         alert(err.status?.[0] || err.detail || "Failed to update status");
+      }
+    } catch {
+      if (previous) setLeads(prev => prev.map(l => (l.id === id ? { ...l, status: previous } : l)));
+      alert("Could not reach the server — the status was not changed.");
+    } finally {
+      setSavingStatusIds(prev => prev.filter(x => x !== id));
     }
     fetchLeads();
   };
@@ -1025,7 +1103,7 @@ This cannot be undone.`)) return;
     <div className="min-h-screen bg-[#f4f6fa]">
 
       {/* ── Header ───────────────────────────────────────────────────────────── */}
-      <div className="bg-white border-b border-slate-200/70 sticky top-0 z-20 shadow-sm shadow-slate-100">
+      <div className="bg-white border-b border-slate-200/70 sticky-under-topbar z-20 shadow-sm shadow-slate-100">
         <div className="max-w-[1440px] mx-auto px-4 sm:px-6 xl:px-8">
           {/* Wraps rather than overflows: the six tools here do not shrink,
               and on a narrower window they need a second line. */}
@@ -1115,10 +1193,10 @@ This cannot be undone.`)) return;
           />
         </div>
 
-        <div className="flex flex-col sm:flex-row gap-2.5 flex-wrap">
+        <div className="flex gap-2.5 overflow-x-auto no-scrollbar pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0">
 
           {/* Status filter */}
-          <div className="relative flex-shrink-0 w-full sm:w-[180px]">
+          <div className="relative flex-shrink-0 w-[172px] sm:w-[180px]">
             <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none z-10"><I.Filter /></div>
             <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
               className="dropdown-premium w-full !pl-8">
@@ -1128,7 +1206,7 @@ This cannot be undone.`)) return;
           </div>
 
           {/* Source filter */}
-          <div className="flex-shrink-0 w-full sm:w-[150px]">
+          <div className="flex-shrink-0 w-[172px] sm:w-[150px]">
             <select value={sourceFilter} onChange={e => setSourceFilter(e.target.value)}
               className="dropdown-premium w-full">
               <option value="all">All Sources</option>
@@ -1143,7 +1221,7 @@ This cannot be undone.`)) return;
           {/* District filter — the options are the districts actually on the
               leads, since the field is free text off a CSV column or a Meta
               form rather than a fixed list */}
-          <div className="flex-shrink-0 w-full sm:w-[160px]">
+          <div className="flex-shrink-0 w-[172px] sm:w-[160px]">
             <select value={districtFilter} onChange={e => { setDistrictFilter(e.target.value); setPage(1); }}
               className="dropdown-premium w-full">
               <option value="all">All Districts</option>
@@ -1153,7 +1231,7 @@ This cannot be undone.`)) return;
           </div>
 
           {/* Campaign filter */}
-          <div className="flex-shrink-0 w-full sm:w-[150px]">
+          <div className="flex-shrink-0 w-[172px] sm:w-[150px]">
             <select value={campaignFilter} onChange={e => setCampaignFilter(e.target.value)}
               className="dropdown-premium w-full">
               <option value="all">All Campaigns</option>
@@ -1164,7 +1242,7 @@ This cannot be undone.`)) return;
 
           {/* Meta integration (branch) filter — only useful once one exists */}
           {integrationsList.length > 0 && (
-            <div className="flex-shrink-0 w-full sm:w-[170px]">
+            <div className="flex-shrink-0 w-[172px] sm:w-[170px]">
               <select value={metaIntegrationFilter} onChange={e => { setMetaIntegrationFilter(e.target.value); setPage(1); }}
                 className="dropdown-premium w-full">
                 <option value="all">All Meta Accounts</option>
@@ -1175,7 +1253,7 @@ This cannot be undone.`)) return;
           )}
 
           {/* Product filter */}
-          <div className="flex-shrink-0 w-full sm:w-[150px]">
+          <div className="flex-shrink-0 w-[172px] sm:w-[150px]">
             <select value={productFilter} onChange={e => setProductFilter(e.target.value)}
               className="dropdown-premium w-full">
               <option value="all">All Products</option>
@@ -1184,7 +1262,7 @@ This cannot be undone.`)) return;
           </div>
 
           {/* Stage filter */}
-          <div className="flex-shrink-0 w-full sm:w-[160px]">
+          <div className="flex-shrink-0 w-[172px] sm:w-[160px]">
             <select value={stageFilter} onChange={e => setStageFilter(e.target.value)}
               className="dropdown-premium w-full">
               <option value="all">All Stages</option>
@@ -1194,7 +1272,7 @@ This cannot be undone.`)) return;
 
           {/* Assignee filter */}
           {canAssign && (
-            <div className="flex-shrink-0 w-full sm:w-[160px]">
+            <div className="flex-shrink-0 w-[172px] sm:w-[160px]">
               <select value={assigneeFilter} onChange={e => setAssigneeFilter(e.target.value)}
                 className="dropdown-premium w-full">
                 <option value="all">All Assignees</option>
@@ -1420,33 +1498,35 @@ This cannot be undone.`)) return;
 
       {selectedIds.length > 0 && (
         <div className="max-w-[1440px] mx-auto px-4 sm:px-6 xl:px-8 pb-3">
-          <div className="flex items-center justify-between gap-3 bg-indigo-600 text-white rounded-2xl px-5 py-3 shadow-lg shadow-indigo-200/60">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-indigo-600 text-white rounded-2xl px-4 sm:px-5 py-3 shadow-lg shadow-indigo-200/60">
             <div className="flex items-center gap-3">
               <span className="w-6 h-6 bg-white/20 rounded-md flex items-center justify-center text-[11px] font-bold tabular-nums">{selectedIds.length}</span>
               <span className="text-sm font-medium">lead{selectedIds.length !== 1 ? "s" : ""} selected</span>
             </div>
-            <div className="flex items-center gap-2">
+            {/* The action set scrolls rather than wrapping into a three-line
+                block that pushes the list off the screen. */}
+            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar -mx-1 px-1 sm:overflow-visible sm:mx-0 sm:px-0">
               {canAssign && (
                 <button onClick={() => setShowBulkAssign(true)}
-                  className="flex items-center gap-1.5 bg-white/15 hover:bg-white/25 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all">
+                  className="flex items-center gap-1.5 bg-white/15 hover:bg-white/25 px-3 py-2 rounded-lg text-xs font-semibold transition-all flex-shrink-0 whitespace-nowrap">
                   <I.Users /> Assign
                 </button>
               )}
               {canEditLeads && (
               <button onClick={() => setShowBulkUpdate(true)}
-                className="flex items-center gap-1.5 bg-white/15 hover:bg-white/25 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all">
+                className="flex items-center gap-1.5 bg-white/15 hover:bg-white/25 px-3 py-2 rounded-lg text-xs font-semibold transition-all flex-shrink-0 whitespace-nowrap">
                 <I.Edit /> Update
               </button>
               )}
               {!isSpectator && (
               <button onClick={() => setShowBulkWa(true)}
-                className="flex items-center gap-1.5 bg-emerald-500 hover:bg-emerald-600 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all">
+                className="flex items-center gap-1.5 bg-emerald-500 hover:bg-emerald-600 px-3 py-2 rounded-lg text-xs font-semibold transition-all flex-shrink-0 whitespace-nowrap">
                 💬 WhatsApp
               </button>
               )}
               {canDeleteLeads && (
               <button onClick={bulkDelete}
-                className="flex items-center gap-1.5 bg-red-500 hover:bg-red-600 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all">
+                className="flex items-center gap-1.5 bg-red-500 hover:bg-red-600 px-3 py-2 rounded-lg text-xs font-semibold transition-all flex-shrink-0 whitespace-nowrap">
                 <I.Trash /> Delete
               </button>
               )}
@@ -1464,12 +1544,130 @@ This cannot be undone.`)) return;
         <div className="bg-white border border-slate-200/60 rounded-2xl shadow-sm overflow-hidden">
 
           {loading ? (
-            <div className="flex flex-col items-center justify-center py-28 gap-3">
-              <div className="w-7 h-7 border-[3px] border-indigo-600 border-t-transparent rounded-full animate-spin" />
-              <p className="text-sm text-slate-400">Loading leads…</p>
-            </div>
+            // Rows in the shape they will arrive in — cards on a phone, a table
+            // above `lg` — so the page does not collapse and re-expand.
+            <SkeletonRegion label="Loading leads">
+              <LeadRowsSkeleton />
+            </SkeletonRegion>
           ) : (
-            <div className="overflow-x-auto">
+            <>
+            {/* ── Mobile: one card per lead ──────────────────────────────────
+                A seven-column table on a 390px screen is a sideways scroll in
+                both directions and a thumb that can't hit anything. The same
+                fields, stacked: who, where they are in the pipeline, what it is
+                worth, and the actions the row had. */}
+            <div className="lg:hidden p-3 space-y-2.5">
+              {leads.length === 0 ? (
+                <div className="flex flex-col items-center py-14 text-center">
+                  <div className="w-12 h-12 bg-slate-100 rounded-2xl flex items-center justify-center mb-3">
+                    <I.Users />
+                  </div>
+                  <h3 className="text-sm font-semibold text-slate-700 mb-1">No leads found</h3>
+                  <p className="text-xs text-slate-400 mb-5">Try adjusting your filters or add a new lead</p>
+                  {canAddLeads && (
+                    <button onClick={openAdd}
+                      className="flex items-center gap-2 px-4 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-semibold active:scale-[0.97] transition-all">
+                      <I.Plus /> Add Lead
+                    </button>
+                  )}
+                </div>
+              ) : leads.map(lead => {
+                const sm    = statusMeta[lead.status] || FALLBACK_STATUS_META;
+                const src   = SOURCE_META[lead.source] || { bg: "bg-slate-100", text: "text-slate-600" };
+                const isSel = selectedIds.includes(lead.id);
+                const initials = `${lead.first_name?.[0] || ""}${lead.last_name?.[0] || ""}`.toUpperCase();
+                return (
+                  <div key={lead.id} onClick={() => openView(lead)}
+                    className={`record-card ${isSel ? "!border-indigo-300 ring-2 ring-indigo-500/15" : ""}`}>
+
+                    {/* Identity */}
+                    <div className="flex items-start gap-3">
+                      <div onClick={e => { e.stopPropagation(); toggleOne(lead.id); }} className="pt-1">
+                        <Checkbox checked={isSel} onChange={() => toggleOne(lead.id)} />
+                      </div>
+                      <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-100 to-violet-100 flex items-center justify-center text-[12px] font-bold text-indigo-600 flex-shrink-0">
+                        {initials || "?"}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[14px] font-bold text-slate-800 leading-tight truncate">
+                          {lead.first_name} {lead.last_name}
+                        </p>
+                        <p className="text-[12px] text-slate-400 truncate">{lead.phone || lead.email || "—"}</p>
+                      </div>
+                      <span className="text-[14px] font-bold text-slate-800 tabular-nums flex-shrink-0">
+                        {formatCurrency(lead.value)}
+                      </span>
+                    </div>
+
+                    {/* Where it is */}
+                    <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
+                      <StageTag stage={lead.pipeline_stage} />
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-semibold ${src.bg} ${src.text}`}>
+                        {getSourceLabel(lead.source)}
+                      </span>
+                      {lead.next_task && <TaskTag task={lead.next_task} />}
+                    </div>
+
+                    {/* Status — the one field that gets changed from a phone all
+                        day, so it stays an inline control rather than a chip. */}
+                    <div className="flex items-center gap-2 mt-2.5" onClick={e => e.stopPropagation()}>
+                      <div className="relative flex-1 min-w-0">
+                        <span className={`absolute inset-0 rounded-xl pointer-events-none ${sm.bg}`} />
+                        <select
+                          value={lead.status}
+                          disabled={!canEditStatus || savingStatusIds.includes(lead.id)}
+                          onChange={e => updateStatus(lead.id, e.target.value)}
+                          className={`relative appearance-none w-full pl-3 pr-8 py-2 rounded-xl text-[12px] font-semibold outline-none border-0 bg-transparent transition-opacity ${sm.text} disabled:opacity-70 ${savingStatusIds.includes(lead.id) ? "opacity-50" : ""}`}
+                          style={{ backgroundImage: 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%2394a3b8\' stroke-width=\'2.5\' stroke-linecap=\'round\' stroke-linejoin=\'round\'%3E%3Cpath d=\'M6 9l6 6 6-6\'/%3E%3C/svg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center', backgroundSize: '12px' }}
+                        >
+                          {statusOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                        </select>
+                      </div>
+                      <div className="flex-shrink-0"><Owners lead={lead} /></div>
+                    </div>
+
+                    {/* Actions — 36px targets, the minimum a thumb can hit. */}
+                    <div className="flex items-center gap-1.5 mt-3 pt-2.5 border-t border-slate-100" onClick={e => e.stopPropagation()}>
+                      {showSiteVisit && (
+                        <Link href={`/leads/${lead.id}#site-visit`}
+                          className={`flex items-center gap-1 px-2.5 h-9 rounded-xl text-[10px] font-bold uppercase tracking-wide border ${
+                            lead.site_visit_complete
+                              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                              : "bg-slate-50 text-slate-500 border-slate-200"}`}>
+                          {lead.site_visit_complete
+                            ? <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12" /></svg>
+                            : <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" /><circle cx="12" cy="10" r="3" /></svg>}
+                          Site Visit
+                        </Link>
+                      )}
+                      {lead.phone && (
+                        <a href={`tel:${lead.phone}`}
+                          className="w-9 h-9 flex items-center justify-center rounded-xl bg-emerald-50 text-emerald-600 border border-emerald-100"
+                          aria-label={`Call ${lead.first_name}`}>
+                          <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6A19.79 19.79 0 012.12 4.18 2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z" /></svg>
+                        </a>
+                      )}
+                      <div className="flex-1" />
+                      <Link href={`/leads/${lead.id}`}
+                        className="w-9 h-9 flex items-center justify-center rounded-xl text-slate-500 bg-slate-50 border border-slate-100"
+                        aria-label="View details"><I.Eye /></Link>
+                      {canEditLeads && (
+                        <button onClick={() => openEdit(lead)}
+                          className="w-9 h-9 flex items-center justify-center rounded-xl text-slate-500 bg-slate-50 border border-slate-100"
+                          aria-label="Edit"><I.Edit /></button>
+                      )}
+                      {!showArchived && canDeleteLeads && (
+                        <button onClick={() => deleteLead(lead.id)}
+                          className="w-9 h-9 flex items-center justify-center rounded-xl text-rose-500 bg-rose-50 border border-rose-100"
+                          aria-label="Move to trash"><I.Trash /></button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="hidden lg:block overflow-x-auto">
               <table className="w-full text-left min-w-[780px]">
                 <thead>
                   <tr className="border-b border-slate-100 bg-slate-50/80">
@@ -1569,10 +1767,10 @@ This cannot be undone.`)) return;
                             <span className={`absolute inset-0 rounded-lg pointer-events-none ${sm.bg} transition-all duration-200 group-hover/status:shadow-sm`} />
                             <select
                               value={lead.status}
-                              disabled={!canEditStatus}
+                              disabled={!canEditStatus || savingStatusIds.includes(lead.id)}
                               title={canEditStatus ? undefined : "Only the tele caller or a manager can change the lead status."}
                               onChange={e => updateStatus(lead.id, e.target.value)}
-                              className={`relative appearance-none pl-2.5 pr-7 py-1.5 rounded-lg text-[11px] font-semibold cursor-pointer outline-none border-0 bg-transparent ${sm.text} min-w-[115px] transition-all duration-200`}
+                              className={`relative appearance-none pl-2.5 pr-7 py-1.5 rounded-lg text-[11px] font-semibold cursor-pointer outline-none border-0 bg-transparent ${sm.text} min-w-[115px] transition-all duration-200 ${savingStatusIds.includes(lead.id) ? "opacity-50" : ""}`}
                               style={{ backgroundImage: 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%2394a3b8\' stroke-width=\'2.5\' stroke-linecap=\'round\' stroke-linejoin=\'round\'%3E%3Cpath d=\'M6 9l6 6 6-6\'/%3E%3C/svg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 6px center', backgroundSize: '12px' }}
                             >
                               {statusOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -1665,15 +1863,16 @@ This cannot be undone.`)) return;
                 </tbody>
               </table>
             </div>
+            </>
           )}
           
           {/* Pagination Controls */}
           {!loading && totalPages > 1 && (
-            <div className="flex items-center justify-between px-6 py-4 border-t border-slate-100 bg-slate-50/50">
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 sm:px-6 py-4 border-t border-slate-100 bg-slate-50/50">
               <p className="text-xs text-slate-500 font-medium">
                 Showing <span className="font-bold text-slate-700">{(page - 1) * 100 + 1}</span> to <span className="font-bold text-slate-700">{Math.min(page * 100, totalLeadsCount)}</span> of <span className="font-bold text-slate-700">{totalLeadsCount}</span> leads
               </p>
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 flex-wrap justify-center">
                 <button
                   onClick={() => setPage(p => Math.max(1, p - 1))}
                   disabled={page === 1}
@@ -1990,7 +2189,7 @@ This cannot be undone.`)) return;
                             <I.Trash />
                           </button>
                         </div>
-                        <div className="grid grid-cols-4 gap-2">
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                           {/* Priority */}
                           <div className="relative">
                             <select
@@ -2045,8 +2244,8 @@ This cannot be undone.`)) return;
                 Cancel
               </button>
               <button onClick={handleSubmit as any} disabled={savingLead}
-                className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 transition-all shadow-sm shadow-indigo-200 disabled:opacity-60 disabled:cursor-not-allowed">
-                {savingLead ? "Saving…" : editingLead ? "Save Changes" : "Create Lead"}
+                className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 transition-all shadow-sm shadow-indigo-200 disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2">
+                {savingLead && <Spinner />}{savingLead ? "Saving…" : editingLead ? "Save Changes" : "Create Lead"}
                 {!savingLead && pendingTasks.filter(t => t.title.trim()).length > 0 && (
                   <span className="ml-2 bg-white/20 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
                     +{pendingTasks.filter(t => t.title.trim()).length} task{pendingTasks.filter(t => t.title.trim()).length !== 1 ? "s" : ""}

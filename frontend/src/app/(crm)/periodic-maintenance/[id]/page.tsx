@@ -5,6 +5,7 @@ import { APP_SLUG } from "@/lib/config";
 import React, { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { DetailSkeleton } from "@/components/Skeleton";
 
 type VisitDoc = { id: number; doc_type: string; file: string; uploaded_at: string };
 
@@ -307,9 +308,9 @@ The customer stays on the books and can be scheduled again.`
   };
 
 
-  if (loading) return <div className="flex items-center justify-center min-h-[60vh]"><div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" /></div>;
+  if (loading) return <DetailSkeleton />;
   if (error || !data) return (
-    <div className="p-6 lg:p-8 max-w-[900px]">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-[900px]">
       <Link href="/periodic-maintenance" className="text-sm text-indigo-600 hover:underline">← Back to Periodic Maintenance</Link>
       <p className="mt-6 text-sm text-rose-600">{error || "Not found."}</p>
     </div>
@@ -321,7 +322,7 @@ The customer stays on the books and can be scheduled again.`
   const fileHref = (f: string | null) => (f ? (f.startsWith("http") ? f : `${apiBase}${f}`) : null);
 
   return (
-    <div className="p-6 lg:p-8 max-w-[1100px]">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-[1100px]">
       {editing && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
           <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden">

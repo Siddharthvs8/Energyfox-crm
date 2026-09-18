@@ -6,6 +6,7 @@ import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
+import { PageSkeleton } from "@/components/Skeleton";
 
 type Item = { product: string; quantity: string; unit_price: string };
 const blankItem: Item = { product: "", quantity: "1", unit_price: "0" };
@@ -211,7 +212,7 @@ export default function PurchaseOrdersPage({ params: paramsPromise }: { params: 
   const field = "w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition";
   const itemField = field.replace("w-full ", ""); // row inputs size via flex/fixed widths, not w-full
 
-  if (loading) return <div className="p-8 flex items-center justify-center h-full"><div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" /></div>;
+  if (loading) return <PageSkeleton />;
 
   return (
     <div className="max-w-6xl mx-auto p-4 sm:p-6 lg:p-8">

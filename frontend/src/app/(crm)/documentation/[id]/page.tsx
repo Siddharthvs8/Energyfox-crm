@@ -8,6 +8,7 @@ import Link from "next/link";
 import DocumentationStage1Section from "./DocumentationStage1Section";
 
 import ActivityTimeline from "@/components/ActivityTimeline";
+import { DetailSkeleton } from "@/components/Skeleton";
 type Attachment = { label: string; url: string; is_image: boolean };
 type DocDetail = {
   id: number;
@@ -110,9 +111,9 @@ export default function DocumentationDetailPage({ params: paramsPromise }: { par
     finally { setAssigning(false); }
   };
 
-  if (loading) return <div className="flex items-center justify-center min-h-[60vh]"><div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" /></div>;
+  if (loading) return <DetailSkeleton />;
   if (error || !data) return (
-    <div className="p-6 lg:p-8 max-w-[900px]">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-[900px]">
       <Link href="/documentation" className="text-sm text-indigo-600 hover:underline">← Back to Documentation Stage 1</Link>
       <p className="mt-6 text-sm text-rose-600">{error || "Not found."}</p>
     </div>
@@ -124,7 +125,7 @@ export default function DocumentationDetailPage({ params: paramsPromise }: { par
     .filter(r => r.value !== null && r.value !== undefined && r.value !== "") : [];
 
   return (
-    <div className="p-6 lg:p-8 max-w-[1100px]">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-[1100px]">
       <div className="flex items-center justify-between gap-3">
         <Link href="/documentation" className="text-sm text-indigo-600 hover:underline">← Back to Documentation Stage 1</Link>
         <ActivityTimeline leadId={params.id} />

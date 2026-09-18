@@ -1240,6 +1240,8 @@ html.dark body { background: var(--night-page); color: #e8edf7; }
 
 /* ── Surfaces ── */
 html.dark .bg-\[\#f5f7fb\] { background-color: var(--night-page); }
+/* The other page background in use — Leads and Converted Leads are on it. */
+html.dark .bg-\[\#f4f6fa\] { background-color: var(--night-page); }
 html.dark .bg-white { background-color: var(--night-card); }
 html.dark .bg-slate-50 { background-color: var(--night-raised); }
 html.dark .bg-slate-100 { background-color: var(--night-raised-2); }
@@ -1355,3 +1357,227 @@ html.dark .shadow-sm, html.dark .shadow, html.dark .shadow-md, html.dark .shadow
 html.dark table thead tr { background-color: var(--night-raised); }
 html.dark ::-webkit-scrollbar-thumb { background: #2b3752; }
 html.dark ::-webkit-scrollbar-track { background: var(--night-page); }
+
+/* ============================================================ */
+/* ===== MOBILE APP SHELL ==================================== */
+/* ============================================================ */
+/* Below `lg` the CRM is used as an app: a fixed bottom tab bar with the four
+ * daily modules (Dashboard / Leads / Calls / Tasks), everything else behind the
+ * hamburger drawer, and a top bar in between. These rules are what the two bars
+ * and the page content need to coexist on a phone — notch and home-indicator
+ * insets included, since the viewport is `viewport-fit=cover`.                */
+
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --mobile-topbar-h: 56px;
+  --mobile-tabbar-h: 60px;
+}
+
+/* Height of the tab bar plus the home indicator under it — what the scrolling
+   page has to keep clear so the last row is never trapped behind the bar. */
+.pb-tabbar { padding-bottom: calc(var(--mobile-tabbar-h) + var(--safe-bottom) + 8px); }
+@media (min-width: 1024px) { .pb-tabbar { padding-bottom: 0; } }
+
+.safe-top    { padding-top: var(--safe-top); }
+.safe-bottom { padding-bottom: var(--safe-bottom); }
+.safe-x      { padding-left: var(--safe-left); padding-right: var(--safe-right); }
+
+/* ── Bottom tab bar ── */
+.tabbar {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: 40;
+  /* Phone-only. The display switch lives here rather than on a `lg:hidden`
+     utility: these rules are unlayered and would win over one. */
+  display: none;
+  align-items: stretch;
+  height: calc(var(--mobile-tabbar-h) + var(--safe-bottom));
+  padding-bottom: var(--safe-bottom);
+  /* Opaque, not frosted: the list scrolling under a translucent bar showed
+     through the labels and made them hard to read. */
+  background: #ffffff;
+  border-top: 1px solid #e9edf5;
+  box-shadow: 0 -6px 24px rgba(15, 23, 42, 0.06);
+}
+@media (max-width: 1023px) {
+  .tabbar { display: flex; }
+}
+
+.tabbar-item {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  position: relative;
+  min-width: 0;
+  padding: 6px 2px 4px;
+  color: #94a3b8;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  -webkit-tap-highlight-color: transparent;
+  transition: color 0.2s ease, transform 0.15s ease;
+}
+.tabbar-item:active { transform: scale(0.94); }
+.tabbar-item.active { color: var(--accent-primary); }
+
+/* The icon sits in a pill that fills in on the active tab — the cue reads at a
+   glance on a small screen, where a colour change alone does not. */
+.tabbar-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 26px;
+  border-radius: 999px;
+  transition: background-color 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.tabbar-item.active .tabbar-icon { background: var(--accent-soft); }
+
+.tabbar-label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Waiting-items count, same source as the sidebar badges. */
+.tabbar-badge {
+  position: absolute;
+  top: 2px;
+  left: 50%;
+  margin-left: 6px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #f43f5e;
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 800;
+  line-height: 17px;
+  text-align: center;
+  box-shadow: 0 0 0 2px #fff;
+}
+
+/* ── Mobile record card ──
+ * The phone-side stand-in for a table row: same data, stacked. */
+.record-card {
+  background: #fff;
+  border: 1px solid #eef1f6;
+  border-radius: 16px;
+  padding: 14px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  transition: box-shadow 0.2s ease, transform 0.12s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.record-card:active { transform: scale(0.995); box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08); }
+
+@media (max-width: 1023px) {
+  /* iOS zooms the whole page in when a focused field is under 16px, and then
+     never zooms back out. Every field the app has is a Tailwind text-sm or
+     smaller, so the rule has to beat a utility class — hence !important. */
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+
+  /* No 300ms delay, no grey flash on tap. */
+  a, button, [role="button"], select, summary {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* A board column at 320px leaves no room for the next one to peek out. */
+  .kanban-column { width: 82vw; max-width: 320px; }
+
+  /* Dialogs become bottom sheets: they arrive from the edge the thumb is on. */
+  .popup-overlay { align-items: flex-end; padding: 0; }
+  .popup-card {
+    max-width: 100%;
+    border-radius: 24px 24px 0 0;
+    max-height: 92vh;
+    overflow-y: auto;
+    padding-bottom: var(--safe-bottom);
+    animation: sheetSlideUp 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .modal-content {
+    width: 100%;
+    margin: 0;
+    border-radius: 24px 24px 0 0;
+    max-height: 92vh;
+  }
+  .modal-overlay { align-items: flex-end; }
+
+  /* Toasts clear the tab bar instead of landing on top of it. */
+  .toast-container {
+    left: 12px;
+    right: 12px;
+    bottom: calc(var(--mobile-tabbar-h) + var(--safe-bottom) + 12px);
+  }
+  .toast { min-width: 0; max-width: 100%; }
+
+  /* Tables stay tables, but they scroll as one piece with momentum rather than
+     dragging the whole page sideways. */
+  .table-container, .overflow-x-auto {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+  }
+}
+
+@keyframes sheetSlideUp {
+  from { opacity: 0; transform: translateY(100%); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* A phone never has the room for a sideways-scrolling page; anything wider than
+   the viewport is a bug, and this keeps it from taking the bars with it. */
+@media (max-width: 1023px) {
+  html, body { overflow-x: hidden; max-width: 100%; }
+  body { text-size-adjust: 100%; -webkit-text-size-adjust: 100%; }
+}
+
+/* The drawer scrolls on its own; the page behind it must not follow. */
+.drawer-open { overflow: hidden; }
+.drawer-scroll { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+
+/* ── Night mode for the app shell ── */
+html.dark .tabbar {
+  background: var(--night-card);
+  border-top-color: var(--night-border);
+  box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.4);
+}
+html.dark .tabbar-item { color: #8390a8; }
+html.dark .tabbar-badge { box-shadow: 0 0 0 2px var(--night-card); }
+html.dark .record-card {
+  background: var(--night-card);
+  border-color: var(--night-border-soft);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+/* A page's own sticky header has to sit under the mobile top bar, not behind
+   it. On `lg` the top bar is gone and the header returns to the top. */
+.sticky-under-topbar {
+  position: sticky;
+  top: calc(var(--mobile-topbar-h) + var(--safe-top));
+}
+@media (min-width: 1024px) {
+  .sticky-under-topbar { top: 0; }
+}
+
+html.dark .notif-dropdown {
+  background: var(--night-card);
+  border-color: var(--night-border);
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
+/* Skeletons on a dark page: the light shimmer would be a flashlight. */
+html.dark .skeleton {
+  background: linear-gradient(90deg, #1b2436 25%, #273250 50%, #1b2436 75%);
+  background-size: 200% 100%;
+}

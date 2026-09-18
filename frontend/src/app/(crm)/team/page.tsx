@@ -5,6 +5,7 @@ import Avatar from "@/components/Avatar";
 
 import React, { useState, useEffect, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
+import { Skeleton, SkeletonRegion, CardGridSkeleton } from "@/components/Skeleton";
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 const I = {
@@ -279,10 +280,20 @@ function TeamPageInner() {
     fetchTeam();
   };
 
+  // Team is a grid of people, not a list of rows.
   if (loading) return (
-    <div className="flex items-center justify-center min-h-[60vh]">
-      <div className="text-center"><div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" /><p className="text-sm text-slate-400">Loading team...</p></div>
-    </div>
+    <SkeletonRegion label="Loading team">
+      <div className="p-4 sm:p-6 lg:p-8 space-y-5">
+        <div className="flex items-center justify-between gap-4">
+          <div className="space-y-2">
+            <Skeleton className="h-5 w-32 rounded-md" />
+            <Skeleton className="h-2.5 w-24 rounded-full" />
+          </div>
+          <Skeleton className="h-10 w-28 rounded-xl" />
+        </div>
+        <CardGridSkeleton count={6} />
+      </div>
+    </SkeletonRegion>
   );
 
   const isAdminOrGM = currentUser?.is_staff || currentUser?.is_general_manager;
@@ -295,7 +306,7 @@ function TeamPageInner() {
   return (
     <div className="min-h-screen bg-[#f5f7fb]">
       {/* ── Header ── */}
-      <div className="bg-white border-b border-slate-200/60 sticky top-0 z-20">
+      <div className="bg-white border-b border-slate-200/60 sticky-under-topbar z-20">
         <div className="max-w-[1200px] mx-auto px-4 sm:px-6 xl:px-8 py-3 sm:py-0 min-h-[4rem] flex justify-center flex-col">
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div className="flex items-center gap-6">

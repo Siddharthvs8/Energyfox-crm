@@ -7,10 +7,10 @@ export default function DashboardCharts({ stats }: { stats: any }) {
   if (!stats?.revenue_over_time && !stats?.leads_over_time) return null;
 
   return (
-    <div className="grid lg:grid-cols-2 gap-5 mb-8">
+    <div className="grid lg:grid-cols-2 gap-4 sm:gap-5 mb-6 sm:mb-8">
       {/* Revenue Area Chart */}
-      <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-sm">
-        <div className="flex items-center justify-between mb-6">
+      <div className="bg-white border border-slate-100 rounded-2xl p-4 sm:p-6 shadow-sm min-w-0">
+        <div className="flex items-center justify-between mb-4 sm:mb-6">
           <div>
             <h2 className="text-base font-bold text-slate-900">Revenue Growth</h2>
             <p className="text-xs text-slate-400 mt-0.5">Trailing 6 months (Closed won)</p>
@@ -19,7 +19,7 @@ export default function DashboardCharts({ stats }: { stats: any }) {
             <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" viewBox="0 0 24 24"><path d="M23 6l-9.5 9.5-5-5L1 18"/><path d="M17 6h6v6"/></svg>
           </div>
         </div>
-        <div className="h-[250px] w-full">
+        <div className="h-[220px] sm:h-[250px] w-full">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={stats?.revenue_over_time || []} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
               <defs>
@@ -50,8 +50,8 @@ export default function DashboardCharts({ stats }: { stats: any }) {
       </div>
 
       {/* Leads Bar Chart */}
-      <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-sm">
-        <div className="flex items-center justify-between mb-6">
+      <div className="bg-white border border-slate-100 rounded-2xl p-4 sm:p-6 shadow-sm min-w-0">
+        <div className="flex items-center justify-between mb-4 sm:mb-6">
           <div>
             <h2 className="text-base font-bold text-slate-900">Lead Acquisition</h2>
             <p className="text-xs text-slate-400 mt-0.5">Trailing 6 months volume</p>
@@ -60,7 +60,7 @@ export default function DashboardCharts({ stats }: { stats: any }) {
             <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 00-3-3.87" /><path d="M16 3.13a4 4 0 010 7.75" /></svg>
           </div>
         </div>
-        <div className="h-[250px] w-full">
+        <div className="h-[220px] sm:h-[250px] w-full">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={stats?.leads_over_time || []} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
