@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 
 import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCleanup";
 import { PageSkeleton } from "@/components/Skeleton";
+import FilterBar, { FilterField } from "@/components/FilterBar";
 type Row = {
   id: number;
   // Set when the lead behind this row has been deleted; the row is then
@@ -118,19 +119,31 @@ export default function DocumentationStatusPage() {
           </div>
 
           {/* Filters */}
-          <div className="flex flex-col sm:flex-row gap-3 mb-4">
-            <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search name, phone, location, BDE…"
-              className="flex-1 bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition" />
-            <select value={stage1Filter} onChange={e => setStage1Filter(e.target.value)} className="dropdown-premium">
-              <option value="all">Stage 1: All</option>
-              <option value="completed">Stage 1: Completed</option>
-              <option value="in_progress">Stage 1: In progress</option>
-              <option value="not_started">Stage 1: Not started</option>
-            </select>
-            <select value={staffFilter} onChange={e => setStaffFilter(e.target.value)} className="dropdown-premium">
-              <option value="all">Doc staff: All</option>
-              {staffOptions.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
+          <div className="mb-4">
+            <FilterBar
+              activeCount={(stage1Filter !== "all" ? 1 : 0) + (staffFilter !== "all" ? 1 : 0)}
+              onClear={() => { setStage1Filter("all"); setStaffFilter("all"); }}
+              resultCount={filtered.length}
+              search={
+                <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search name, phone, location, BDE…"
+                  className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition" />
+              }
+            >
+              <FilterField label="Stage 1">
+                <select value={stage1Filter} onChange={e => setStage1Filter(e.target.value)} className="dropdown-premium">
+                  <option value="all">Stage 1: All</option>
+                  <option value="completed">Stage 1: Completed</option>
+                  <option value="in_progress">Stage 1: In progress</option>
+                  <option value="not_started">Stage 1: Not started</option>
+                </select>
+              </FilterField>
+              <FilterField label="Doc staff">
+                <select value={staffFilter} onChange={e => setStaffFilter(e.target.value)} className="dropdown-premium">
+                  <option value="all">Doc staff: All</option>
+                  {staffOptions.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </FilterField>
+            </FilterBar>
           </div>
 
           {/* Table */}

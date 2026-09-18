@@ -1523,10 +1523,13 @@ html.dark ::-webkit-scrollbar-track { background: var(--night-page); }
   .toast { min-width: 0; max-width: 100%; }
 
   /* Tables stay tables, but they scroll as one piece with momentum rather than
-     dragging the whole page sideways. */
+     dragging the whole page sideways. `min-width: 0` is what makes that true
+     when the scroll box is itself a flex or grid item: without it the box is at
+     least as wide as the table inside it and there is nothing left to scroll. */
   .table-container, .overflow-x-auto {
     -webkit-overflow-scrolling: touch;
     overscroll-behavior-x: contain;
+    min-width: 0;
   }
 }
 
@@ -1540,6 +1543,31 @@ html.dark ::-webkit-scrollbar-track { background: var(--night-page); }
 @media (max-width: 1023px) {
   html, body { overflow-x: hidden; max-width: 100%; }
   body { text-size-adjust: 100%; -webkit-text-size-adjust: 100%; }
+}
+
+/* …and this stops the page becoming wider than the viewport in the first place.
+ *
+ * `overflow-x: hidden` above only clips: a page that overflowed still lost its
+ * right edge, which is what a lead's record did on a phone — its cards ran off
+ * the screen and took the quotation panel, the attachments and the timeline
+ * dates with them.
+ *
+ * The cause is the default sizing of a grid item. A track with no explicit size
+ * is `auto`, which is at least the widest thing inside it, and the item is then
+ * stretched to the track — so one child with a large intrinsic width (a media
+ * player, a long unbroken string, a table) drags the whole column, and the page,
+ * past the screen. `min-width: 0` lets the track shrink and the child scroll or
+ * wrap inside its own card instead.
+ *
+ * In `base` on purpose: an explicit `min-w-*` utility on a particular child is a
+ * deliberate choice and still wins. */
+@layer base {
+  @media (max-width: 1023px) {
+    .grid > * { min-width: 0; }
+  }
+  /* A browser gives <audio controls> a ~300px minimum of its own, which is most
+     of a phone's width before any padding. */
+  audio, video, img, svg, canvas, iframe { max-width: 100%; }
 }
 
 /* The drawer scrolls on its own; the page behind it must not follow. */
@@ -1580,4 +1608,248 @@ html.dark .notif-dropdown {
 html.dark .skeleton {
   background: linear-gradient(90deg, #1b2436 25%, #273250 50%, #1b2436 75%);
   background-size: 200% 100%;
+}
+
+/* ── Filter bar ──────────────────────────────────────────────────────────────
+ * Desktop: the wrappers get out of the way (`display: contents`) and the
+ * controls sit on the toolbar row exactly as they always have.
+ * Phone: the same controls stack inside a bottom sheet behind one button.
+ * See components/FilterBar.tsx. */
+.filterbar {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.filterbar-head { display: flex; align-items: center; gap: 10px; }
+.filterbar-search { flex: 1 1 auto; min-width: 0; }
+.filterbar-panel { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.filterbar-controls,
+.filterbar-field { display: contents; }
+.filterbar-trigger,
+.filterbar-field-label,
+.filterbar-panel-head,
+.filterbar-panel-foot,
+.filterbar-scrim { display: none; }
+
+@media (min-width: 1024px) {
+  .filterbar { flex-direction: row; flex-wrap: wrap; align-items: center; }
+  /* Basis, not `flex: 1`: the search box takes the slack on a wide toolbar but
+     still drops to its own row rather than crushing the filters on a narrow
+     laptop. */
+  .filterbar-head { flex: 1 1 240px; min-width: 0; }
+  .filterbar-head-bare { flex: 0 0 0; }
+  .filterbar-panel { flex: 1 1 auto; min-width: 0; }
+}
+
+/* Boards that were built with a label over each select keep them on a desktop;
+   everywhere else the control's own first option ("All Sources") is the label
+   and a second one would only repeat it. */
+@media (min-width: 1024px) {
+  .filterbar-labelled { align-items: flex-end; }
+  .filterbar-labelled .filterbar-panel { align-items: flex-end; }
+  .filterbar-labelled .filterbar-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .filterbar-labelled .filterbar-field-label {
+    display: block;
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #94a3b8;
+  }
+}
+
+/* Leads has eight filters and none of them shrink; its search box keeps the row
+   above to itself rather than being squeezed to a bare magnifier. */
+@media (min-width: 1024px) {
+  .filterbar-stacked .filterbar-head { flex: 0 0 100%; }
+  .filterbar-stacked .filterbar-search { max-width: 28rem; }
+}
+
+@media (max-width: 1023px) {
+  .filterbar-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    flex-shrink: 0;
+    height: 42px;
+    padding: 0 14px;
+    border-radius: 12px;
+    border: 1px solid #e2e8f0;
+    background: #fff;
+    color: #475569;
+    font-size: 13.5px;
+    font-weight: 600;
+    -webkit-tap-highlight-color: transparent;
+    transition: transform 0.12s ease, border-color 0.2s ease, background-color 0.2s ease;
+  }
+  .filterbar-trigger:active { transform: scale(0.96); }
+  /* Once something is filtering the list the button has to say so — the list
+     itself gives no clue that it is short because of a filter. */
+  .filterbar-trigger.has-filters {
+    border-color: var(--accent-primary);
+    background: var(--accent-soft);
+    color: var(--accent-primary);
+  }
+  .filterbar-count {
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: var(--accent-primary);
+    color: #fff;
+    font-size: 10.5px;
+    font-weight: 800;
+    line-height: 18px;
+    text-align: center;
+  }
+
+  .filterbar-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    background: rgba(15, 23, 42, 0.45);
+    backdrop-filter: blur(2px);
+    animation: filterScrimIn 0.25s ease;
+  }
+
+  .filterbar-panel {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 61;
+    display: flex;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    gap: 0;
+    max-height: 86vh;
+    background: #fff;
+    border-radius: 24px 24px 0 0;
+    box-shadow: 0 -12px 40px rgba(15, 23, 42, 0.18);
+    /* Parked off-screen rather than unmounted, so the controls keep their
+       identity — a select that was mid-edit is not rebuilt on reopening. */
+    transform: translateY(100%);
+    visibility: hidden;
+    transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.32s;
+  }
+  .filterbar-panel.open { transform: none; visibility: visible; }
+
+  .filterbar-panel-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 18px 18px 12px;
+    border-bottom: 1px solid #f1f5f9;
+  }
+  .filterbar-panel-title { font-size: 16px; font-weight: 700; color: #0f172a; }
+  .filterbar-panel-sub { margin-top: 2px; font-size: 11.5px; color: #94a3b8; }
+  .filterbar-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    flex-shrink: 0;
+    border-radius: 12px;
+    background: #f1f5f9;
+    color: #64748b;
+  }
+
+  .filterbar-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 16px;
+    padding: 16px 18px 20px;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+  .filterbar-field { display: flex; flex-direction: column; gap: 6px; }
+  .filterbar-field-label {
+    display: block;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #94a3b8;
+  }
+  /* Every control fills the sheet: a 140px select stranded in a 360px column
+     reads as broken, and a full-width tap target is easier to hit. */
+  .filterbar-controls > *,
+  .filterbar-field > select,
+  .filterbar-field > input,
+  .filterbar-field > button,
+  .filterbar-field > div,
+  .filterbar-field > div > select,
+  .filterbar-field > div > button { width: 100%; }
+  /* A control whose own dropdown opens under it cannot be clipped by the
+     scroll box, so the sheet lets it out. */
+  .filterbar-controls { position: relative; }
+
+  .filterbar-panel-foot {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 18px calc(12px + var(--safe-bottom));
+    border-top: 1px solid #f1f5f9;
+    background: #fff;
+  }
+  .filterbar-clear {
+    flex: 0 0 auto;
+    padding: 12px 18px;
+    border-radius: 12px;
+    border: 1px solid #e2e8f0;
+    background: #fff;
+    color: #475569;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .filterbar-clear:disabled { opacity: 0.45; }
+  .filterbar-apply {
+    flex: 1 1 auto;
+    padding: 12px 18px;
+    border-radius: 12px;
+    background: var(--accent-primary);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 700;
+  }
+  .filterbar-apply:active, .filterbar-clear:active { transform: scale(0.98); }
+}
+
+@keyframes filterScrimIn { from { opacity: 0; } to { opacity: 1; } }
+
+html.dark .filterbar-trigger {
+  background: var(--night-card);
+  border-color: var(--night-border);
+  color: #c3cbdb;
+}
+html.dark .filterbar-trigger.has-filters {
+  background: var(--accent-soft);
+  border-color: var(--accent-primary);
+  color: var(--accent-primary-hover);
+}
+html.dark .filterbar-panel {
+  background: var(--night-card);
+  box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.5);
+}
+html.dark .filterbar-panel-head,
+html.dark .filterbar-panel-foot {
+  background: var(--night-card);
+  border-color: var(--night-border);
+}
+html.dark .filterbar-panel-title { color: #e8edf7; }
+html.dark .filterbar-close { background: var(--night-raised); color: #a8b3c7; }
+html.dark .filterbar-clear {
+  background: var(--night-card);
+  border-color: var(--night-border);
+  color: #c3cbdb;
 }

@@ -10,6 +10,7 @@ import React, { useState, useEffect, useRef, Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getSourceLabel, formatCurrency } from "@/lib/mock-data";
+import FilterBar, { FilterField } from "@/components/FilterBar";
 import { Skeleton, SkeletonRegion, Spinner } from "@/components/Skeleton";
 
 function formatRelativeTime(dateStr: string) {
@@ -1079,7 +1080,7 @@ This cannot be undone.`)) return;
 
   const activeFilters = [
     statusFilter !== "all", sourceFilter !== "all", assigneeFilter !== "all", campaignFilter !== "all",
-    districtFilter !== "all",
+    districtFilter !== "all", productFilter !== "all", stageFilter !== "all", metaIntegrationFilter !== "all",
     createdType !== "all", modType !== "all", !!valueMin, !!valueMax, !!companyFilter,
     statusChangeFrom !== "all", statusChangeTo !== "all", statusChangeType !== "all",
     activityType !== "all", !!hasActivityDays, !!noActivityDays
@@ -1087,7 +1088,7 @@ This cannot be undone.`)) return;
 
   const clearFilters = () => {
     setStatusFilter("all"); setSourceFilter("all"); setAssigneeFilter("all"); setCampaignFilter("all"); setProductFilter("all");
-    setDistrictFilter("all");
+    setDistrictFilter("all"); setStageFilter("all"); setMetaIntegrationFilter("all");
     setCreatedType("all"); setCreatedParam("2"); setCreatedFrom(""); setCreatedTo("");
     setModType("all"); setModParam("2"); setModFrom(""); setModTo("");
     setValueMin(""); setValueMax(""); setCompanyFilter(""); setSearch("");
@@ -1181,125 +1182,153 @@ This cannot be undone.`)) return;
             many filters appear depends on the role (assignee needs assign rights,
             Meta needs an integration), so a layout that survives any number of
             them is the one to have. */}
-        <div className="relative w-full sm:max-w-md mb-2.5">
-          <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"><I.Search /></div>
-          <input
-            type="text"
-            placeholder="Search name, email or place…"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && fetchLeads()}
-            className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-4 py-2.5 text-sm text-slate-700 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all shadow-sm shadow-slate-50"
-          />
-        </div>
-
-        <div className="flex gap-2.5 overflow-x-auto no-scrollbar pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0">
-
+        <FilterBar
+          className="filterbar-stacked"
+          activeCount={activeFilters}
+          onClear={clearFilters}
+          resultCount={totalLeadsCount > 0 ? totalLeadsCount : leads.length}
+          search={
+            /* Search sits on its own row.
+               Sharing a wrapping row with the filters, it was the only flexible
+               item among eight fixed-width ones, so it lost the fight and shrank
+               to the width of its own padding — a bare circle with the magnifier
+               in it. How many filters appear depends on the role (assignee needs
+               assign rights, Meta needs an integration), so a layout that
+               survives any number of them is the one to have. */
+            <div className="relative w-full">
+              <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"><I.Search /></div>
+              <input
+                type="text"
+                placeholder="Search name, email or place…"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && fetchLeads()}
+                className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-4 py-2.5 text-sm text-slate-700 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all shadow-sm shadow-slate-50"
+              />
+            </div>
+          }
+        >
           {/* Status filter */}
-          <div className="relative flex-shrink-0 w-[172px] sm:w-[180px]">
-            <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none z-10"><I.Filter /></div>
-            <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
-              className="dropdown-premium w-full !pl-8">
-              <option value="all">All Statuses</option>
-              {statusOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-          </div>
+          <FilterField label="Status">
+            <div className="relative flex-shrink-0 w-[172px] sm:w-[180px]">
+              <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none z-10"><I.Filter /></div>
+              <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+                className="dropdown-premium w-full !pl-8">
+                <option value="all">All Statuses</option>
+                {statusOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+          </FilterField>
 
           {/* Source filter */}
-          <div className="flex-shrink-0 w-[172px] sm:w-[150px]">
-            <select value={sourceFilter} onChange={e => setSourceFilter(e.target.value)}
-              className="dropdown-premium w-full">
-              <option value="all">All Sources</option>
-              <option value="meta_ads">Meta Ads</option>
-              <option value="manual">Manual</option>
-              <option value="website">Website</option>
-              <option value="linkedin">LinkedIn</option>
-              <option value="referral">Referral</option>
-            </select>
-          </div>
+          <FilterField label="Source">
+            <div className="flex-shrink-0 w-[172px] sm:w-[150px]">
+              <select value={sourceFilter} onChange={e => setSourceFilter(e.target.value)}
+                className="dropdown-premium w-full">
+                <option value="all">All Sources</option>
+                <option value="meta_ads">Meta Ads</option>
+                <option value="manual">Manual</option>
+                <option value="website">Website</option>
+                <option value="linkedin">LinkedIn</option>
+                <option value="referral">Referral</option>
+              </select>
+            </div>
+          </FilterField>
 
           {/* District filter — the options are the districts actually on the
               leads, since the field is free text off a CSV column or a Meta
               form rather than a fixed list */}
-          <div className="flex-shrink-0 w-[172px] sm:w-[160px]">
-            <select value={districtFilter} onChange={e => { setDistrictFilter(e.target.value); setPage(1); }}
-              className="dropdown-premium w-full">
-              <option value="all">All Districts</option>
-              <option value="none">No District</option>
-              {districtsList.map(d => <option key={d} value={d}>{d}</option>)}
-            </select>
-          </div>
+          <FilterField label="District">
+            <div className="flex-shrink-0 w-[172px] sm:w-[160px]">
+              <select value={districtFilter} onChange={e => { setDistrictFilter(e.target.value); setPage(1); }}
+                className="dropdown-premium w-full">
+                <option value="all">All Districts</option>
+                <option value="none">No District</option>
+                {districtsList.map(d => <option key={d} value={d}>{d}</option>)}
+              </select>
+            </div>
+          </FilterField>
 
           {/* Campaign filter */}
-          <div className="flex-shrink-0 w-[172px] sm:w-[150px]">
-            <select value={campaignFilter} onChange={e => setCampaignFilter(e.target.value)}
-              className="dropdown-premium w-full">
-              <option value="all">All Campaigns</option>
-              <option value="none">No Campaign</option>
-              {campaignsList.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </div>
+          <FilterField label="Campaign">
+            <div className="flex-shrink-0 w-[172px] sm:w-[150px]">
+              <select value={campaignFilter} onChange={e => setCampaignFilter(e.target.value)}
+                className="dropdown-premium w-full">
+                <option value="all">All Campaigns</option>
+                <option value="none">No Campaign</option>
+                {campaignsList.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+          </FilterField>
 
           {/* Meta integration (branch) filter — only useful once one exists */}
           {integrationsList.length > 0 && (
-            <div className="flex-shrink-0 w-[172px] sm:w-[170px]">
-              <select value={metaIntegrationFilter} onChange={e => { setMetaIntegrationFilter(e.target.value); setPage(1); }}
-                className="dropdown-premium w-full">
-                <option value="all">All Meta Accounts</option>
-                <option value="none">Not from Meta</option>
-                {integrationsList.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
-              </select>
-            </div>
+            <FilterField label="Meta account">
+              <div className="flex-shrink-0 w-[172px] sm:w-[170px]">
+                <select value={metaIntegrationFilter} onChange={e => { setMetaIntegrationFilter(e.target.value); setPage(1); }}
+                  className="dropdown-premium w-full">
+                  <option value="all">All Meta Accounts</option>
+                  <option value="none">Not from Meta</option>
+                  {integrationsList.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
+                </select>
+              </div>
+            </FilterField>
           )}
 
           {/* Product filter */}
-          <div className="flex-shrink-0 w-[172px] sm:w-[150px]">
-            <select value={productFilter} onChange={e => setProductFilter(e.target.value)}
-              className="dropdown-premium w-full">
-              <option value="all">All Products</option>
-              {productsList.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-          </div>
+          <FilterField label="Product">
+            <div className="flex-shrink-0 w-[172px] sm:w-[150px]">
+              <select value={productFilter} onChange={e => setProductFilter(e.target.value)}
+                className="dropdown-premium w-full">
+                <option value="all">All Products</option>
+                {productsList.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+          </FilterField>
 
           {/* Stage filter */}
-          <div className="flex-shrink-0 w-[172px] sm:w-[160px]">
-            <select value={stageFilter} onChange={e => setStageFilter(e.target.value)}
-              className="dropdown-premium w-full">
-              <option value="all">All Stages</option>
-              {STAGE_OPTIONS.map(s => <option key={s} value={s}>{STAGE_META[s].label}</option>)}
-            </select>
-          </div>
+          <FilterField label="Stage">
+            <div className="flex-shrink-0 w-[172px] sm:w-[160px]">
+              <select value={stageFilter} onChange={e => setStageFilter(e.target.value)}
+                className="dropdown-premium w-full">
+                <option value="all">All Stages</option>
+                {STAGE_OPTIONS.map(s => <option key={s} value={s}>{STAGE_META[s].label}</option>)}
+              </select>
+            </div>
+          </FilterField>
 
           {/* Assignee filter */}
           {canAssign && (
-            <div className="flex-shrink-0 w-[172px] sm:w-[160px]">
-              <select value={assigneeFilter} onChange={e => setAssigneeFilter(e.target.value)}
-                className="dropdown-premium w-full">
-                <option value="all">All Assignees</option>
-                <option value="unassigned">Unassigned</option>
-                {teamMembers.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-              </select>
-            </div>
+            <FilterField label="Assignee">
+              <div className="flex-shrink-0 w-[172px] sm:w-[160px]">
+                <select value={assigneeFilter} onChange={e => setAssigneeFilter(e.target.value)}
+                  className="dropdown-premium w-full">
+                  <option value="all">All Assignees</option>
+                  <option value="unassigned">Unassigned</option>
+                  {teamMembers.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                </select>
+              </div>
+            </FilterField>
           )}
 
           {/* Advanced Filter Toggle */}
           <button onClick={() => setShowAdvanced(!showAdvanced)}
-            className={`flex-shrink-0 flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold rounded-xl transition-all duration-200 border ${showAdvanced ? "bg-indigo-50 border-indigo-200 text-indigo-700 shadow-sm shadow-indigo-100" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300 shadow-sm shadow-slate-50"}`}>
+            className={`flex-shrink-0 flex items-center justify-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold rounded-xl transition-all duration-200 border ${showAdvanced ? "bg-indigo-50 border-indigo-200 text-indigo-700 shadow-sm shadow-indigo-100" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300 shadow-sm shadow-slate-50"}`}>
             <I.Filter /> {showAdvanced ? "Hide Advanced" : "Advanced Filters"}
           </button>
 
-          {/* Clear filters — only shown when active */}
+          {/* Clear filters — only shown when active. The phone sheet has its own
+              "Clear all" in the footer, so this is the desktop's copy of it. */}
           {activeFilters > 0 && (
             <button onClick={clearFilters}
-              className="flex-shrink-0 flex items-center gap-1.5 px-3 py-2.5 text-xs font-semibold text-rose-600 bg-rose-50 border border-rose-200 rounded-xl hover:bg-rose-100 transition-all">
+              className="hidden lg:flex flex-shrink-0 items-center gap-1.5 px-3 py-2.5 text-xs font-semibold text-rose-600 bg-rose-50 border border-rose-200 rounded-xl hover:bg-rose-100 transition-all">
               <I.X /> Clear ({activeFilters})
             </button>
           )}
-        </div>
 
         {/* ── Advanced Filters Panel ────────────────────────────────────────────── */}
         {showAdvanced && (
-          <div className="mt-3 bg-white border border-slate-200/80 rounded-2xl p-5 shadow-sm shadow-slate-50 relative animate-fade-in-down">
+          <div className="w-full mt-3 bg-white border border-slate-200/80 rounded-2xl p-4 sm:p-5 shadow-sm shadow-slate-50 relative animate-fade-in-down">
             <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider mb-4 flex items-center gap-2">
               <I.Filter /> Advanced Search Rules
             </h3>
@@ -1455,6 +1484,7 @@ This cannot be undone.`)) return;
             </div>
           </div>
         )}
+        </FilterBar>
       </div>
 
       {/* ── Bulk action bar ───────────────────────────────────────────────────── */}

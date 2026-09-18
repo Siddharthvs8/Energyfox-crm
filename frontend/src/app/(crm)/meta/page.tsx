@@ -351,7 +351,7 @@ export default function MetaPage() {
             </div>
           </div>
           <div className="flex gap-3">
-            <div className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 font-mono text-xs text-slate-600 overflow-x-auto whitespace-nowrap flex items-center">{webhookUrl}</div>
+            <div className="flex-1 min-w-0 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 font-mono text-xs text-slate-600 overflow-x-auto whitespace-nowrap flex items-center">{webhookUrl}</div>
             <button onClick={copyWebhook} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all flex-shrink-0 ${copied ? "bg-emerald-600 text-white" : "bg-indigo-600 text-white hover:bg-indigo-700"}`}>
               {copied ? <I.Check /> : <I.Copy />}{copied ? "Copied!" : "Copy"}
             </button>

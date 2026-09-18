@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
+import FilterBar, { FilterField } from "@/components/FilterBar";
 
 type Change = { from: string | null; to: string | null };
 type Entry = {
@@ -137,6 +138,7 @@ export default function ActivityLogPage() {
   }
 
   const filtered = category !== "all" || act !== "all" || actor || query;
+  const activeFilterCount = [category !== "all", act !== "all", !!actor].filter(Boolean).length;
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-[1400px] mx-auto">
@@ -147,23 +149,42 @@ export default function ActivityLogPage() {
         </p>
       </div>
 
-      {/* ── Filters ── */}
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_180px_150px_180px] mb-5">
-        <input value={search} onChange={e => setSearch(e.target.value)}
-          placeholder="Search what changed, which record, or who changed it…"
-          className={inputCls} />
-        <select value={category} onChange={e => setCategory(e.target.value)} className={inputCls}>
-          <option value="all">All categories</option>
-          {opts.categories.map(c => <option key={c} value={c}>{c}</option>)}
-        </select>
-        <select value={act} onChange={e => setAct(e.target.value)} className={inputCls}>
-          <option value="all">All actions</option>
-          {opts.actions.map((a: any) => <option key={a.value} value={a.value}>{a.label}</option>)}
-        </select>
-        <select value={actor} onChange={e => setActor(e.target.value)} className={inputCls}>
-          <option value="">Everyone</option>
-          {opts.actors.map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}
-        </select>
+      <div className="mb-5">
+        <FilterBar
+          activeCount={activeFilterCount}
+          onClear={() => { setCategory("all"); setAct("all"); setActor(""); }}
+          resultCount={count}
+          search={
+            <input value={search} onChange={e => setSearch(e.target.value)}
+              placeholder="Search what changed, which record, or who changed it…"
+              className={inputCls} />
+          }
+        >
+          <FilterField label="Category">
+            <div className="lg:w-[180px]">
+              <select value={category} onChange={e => setCategory(e.target.value)} className={inputCls}>
+                <option value="all">All categories</option>
+                {opts.categories.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+          </FilterField>
+          <FilterField label="Action">
+            <div className="lg:w-[170px]">
+              <select value={act} onChange={e => setAct(e.target.value)} className={inputCls}>
+                <option value="all">All actions</option>
+                {opts.actions.map((a: any) => <option key={a.value} value={a.value}>{a.label}</option>)}
+              </select>
+            </div>
+          </FilterField>
+          <FilterField label="Who">
+            <div className="lg:w-[180px]">
+              <select value={actor} onChange={e => setActor(e.target.value)} className={inputCls}>
+                <option value="">Everyone</option>
+                {opts.actors.map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
+            </div>
+          </FilterField>
+        </FilterBar>
       </div>
 
       <div className="flex flex-wrap items-center gap-3 mb-4">

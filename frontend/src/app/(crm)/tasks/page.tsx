@@ -5,6 +5,7 @@ import { getApiBase } from "@/lib/mock-data";
 import React, { useState, useEffect, useRef } from "react";
 import { DragDropContext, Droppable, Draggable } from "@hello-pangea/dnd";
 import { Skeleton, SkeletonRegion, Spinner } from "@/components/Skeleton";
+import FilterBar, { FilterField } from "@/components/FilterBar";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Task {
@@ -178,6 +179,14 @@ function PriorityBadge({ priority }: { priority: Task["priority"] }) {
   );
 }
 
+/* The status filter's three choices. Written once because they are now drawn
+   twice: a hover menu on a desktop, a row of chips in the phone sheet. */
+const TIMELINE_OPTIONS = [
+  { id: "pending",   label: "Pending"   },
+  { id: "overdue",   label: "Overdue"   },
+  { id: "completed", label: "Completed" },
+];
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function TasksPage({ params: paramsPromise }: { params: Promise<{ domain: string }> }) {
   const params = React.use(paramsPromise);
@@ -332,6 +341,25 @@ export default function TasksPage({ params: paramsPromise }: { params: Promise<{
       if (res.ok) { setShowModal(false); fetchTasks(); }
     } catch (e) { console.error(e); }
     finally { setSaving(false); }
+  };
+
+  const toggleTimeline = (id: string) =>
+    setFilterTimeline(prev => prev.includes(id) ? prev.filter(v => v !== id) : [...prev, id]);
+
+  // What the "Filters" button counts and what "Clear all" undoes. A date range
+  // counts as one filter however many of its two ends are set.
+  const activeFilterCount =
+    (filterPriority !== "all" ? 1 : 0) +
+    (filterAssignee !== "all" ? 1 : 0) +
+    (filterTimeline.length > 0 ? 1 : 0) +
+    (filterDateFrom || filterDateTo ? 1 : 0);
+
+  const clearFilters = () => {
+    setFilterPriority("all");
+    setFilterAssignee("all");
+    setFilterTimeline([]);
+    setFilterDateFrom("");
+    setFilterDateTo("");
   };
 
   const filtered = tasks.filter(t => {
@@ -780,34 +808,37 @@ export default function TasksPage({ params: paramsPromise }: { params: Promise<{
 
       {/* ── Toolbar ─────────────────────────────────────────────────────── */}
       <div className="max-w-[1400px] mx-auto px-4 sm:px-6 xl:px-8 pt-5 pb-4">
-        <div className="flex flex-col lg:flex-row lg:flex-wrap gap-3">
-          {/* Search */}
-          <div className="relative flex-1">
-            <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
-              <Icon.Search />
+        <FilterBar
+          activeCount={activeFilterCount}
+          onClear={clearFilters}
+          resultCount={filtered.length}
+          search={
+            <div className="relative">
+              <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+                <Icon.Search />
+              </div>
+              <input
+                ref={searchRef}
+                type="text"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search tasks by name, description or lead..."
+                className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-4 py-2.5 text-sm text-slate-700 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all"
+              />
+              {search && (
+                <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+                  <Icon.X />
+                </button>
+              )}
             </div>
-            <input
-              ref={searchRef}
-              type="text"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              placeholder="Search tasks by name, description or lead..."
-              className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-4 py-2.5 text-sm text-slate-700 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all"
-            />
-            {search && (
-              <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
-                <Icon.X />
-              </button>
-            )}
-          </div>
-
-          {/* Filters — a row that scrolls on a phone; wrapped on a desktop. */}
-          <div className="flex gap-2 flex-shrink-0 overflow-x-auto no-scrollbar pb-1 lg:flex-wrap lg:overflow-visible lg:pb-0 [&>*]:flex-shrink-0">
+          }
+        >
+          <FilterField label="Priority">
             <div className="relative">
               <select
                 value={filterPriority}
                 onChange={e => setFilterPriority(e.target.value)}
-                className="appearance-none bg-white border border-slate-200 rounded-xl pl-3.5 pr-8 py-2.5 text-sm font-medium text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 cursor-pointer transition-all"
+                className="appearance-none w-full bg-white border border-slate-200 rounded-xl pl-3.5 pr-8 py-2.5 text-sm font-medium text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 cursor-pointer transition-all"
               >
                 <option value="all">All Priorities</option>
                 <option value="high">High Priority</option>
@@ -816,11 +847,14 @@ export default function TasksPage({ params: paramsPromise }: { params: Promise<{
               </select>
               <div className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"><Icon.ChevronDown /></div>
             </div>
+          </FilterField>
+
+          <FilterField label="Owner">
             <div className="relative">
               <select
                 value={filterAssignee}
                 onChange={e => setFilterAssignee(e.target.value)}
-                className="appearance-none bg-white border border-slate-200 rounded-xl pl-3.5 pr-8 py-2.5 text-sm font-medium text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 cursor-pointer transition-all"
+                className="appearance-none w-full bg-white border border-slate-200 rounded-xl pl-3.5 pr-8 py-2.5 text-sm font-medium text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 cursor-pointer transition-all"
               >
                 <option value="all">All Owners</option>
                 <option value="me">Assigned to Me</option>
@@ -828,26 +862,25 @@ export default function TasksPage({ params: paramsPromise }: { params: Promise<{
               </select>
               <div className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"><Icon.ChevronDown /></div>
             </div>
-            {/* Multi-select Status/Timeline */}
-            <div className="relative group" tabIndex={0}>
+          </FilterField>
+
+          {/* Status is a multi-select. On a desktop it hangs off a hover menu;
+              stacked in the sheet there is room to show the three choices as
+              chips, which a thumb can hit without a second menu. */}
+          <FilterField label="Status">
+            <div className="hidden lg:block relative group" tabIndex={0}>
               <button className="flex items-center gap-1.5 appearance-none bg-white border border-slate-200 rounded-xl pl-3.5 pr-2.5 py-2.5 text-sm font-medium text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all whitespace-nowrap">
                 {filterTimeline.length === 0 ? "All Status" : `Status (${filterTimeline.length})`}
                 <Icon.ChevronDown />
               </button>
               <div className="absolute top-full mt-1.5 left-0 w-44 bg-white border border-slate-200 rounded-xl shadow-lg shadow-slate-200/50 p-2 z-30 opacity-0 invisible group-hover:opacity-100 group-hover:visible group-focus-within:opacity-100 group-focus-within:visible transition-all flex flex-col gap-1">
-                {[
-                  { id: "pending", label: "Pending" },
-                  { id: "overdue", label: "Overdue" },
-                  { id: "completed", label: "Completed" }
-                ].map(opt => (
+                {TIMELINE_OPTIONS.map(opt => (
                   <label key={opt.id} className="flex items-center gap-2.5 px-2 py-1.5 hover:bg-slate-50 rounded-lg cursor-pointer text-sm text-slate-700 font-medium">
-                    <input 
-                      type="checkbox" 
-                      className="hidden" 
+                    <input
+                      type="checkbox"
+                      className="hidden"
                       checked={filterTimeline.includes(opt.id)}
-                      onChange={() => {
-                        setFilterTimeline(prev => prev.includes(opt.id) ? prev.filter(v => v !== opt.id) : [...prev, opt.id]);
-                      }}
+                      onChange={() => toggleTimeline(opt.id)}
                     />
                     <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${filterTimeline.includes(opt.id) ? "bg-indigo-600 border-indigo-600 text-white" : "border-slate-300 bg-white"}`}>
                       {filterTimeline.includes(opt.id) && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>}
@@ -857,33 +890,51 @@ export default function TasksPage({ params: paramsPromise }: { params: Promise<{
                 ))}
               </div>
             </div>
-            {/* Date Range Filter */}
+            <div className="flex lg:hidden gap-2">
+              {TIMELINE_OPTIONS.map(opt => {
+                const on = filterTimeline.includes(opt.id);
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => toggleTimeline(opt.id)}
+                    aria-pressed={on}
+                    className={`flex-1 py-2.5 rounded-xl border text-sm font-semibold transition-colors ${on ? "bg-indigo-600 border-indigo-600 text-white" : "bg-white border-slate-200 text-slate-600"}`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          </FilterField>
+
+          <FilterField label="Due date">
             <div className="flex items-center bg-white border border-slate-200 rounded-xl px-2 py-1.5 focus-within:ring-2 focus-within:ring-indigo-500/20 focus-within:border-indigo-400 transition-all gap-2">
-              <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest pl-1">Due</span>
-              <input 
-                type="date" 
-                value={filterDateFrom} 
-                onChange={e => setFilterDateFrom(e.target.value)} 
-                className="appearance-none bg-transparent text-xs font-medium text-slate-700 outline-none w-[124px] cursor-pointer" 
+              <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest pl-1 hidden lg:inline">Due</span>
+              <input
+                type="date"
+                value={filterDateFrom}
+                onChange={e => setFilterDateFrom(e.target.value)}
+                className="appearance-none bg-transparent text-xs font-medium text-slate-700 outline-none w-full lg:w-[124px] min-w-0 cursor-pointer"
               />
               <span className="text-slate-300">-</span>
-              <input 
-                type="date" 
-                value={filterDateTo} 
-                onChange={e => setFilterDateTo(e.target.value)} 
-                className="appearance-none bg-transparent text-xs font-medium text-slate-700 outline-none w-[124px] cursor-pointer" 
+              <input
+                type="date"
+                value={filterDateTo}
+                onChange={e => setFilterDateTo(e.target.value)}
+                className="appearance-none bg-transparent text-xs font-medium text-slate-700 outline-none w-full lg:w-[124px] min-w-0 cursor-pointer"
               />
               {(filterDateFrom || filterDateTo) && (
-                <button 
-                  onClick={() => { setFilterDateFrom(""); setFilterDateTo(""); }} 
-                  className="flex items-center justify-center w-5 h-5 rounded hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors"
+                <button
+                  onClick={() => { setFilterDateFrom(""); setFilterDateTo(""); }}
+                  className="flex items-center justify-center w-5 h-5 flex-shrink-0 rounded hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors"
                 >
                   <Icon.X />
                 </button>
               )}
             </div>
-          </div>
-        </div>
+          </FilterField>
+        </FilterBar>
       </div>
 
       {/* ── View Content ─────────────────────────────────────────────────── */}

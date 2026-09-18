@@ -5,6 +5,7 @@ import { getApiBase } from "@/lib/mock-data";
 import React, { useState, useEffect } from "react";
 import { use } from "react";
 import Link from "next/link";
+import FilterBar, { FilterField } from "@/components/FilterBar";
 import { Skeleton, SkeletonRegion } from "@/components/Skeleton";
 
 const I = {
@@ -161,6 +162,11 @@ export default function CallsPage({ params: paramsPromise }: { params: Promise<{
 
   const hasActiveFilters = selectedOutcome || selectedUserId || selectedDirection || dateFrom || dateTo;
 
+  // What the phone's "Filters" button counts. Search is not one of them: it has
+  // its own box on the page and never moves into the sheet.
+  const activeFilterCount = [selectedOutcome, selectedUserId, selectedDirection, dateFrom, dateTo]
+    .filter(Boolean).length;
+
   const clearAllFilters = () => {
     setSelectedUserId("");
     setSelectedOutcome("");
@@ -195,110 +201,121 @@ export default function CallsPage({ params: paramsPromise }: { params: Promise<{
 
       {/* Filter Bar */}
       <div className="bg-white rounded-3xl sm:rounded-[2rem] border border-slate-100 shadow-sm p-3.5 sm:p-5">
-        {/* Six controls wrap to five rows on a phone, so below `lg` they are one
-            row that scrolls — the filters stay one thumb-swipe apart. */}
-        <div className="flex items-center gap-3 overflow-x-auto no-scrollbar pb-1 lg:flex-wrap lg:overflow-visible lg:pb-0 [&>*]:flex-shrink-0">
+        <FilterBar
+          activeCount={activeFilterCount}
+          onClear={clearAllFilters}
+          resultCount={filteredCalls.length}
+          search={
+            <div className="relative group">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-indigo-500 transition-colors">
+                <I.Search />
+              </span>
+              <input
+                type="text"
+                placeholder="Search leads..."
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                className="pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-2xl text-sm w-full outline-none focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all shadow-sm"
+              />
+            </div>
+          }
+        >
           {/* User Filter — only visible to Admin, GM, Manager */}
           {canFilterByUser && (
-            <select 
-              value={selectedUserId}
-              onChange={e => setSelectedUserId(e.target.value)}
-              className="px-4 py-2.5 bg-white border border-slate-200 rounded-2xl text-sm outline-none focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all shadow-sm"
-            >
-              <option value="">All Users</option>
-              {users.map(u => (
-                <option key={u.id} value={u.id}>
-                  {`${u.first_name} ${u.last_name}`.trim() || u.username}
-                </option>
-              ))}
-            </select>
+            <FilterField label="User">
+              <select
+                value={selectedUserId}
+                onChange={e => setSelectedUserId(e.target.value)}
+                className="px-4 py-2.5 bg-white border border-slate-200 rounded-2xl text-sm outline-none focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all shadow-sm"
+              >
+                <option value="">All Users</option>
+                {users.map(u => (
+                  <option key={u.id} value={u.id}>
+                    {`${u.first_name} ${u.last_name}`.trim() || u.username}
+                  </option>
+                ))}
+              </select>
+            </FilterField>
           )}
 
           {/* Outcome Filter */}
-          <div className="relative">
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
-              <I.Filter />
-            </span>
-            <select 
-              value={selectedOutcome}
-              onChange={e => setSelectedOutcome(e.target.value)}
-              className="pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-2xl text-sm outline-none focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all shadow-sm appearance-none cursor-pointer min-w-[140px]"
-            >
-              {OUTCOME_OPTIONS.map(o => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
-          </div>
+          <FilterField label="Outcome">
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+                <I.Filter />
+              </span>
+              <select
+                value={selectedOutcome}
+                onChange={e => setSelectedOutcome(e.target.value)}
+                className="pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-2xl text-sm outline-none focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all shadow-sm appearance-none cursor-pointer min-w-[140px]"
+              >
+                {OUTCOME_OPTIONS.map(o => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+          </FilterField>
 
           {/* Direction Filter */}
-          <div className="relative">
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
-              <I.Filter />
-            </span>
-            <select 
-              value={selectedDirection}
-              onChange={e => setSelectedDirection(e.target.value)}
-              className="pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-2xl text-sm outline-none focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all shadow-sm appearance-none cursor-pointer min-w-[140px]"
-            >
-              {DIRECTION_OPTIONS.map(d => (
-                <option key={d.value} value={d.value}>{d.label}</option>
-              ))}
-            </select>
-          </div>
-
+          <FilterField label="Direction">
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+                <I.Filter />
+              </span>
+              <select
+                value={selectedDirection}
+                onChange={e => setSelectedDirection(e.target.value)}
+                className="pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-2xl text-sm outline-none focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all shadow-sm appearance-none cursor-pointer min-w-[140px]"
+              >
+                {DIRECTION_OPTIONS.map(d => (
+                  <option key={d.value} value={d.value}>{d.label}</option>
+                ))}
+              </select>
+            </div>
+          </FilterField>
 
           {/* Date From */}
-          <div className="relative">
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
-              <I.Calendar />
-            </span>
-            <input
-              type="date"
-              value={dateFrom}
-              onChange={e => setDateFrom(e.target.value)}
-              className="pl-9 pr-3 py-2.5 bg-white border border-slate-200 rounded-2xl text-sm outline-none focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all shadow-sm cursor-pointer min-w-[140px]"
-              title="From date"
-            />
-          </div>
+          <FilterField label="From">
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+                <I.Calendar />
+              </span>
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={e => setDateFrom(e.target.value)}
+                className="pl-9 pr-3 py-2.5 bg-white border border-slate-200 rounded-2xl text-sm outline-none focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all shadow-sm cursor-pointer min-w-[140px]"
+                title="From date"
+              />
+            </div>
+          </FilterField>
 
           {/* Date To */}
-          <div className="relative">
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
-              <I.Calendar />
-            </span>
-            <input
-              type="date"
-              value={dateTo}
-              onChange={e => setDateTo(e.target.value)}
-              className="pl-9 pr-3 py-2.5 bg-white border border-slate-200 rounded-2xl text-sm outline-none focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all shadow-sm cursor-pointer min-w-[140px]"
-              title="To date"
-            />
-          </div>
+          <FilterField label="To">
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+                <I.Calendar />
+              </span>
+              <input
+                type="date"
+                value={dateTo}
+                onChange={e => setDateTo(e.target.value)}
+                className="pl-9 pr-3 py-2.5 bg-white border border-slate-200 rounded-2xl text-sm outline-none focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all shadow-sm cursor-pointer min-w-[140px]"
+                title="To date"
+              />
+            </div>
+          </FilterField>
 
-          {/* Search */}
-          <div className="relative group flex-1 !flex-shrink w-[200px] min-w-[180px]">
-             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-indigo-500 transition-colors">
-               <I.Search />
-             </span>
-             <input 
-               type="text" 
-               placeholder="Search leads..." 
-               value={search}
-               onChange={e => setSearch(e.target.value)}
-               className="pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-2xl text-sm w-full outline-none focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all shadow-sm"
-             />
-          </div>
-
-          {/* Clear All */}
+          {/* Clear All — the phone sheet carries its own in the footer. */}
           {hasActiveFilters && (
             <button
               onClick={clearAllFilters}
-              className="px-4 py-2.5 text-xs font-bold text-rose-500 hover:text-white hover:bg-rose-500 border border-rose-200 rounded-2xl transition-all"
+              className="hidden lg:block px-4 py-2.5 text-xs font-bold text-rose-500 hover:text-white hover:bg-rose-500 border border-rose-200 rounded-2xl transition-all"
             >
               Clear All
             </button>
           )}
-        </div>
+        </FilterBar>
 
         {/* Active Filters Indicator */}
         {hasActiveFilters && (
