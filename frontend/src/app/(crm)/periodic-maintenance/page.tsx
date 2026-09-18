@@ -289,6 +289,9 @@ export default function PeriodicMaintenancePage() {
           className="w-full max-w-md bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all"
         />
         {/* The search runs across all three, so the counts show where matches went. */}
+        {/* Three long tab labels do not fit a narrow phone, so the group
+            scrolls sideways on its own rather than widening the page. */}
+        <div className="max-w-full overflow-x-auto no-scrollbar">
         <div className="inline-flex rounded-xl bg-slate-100 p-1">
           {([["upcoming", "Upcoming Maintenance", fUpcoming.length],
              ["scheduled", "Scheduled Customers", fScheduled.length],
@@ -312,6 +315,7 @@ export default function PeriodicMaintenancePage() {
               </button>
             );
           })}
+        </div>
         </div>
       </div>
 

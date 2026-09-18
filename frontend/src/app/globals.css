@@ -1564,6 +1564,17 @@ html.dark ::-webkit-scrollbar-track { background: var(--night-page); }
 @layer base {
   @media (max-width: 1023px) {
     .grid > * { min-width: 0; }
+    /* A flex item has the same automatic minimum as a grid one: it will not
+       shrink below its content, so a row holding a long email or a long name
+       grows past the card it sits in and takes the page with it. This is also
+       what makes a `truncate` inside such a row start working.
+       Only the items that were told to take up the leftover space are freed:
+       those are the text columns, and they are the ones that have to give. A
+       badge or a phone number beside them keeps its automatic minimum, because
+       shrinking those turns a word into a vertical stack of letters. */
+    .flex > .flex-1,
+    .flex > .flex-auto,
+    .flex > .grow { min-width: 0; }
   }
   /* A browser gives <audio controls> a ~300px minimum of its own, which is most
      of a phone's width before any padding. */
@@ -1852,4 +1863,43 @@ html.dark .filterbar-clear {
   background: var(--night-card);
   border-color: var(--night-border);
   color: #c3cbdb;
+}
+
+/* ── Phone type scale ──────────────────────────────────────────────────────
+ *
+ * The app's type was sized on a desktop: a `text-3xl` figure that is
+ * comfortable in a quarter-width KPI card at 1440px is 30px inside a ~120px
+ * card on a 390px phone, and the number ran out of the card. The other half of
+ * the problem is at the small end — micro-labels at 9–10px are legible on a
+ * monitor at arm's length and squinting material on a phone.
+ *
+ * So both ends are pulled towards the middle for phones only: the display
+ * sizes are capped, the smallest labels are lifted to ~11px, and everything
+ * between is left exactly as it is.
+ *
+ * These rules are deliberately unlayered, which puts them above Tailwind's
+ * `@layer utilities` no matter the specificity — capping a utility is the whole
+ * point. They stop at 639.98px so a `sm:` override (which starts at 640px) is
+ * never fighting them, and a class written with a phone size of its own, e.g.
+ * `text-[22px] sm:text-3xl`, is untouched because `.text-3xl` never applies
+ * below `sm` in the first place. */
+@media (max-width: 639.98px) {
+  .text-2xl { font-size: 21px; line-height: 1.2; }
+  .text-3xl { font-size: 24px; line-height: 1.18; }
+  .text-4xl { font-size: 28px; line-height: 1.15; }
+  .text-5xl { font-size: 32px; line-height: 1.12; }
+  .text-6xl { font-size: 36px; line-height: 1.1; }
+  .text-7xl { font-size: 40px; line-height: 1.1; }
+
+  /* The floor. Tailwind emits a class per arbitrary value, so these are the
+     exact sizes the app asks for below 11px. */
+  .text-\[9px\],
+  .text-\[9\.5px\]  { font-size: 10.5px; }
+  .text-\[10px\],
+  .text-\[10\.5px\] { font-size: 11px; }
+
+  /* A figure or a heading that still outgrows its card wraps onto a second
+     line rather than running off the edge. `break-word` only breaks a word
+     that cannot fit on a line of its own, so ordinary prose is unaffected. */
+  h1, h2, h3, p, span, div, td, th, li, a, button, label { overflow-wrap: break-word; }
 }

@@ -144,8 +144,8 @@ export default function AutomationDetailPage({
               <h1 className="text-xl font-black text-slate-800 tracking-tight flex items-center gap-2.5">
                 <span>⚡</span> {rule.name}
               </h1>
-              <div className="flex items-center gap-3 mt-0.5">
-                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${rule.is_active ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-0.5">
+                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider whitespace-nowrap flex-shrink-0 ${rule.is_active ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>
                   {rule.is_active ? "● Active" : "○ Paused"}
                 </span>
                 <span className="text-xs text-slate-400">Created {new Date(rule.created_at).toLocaleDateString('en-IN', { month: 'short', day: 'numeric', year: 'numeric' })}</span>

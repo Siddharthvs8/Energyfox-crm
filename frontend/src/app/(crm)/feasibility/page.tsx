@@ -96,7 +96,7 @@ export default function FeasibilityPage() {
       <div className="mb-5 flex items-center gap-3">
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by name, phone or location…"
           className="w-full max-w-md bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all" />
-        <span className="text-xs font-semibold text-slate-400">{filtered.length} lead{filtered.length === 1 ? "" : "s"}</span>
+        <span className="text-xs font-semibold text-slate-400 whitespace-nowrap flex-shrink-0">{filtered.length} lead{filtered.length === 1 ? "" : "s"}</span>
       </div>
 
       {loading ? (

@@ -159,19 +159,21 @@ export default function ProjectPage() {
             <Link key={l.id} href={`/project/${l.id}`} className="block bg-white border border-slate-200 rounded-2xl shadow-sm px-5 py-4 hover:bg-slate-50/60 hover:border-indigo-200 transition-colors">
               <div className="flex items-center justify-between gap-4">
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2">
+                  {/* Four things on one line is a desktop row; on a phone it
+                      wraps rather than crushing the badges into letter towers. */}
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                     <p className="text-sm font-bold text-slate-900 truncate">{l.first_name} {l.last_name}</p>
                     <BdeTag name={l.bde_name} />
                     {l.lead_deleted && <DeletedLeadBadge />}
                     {/* Nothing overdue reaches this list — it has moved to the
                         Overdue Projects module by then. */}
-                    <span className={`text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${
+                    <span className={`text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full whitespace-nowrap flex-shrink-0 ${
                       l.project_complete ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
                       {l.project_complete ? "Done" : "In Progress"}
                     </span>
                     {/* The deadline only matters while the work is still running. */}
                     {!l.project_complete && (
-                      <span className={`text-[10px] font-semibold ${(l.days_to_deadline ?? 99) <= 3 ? "text-amber-600" : "text-slate-400"}`}>
+                      <span className={`text-[10px] font-semibold whitespace-nowrap flex-shrink-0 ${(l.days_to_deadline ?? 99) <= 3 ? "text-amber-600" : "text-slate-400"}`}>
                         {deadlineNote(l)}
                       </span>
                     )}
