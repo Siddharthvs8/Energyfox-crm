@@ -234,7 +234,7 @@ export default function PeriodicMaintenancePage() {
 
       {showAdd && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
-          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden">
+          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain">
             <div className="px-6 py-4 border-b border-slate-100">
               <h2 className="text-[15px] font-bold text-slate-900">Add customer</h2>
               <p className="text-xs text-slate-400 mt-0.5">
@@ -347,51 +347,53 @@ export default function PeriodicMaintenancePage() {
             </div>
           ) : (
             <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-[10px] font-bold text-slate-400 uppercase tracking-wide border-b border-slate-100 bg-slate-50/60">
-                    <th className="px-5 py-3">Customer</th>
-                    <th className="px-5 py-3">Visit</th>
-                    <th className="px-5 py-3">Due</th>
-                    <th className="px-5 py-3">When</th>
-                    <th className="px-5 py-3 text-right"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {shownUpcoming.map(r => (
-                    <tr key={r.visit_id}
-                      className={`border-b border-slate-50 hover:bg-slate-50/60 ${r.is_overdue ? "bg-rose-50/40" : r.is_due ? "bg-amber-50/40" : ""}`}>
-                      <td className="px-5 py-3">
-                        <span className="flex items-center gap-2 flex-wrap">
-                          <p className="font-semibold text-slate-800">{r.first_name} {r.last_name}</p>
-                          <BdeTag name={r.bde_name} />
-                        </span>
-                        <p className="text-[11px] text-slate-400">{r.phone || "—"}{r.location ? ` · ${r.location}` : ""}</p>
-                      </td>
-                      <td className="px-5 py-3 text-slate-600 whitespace-nowrap">#{r.sequence}</td>
-                      <td className="px-5 py-3 whitespace-nowrap">
-                        <span className="text-slate-700 font-medium">{new Date(r.due_date).toLocaleDateString("en-IN")}</span>
-                        {/* A moved visit shows where it came from, rather than the
-                            schedule quietly rewriting itself. */}
-                        {r.is_rescheduled && r.original_due_date && (
-                          <span className="block text-[11px] text-slate-400"
-                            title={r.reschedule_reason || undefined}>
-                            moved from {new Date(r.original_due_date).toLocaleDateString("en-IN")}
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-5 py-3 whitespace-nowrap">
-                        <span className={`text-xs font-bold ${r.is_overdue ? "text-rose-600" : r.is_due ? "text-amber-600" : "text-slate-500"}`}>
-                          {dueNote(r)}
-                        </span>
-                      </td>
-                      <td className="px-5 py-3 text-right">
-                        <Link href={`/periodic-maintenance/${r.lead_id}`} className="text-[12px] font-semibold text-indigo-600 hover:text-indigo-800">Open →</Link>
-                      </td>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-[10px] font-bold text-slate-400 uppercase tracking-wide border-b border-slate-100 bg-slate-50/60">
+                      <th className="px-5 py-3">Customer</th>
+                      <th className="px-5 py-3">Visit</th>
+                      <th className="px-5 py-3">Due</th>
+                      <th className="px-5 py-3">When</th>
+                      <th className="px-5 py-3 text-right"></th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {shownUpcoming.map(r => (
+                      <tr key={r.visit_id}
+                        className={`border-b border-slate-50 hover:bg-slate-50/60 ${r.is_overdue ? "bg-rose-50/40" : r.is_due ? "bg-amber-50/40" : ""}`}>
+                        <td className="px-5 py-3">
+                          <span className="flex items-center gap-2 flex-wrap">
+                            <p className="font-semibold text-slate-800">{r.first_name} {r.last_name}</p>
+                            <BdeTag name={r.bde_name} />
+                          </span>
+                          <p className="text-[11px] text-slate-400">{r.phone || "—"}{r.location ? ` · ${r.location}` : ""}</p>
+                        </td>
+                        <td className="px-5 py-3 text-slate-600 whitespace-nowrap">#{r.sequence}</td>
+                        <td className="px-5 py-3 whitespace-nowrap">
+                          <span className="text-slate-700 font-medium">{new Date(r.due_date).toLocaleDateString("en-IN")}</span>
+                          {/* A moved visit shows where it came from, rather than the
+                              schedule quietly rewriting itself. */}
+                          {r.is_rescheduled && r.original_due_date && (
+                            <span className="block text-[11px] text-slate-400"
+                              title={r.reschedule_reason || undefined}>
+                              moved from {new Date(r.original_due_date).toLocaleDateString("en-IN")}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-5 py-3 whitespace-nowrap">
+                          <span className={`text-xs font-bold ${r.is_overdue ? "text-rose-600" : r.is_due ? "text-amber-600" : "text-slate-500"}`}>
+                            {dueNote(r)}
+                          </span>
+                        </td>
+                        <td className="px-5 py-3 text-right">
+                          <Link href={`/periodic-maintenance/${r.lead_id}`} className="text-[12px] font-semibold text-indigo-600 hover:text-indigo-800">Open →</Link>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
               {fUpcoming.length > UPCOMING_PREVIEW && (
                 <button onClick={() => setShowAllUpcoming(v => !v)}
                   className="w-full py-3 text-[12px] font-semibold text-indigo-600 hover:bg-slate-50 transition border-t border-slate-100">

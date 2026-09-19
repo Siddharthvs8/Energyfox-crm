@@ -672,29 +672,31 @@ export default function TeamPerformancePage({ params: paramsPromise }: { params:
             <div>
               <p className="text-xs font-bold text-slate-500 mb-2 uppercase tracking-wider">Current Targets — {MONTHS[month - 1]} {year}</p>
               <div className="border border-slate-100 rounded-xl overflow-hidden">
-                <table className="w-full text-left">
-                  <thead className="bg-slate-50">
-                    <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                      <th className="px-4 py-3">Agent</th>
-                      <th className="px-4 py-3 text-right">Leads</th>
-                      <th className="px-4 py-3 text-right">Amount</th>
-                      <th className="px-4 py-3 text-right">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-50">
-                    {existingTargets.map((t: any) => (
-                      <tr key={t.id} className="hover:bg-slate-50/50">
-                        <td className="px-4 py-3 text-sm font-semibold text-slate-800">{t.agent_name}</td>
-                        <td className="px-4 py-3 text-right text-sm text-slate-600">{t.target_leads}</td>
-                        <td className="px-4 py-3 text-right text-sm text-slate-600">₹{parseFloat(t.target_amount).toLocaleString("en-IN")}</td>
-                        <td className="px-4 py-3 text-right">
-                          <button onClick={() => setTargetForm({agent: String(t.agent), target_leads: String(t.target_leads), target_amount: String(t.target_amount)})} className="text-violet-500 hover:text-violet-700 transition-colors mr-3 whitespace-nowrap"><Icons.Edit /></button>
-                          <button onClick={() => deleteTarget(t.id)} className="text-rose-400 hover:text-rose-600 transition-colors"><Icons.Trash /></button>
-                        </td>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead className="bg-slate-50">
+                      <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                        <th className="px-4 py-3">Agent</th>
+                        <th className="px-4 py-3 text-right">Leads</th>
+                        <th className="px-4 py-3 text-right">Amount</th>
+                        <th className="px-4 py-3 text-right">Action</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {existingTargets.map((t: any) => (
+                        <tr key={t.id} className="hover:bg-slate-50/50">
+                          <td className="px-4 py-3 text-sm font-semibold text-slate-800">{t.agent_name}</td>
+                          <td className="px-4 py-3 text-right text-sm text-slate-600">{t.target_leads}</td>
+                          <td className="px-4 py-3 text-right text-sm text-slate-600">₹{parseFloat(t.target_amount).toLocaleString("en-IN")}</td>
+                          <td className="px-4 py-3 text-right">
+                            <button onClick={() => setTargetForm({agent: String(t.agent), target_leads: String(t.target_leads), target_amount: String(t.target_amount)})} className="text-violet-500 hover:text-violet-700 transition-colors mr-3 whitespace-nowrap"><Icons.Edit /></button>
+                            <button onClick={() => deleteTarget(t.id)} className="text-rose-400 hover:text-rose-600 transition-colors"><Icons.Trash /></button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
           )}

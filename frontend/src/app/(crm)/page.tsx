@@ -551,37 +551,39 @@ export default function DashboardPage({ params: paramsPromise }: { params: Promi
                        Leaderboard
                     </h3>
                     <div className="border border-slate-100 rounded-xl overflow-hidden bg-white">
-                      <table className="w-full text-left">
-                        <thead className="bg-slate-50">
-                          <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                            <th className="px-4 py-3">Member</th>
-                            <th className="px-4 py-3 text-right">Converted</th>
-                            <th className="px-4 py-3 text-right">Revenue</th>
-                            <th className="px-4 py-3 text-right">Pipeline</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-50">
-                          {selectedTeam.leaderboard.length === 0 && (
-                            <tr><td colSpan={4} className="py-8 text-center text-sm text-slate-400">No members with leads</td></tr>
-                          )}
-                          {selectedTeam.leaderboard.map((m: any, i: number) => (
-                            <tr key={m.id} className="hover:bg-slate-50/50">
-                              <td className="px-4 py-3">
-                                <div className="flex items-center gap-2">
-                                  {i === 0 && <span className="w-5 h-5 rounded flex items-center justify-center bg-amber-100 text-amber-600 font-bold text-[10px]">1</span>}
-                                  {i === 1 && <span className="w-5 h-5 rounded flex items-center justify-center bg-slate-200 text-slate-600 font-bold text-[10px]">2</span>}
-                                  {i === 2 && <span className="w-5 h-5 rounded flex items-center justify-center bg-orange-100 text-orange-700 font-bold text-[10px]">3</span>}
-                                  {i > 2 && <span className="w-5 h-5 rounded flex items-center justify-center bg-slate-50 text-slate-400 font-bold text-[10px]">{i+1}</span>}
-                                  <p className="text-sm font-semibold text-slate-800">{m.name}</p>
-                                </div>
-                              </td>
-                              <td className="px-4 py-3 text-right text-sm font-semibold text-slate-700">{m.won_count}</td>
-                              <td className="px-4 py-3 text-right text-sm font-bold text-emerald-600">₹{m.won_value.toLocaleString()}</td>
-                              <td className="px-4 py-3 text-right text-sm text-slate-400">₹{m.pipeline_value.toLocaleString()}</td>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left">
+                          <thead className="bg-slate-50">
+                            <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                              <th className="px-4 py-3">Member</th>
+                              <th className="px-4 py-3 text-right">Converted</th>
+                              <th className="px-4 py-3 text-right">Revenue</th>
+                              <th className="px-4 py-3 text-right">Pipeline</th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                          </thead>
+                          <tbody className="divide-y divide-slate-50">
+                            {selectedTeam.leaderboard.length === 0 && (
+                              <tr><td colSpan={4} className="py-8 text-center text-sm text-slate-400">No members with leads</td></tr>
+                            )}
+                            {selectedTeam.leaderboard.map((m: any, i: number) => (
+                              <tr key={m.id} className="hover:bg-slate-50/50">
+                                <td className="px-4 py-3">
+                                  <div className="flex items-center gap-2">
+                                    {i === 0 && <span className="w-5 h-5 rounded flex items-center justify-center bg-amber-100 text-amber-600 font-bold text-[10px]">1</span>}
+                                    {i === 1 && <span className="w-5 h-5 rounded flex items-center justify-center bg-slate-200 text-slate-600 font-bold text-[10px]">2</span>}
+                                    {i === 2 && <span className="w-5 h-5 rounded flex items-center justify-center bg-orange-100 text-orange-700 font-bold text-[10px]">3</span>}
+                                    {i > 2 && <span className="w-5 h-5 rounded flex items-center justify-center bg-slate-50 text-slate-400 font-bold text-[10px]">{i+1}</span>}
+                                    <p className="text-sm font-semibold text-slate-800">{m.name}</p>
+                                  </div>
+                                </td>
+                                <td className="px-4 py-3 text-right text-sm font-semibold text-slate-700">{m.won_count}</td>
+                                <td className="px-4 py-3 text-right text-sm font-bold text-emerald-600">₹{m.won_value.toLocaleString()}</td>
+                                <td className="px-4 py-3 text-right text-sm text-slate-400">₹{m.pipeline_value.toLocaleString()}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
                   </div>
 
