@@ -496,57 +496,59 @@ export default function MyPerformancePage({ params: paramsPromise }: { params: P
             </div>
           ) : (
             <div className="max-h-[360px] overflow-y-auto">
-              <table className="w-full text-xs">
-                <thead className="bg-slate-50 sticky top-0 z-10">
-                  <tr>
-                    <th className="text-left px-4 py-2 font-semibold text-slate-500">Date</th>
-                    <th className="text-left px-4 py-2 font-semibold text-slate-500">Leads</th>
-                    <th className="text-left px-4 py-2 font-semibold text-slate-500">Calls / Time</th>
-                    <th className="text-left px-4 py-2 font-semibold text-slate-500">Status</th>
-                    <th className="text-right px-4 py-2 font-semibold text-slate-500">Submit</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-50">
-                  {dailyTargets.map((dt: any) => {
-                    const d = new Date(dt.date + 'T12:00:00');
-                    const isToday = d.toDateString() === new Date().toDateString();
-                    const isPastOrToday = d <= new Date();
-                    const sc = dt.status === 'achieved' ? 'bg-emerald-50 text-emerald-600' : dt.status === 'missed' ? 'bg-red-50 text-red-500' : 'bg-slate-50 text-slate-500';
-                    return (
-                      <tr key={dt.id} className={`transition-colors ${isToday ? 'bg-indigo-50/50 font-semibold' : 'hover:bg-slate-50/50'}`}>
-                        <td className="px-4 py-2.5">
-                          <div className="flex items-center gap-1.5">
-                            {isToday && <span className="w-1.5 h-1.5 rounded-full bg-indigo-600 flex-shrink-0" />}
-                            <span className={`font-medium ${isToday ? 'text-indigo-700' : 'text-slate-700'}`}>
-                              {d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', weekday: 'short' })}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="px-4 py-2.5 font-semibold text-slate-800">{dt.target_leads}</td>
-                        <td className="px-4 py-2.5">
-                          {(dt.target_dialed_calls > 0 || dt.target_call_time > 0 || dt.achieved_dialed_calls > 0 || dt.achieved_call_time > 0) ? (
-                            <div className="space-y-0.5 leading-tight">
-                              <div className="text-slate-700">{dt.achieved_dialed_calls}{dt.target_dialed_calls > 0 && <span className="text-slate-400">/{dt.target_dialed_calls}</span>} <span className="text-slate-400 text-[9px]">calls</span></div>
-                              <div className="text-slate-700">{dt.achieved_call_time}{dt.target_call_time > 0 && <span className="text-slate-400">/{dt.target_call_time}</span>} <span className="text-slate-400 text-[9px]">min</span></div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-slate-50 sticky top-0 z-10">
+                    <tr>
+                      <th className="text-left px-4 py-2 font-semibold text-slate-500">Date</th>
+                      <th className="text-left px-4 py-2 font-semibold text-slate-500">Leads</th>
+                      <th className="text-left px-4 py-2 font-semibold text-slate-500">Calls / Time</th>
+                      <th className="text-left px-4 py-2 font-semibold text-slate-500">Status</th>
+                      <th className="text-right px-4 py-2 font-semibold text-slate-500">Submit</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {dailyTargets.map((dt: any) => {
+                      const d = new Date(dt.date + 'T12:00:00');
+                      const isToday = d.toDateString() === new Date().toDateString();
+                      const isPastOrToday = d <= new Date();
+                      const sc = dt.status === 'achieved' ? 'bg-emerald-50 text-emerald-600' : dt.status === 'missed' ? 'bg-red-50 text-red-500' : 'bg-slate-50 text-slate-500';
+                      return (
+                        <tr key={dt.id} className={`transition-colors ${isToday ? 'bg-indigo-50/50 font-semibold' : 'hover:bg-slate-50/50'}`}>
+                          <td className="px-4 py-2.5">
+                            <div className="flex items-center gap-1.5">
+                              {isToday && <span className="w-1.5 h-1.5 rounded-full bg-indigo-600 flex-shrink-0" />}
+                              <span className={`font-medium ${isToday ? 'text-indigo-700' : 'text-slate-700'}`}>
+                                {d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', weekday: 'short' })}
+                              </span>
                             </div>
-                          ) : <span className="text-slate-300">—</span>}
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${sc}`}>{dt.status}</span>
-                        </td>
-                        <td className="px-4 py-2.5 text-right">
-                          {isPastOrToday && (
-                            <button onClick={() => openSubmitModal(dt)}
-                              className="inline-flex items-center gap-1 px-2 py-1 bg-violet-50 text-violet-600 text-[10px] font-bold rounded-lg hover:bg-violet-100 transition-colors">
-                              <I.Upload /> Log
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                          </td>
+                          <td className="px-4 py-2.5 font-semibold text-slate-800">{dt.target_leads}</td>
+                          <td className="px-4 py-2.5">
+                            {(dt.target_dialed_calls > 0 || dt.target_call_time > 0 || dt.achieved_dialed_calls > 0 || dt.achieved_call_time > 0) ? (
+                              <div className="space-y-0.5 leading-tight">
+                                <div className="text-slate-700">{dt.achieved_dialed_calls}{dt.target_dialed_calls > 0 && <span className="text-slate-400">/{dt.target_dialed_calls}</span>} <span className="text-slate-400 text-[9px]">calls</span></div>
+                                <div className="text-slate-700">{dt.achieved_call_time}{dt.target_call_time > 0 && <span className="text-slate-400">/{dt.target_call_time}</span>} <span className="text-slate-400 text-[9px]">min</span></div>
+                              </div>
+                            ) : <span className="text-slate-300">—</span>}
+                          </td>
+                          <td className="px-4 py-2.5">
+                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${sc}`}>{dt.status}</span>
+                          </td>
+                          <td className="px-4 py-2.5 text-right">
+                            {isPastOrToday && (
+                              <button onClick={() => openSubmitModal(dt)}
+                                className="inline-flex items-center gap-1 px-2 py-1 bg-violet-50 text-violet-600 text-[10px] font-bold rounded-lg hover:bg-violet-100 transition-colors">
+                                <I.Upload /> Log
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </div>
@@ -643,7 +645,7 @@ export default function MyPerformancePage({ params: paramsPromise }: { params: P
       {submitModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
-          <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden">
+          <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain">
             <div className="bg-gradient-to-br from-violet-500 to-indigo-600 px-6 py-5">
               <div className="flex items-center justify-between">
                 <div>

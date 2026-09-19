@@ -1351,7 +1351,7 @@ export default function LeadDetailPage({
         const chosen = productList.find(p => String(p.id) === productChoice);
         return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
-          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain" onClick={e => e.stopPropagation()}>
             <div className="px-6 py-4 border-b border-slate-100">
               <h2 className="text-[15px] font-bold text-slate-900">{lead.product ? "Edit Product" : "Add Product"}</h2>
               <p className="text-xs text-slate-400 mt-0.5">What this customer is buying. The price and any discount are set in the Deal section of the site visit.</p>
@@ -1393,7 +1393,7 @@ export default function LeadDetailPage({
       {/* Assign to BDE Modal */}
       {showBdeModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
-          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain" onClick={e => e.stopPropagation()}>
             <div className="px-6 py-4 border-b border-slate-100">
               <h2 className="text-[15px] font-bold text-slate-900">Assign to BDE</h2>
               <p className="text-xs text-slate-400 mt-0.5">Hand this lead off to a BDE for the site visit.</p>
@@ -1417,7 +1417,7 @@ export default function LeadDetailPage({
       {/* Assign Documentation Staff Modal */}
       {showDocModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
-          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain" onClick={e => e.stopPropagation()}>
             <div className="px-6 py-4 border-b border-slate-100">
               <h2 className="text-[15px] font-bold text-slate-900">Assign Documentation Staff</h2>
               <p className="text-xs text-slate-400 mt-0.5">Hand this lead&apos;s paperwork to a documentation staff member.</p>
@@ -1587,10 +1587,10 @@ export default function LeadDetailPage({
       {showManualCallModal && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm shadow-2xl"
           onClick={() => setShowManualCallModal(false)}>
-          <div className="bg-white w-full sm:max-w-md sm:mx-4 rounded-t-2xl sm:rounded-2xl shadow-2xl overflow-hidden flex flex-col"
+          <div className="bg-white w-full sm:max-w-md sm:mx-4 rounded-t-2xl sm:rounded-2xl shadow-2xl overflow-hidden max-h-[90dvh] flex flex-col"
             onClick={e => e.stopPropagation()}>
             
-            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 flex-shrink-0">
               <div>
                 <h2 className="text-[15px] font-bold text-slate-900">Log Call Manually</h2>
                 <p className="text-xs text-slate-400 mt-0.5">Record a custom call interaction</p>
@@ -1601,7 +1601,7 @@ export default function LeadDetailPage({
               </button>
             </div>
 
-            <form onSubmit={handleManualCallSubmit} className="p-6 space-y-4">
+            <form onSubmit={handleManualCallSubmit} className="p-6 space-y-4 overflow-y-auto flex-1 overscroll-contain">
               <div>
                 <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Outcome</label>
                 <div className="relative">
@@ -1678,10 +1678,10 @@ export default function LeadDetailPage({
       {editingCall && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm"
           onClick={() => setEditingCall(null)}>
-          <div className="bg-white w-full sm:max-w-md sm:mx-4 rounded-t-2xl sm:rounded-2xl shadow-2xl overflow-hidden flex flex-col"
+          <div className="bg-white w-full sm:max-w-md sm:mx-4 rounded-t-2xl sm:rounded-2xl shadow-2xl overflow-hidden max-h-[90dvh] flex flex-col"
             onClick={e => e.stopPropagation()}>
             
-            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 flex-shrink-0">
               <div>
                 <h2 className="text-[15px] font-bold text-slate-900">Edit Call Log</h2>
                 <p className="text-xs text-slate-400 mt-0.5">Modify call details</p>
@@ -1692,7 +1692,7 @@ export default function LeadDetailPage({
               </button>
             </div>
 
-            <form onSubmit={handleEditCallSubmit} className="p-6 space-y-4">
+            <form onSubmit={handleEditCallSubmit} className="p-6 space-y-4 overflow-y-auto flex-1 overscroll-contain">
               <div>
                 <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Outcome</label>
                 <div className="relative">

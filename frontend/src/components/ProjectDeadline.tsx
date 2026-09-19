@@ -83,7 +83,7 @@ export function ReleaseDialog({ leadId, name, info, domain, onClose, onReleased 
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-      <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+      <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain" onClick={e => e.stopPropagation()}>
         <div className="px-6 py-4 border-b border-slate-100">
           <h2 className="text-base font-bold text-slate-900">Release to the project team</h2>
           <p className="text-xs text-slate-400 mt-0.5">

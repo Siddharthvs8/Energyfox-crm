@@ -325,7 +325,7 @@ The customer stays on the books and can be scheduled again.`
     <div className="p-4 sm:p-6 lg:p-8 max-w-[1100px]">
       {editing && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
-          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden">
+          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain">
             <div className="px-6 py-4 border-b border-slate-100">
               <h2 className="text-[15px] font-bold text-slate-900">Edit customer</h2>
               <p className="text-xs text-slate-400 mt-0.5">
@@ -482,7 +482,7 @@ The customer stays on the books and can be scheduled again.`
       {moving && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
           onClick={() => setMoving(null)}>
-          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden"
+          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain"
             onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
               <div>

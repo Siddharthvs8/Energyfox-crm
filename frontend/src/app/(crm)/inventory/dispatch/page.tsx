@@ -431,7 +431,7 @@ export default function StockDispatchPage() {
           opening payment with it, and neither answer ships anything. */}
       {pendingLines !== null && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain">
             <div className="px-6 py-4 border-b border-slate-100">
               <h2 className="text-lg font-bold text-slate-900">Raise this delivery?</h2>
               <p className="text-xs text-slate-400 mt-0.5">

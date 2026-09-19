@@ -1491,7 +1491,7 @@ This cannot be undone.`)) return;
       {showBulkWa && (
         <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
           <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" />
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg relative z-10 overflow-hidden">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg relative z-10 max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain">
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
               <div>
                 <h3 className="font-bold text-lg text-slate-900">💬 Send WhatsApp</h3>
@@ -1989,65 +1989,67 @@ This cannot be undone.`)) return;
               ) : trashRows.length === 0 ? (
                 <div className="py-14 text-center text-sm text-slate-400">Trash is empty.</div>
               ) : (
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-[10px] font-bold text-slate-400 uppercase tracking-wide border-b border-slate-100 bg-slate-50/60">
-                      {!isSpectator && (
-                        <th className="pl-5 pr-2 py-3 w-8">
-                          <input type="checkbox" aria-label="Select every lead in the Trash"
-                            checked={trashPicked.length > 0 && trashPicked.length === trashRows.length}
-                            // Ticked-but-not-all reads as a third state, not as "none".
-                            ref={el => { if (el) el.indeterminate =
-                              trashPicked.length > 0 && trashPicked.length < trashRows.length; }}
-                            onChange={e => setTrashPicked(
-                              e.target.checked ? trashRows.map(r => r.id) : [])}
-                            className="w-4 h-4 accent-indigo-600 cursor-pointer" />
-                        </th>
-                      )}
-                      <th className="px-5 py-3">Lead</th>
-                      <th className="px-5 py-3">Trashed</th>
-                      <th className="px-5 py-3">Disappears In</th>
-                      <th className="px-5 py-3 text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {trashRows.map(t => (
-                      <tr key={t.id} className={`border-b border-slate-50 hover:bg-slate-50/60 ${
-                        trashPicked.includes(t.id) ? "bg-indigo-50/40" : ""}`}>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-[10px] font-bold text-slate-400 uppercase tracking-wide border-b border-slate-100 bg-slate-50/60">
                         {!isSpectator && (
-                          <td className="pl-5 pr-2 py-3">
-                            <input type="checkbox" aria-label={`Select ${t.first_name} ${t.last_name}`}
-                              checked={trashPicked.includes(t.id)}
-                              onChange={e => setTrashPicked(prev =>
-                                e.target.checked ? [...prev, t.id] : prev.filter(id => id !== t.id))}
+                          <th className="pl-5 pr-2 py-3 w-8">
+                            <input type="checkbox" aria-label="Select every lead in the Trash"
+                              checked={trashPicked.length > 0 && trashPicked.length === trashRows.length}
+                              // Ticked-but-not-all reads as a third state, not as "none".
+                              ref={el => { if (el) el.indeterminate =
+                                trashPicked.length > 0 && trashPicked.length < trashRows.length; }}
+                              onChange={e => setTrashPicked(
+                                e.target.checked ? trashRows.map(r => r.id) : [])}
                               className="w-4 h-4 accent-indigo-600 cursor-pointer" />
-                          </td>
+                          </th>
                         )}
-                        <td className="px-5 py-3">
-                          <p className="font-semibold text-slate-800">{t.first_name} {t.last_name}</p>
-                          <p className="text-[11px] text-slate-400">{t.phone || "—"}{t.email ? ` · ${t.email}` : ""}</p>
-                        </td>
-                        <td className="px-5 py-3 text-slate-500 text-xs">
-                          {t.trashed_at ? new Date(t.trashed_at).toLocaleDateString("en-IN") : "—"}
-                          {t.trashed_by_name ? <span className="block text-[11px] text-slate-400">by {t.trashed_by_name}</span> : null}
-                        </td>
-                        <td className="px-5 py-3">
-                          <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${t.days_left <= 2 ? "bg-rose-50 text-rose-600" : "bg-amber-50 text-amber-700"}`}>
-                            {t.days_left <= 0 ? "today" : `${t.days_left} day${t.days_left === 1 ? "" : "s"}`}
-                          </span>
-                        </td>
-                        <td className="px-5 py-3">
-                          <div className="flex items-center justify-end gap-3">
-                            {!isSpectator && (
-                            <button onClick={() => restoreFromTrash(t.id)} className="text-[12px] font-semibold text-indigo-600 hover:text-indigo-800">Restore</button>
-                            )}
-                            <button onClick={() => purgeFromTrash(t.id)} className="text-[12px] font-semibold text-rose-500 hover:text-rose-700">Delete forever</button>
-                          </div>
-                        </td>
+                        <th className="px-5 py-3">Lead</th>
+                        <th className="px-5 py-3">Trashed</th>
+                        <th className="px-5 py-3">Disappears In</th>
+                        <th className="px-5 py-3 text-right">Actions</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {trashRows.map(t => (
+                        <tr key={t.id} className={`border-b border-slate-50 hover:bg-slate-50/60 ${
+                          trashPicked.includes(t.id) ? "bg-indigo-50/40" : ""}`}>
+                          {!isSpectator && (
+                            <td className="pl-5 pr-2 py-3">
+                              <input type="checkbox" aria-label={`Select ${t.first_name} ${t.last_name}`}
+                                checked={trashPicked.includes(t.id)}
+                                onChange={e => setTrashPicked(prev =>
+                                  e.target.checked ? [...prev, t.id] : prev.filter(id => id !== t.id))}
+                                className="w-4 h-4 accent-indigo-600 cursor-pointer" />
+                            </td>
+                          )}
+                          <td className="px-5 py-3">
+                            <p className="font-semibold text-slate-800">{t.first_name} {t.last_name}</p>
+                            <p className="text-[11px] text-slate-400">{t.phone || "—"}{t.email ? ` · ${t.email}` : ""}</p>
+                          </td>
+                          <td className="px-5 py-3 text-slate-500 text-xs">
+                            {t.trashed_at ? new Date(t.trashed_at).toLocaleDateString("en-IN") : "—"}
+                            {t.trashed_by_name ? <span className="block text-[11px] text-slate-400">by {t.trashed_by_name}</span> : null}
+                          </td>
+                          <td className="px-5 py-3">
+                            <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${t.days_left <= 2 ? "bg-rose-50 text-rose-600" : "bg-amber-50 text-amber-700"}`}>
+                              {t.days_left <= 0 ? "today" : `${t.days_left} day${t.days_left === 1 ? "" : "s"}`}
+                            </span>
+                          </td>
+                          <td className="px-5 py-3">
+                            <div className="flex items-center justify-end gap-3">
+                              {!isSpectator && (
+                              <button onClick={() => restoreFromTrash(t.id)} className="text-[12px] font-semibold text-indigo-600 hover:text-indigo-800">Restore</button>
+                              )}
+                              <button onClick={() => purgeFromTrash(t.id)} className="text-[12px] font-semibold text-rose-500 hover:text-rose-700">Delete forever</button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </div>
           </div>
@@ -2291,49 +2293,49 @@ This cannot be undone.`)) return;
       {viewLead && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
           onClick={() => setViewLead(null)}>
-          <div className="bg-white w-full max-w-4xl rounded-2xl shadow-2xl max-h-[90vh] overflow-hidden flex flex-col"
+          <div className="bg-white w-full max-w-4xl rounded-2xl shadow-2xl max-h-[calc(100dvh-2rem)] sm:max-h-[90vh] overflow-hidden flex flex-col"
             onClick={e => e.stopPropagation()}>
 
             {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 flex-shrink-0">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-white font-bold text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-4 sm:px-6 py-3 sm:py-4 border-b border-slate-100 flex-shrink-0">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-white font-bold text-sm flex-shrink-0">
                   {(viewLead.first_name?.[0] || "").toUpperCase()}{(viewLead.last_name?.[0] || "").toUpperCase()}
                 </div>
-                <div>
-                  <h2 className="text-[15px] font-bold text-slate-900">{viewLead.first_name} {viewLead.last_name}</h2>
-                  <p className="text-[11px] text-slate-400">{viewLead.phone || viewLead.email || "No contact info"}</p>
+                <div className="min-w-0">
+                  <h2 className="text-[15px] font-bold text-slate-900 truncate">{viewLead.first_name} {viewLead.last_name}</h2>
+                  <p className="text-[11px] text-slate-400 truncate">{viewLead.phone || viewLead.email || "No contact info"}</p>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0 ml-auto">
                 <button
                   onClick={() => initiateCall(viewLead.id)}
                   className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700 transition-all shadow-sm shadow-emerald-100"
                 >
                   <I.Phone /> Call
                 </button>
-                <Link href={`/leads/${viewLead.id}`}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 text-slate-700 text-xs font-semibold hover:bg-slate-200 border border-slate-200 transition-all">
-                  <I.Eye /> Full Screen
+                <Link href={`/leads/${viewLead.id}`} title="Full Screen"
+                  className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl bg-slate-100 text-slate-700 text-xs font-semibold hover:bg-slate-200 border border-slate-200 transition-all">
+                  <I.Eye /> <span className="hidden sm:inline">Full Screen</span>
                 </Link>
                 {canEditLeads && (
-                <button onClick={() => { setViewLead(null); openEdit(viewLead); }}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-50 text-indigo-700 text-xs font-semibold hover:bg-indigo-100 transition-all">
-                  <I.Edit /> Edit
+                <button onClick={() => { setViewLead(null); openEdit(viewLead); }} title="Edit"
+                  className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl bg-indigo-50 text-indigo-700 text-xs font-semibold hover:bg-indigo-100 transition-all">
+                  <I.Edit /> <span className="hidden sm:inline">Edit</span>
                 </button>
                 )}
-                <button onClick={() => setViewLead(null)}
-                  className="w-8 h-8 flex items-center justify-center rounded-xl bg-slate-100 text-slate-500 hover:bg-slate-200 transition-all">
+                <button onClick={() => setViewLead(null)} title="Close"
+                  className="w-8 h-8 flex items-center justify-center rounded-xl bg-slate-100 text-slate-500 hover:bg-slate-200 transition-all flex-shrink-0">
                   <I.X />
                 </button>
               </div>
             </div>
 
             {/* Body: split panel */}
-            <div className="flex flex-col sm:flex-row overflow-hidden flex-1 min-h-0">
+            <div className="flex flex-col sm:flex-row flex-1 min-h-0 overflow-y-auto sm:overflow-hidden overscroll-contain">
 
               {/* ── Left: Lead Details ── */}
-              <div className="sm:w-[340px] flex-shrink-0 border-r border-slate-100 overflow-y-auto p-5 space-y-4">
+              <div className="w-full sm:w-[340px] sm:flex-shrink-0 border-b sm:border-b-0 sm:border-r border-slate-100 sm:overflow-y-auto p-4 sm:p-5 space-y-4">
                 {/* Status badge */}
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Current Status</span>
@@ -2584,7 +2586,7 @@ This cannot be undone.`)) return;
                 </div>
 
                 {/* ── Attachments ── */}
-                <div className="px-5 pb-4 border-t border-slate-100 pt-4">
+                <div className="border-t border-slate-100 pt-4">
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
                       <div className="w-5 h-5 rounded-md bg-indigo-100 flex items-center justify-center text-indigo-600">
@@ -2697,7 +2699,7 @@ This cannot be undone.`)) return;
               </div>
 
               {/* ── Right: Lead History ── */}
-              <div className="flex-1 overflow-y-auto p-5 min-h-0">
+              <div className="w-full sm:flex-1 sm:overflow-y-auto sm:min-h-0 p-4 sm:p-5">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-bold text-slate-900">Lead History</h3>
                   <span className="text-[10px] font-semibold text-slate-400 bg-slate-100 px-2 py-1 rounded-md">
@@ -2791,7 +2793,7 @@ This cannot be undone.`)) return;
       {showBulkAssign && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
           onClick={() => setShowBulkAssign(false)}>
-          <div className="bg-white w-full max-w-sm mx-4 rounded-2xl shadow-2xl overflow-hidden"
+          <div className="bg-white w-full max-w-sm mx-4 rounded-2xl shadow-2xl max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain"
             onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
               <div>
@@ -2828,7 +2830,7 @@ This cannot be undone.`)) return;
       {showBulkUpdate && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
           onClick={() => setShowBulkUpdate(false)}>
-          <div className="bg-white w-full max-w-sm mx-4 rounded-2xl shadow-2xl overflow-hidden"
+          <div className="bg-white w-full max-w-sm mx-4 rounded-2xl shadow-2xl max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain"
             onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
               <div>

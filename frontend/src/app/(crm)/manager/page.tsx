@@ -857,39 +857,41 @@ export default function ManagerPage({ params: paramsPromise }: { params: Promise
                                     <p className="text-xs text-slate-400 text-center py-4">No daily targets generated yet. Set a monthly target first.</p>
                                   ) : (
                                     <div className="bg-white rounded-xl border border-slate-100 overflow-hidden max-h-64 overflow-y-auto">
-                                      <table className="w-full text-xs">
-                                        <thead className="bg-slate-50 sticky top-0">
-                                          <tr>
-                                            <th className="text-left px-3 py-2 font-semibold text-slate-500">Date</th>
-                                            <th className="text-left px-3 py-2 font-semibold text-slate-500">Leads</th>
-                                            <th className="text-left px-3 py-2 font-semibold text-slate-500">Amount</th>
-                                            <th className="text-left px-3 py-2 font-semibold text-slate-500">Status</th>
-                                            <th className="text-right px-3 py-2 font-semibold text-slate-500">Edit</th>
-                                          </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-slate-50">
-                                          {expandedDailyTargets.map(dt => {
-                                            const sc = dt.status === 'achieved' ? 'bg-emerald-50 text-emerald-600' : dt.status === 'missed' ? 'bg-red-50 text-red-500' : 'bg-slate-50 text-slate-500';
-                                            return (
-                                              <tr key={dt.id} className={`hover:bg-slate-50/50 ${dt.is_manual ? 'bg-amber-50/30' : ''}`}>
-                                                <td className="px-3 py-2">
-                                                  <span className="font-medium text-slate-700">{new Date(dt.date + 'T12:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', weekday: 'short' })}</span>
-                                                  {dt.is_manual && <span className="ml-1 text-[9px] font-bold bg-amber-100 text-amber-600 px-1 py-0.5 rounded">Manual</span>}
-                                                </td>
-                                                <td className="px-3 py-2 font-semibold text-slate-800">{dt.target_leads}</td>
-                                                <td className="px-3 py-2 font-semibold text-slate-800">₹{parseFloat(dt.target_amount).toLocaleString('en-IN')}</td>
-                                                <td className="px-3 py-2"><span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${sc}`}>{dt.status}</span></td>
-                                                <td className="px-3 py-2 text-right">
-                                                  <button onClick={(e) => { e.stopPropagation(); setDailyModal({ target: dt }); setDailyForm({ target_leads: String(dt.target_leads), target_amount: dt.target_amount }); }}
-                                                    className="inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-50 text-indigo-600 text-[10px] font-semibold rounded hover:bg-indigo-100 transition-colors">
-                                                    <Icons.Edit /> Edit
-                                                  </button>
-                                                </td>
-                                              </tr>
-                                            );
-                                          })}
-                                        </tbody>
-                                      </table>
+                                      <div className="overflow-x-auto">
+                                        <table className="w-full text-xs">
+                                          <thead className="bg-slate-50 sticky top-0">
+                                            <tr>
+                                              <th className="text-left px-3 py-2 font-semibold text-slate-500">Date</th>
+                                              <th className="text-left px-3 py-2 font-semibold text-slate-500">Leads</th>
+                                              <th className="text-left px-3 py-2 font-semibold text-slate-500">Amount</th>
+                                              <th className="text-left px-3 py-2 font-semibold text-slate-500">Status</th>
+                                              <th className="text-right px-3 py-2 font-semibold text-slate-500">Edit</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody className="divide-y divide-slate-50">
+                                            {expandedDailyTargets.map(dt => {
+                                              const sc = dt.status === 'achieved' ? 'bg-emerald-50 text-emerald-600' : dt.status === 'missed' ? 'bg-red-50 text-red-500' : 'bg-slate-50 text-slate-500';
+                                              return (
+                                                <tr key={dt.id} className={`hover:bg-slate-50/50 ${dt.is_manual ? 'bg-amber-50/30' : ''}`}>
+                                                  <td className="px-3 py-2">
+                                                    <span className="font-medium text-slate-700">{new Date(dt.date + 'T12:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', weekday: 'short' })}</span>
+                                                    {dt.is_manual && <span className="ml-1 text-[9px] font-bold bg-amber-100 text-amber-600 px-1 py-0.5 rounded">Manual</span>}
+                                                  </td>
+                                                  <td className="px-3 py-2 font-semibold text-slate-800">{dt.target_leads}</td>
+                                                  <td className="px-3 py-2 font-semibold text-slate-800">₹{parseFloat(dt.target_amount).toLocaleString('en-IN')}</td>
+                                                  <td className="px-3 py-2"><span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${sc}`}>{dt.status}</span></td>
+                                                  <td className="px-3 py-2 text-right">
+                                                    <button onClick={(e) => { e.stopPropagation(); setDailyModal({ target: dt }); setDailyForm({ target_leads: String(dt.target_leads), target_amount: dt.target_amount }); }}
+                                                      className="inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-50 text-indigo-600 text-[10px] font-semibold rounded hover:bg-indigo-100 transition-colors">
+                                                      <Icons.Edit /> Edit
+                                                    </button>
+                                                  </td>
+                                                </tr>
+                                              );
+                                            })}
+                                          </tbody>
+                                        </table>
+                                      </div>
                                     </div>
                                   )}
                                 </div>
@@ -1483,7 +1485,7 @@ export default function ManagerPage({ params: paramsPromise }: { params: Promise
       {targetModal.agent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
-          <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden animate-fadeIn">
+          <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain animate-fadeIn">
             <div className="bg-gradient-to-br from-indigo-500 to-violet-600 px-6 py-5">
               <div className="flex items-center justify-between">
                 <div>
@@ -1542,7 +1544,7 @@ export default function ManagerPage({ params: paramsPromise }: { params: Promise
       {dailyModal.target && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
-          <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-sm p-6">
+          <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-sm p-6 max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain">
             <div className="flex items-center justify-between mb-5">
               <div>
                 <h2 className="font-black text-slate-800 text-lg">Override Daily Target</h2>
@@ -1574,7 +1576,7 @@ export default function ManagerPage({ params: paramsPromise }: { params: Promise
       {/* PDF Generate Modal */}
       {showPdfModal && (
         <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl shadow-xl w-full max-w-md overflow-hidden">
+          <div className="bg-white rounded-3xl shadow-xl w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain">
             <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
               <h3 className="font-bold text-slate-800">Generate PDF Report</h3>
               <button onClick={() => setShowPdfModal(false)} className="text-slate-400 hover:text-slate-600"><Icons.Close /></button>
