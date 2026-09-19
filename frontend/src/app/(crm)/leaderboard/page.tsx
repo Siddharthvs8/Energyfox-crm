@@ -1,12 +1,13 @@
 "use client";
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
+import { compactINR } from "@/lib/format";
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
 
 // ─── Animated Counter ─────────────────────────────────────────────────────────
-function AnimatedNumber({ value, prefix = "", suffix = "", isCurrency = false }: { value: number; prefix?: string; suffix?: string; isCurrency?: boolean }) {
+function AnimatedNumber({ value, prefix = "", suffix = "", isCurrency = false, fullBelow = false }: { value: number; prefix?: string; suffix?: string; isCurrency?: boolean; fullBelow?: boolean }) {
   const [display, setDisplay] = useState(0);
   useEffect(() => {
     if (value === 0) { setDisplay(0); return; }
@@ -19,10 +20,16 @@ function AnimatedNumber({ value, prefix = "", suffix = "", isCurrency = false }:
     }, 16);
     return () => clearInterval(timer);
   }, [value]);
-  const formatted = isCurrency
-    ? display.toLocaleString("en-IN", { minimumFractionDigits: 0 })
-    : display.toLocaleString("en-IN");
-  return <>{prefix}{formatted}{suffix}</>;
+  const full = `${prefix}${display.toLocaleString("en-IN")}${suffix}`;
+  if (!isCurrency) return <>{full}</>;
+  // Compact on phones so long amounts never wrap; exact figure from sm up.
+  return (
+    <span className="whitespace-nowrap tabular-nums tracking-tight" title={full}>
+      <span className="sm:hidden">{prefix}{compactINR(display)}{suffix}</span>
+      <span className="hidden sm:inline">{full}</span>
+      {fullBelow && <span className="sm:hidden block text-[11px] font-bold tracking-normal opacity-60">{full}</span>}
+    </span>
+  );
 }
 
 // ─── Trophy Icon ──────────────────────────────────────────────────────────────
@@ -189,7 +196,7 @@ export default function LeaderboardPage({ params: paramsPromise }: { params: Pro
                 <div className="absolute -right-6 -bottom-6 w-32 h-32 bg-white/10 rounded-full blur-2xl" />
                 <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-60 mb-2">Total Sales Force Revenue</p>
                 <p className="text-4xl font-black">
-                  <AnimatedNumber value={data.reduce((acc: any, curr: any) => acc + curr.revenue, 0)} prefix="₹" isCurrency />
+                  <AnimatedNumber value={data.reduce((acc: any, curr: any) => acc + curr.revenue, 0)} prefix="₹" isCurrency fullBelow />
                 </p>
                 <div className="mt-4 flex items-center gap-2">
                    <span className="text-[10px] font-bold bg-white/20 px-3 py-1 rounded-full">{data.length} BDEs</span>

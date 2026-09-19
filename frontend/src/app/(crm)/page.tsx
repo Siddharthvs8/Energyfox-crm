@@ -1,5 +1,6 @@
 "use client";
 import { APP_SLUG } from "@/lib/config";
+import { compactINR } from "@/lib/format";
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
@@ -12,7 +13,7 @@ const ModernDashboardCharts = dynamic(() => import("./DashboardCharts"), { ssr: 
 const PipelineChart = dynamic(() => import("./PipelineChart"), { ssr: false });
 
 // ─── Animated Counter ─────────────────────────────────────────────────────────
-function AnimatedNumber({ value, prefix = "", suffix = "", isCurrency = false }: { value: number; prefix?: string; suffix?: string; isCurrency?: boolean }) {
+function useAnimatedNumber(value: number) {
   const [display, setDisplay] = useState(0);
   useEffect(() => {
     if (value === 0) { setDisplay(0); return; }
@@ -25,25 +26,32 @@ function AnimatedNumber({ value, prefix = "", suffix = "", isCurrency = false }:
     }, 16);
     return () => clearInterval(timer);
   }, [value]);
-  const formatted = isCurrency
-    ? display.toLocaleString("en-IN", { minimumFractionDigits: 0 })
-    : display.toLocaleString("en-IN");
-  return <>{prefix}{formatted}{suffix}</>;
+  return display;
 }
 
 // ─── Stat Card ────────────────────────────────────────────────────────────────
 function StatCard({ label, value, prefix = "", isCurrency = false, icon, accent, sub }: any) {
+  const display = useAnimatedNumber(value);
+  const full = `${prefix}${display.toLocaleString("en-IN")}`;
   return (
     <div className="bg-white border border-slate-100 rounded-2xl p-4 sm:p-5 shadow-sm hover:shadow-md transition-shadow">
-      <div className="flex items-start justify-between mb-3 sm:mb-4">
-        <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ backgroundColor: accent + "15" }}>
+      <div className="flex items-start justify-between mb-3 sm:mb-4 gap-2">
+        <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ backgroundColor: accent + "15" }}>
           <span style={{ color: accent }}>{icon}</span>
         </div>
-        <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest">{label}</span>
+        <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest text-right">{label}</span>
       </div>
-      <p className="text-2xl sm:text-3xl font-bold text-slate-900">
-        <AnimatedNumber value={value} prefix={prefix} isCurrency={isCurrency} />
+      <p className="text-2xl sm:text-3xl font-bold text-slate-900 whitespace-nowrap tabular-nums tracking-tight" title={full}>
+        {isCurrency ? (
+          <>
+            <span className="sm:hidden">{prefix}{compactINR(display)}</span>
+            <span className="hidden sm:inline">{full}</span>
+          </>
+        ) : full}
       </p>
+      {isCurrency && (
+        <p className="sm:hidden text-[11px] font-semibold text-slate-400 tabular-nums mt-0.5">{full}</p>
+      )}
       <p className="text-xs text-slate-400 mt-1.5">{sub}</p>
     </div>
   );
