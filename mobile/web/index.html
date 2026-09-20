@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="Leads, tasks and deals for the EnergyFox team — on your phone.">
+  <!-- viewport-fit=cover so the app paints under the notch and the home bar,
+       the way an installed app does. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#191E32">
+  <meta name="color-scheme" content="dark light">
+
+  <!-- iOS: standalone, so the browser chrome disappears once it is on the
+       home screen, and a status bar that matches the navy header. -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="EnergyFox">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+
+  <title>EnergyFox CRM</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #191E32;
+      /* No rubber-band scroll of the page behind the app, and no long-press
+         text selection — both give away that this is a web page. */
+      overscroll-behavior: none;
+      -webkit-tap-highlight-color: transparent;
+      -webkit-touch-callout: none;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+
+    /* The boot screen: the logo and the brand, shown from the first paint
+       until Flutter has the first frame up, so the launch never flashes white. */
+    #boot {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 26px;
+      background: radial-gradient(120% 120% at 50% 0%, #232A44 0%, #141A2C 70%);
+      z-index: 9999;
+      transition: opacity .35s ease;
+    }
+    #boot.gone { opacity: 0; pointer-events: none; }
+
+    #boot .mark {
+      width: 96px;
+      height: 96px;
+      border-radius: 28px;
+      background-image: url('icons/Icon-512.png');
+      background-size: cover;
+      box-shadow: 0 18px 60px rgba(224, 153, 69, .22);
+    }
+    #boot .word {
+      color: #fff;
+      font-size: 19px;
+      font-weight: 700;
+      letter-spacing: -.2px;
+    }
+    #boot .sub {
+      margin-top: 6px;
+      color: rgba(255,255,255,.42);
+      font-size: 10.5px;
+      letter-spacing: 2.4px;
+      text-transform: uppercase;
+    }
+    #boot .bar {
+      width: 132px;
+      height: 3px;
+      border-radius: 999px;
+      background: rgba(255,255,255,.10);
+      overflow: hidden;
+    }
+    #boot .bar i {
+      display: block;
+      width: 42%;
+      height: 100%;
+      border-radius: 999px;
+      background: #E09945;
+      animation: slide 1.15s ease-in-out infinite;
+    }
+    @keyframes slide {
+      0%   { transform: translateX(-110%); }
+      100% { transform: translateX(260%); }
+    }
+  </style>
+</head>
+<body>
+  <div id="boot">
+    <div class="mark"></div>
+    <div style="text-align:center">
+      <div class="word">EnergyFox CRM</div>
+      <div class="sub">Consultants Pvt Ltd</div>
+    </div>
+    <div class="bar"><i></i></div>
+  </div>
+
+  <script>
+    // Flutter's loader fires this once the engine has painted; the boot screen
+    // fades out rather than being cut away mid-launch.
+    window.addEventListener('flutter-first-frame', function () {
+      var boot = document.getElementById('boot');
+      if (!boot) return;
+      boot.classList.add('gone');
+      setTimeout(function () { boot.remove(); }, 400);
+    });
+  </script>
+  <script>
+    // The app's own worker (web/sw.js): app-shell caching so the CRM opens on
+    // a site with no signal, and the registration browsers look for before
+    // offering "Add to home screen".
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('sw.js').catch(function () {
+          /* No worker is survivable — the app just loses offline start-up. */
+        });
+      });
+    }
+  </script>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>

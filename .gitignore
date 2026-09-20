@@ -9,3 +9,4 @@ __pycache__/
 .next/
 node_modules/
 backend/venv/
+.DS_Store
