@@ -2,8 +2,8 @@
 #
 # Build the EnergyFox CRM Android app.
 #
-#   ./build_apk.sh                              → asks for the server on the sign-in screen
-#   ./build_apk.sh https://crm.energyfox.co     → that server baked in as the default
+#   ./build_apk.sh                              → points at https://crmenergyfox.com
+#   ./build_apk.sh http://10.0.2.2:8000         → dev override, for a local Django
 #
 # Per-ABI APKs are built as well as the universal one: the universal APK works
 # on any phone but carries every architecture (~55 MB), while the arm64 one is
@@ -17,7 +17,7 @@ if [[ $# -gt 0 ]]; then
   ARGS+=("--dart-define=API_BASE=$1")
   echo "Building with API_BASE=$1"
 else
-  echo "Building without a baked-in server — users set it on the sign-in screen."
+  echo "Building against the production server (https://crmenergyfox.com)."
 fi
 
 flutter build apk "${ARGS[@]}"

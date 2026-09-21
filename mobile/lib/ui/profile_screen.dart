@@ -139,16 +139,13 @@ class ProfileScreen extends StatelessWidget {
                     ),
                   ),
                   _Divider(color: scheme.outlineVariant),
-                  InkWell(
-                    onTap: () => _editServer(context, auth),
-                    child: _Row(
-                      icon: Icons.dns_outlined,
-                      label: 'Server',
-                      value: auth.baseUrl.isEmpty
-                          ? 'Not set'
-                          : auth.baseUrl.replaceFirst(RegExp(r'^https?://'), ''),
-                      trailing: Icons.chevron_right_rounded,
-                    ),
+                  // Shown, not offered: the server is fixed in the build, so
+                  // this is here to answer "which CRM am I on?" and nothing
+                  // more.
+                  _Row(
+                    icon: Icons.dns_outlined,
+                    label: 'Server',
+                    value: auth.baseUrl.replaceFirst(RegExp(r'^https?://'), ''),
                   ),
                   _Divider(color: scheme.outlineVariant),
                   InkWell(
@@ -218,45 +215,6 @@ class ProfileScreen extends StatelessWidget {
     // tabs around everything above.
     context.read<AuthController>().refreshIdentity();
     showToast(context, 'Refreshing…');
-  }
-
-  Future<void> _editServer(BuildContext context, AuthController auth) async {
-    final controller = TextEditingController(text: auth.baseUrl);
-    final value = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('CRM server'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: controller,
-              keyboardType: TextInputType.url,
-              decoration:
-                  const InputDecoration(hintText: 'https://crm.energyfox.co'),
-            ),
-            const SizedBox(height: 12),
-            const Text(
-              'Changing this signs you out of the current server.',
-              style: TextStyle(fontSize: 12, height: 1.4),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel')),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text),
-            style: FilledButton.styleFrom(minimumSize: const Size(90, 44)),
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
-    if (value == null || value.trim().isEmpty) return;
-    await auth.setServer(value);
-    await auth.signOut();
   }
 
   Future<void> _confirmSignOut(

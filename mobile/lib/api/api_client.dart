@@ -30,7 +30,6 @@ class ApiException implements Exception {
 class ApiClient {
   ApiClient({required this.baseUrl});
 
-  static const kPrefBase = 'ef_api_base';
   static const kPrefAccess = 'ef_access';
   static const kPrefRefresh = 'ef_refresh';
 
@@ -43,25 +42,31 @@ class ApiClient {
 
   Future<void>? _refreshing;
 
-  /// Baked into a packaged build:
-  ///   flutter build apk --dart-define=API_BASE=https://crm.energyfox.co
+  /// The EnergyFox production CRM. There is one server, so the app points at
+  /// it and never asks: nobody signing in on a phone knows or should have to
+  /// type an API address.
+  static const kProductionBase = 'https://crmenergyfox.com';
+
+  /// Overridden only for development:
+  ///   flutter run --dart-define=API_BASE=http://10.0.2.2:8000
   static const _compiledBase = String.fromEnvironment('API_BASE');
 
-  /// Where the API lives when nothing has been configured.
+  /// Where the API lives. The compiled override wins — that is how a developer
+  /// points a debug build at a laptop — and everything else, packaged or web,
+  /// gets the production server above.
   ///
-  /// The web build is served from the same host as the CRM, so the page's own
-  /// origin is the right guess (and localhost means development, where Django
-  /// sits on :8000). A packaged app has no origin to fall back on: it uses the
-  /// address it was built with, and otherwise asks on the sign-in screen
-  /// rather than guessing somebody's server.
+  /// One exception, and it is a build-time one: a web build served from
+  /// localhost is a developer's `flutter run -d chrome`, where Django sits on
+  /// :8000 rather than behind the page's own origin.
   static String defaultBaseUrl() {
     if (_compiledBase.isNotEmpty) return normalizeBase(_compiledBase);
-    if (!kIsWeb) return '';
-    final here = Uri.base;
-    if (here.host.isEmpty || here.host == 'localhost' || here.host == '127.0.0.1') {
-      return 'http://${here.host.isEmpty ? 'localhost' : here.host}:8000';
+    if (kIsWeb) {
+      final here = Uri.base;
+      if (here.host == 'localhost' || here.host == '127.0.0.1') {
+        return 'http://${here.host}:8000';
+      }
     }
-    return '${here.scheme}://${here.host}${here.hasPort ? ':${here.port}' : ''}';
+    return kProductionBase;
   }
 
   static String normalizeBase(String value) {
@@ -95,14 +100,16 @@ class ApiClient {
 
   Future<void> loadSession() async {
     final prefs = await SharedPreferences.getInstance();
-    baseUrl = normalizeBase(prefs.getString(kPrefBase) ?? '');
+    // The server is fixed, so it is re-derived rather than restored: a build
+    // that moves to a new address must not keep talking to the old one because
+    // somebody signed in before the move.
+    baseUrl = defaultBaseUrl();
     accessToken = prefs.getString(kPrefAccess);
     refreshToken = prefs.getString(kPrefRefresh);
   }
 
   Future<void> saveSession() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(kPrefBase, baseUrl);
     if (accessToken != null) {
       await prefs.setString(kPrefAccess, accessToken!);
     } else {
@@ -161,6 +168,49 @@ class ApiClient {
 
   Future<dynamic> delete(String path) => _request('DELETE', path);
 
+  /// A file upload. Separate from [_request] because a multipart body cannot be
+  /// replayed from the same stream, so the token is refreshed *before* the
+  /// request rather than after a 401 — there is nothing left to retry with.
+  Future<dynamic> upload(
+    String path, {
+    required String field,
+    required String filename,
+    required List<int> bytes,
+    Map<String, String> fields = const {},
+  }) async {
+    if (accessToken == null && refreshToken != null) await _refreshAccess();
+    var res = await _sendMultipart(path, field, filename, bytes, fields);
+    if (res.statusCode == 401 && refreshToken != null) {
+      try {
+        await _refreshAccess();
+      } on ApiException {
+        await clearSession();
+        onSessionExpired?.call();
+        rethrow;
+      }
+      res = await _sendMultipart(path, field, filename, bytes, fields);
+    }
+    return _decode(res);
+  }
+
+  Future<http.Response> _sendMultipart(String path, String field,
+      String filename, List<int> bytes, Map<String, String> fields) async {
+    final req = http.MultipartRequest('POST', _uri(path))
+      ..fields.addAll(fields)
+      ..files.add(http.MultipartFile.fromBytes(field, bytes, filename: filename));
+    if (accessToken != null) {
+      req.headers['Authorization'] = 'Bearer $accessToken';
+    }
+    try {
+      final streamed = await req.send().timeout(const Duration(minutes: 3));
+      return await http.Response.fromStream(streamed);
+    } on TimeoutException {
+      throw ApiException(0, 'The upload took too long. Try a smaller file.');
+    } catch (_) {
+      throw ApiException(0, "Can't reach the server. Check your connection.");
+    }
+  }
+
   Future<dynamic> _request(String method, String path,
       {Map<String, dynamic>? query, Object? body}) async {
     try {
@@ -210,7 +260,11 @@ class ApiClient {
       throw ApiException(0, "Can't reach the server. Check your connection.");
     }
 
-    if (res.statusCode == 204 || res.body.isEmpty) return null;
+    return _decode(res);
+  }
+
+  dynamic _decode(http.Response res) {
+    if (res.statusCode == 204 || res.bodyBytes.isEmpty) return null;
 
     dynamic decoded;
     try {
