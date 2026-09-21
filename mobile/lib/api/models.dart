@@ -192,6 +192,42 @@ class Lead {
   String get pipelineStageLabel => _asString(raw['pipeline_stage_label']);
   String get dealClassification => _asString(raw['deal_classification']);
   int? get productId => _asInt(raw['product']);
+  int? get bdeId => _asInt(raw['bde']);
+  int? get documentationStaffId => _asInt(raw['documentation_staff']);
+  String get documentationStaffName => _asString(raw['documentation_staff_name']);
+  String get metaIntegrationName => _asString(raw['meta_integration_name']);
+  String get invoiceUrl => _asString(raw['invoice']);
+
+  // ── What this viewer may do to *this* lead ────────────────────────────────
+  // Decided per record by the server (LeadSerializer) rather than per account,
+  // because they depend on the lead as much as on the role: a BDE owns the
+  // site visit of the leads assigned to them and no others. Missing keys mean
+  // an older server, and the safe reading of a missing permission is "no".
+  bool get canEditSiteVisit => raw['can_edit_site_visit'] == true;
+  bool get canReopenSiteVisit => raw['can_reopen_site_visit'] == true;
+  bool get canAssignBde => raw['can_assign_bde'] == true;
+  bool get canAssignDocumentation => raw['can_assign_documentation'] == true;
+  bool get canMarkLost => raw['can_mark_lost'] == true;
+
+  bool get siteVisitComplete => raw['site_visit_complete'] == true;
+  bool get siteVisitReopened => raw['site_visit_reopened'] == true;
+  bool get pushedToDocumentation => raw['pushed_to_documentation'] == true;
+
+  /// 0–100, the same ladder the web sidebar's Quick Stats draws.
+  int get leadScore => switch (status) {
+        'converted' => 100,
+        'positive' => 75,
+        'follow_up' => 50,
+        'new' => 25,
+        _ => 10,
+      };
+
+  int get daysInPipeline {
+    final c = createdAt;
+    if (c == null) return 0;
+    final days = DateTime.now().difference(c).inDays;
+    return days < 0 ? 0 : days;
+  }
   String get productName {
     final p = raw['product_details'];
     return p is Map ? _asString(p['name']) : '';

@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../api/models.dart';
 import '../state/auth.dart';
 import '../state/stores.dart';
+import '../theme.dart';
+import 'lead/site_visit_screen.dart';
 import 'lead_detail_screen.dart';
 import 'widgets/common.dart';
 
@@ -117,9 +120,33 @@ class _LeadsScreenState extends State<LeadsScreen> {
           lead: leads[i],
           status: auth.statusFor(leads[i].status),
           onTap: () => _open(leads[i]),
+          onSiteVisit: () => _openSiteVisit(leads[i]),
+          onDial: () => _dial(leads[i]),
         );
       },
     );
+  }
+
+  /// Straight into the survey, the way the web list's "Site visit" button
+  /// goes — a BDE working a day of visits should not have to open the lead and
+  /// scroll down to find it.
+  Future<void> _openSiteVisit(Lead lead) async {
+    final changed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => SiteVisitScreen(lead: lead)),
+    );
+    if (changed == true && mounted) {
+      context.read<LeadStore>().load(force: true);
+    }
+  }
+
+  Future<void> _dial(Lead lead) async {
+    if (lead.phone.isEmpty) return;
+    final ok = await launchUrl(Uri.parse('tel:${lead.phone}'),
+        mode: LaunchMode.externalApplication);
+    if (!ok && mounted) {
+      showToast(context, 'Nothing on this device can place a call.',
+          error: true);
+    }
   }
 
   Widget _footer(LeadStore store, int shown) {
@@ -368,11 +395,15 @@ class _LeadCard extends StatelessWidget {
     required this.lead,
     required this.status,
     required this.onTap,
+    required this.onSiteVisit,
+    required this.onDial,
   });
 
   final Lead lead;
   final LeadStatus status;
   final VoidCallback onTap;
+  final VoidCallback onSiteVisit;
+  final VoidCallback onDial;
 
   @override
   Widget build(BuildContext context) {
@@ -384,109 +415,159 @@ class _LeadCard extends StatelessWidget {
     return AppCard(
       onTap: onTap,
       padding: const EdgeInsets.fromLTRB(14, 13, 14, 13),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          InitialsAvatar(text: lead.initials, size: 44),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        lead.name.isEmpty ? 'Unnamed lead' : lead.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            fontSize: 15.5,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: -0.2),
+  Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            InitialsAvatar(text: lead.initials, size: 44),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          lead.name.isEmpty ? 'Unnamed lead' : lead.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 15.5,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: -0.2),
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    StatusPill(
-                        label: status.label, color: status.color, dense: true),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                Row(
-                  children: [
-                    if (lead.phone.isNotEmpty) ...[
-                      Icon(Icons.call_rounded,
-                          size: 13, color: scheme.onSurfaceVariant),
-                      const SizedBox(width: 4),
+                      const SizedBox(width: 8),
+                      StatusPill(
+                          label: status.label, color: status.color, dense: true),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      if (lead.phone.isNotEmpty) ...[
+                        Icon(Icons.call_rounded,
+                            size: 13, color: scheme.onSurfaceVariant),
+                        const SizedBox(width: 4),
+                        Text(
+                          lead.phone,
+                          style: TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w600,
+                              color: scheme.onSurfaceVariant),
+                        ),
+                      ],
+                      if (place.isNotEmpty) ...[
+                        if (lead.phone.isNotEmpty)
+                          Text('  ·  ',
+                              style: TextStyle(color: scheme.onSurfaceVariant)),
+                        Flexible(
+                          child: Text(
+                            place,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                fontSize: 12.5, color: scheme.onSurfaceVariant),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 9),
+                  Row(
+                    children: [
+                      if (lead.value > 0) ...[
+                        Text(
+                          moneyShort(lead.value),
+                          style: const TextStyle(
+                              fontSize: 13, fontWeight: FontWeight.w800),
+                        ),
+                        const SizedBox(width: 10),
+                      ],
+                      if (lead.assignedToName.isNotEmpty)
+                        Flexible(
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.person_outline_rounded,
+                                  size: 13, color: scheme.onSurfaceVariant),
+                              const SizedBox(width: 3),
+                              Flexible(
+                                child: Text(
+                                  lead.assignedToName,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      color: scheme.onSurfaceVariant),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      const Spacer(),
                       Text(
-                        lead.phone,
+                        timeAgo(lead.createdAt),
                         style: TextStyle(
-                            fontSize: 12.5,
+                            fontSize: 11.5,
                             fontWeight: FontWeight.w600,
                             color: scheme.onSurfaceVariant),
                       ),
                     ],
-                    if (place.isNotEmpty) ...[
-                      if (lead.phone.isNotEmpty)
-                        Text('  ·  ',
-                            style: TextStyle(color: scheme.onSurfaceVariant)),
-                      Flexible(
-                        child: Text(
-                          place,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                              fontSize: 12.5, color: scheme.onSurfaceVariant),
-                        ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+          // The two things done from the list rather than from the record:
+          // ring the customer, and open the survey. Both are on the web
+          // list too, and both are why a BDE has the phone out at all.
+          if (lead.phone.isNotEmpty || lead.canEditSiteVisit) ...[
+            const SizedBox(height: 11),
+            Row(
+              children: [
+                if (lead.canEditSiteVisit)
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: onSiteVisit,
+                      icon: const Icon(Icons.assignment_outlined, size: 16),
+                      label: Text(
+                        lead.siteVisitComplete
+                            ? 'Site visit ✓'
+                            : 'Site visit',
+                        style: const TextStyle(fontSize: 12.5),
                       ),
-                    ],
-                  ],
-                ),
-                const SizedBox(height: 9),
-                Row(
-                  children: [
-                    if (lead.value > 0) ...[
-                      Text(
-                        moneyShort(lead.value),
-                        style: const TextStyle(
-                            fontSize: 13, fontWeight: FontWeight.w800),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size.fromHeight(38),
+                        visualDensity: VisualDensity.compact,
+                        foregroundColor:
+                            lead.siteVisitComplete ? Brand.success : null,
                       ),
-                      const SizedBox(width: 10),
-                    ],
-                    if (lead.assignedToName.isNotEmpty)
-                      Flexible(
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.person_outline_rounded,
-                                size: 13, color: scheme.onSurfaceVariant),
-                            const SizedBox(width: 3),
-                            Flexible(
-                              child: Text(
-                                lead.assignedToName,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                    fontSize: 12,
-                                    color: scheme.onSurfaceVariant),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    const Spacer(),
-                    Text(
-                      timeAgo(lead.createdAt),
-                      style: TextStyle(
-                          fontSize: 11.5,
-                          fontWeight: FontWeight.w600,
-                          color: scheme.onSurfaceVariant),
                     ),
-                  ],
-                ),
+                  ),
+                if (lead.canEditSiteVisit && lead.phone.isNotEmpty)
+                  const SizedBox(width: 9),
+                if (lead.phone.isNotEmpty)
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: onDial,
+                      icon: const Icon(Icons.call_rounded, size: 16),
+                      label: const Text('Call',
+                          style: TextStyle(fontSize: 12.5)),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size.fromHeight(38),
+                        visualDensity: VisualDensity.compact,
+                        foregroundColor: Brand.success,
+                      ),
+                    ),
+                  ),
               ],
             ),
-          ),
+          ],
         ],
       ),
     );

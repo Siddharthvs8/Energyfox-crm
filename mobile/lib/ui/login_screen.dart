@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../api/api_client.dart';
 import '../state/auth.dart';
 import '../theme.dart';
 import 'widgets/common.dart';
@@ -17,28 +16,25 @@ class _LoginScreenState extends State<LoginScreen> {
   final _form = GlobalKey<FormState>();
   final _username = TextEditingController();
   final _password = TextEditingController();
-  late final TextEditingController _server =
-      TextEditingController(text: context.read<AuthController>().baseUrl);
 
   bool _showPassword = false;
-  late bool _showServer = _server.text.isEmpty;
 
   @override
   void dispose() {
     _username.dispose();
     _password.dispose();
-    _server.dispose();
     super.dispose();
   }
 
   Future<void> _submit() async {
     if (!(_form.currentState?.validate() ?? false)) return;
     FocusScope.of(context).unfocus();
+    // The server is fixed at build time (ApiClient.kProductionBase), so there
+    // is nothing to ask for here beyond the username and password.
     final auth = context.read<AuthController>();
     await auth.signIn(
       username: _username.text,
       password: _password.text,
-      server: _server.text,
     );
   }
 
@@ -220,62 +216,6 @@ class _LoginScreenState extends State<LoginScreen> {
                           strokeWidth: 2.2, color: Brand.navyDeep),
                     )
                   : const Text('Sign in'),
-            ),
-            const SizedBox(height: 6),
-            Align(
-              alignment: Alignment.center,
-              child: TextButton.icon(
-                onPressed: () => setState(() => _showServer = !_showServer),
-                icon: Icon(
-                  _showServer
-                      ? Icons.expand_less_rounded
-                      : Icons.dns_outlined,
-                  size: 17,
-                  color: Colors.white.withValues(alpha: 0.5),
-                ),
-                label: Text(
-                  _showServer ? 'Hide server' : 'Server settings',
-                  style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.5), fontSize: 13),
-                ),
-              ),
-            ),
-            AnimatedCrossFade(
-              duration: const Duration(milliseconds: 220),
-              crossFadeState: _showServer
-                  ? CrossFadeState.showSecond
-                  : CrossFadeState.showFirst,
-              firstChild: const SizedBox(width: double.infinity),
-              secondChild: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const SizedBox(height: 6),
-                  _field(
-                    controller: _server,
-                    label: 'CRM server',
-                    icon: Icons.language_rounded,
-                    keyboardType: TextInputType.url,
-                    validator: (v) {
-                      if (v == null || v.trim().isEmpty) {
-                        return 'Enter the CRM server address';
-                      }
-                      final uri = Uri.tryParse(ApiClient.normalizeBase(v));
-                      return (uri == null || uri.host.isEmpty)
-                          ? 'That does not look like an address'
-                          : null;
-                    },
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Where the EnergyFox API lives, e.g. https://crm.energyfox.co',
-                    style: TextStyle(
-                      fontSize: 11.5,
-                      height: 1.4,
-                      color: Colors.white.withValues(alpha: 0.4),
-                    ),
-                  ),
-                ],
-              ),
             ),
           ],
         ),

@@ -86,15 +86,11 @@ class AuthController extends ChangeNotifier {
   Future<bool> signIn({
     required String username,
     required String password,
-    String? server,
   }) async {
     _busy = true;
     _error = null;
     notifyListeners();
     try {
-      if (server != null) {
-        api.baseUrl = ApiClient.normalizeBase(server);
-      }
       await api.login(username.trim(), password);
       await _loadIdentity();
       _stage = AuthStage.signedIn;
@@ -115,12 +111,6 @@ class AuthController extends ChangeNotifier {
     _user = null;
     _statuses = const [];
     _stage = AuthStage.signedOut;
-    notifyListeners();
-  }
-
-  Future<void> setServer(String value) async {
-    api.baseUrl = ApiClient.normalizeBase(value);
-    await api.saveSession();
     notifyListeners();
   }
 
