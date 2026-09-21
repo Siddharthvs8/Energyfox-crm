@@ -29,6 +29,15 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        getByName("debug") {
+            // AGP turns off v1 (JAR) signing automatically when minSdk >= 24. Some OEM
+            // installers still reject a v2-only APK when sideloading, so sign with both.
+            enableV1Signing = true
+            enableV2Signing = true
+        }
+    }
+
     buildTypes {
         release {
             // TODO: Add your own signing config for the release build.
