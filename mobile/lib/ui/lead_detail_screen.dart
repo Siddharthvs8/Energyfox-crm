@@ -8,6 +8,15 @@ import '../api/models.dart';
 import '../state/auth.dart';
 import '../state/stores.dart';
 import '../theme.dart';
+import 'lead/attachments_card.dart';
+import 'lead/calls_card.dart';
+import 'lead/lead_actions.dart';
+import 'lead/notes_card.dart';
+import 'lead/quick_stats_card.dart';
+import 'lead/quotations_card.dart';
+import 'lead/site_visit_screen.dart';
+import 'lead/tasks_card.dart';
+import 'lead/whatsapp_card.dart';
 import 'lead_form_screen.dart';
 import 'task_editor.dart';
 import 'widgets/common.dart';
@@ -23,6 +32,12 @@ class LeadDetailScreen extends StatefulWidget {
 }
 
 class _LeadDetailScreenState extends State<LeadDetailScreen> {
+  // The sections own their own data, so a change made in one of them reloads
+  // that one rather than the whole page. These are how the page reaches them
+  // when an action elsewhere — placing a call, say — affects what they show.
+  final _callsKey = GlobalKey<CallHistoryCardState>();
+  final _tasksKey = GlobalKey<RelatedTasksCardState>();
+
   Lead? _lead;
   List<ActivityEntry> _timeline = const [];
   String? _error;
@@ -97,7 +112,9 @@ class _LeadDetailScreenState extends State<LeadDetailScreen> {
       await _api.post('/api/calls/initiate/', {'lead_id': lead.id});
       if (!mounted) return;
       showToast(context, 'Calling — your phone will ring first.');
-      _load();
+      // The log takes a moment to land: the card is refreshed, and the user
+      // can pull it again from its own Refresh if the dialler is slow.
+      _callsKey.currentState?.reload();
     } on ApiException catch (e) {
       if (!mounted) return;
       showToast(context, e.message, error: true);
@@ -179,6 +196,44 @@ class _LeadDetailScreenState extends State<LeadDetailScreen> {
     final updated = await Navigator.of(context).push<Lead>(
       MaterialPageRoute(builder: (_) => LeadFormScreen(lead: lead)),
     );
+    if (updated != null && mounted) {
+      setState(() => _lead = updated);
+      _load();
+    }
+  }
+
+  Future<void> _openSiteVisit() async {
+    final lead = _lead;
+    if (lead == null) return;
+    final changed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => SiteVisitScreen(lead: lead)),
+    );
+    // The site visit settles the deal value and the completion flag, both of
+    // which this page shows, so it re-reads the lead when something moved.
+    if (changed == true) _load();
+  }
+
+  Future<void> _assign({required bool documentation}) async {
+    final lead = _lead;
+    if (lead == null) return;
+    final updated =
+        await openAssignSheet(context, lead: lead, documentation: documentation);
+    if (updated != null && mounted) {
+      setState(() => _lead = updated);
+      _load();
+    }
+  }
+
+  Future<void> _setProduct() async {
+    final lead = _lead;
+    if (lead == null) return;
+    if (await openProductSheet(context, lead) && mounted) _load();
+  }
+
+  Future<void> _push() async {
+    final lead = _lead;
+    if (lead == null) return;
+    final updated = await pushToDocumentation(context, lead);
     if (updated != null && mounted) {
       setState(() => _lead = updated);
       _load();
@@ -282,7 +337,10 @@ class _LeadDetailScreenState extends State<LeadDetailScreen> {
                             onPressed: () async {
                               final created =
                                   await openTaskEditor(context, lead: lead);
-                              if (created != null) _load();
+                              if (created != null) {
+                                _tasksKey.currentState?.reload();
+                                _load();
+                              }
                             },
                             icon: const Icon(Icons.add_task_rounded, size: 18),
                             label: const Text('Add task'),
@@ -292,22 +350,117 @@ class _LeadDetailScreenState extends State<LeadDetailScreen> {
                         ),
                     ],
                   ),
-                const SizedBox(height: 22),
-                const SectionHeader(
-                    title: 'Details', icon: Icons.badge_outlined),
-                _DetailsCard(lead: lead),
-                if (lead.notes.isNotEmpty) ...[
-                  const SizedBox(height: 22),
-                  const SectionHeader(
-                      title: 'Notes', icon: Icons.sticky_note_2_outlined),
-                  AppCard(
-                    child: Text(lead.notes,
-                        style: const TextStyle(fontSize: 14, height: 1.5)),
+
+                // The hand-offs the web page keeps in its header. Each one is
+                // drawn only when the server said this account may do it to
+                // this lead — see LeadSerializer's can_* fields.
+                if (lead.canEditSiteVisit ||
+                    lead.canAssignBde ||
+                    (lead.canAssignDocumentation && lead.pushedToDocumentation))
+                  Padding(
+                    padding: const EdgeInsets.only(top: 10),
+                    child: Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: [
+                        if (lead.canEditSiteVisit)
+                          OutlinedButton.icon(
+                            onPressed: _setProduct,
+                            icon: const Icon(Icons.inventory_2_outlined,
+                                size: 17),
+                            label: Text(lead.productId == null
+                                ? 'Add product'
+                                : 'Edit product'),
+                          ),
+                        if (lead.canAssignBde)
+                          OutlinedButton.icon(
+                            onPressed: () => _assign(documentation: false),
+                            icon: const Icon(Icons.directions_car_outlined,
+                                size: 17),
+                            label: Text(lead.bdeId == null
+                                ? 'Assign BDE'
+                                : 'Reassign BDE'),
+                          ),
+                        if (lead.canAssignDocumentation &&
+                            lead.pushedToDocumentation)
+                          OutlinedButton.icon(
+                            onPressed: () => _assign(documentation: true),
+                            icon: const Icon(Icons.folder_shared_outlined,
+                                size: 17),
+                            label: Text(lead.documentationStaffId == null
+                                ? 'Assign documentation'
+                                : 'Reassign documentation'),
+                          ),
+                      ],
+                    ),
+                  ),
+
+                // The BDE's own screen. Prominent rather than buried: on a
+                // phone this is the reason the app is open at all.
+                if (lead.canEditSiteVisit || lead.siteVisitComplete) ...[
+                  const SizedBox(height: 12),
+                  FilledButton.icon(
+                    onPressed: _openSiteVisit,
+                    icon: const Icon(Icons.assignment_outlined, size: 19),
+                    label: Text(lead.siteVisitComplete
+                        ? 'Site visit — complete'
+                        : 'Site visit details'),
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size.fromHeight(50),
+                      backgroundColor:
+                          lead.siteVisitComplete ? Brand.success : Brand.amber,
+                      foregroundColor: lead.siteVisitComplete
+                          ? Colors.white
+                          : Brand.navyDeep,
+                    ),
                   ),
                 ],
+
+                const SizedBox(height: 22),
+                const SectionHeader(
+                    title: 'Contact information', icon: Icons.badge_outlined),
+                _DetailsCard(lead: lead),
+
+                const SizedBox(height: 22),
+                QuickStatsCard(lead: lead),
+
+                const SizedBox(height: 22),
+                NotesCard(
+                  leadId: lead.id,
+                  readOnly: auth.readOnly,
+                  onChanged: _load,
+                ),
+
+                const SizedBox(height: 22),
+                WhatsAppCard(leadId: lead.id, readOnly: auth.readOnly),
+
+                const SizedBox(height: 22),
+                RelatedTasksCard(
+                    key: _tasksKey, lead: lead, canAddTasks: auth.canAddTasks),
+
+                const SizedBox(height: 22),
+                CallHistoryCard(
+                    key: _callsKey,
+                    leadId: lead.id,
+                    readOnly: auth.readOnly),
+
+                const SizedBox(height: 22),
+                QuotationsCard(
+                  leadId: lead.id,
+                  readOnly: auth.readOnly,
+                  customerEmail: lead.email,
+                ),
+
+                const SizedBox(height: 22),
+                AttachmentsCard(
+                  leadId: lead.id,
+                  readOnly: auth.readOnly,
+                  invoiceUrl: lead.invoiceUrl,
+                ),
+
                 const SizedBox(height: 22),
                 SectionHeader(
-                  title: 'Timeline',
+                  title: 'Activity timeline',
                   icon: Icons.history_rounded,
                   action: _timeline.length > 6
                       ? TextButton(
@@ -323,6 +476,43 @@ class _LeadDetailScreenState extends State<LeadDetailScreen> {
                 ),
                 _TimelineCard(
                     entries: _timeline.take(6).toList(), loading: _loading),
+
+                // The hand-off that follows the site visit above.
+                if (lead.canEditSiteVisit && !lead.pushedToDocumentation) ...[
+                  const SizedBox(height: 22),
+                  AppCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const Text('Push to documentation',
+                            style: TextStyle(
+                                fontSize: 14.5, fontWeight: FontWeight.w800)),
+                        const SizedBox(height: 4),
+                        Text(
+                          lead.siteVisitComplete
+                              ? 'Site visit is complete — hand this lead over '
+                                  'to the documentation team.'
+                              : 'Mark the site visit complete first.',
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            height: 1.4,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        FilledButton.icon(
+                          onPressed: lead.siteVisitComplete ? _push : null,
+                          icon: const Icon(Icons.outbox_rounded, size: 18),
+                          label: const Text('Push to documentation'),
+                          style: FilledButton.styleFrom(
+                              minimumSize: const Size.fromHeight(48)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ]),
             ),
           ],

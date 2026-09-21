@@ -451,3 +451,62 @@ void showToast(BuildContext context, String message, {bool error = false}) {
       duration: Duration(seconds: error ? 4 : 2),
     ));
 }
+
+/// A yes/no dialog. Returns false when it is dismissed, so a caller can always
+/// treat the answer as "did they actually say yes?".
+Future<bool> confirm(
+  BuildContext context, {
+  required String title,
+  String? message,
+  String confirmLabel = 'Confirm',
+  String cancelLabel = 'Cancel',
+  bool danger = false,
+}) async {
+  final scheme = Theme.of(context).colorScheme;
+  final answer = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text(title),
+      content: message == null ? null : Text(message),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(cancelLabel)),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, true),
+          style: FilledButton.styleFrom(
+            minimumSize: const Size(96, 44),
+            backgroundColor: danger ? scheme.error : null,
+            foregroundColor: danger ? scheme.onError : null,
+          ),
+          child: Text(confirmLabel),
+        ),
+      ],
+    ),
+  );
+  return answer ?? false;
+}
+
+/// The label above a field or a figure — small, quiet, upper case, the same
+/// one the web app's forms use.
+class FieldLabel extends StatelessWidget {
+  const FieldLabel(this.text, {super.key});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Text(
+        text.toUpperCase(),
+        style: TextStyle(
+          fontSize: 10.5,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0.9,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
+      ),
+    );
+  }
+}
