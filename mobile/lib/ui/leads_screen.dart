@@ -411,6 +411,10 @@ class _LeadCard extends StatelessWidget {
     final place = [lead.company, lead.district]
         .where((s) => s.isNotEmpty)
         .join(' · ');
+    // A finished survey stays on the card even once the lead has been pushed to
+    // documentation and editing is locked, the way the web list shows it — the
+    // tick is the status, not an invitation to edit.
+    final showSiteVisit = lead.canEditSiteVisit || lead.siteVisitComplete;
 
     return AppCard(
       onTap: onTap,
@@ -526,30 +530,43 @@ class _LeadCard extends StatelessWidget {
           // The two things done from the list rather than from the record:
           // ring the customer, and open the survey. Both are on the web
           // list too, and both are why a BDE has the phone out at all.
-          if (lead.phone.isNotEmpty || lead.canEditSiteVisit) ...[
+          if (lead.phone.isNotEmpty || showSiteVisit) ...[
             const SizedBox(height: 11),
             Row(
               children: [
-                if (lead.canEditSiteVisit)
+                if (showSiteVisit)
                   Expanded(
                     child: OutlinedButton.icon(
                       onPressed: onSiteVisit,
-                      icon: const Icon(Icons.assignment_outlined, size: 16),
-                      label: Text(
+                      // A tick once the survey is signed off, a map pin while it
+                      // is still to be done — same two marks as the web list, and
+                      // a real icon rather than a character the label can clip.
+                      icon: Icon(
                         lead.siteVisitComplete
-                            ? 'Site visit ✓'
-                            : 'Site visit',
-                        style: const TextStyle(fontSize: 12.5),
+                            ? Icons.check_rounded
+                            : Icons.place_outlined,
+                        size: 16,
+                      ),
+                      label: const Text(
+                        'Site visit',
+                        style: TextStyle(fontSize: 12.5),
                       ),
                       style: OutlinedButton.styleFrom(
                         minimumSize: const Size.fromHeight(38),
                         visualDensity: VisualDensity.compact,
                         foregroundColor:
                             lead.siteVisitComplete ? Brand.success : null,
+                        backgroundColor: lead.siteVisitComplete
+                            ? Brand.success.withValues(alpha: 0.10)
+                            : null,
+                        side: lead.siteVisitComplete
+                            ? BorderSide(
+                                color: Brand.success.withValues(alpha: 0.55))
+                            : null,
                       ),
                     ),
                   ),
-                if (lead.canEditSiteVisit && lead.phone.isNotEmpty)
+                if (showSiteVisit && lead.phone.isNotEmpty)
                   const SizedBox(width: 9),
                 if (lead.phone.isNotEmpty)
                   Expanded(
