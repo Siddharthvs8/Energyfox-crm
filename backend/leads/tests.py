@@ -4623,6 +4623,181 @@ class MetaAutoSyncTests(TestCase):
         self.assertIsNone(self.a.last_synced_at)
 
 
+class KsebFeasibilitySuperAdminTests(TestCase):
+    """The super admin editing or deleting a KSEB feasibility.
+
+    Completing the feasibility locks it: it is what lets the customer be pushed
+    to purchase, and accounts takes a copy of its dates. Correcting it after that
+    is an override, and it sits with the super admin alone — the same rule as the
+    site-visit and liasoning unlocks.
+    """
+
+    def setUp(self):
+        from .models import PaymentVerification, SiteVisit
+        self.superadmin = mk('fsa_super', 'superadmin')
+        self.admin = mk('fsa_admin', 'admin')
+        self.bde = mk('fsa_bde', 'bde')
+        self.lead = Lead.objects.create(
+            first_name='Manikantan', last_name='Nair', phone='9895271491',
+            status='converted', value=Decimal('240000'), bde=self.bde)
+        self.sv = SiteVisit.objects.create(
+            lead=self.lead, po_signed_date=date(2026, 8, 10),
+            kseb_feasibility_taken='yes', kseb_feasibility_date=date(2026, 9, 22),
+            kseb_feasibility_complete=True)
+        self.pv = PaymentVerification.objects.create(
+            lead=self.lead, po_date=date(2026, 8, 10), kseb_feasibility_date=date(2026, 9, 22))
+
+    def url(self, suffix=''):
+        return f'/api/leads/{self.lead.id}/kseb-feasibility/{suffix}'
+
+    def patch(self, user, **data):
+        return self.client.patch(self.url(), data=data, content_type='application/json',
+                                 HTTP_AUTHORIZATION=token_for(user))
+
+    def delete(self, user):
+        return self.client.delete(self.url(), HTTP_AUTHORIZATION=token_for(user))
+
+    def add_receipt(self, user):
+        return self.client.post(
+            self.url('documents/'),
+            data={'file': SimpleUploadedFile('receipt.jpg', b'jpeg bytes', content_type='image/jpeg')},
+            HTTP_AUTHORIZATION=token_for(user))
+
+    def receipt(self):
+        from .models import SiteVisitDocument
+        doc = SiteVisitDocument(site_visit=self.sv, doc_type='kseb_feasibility_receipt')
+        doc.file.save('receipt.jpg', SimpleUploadedFile('receipt.jpg', b'jpeg bytes'), save=True)
+        return doc
+
+    # ── The lock still holds for everyone else ──
+    def test_the_bde_cannot_edit_a_completed_feasibility(self):
+        r = self.patch(self.bde, kseb_feasibility_date='2026-09-25')
+        self.assertEqual(r.status_code, 400, r.content[:200])
+        self.assertIn('locked', r.json()['error'])
+
+    def test_an_admin_is_not_the_super_admin(self):
+        r = self.patch(self.admin, kseb_feasibility_date='2026-09-25')
+        self.assertEqual(r.status_code, 400, r.content[:200])
+
+    # ── Editing ──
+    def test_the_super_admin_can_edit_a_completed_feasibility(self):
+        r = self.patch(self.superadmin, kseb_feasibility_date='2026-09-25')
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.sv.refresh_from_db()
+        self.assertEqual(self.sv.kseb_feasibility_date, date(2026, 9, 25))
+        self.assertTrue(self.sv.kseb_feasibility_complete)
+
+    def test_the_correction_reaches_accounts(self):
+        """Accounts copied the dates on completion; left alone it would keep
+        the wrong one for ever."""
+        self.patch(self.superadmin, po_signed_date='2026-08-12', kseb_feasibility_date='2026-09-25')
+        self.pv.refresh_from_db()
+        self.assertEqual(self.pv.po_date, date(2026, 8, 12))
+        self.assertEqual(self.pv.kseb_feasibility_date, date(2026, 9, 25))
+
+    def test_an_edit_is_logged(self):
+        from .models import ActivityLog
+        self.patch(self.superadmin, kseb_feasibility_date='2026-09-25')
+        self.assertTrue(ActivityLog.objects.filter(
+            lead=self.lead, description__icontains='feasibility edited').exists())
+
+    def test_an_edit_cannot_hollow_out_a_completed_record(self):
+        """Blanking the date would leave it locked and complete with nothing
+        behind it — clearing is what delete is for."""
+        r = self.patch(self.superadmin, kseb_feasibility_date='')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('kseb_feasibility_date', r.json()['missing'])
+        r = self.patch(self.superadmin, kseb_feasibility_taken='no')
+        self.assertEqual(r.status_code, 400)
+        self.sv.refresh_from_db()
+        self.assertEqual(self.sv.kseb_feasibility_taken, 'yes')
+
+    # ── Receipts on a completed record ──
+    def test_the_super_admin_can_add_a_receipt_to_a_completed_record(self):
+        self.assertEqual(self.add_receipt(self.superadmin).status_code, 201)
+
+    def test_the_bde_still_cannot(self):
+        self.assertEqual(self.add_receipt(self.bde).status_code, 400)
+
+    def test_the_bde_can_no_longer_delete_a_receipt_from_a_completed_record(self):
+        """This used to ignore the lock: the evidence could be stripped off a
+        signed-off feasibility by the person who signed it."""
+        doc = self.receipt()
+        r = self.client.delete(self.url(f'documents/{doc.id}/'), HTTP_AUTHORIZATION=token_for(self.bde))
+        self.assertEqual(r.status_code, 400)
+        from .models import SiteVisitDocument
+        self.assertTrue(SiteVisitDocument.objects.filter(pk=doc.pk).exists())
+
+    def test_the_super_admin_can_delete_a_receipt_from_a_completed_record(self):
+        doc = self.receipt()
+        r = self.client.delete(self.url(f'documents/{doc.id}/'),
+                               HTTP_AUTHORIZATION=token_for(self.superadmin))
+        self.assertEqual(r.status_code, 204)
+
+    # ── Deleting ──
+    def test_the_super_admin_can_delete_the_feasibility(self):
+        self.receipt()
+        r = self.delete(self.superadmin)
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.sv.refresh_from_db()
+        self.assertIsNone(self.sv.po_signed_date)
+        self.assertEqual(self.sv.kseb_feasibility_taken, '')
+        self.assertIsNone(self.sv.kseb_feasibility_date)
+        self.assertFalse(self.sv.kseb_feasibility_complete)
+        self.assertFalse(self.sv.documents.filter(doc_type='kseb_feasibility_receipt').exists())
+
+    def test_deleting_clears_the_dates_from_accounts(self):
+        """A payment record quoting a feasibility that no longer exists would be
+        worse than one quoting none."""
+        self.delete(self.superadmin)
+        self.pv.refresh_from_db()
+        self.assertIsNone(self.pv.po_date)
+        self.assertIsNone(self.pv.kseb_feasibility_date)
+
+    def test_deleting_is_logged(self):
+        from .models import ActivityLog
+        self.delete(self.superadmin)
+        self.assertTrue(ActivityLog.objects.filter(
+            lead=self.lead, description__icontains='feasibility deleted').exists())
+
+    def test_only_the_super_admin_can_delete(self):
+        self.assertEqual(self.delete(self.bde).status_code, 403)
+        self.assertEqual(self.delete(self.admin).status_code, 403)
+        self.sv.refresh_from_db()
+        self.assertTrue(self.sv.kseb_feasibility_complete)
+
+    def test_deleting_nothing_says_so(self):
+        self.delete(self.superadmin)
+        r = self.delete(self.superadmin)
+        self.assertEqual(r.status_code, 404)
+
+    def test_a_customer_already_with_purchase_stays_there(self):
+        """Pulling them back out of procurement is not something clearing a form
+        should do quietly."""
+        Lead.objects.filter(pk=self.lead.pk).update(pushed_to_purchase=True)
+        r = self.delete(self.superadmin)
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()['pushed_to_purchase'])
+        self.lead.refresh_from_db()
+        self.assertTrue(self.lead.pushed_to_purchase)
+
+    def test_the_answer_says_whether_the_customer_is_still_on_the_list(self):
+        r = self.delete(self.superadmin)
+        self.assertFalse(r.json()['still_in_queue'])     # no PO date, not in documentation
+
+    def test_a_customer_in_documentation_stays_on_the_list(self):
+        Lead.objects.filter(pk=self.lead.pk).update(pushed_to_documentation=True)
+        r = self.delete(self.superadmin)
+        self.assertTrue(r.json()['still_in_queue'])
+
+    # ── What the screen is told ──
+    def test_only_the_super_admin_is_offered_the_controls(self):
+        r = self.client.get(self.url(), HTTP_AUTHORIZATION=token_for(self.superadmin))
+        self.assertTrue(r.json()['can_manage'])
+        r = self.client.get(self.url(), HTTP_AUTHORIZATION=token_for(self.bde))
+        self.assertFalse(r.json()['can_manage'])
+
+
 class ReopenSiteVisitTests(TestCase):
     """A super admin unlocking a signed-off site visit.
 

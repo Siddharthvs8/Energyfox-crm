@@ -522,7 +522,7 @@ class LeadViewSet(viewsets.ModelViewSet):
 
     # ── KSEB feasibility (BDE section for pushed-to-documentation leads) ──
     def _feasibility_payload(self, lead, request, sv=None):
-        from .access import can_edit_kseb_feasibility
+        from .access import can_edit_kseb_feasibility, can_manage_kseb_feasibility
         # `sv` is passed by writers so the response reflects what was just saved;
         # reading lead.site_visit here can hand back a stale cached instance.
         if sv is None:
@@ -558,6 +558,11 @@ class LeadViewSet(viewsets.ModelViewSet):
             'feasibility_due_date': d(sv.kseb_feasibility_due_date) if sv else None,
             'receipts': receipts,
             'can_edit': can_edit_kseb_feasibility(request.user, lead),
+            # Super admin only: edit a completed record, or delete it.
+            'can_manage': can_manage_kseb_feasibility(getattr(request, 'user', None)),
+            # So the delete confirmation can warn that the customer is already
+            # with purchase and will stay there.
+            'pushed_to_purchase': lead.pushed_to_purchase,
         }
 
     @action(detail=False, methods=['get'], url_path='bde-feasibility')
@@ -776,40 +781,149 @@ class LeadViewSet(viewsets.ModelViewSet):
             })
         return Response({'count': len(items), 'items': items})
 
-    @action(detail=True, methods=['get', 'patch'], url_path='kseb-feasibility')
+    @action(detail=True, methods=['get', 'patch', 'delete'], url_path='kseb-feasibility')
     def kseb_feasibility(self, request, pk=None):
-        """Get or update a lead's KSEB feasibility (PO date, taken, feasibility date)."""
-        from .access import can_edit_kseb_feasibility
+        """Get, update or (super admin) delete a lead's KSEB feasibility.
+
+        Once completed the record is locked for everyone except the super admin,
+        who may still correct it — a wrong date is usually found by accounts,
+        after the BDE signed it off — or delete it outright.
+        """
+        from .access import can_edit_kseb_feasibility, can_manage_kseb_feasibility
         lead = self.get_object()
         sv, _ = SiteVisit.objects.get_or_create(lead=lead)
         if request.method == 'GET':
             return Response(self._feasibility_payload(lead, request))
-        if not can_edit_kseb_feasibility(request.user, lead):
+
+        if request.method == 'DELETE':
+            return self._delete_kseb_feasibility(request, lead, sv)
+
+        admin_override = can_manage_kseb_feasibility(request.user)
+        if not (can_edit_kseb_feasibility(request.user, lead) or admin_override):
             return Response({'error': 'You do not have permission to edit this feasibility.'},
                             status=status.HTTP_403_FORBIDDEN)
-        if sv.kseb_feasibility_complete:
+        was_complete = sv.kseb_feasibility_complete
+        if was_complete and not admin_override:
             return Response({'error': 'KSEB feasibility is already completed and locked.'},
                             status=status.HTTP_400_BAD_REQUEST)
+
+        before = (sv.po_signed_date, sv.kseb_feasibility_taken, sv.kseb_feasibility_date)
         for field in ('po_signed_date', 'kseb_feasibility_date'):
             if field in request.data:
                 setattr(sv, field, request.data.get(field) or None)
         if 'kseb_feasibility_taken' in request.data:
             sv.kseb_feasibility_taken = request.data.get('kseb_feasibility_taken') or ''
+
+        # A completed record has to stay one. Editing its date away, or marking
+        # it "not taken", would leave it locked and complete with nothing behind
+        # it — and the customer may already have been pushed to purchase on the
+        # strength of it. Clearing it is what delete is for.
+        if was_complete:
+            missing = []
+            if not sv.po_signed_date:
+                missing.append('po_signed_date')
+            if sv.kseb_feasibility_taken != 'yes':
+                missing.append('kseb_feasibility_taken')
+            if not sv.kseb_feasibility_date:
+                missing.append('kseb_feasibility_date')
+            if missing:
+                return Response(
+                    {'error': 'A completed feasibility needs its PO date, "taken" and the '
+                              'feasibility date. To clear it, delete it instead.',
+                     'missing': missing},
+                    status=status.HTTP_400_BAD_REQUEST)
+
         sv.save()
         sv.refresh_from_db()  # turn date strings into date objects for the payload/reminder
         self._sync_feasibility_reminder(lead, sv)
+
+        if was_complete:
+            # Accounts took a copy of these dates when the feasibility was
+            # completed; a correction has to reach it, or accounts keeps the
+            # wrong date for ever.
+            self._sync_site_visit_downstream(lead, sv)
+            after = (sv.po_signed_date, sv.kseb_feasibility_taken, sv.kseb_feasibility_date)
+            if after != before:
+                actor = (f"{request.user.first_name} {request.user.last_name}".strip()
+                         or request.user.username)
+                ActivityLog.objects.create(
+                    activity_type='note_added', lead=lead,
+                    actor=request.user if request.user.is_authenticated else None,
+                    description=f"Completed KSEB feasibility edited by {actor}.",
+                    extra={'auto_generated': True},
+                )
         return Response(self._feasibility_payload(lead, request, sv=sv))
+
+    def _delete_kseb_feasibility(self, request, lead, sv):
+        """Super admin clears a lead's KSEB feasibility completely.
+
+        Everything the feasibility card shows goes: the PO date, whether it was
+        taken, the date, the completed flag and the receipts. The dates accounts
+        copied go with them — a payment record still quoting a feasibility that no
+        longer exists would be worse than one that quotes none.
+
+        A customer already pushed to purchase stays there. Pulling them back out of
+        procurement is not something clearing a form should do quietly; the screen
+        warns before this is confirmed.
+        """
+        from .access import can_manage_kseb_feasibility
+        if not can_manage_kseb_feasibility(request.user):
+            return Response({'error': 'Only the super admin can delete a KSEB feasibility.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        has_data = bool(sv.po_signed_date or sv.kseb_feasibility_taken
+                        or sv.kseb_feasibility_date or sv.kseb_feasibility_complete
+                        or sv.documents.filter(doc_type='kseb_feasibility_receipt').exists())
+        if not has_data:
+            return Response({'error': 'There is no KSEB feasibility data to delete.'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        receipts = list(sv.documents.filter(doc_type='kseb_feasibility_receipt'))
+        for doc in receipts:
+            doc.file.delete(save=False)
+            doc.delete()
+
+        sv.po_signed_date = None
+        sv.kseb_feasibility_taken = ''
+        sv.kseb_feasibility_date = None
+        sv.kseb_feasibility_complete = False
+        sv.save(update_fields=list(self.FEASIBILITY_FIELDS) + ['updated_at'])
+
+        self._sync_feasibility_reminder(lead, sv)
+        self._sync_site_visit_downstream(lead, sv)
+
+        actor = (f"{request.user.first_name} {request.user.last_name}".strip()
+                 or request.user.username)
+        note = f"KSEB feasibility deleted by {actor}"
+        if receipts:
+            note += f" ({len(receipts)} receipt{'s' if len(receipts) != 1 else ''} removed)"
+        if lead.pushed_to_purchase:
+            note += " — the customer was already with purchase and stays there"
+        ActivityLog.objects.create(
+            activity_type='note_added', lead=lead,
+            actor=request.user if request.user.is_authenticated else None,
+            description=note + '.',
+            extra={'auto_generated': True},
+        )
+        # The queue is "PO signed OR in documentation": without a PO date a lead
+        # that is not in documentation drops off it, so say which happened.
+        return Response({
+            'deleted': True,
+            'lead': lead.id,
+            'still_in_queue': bool(lead.pushed_to_documentation),
+            'pushed_to_purchase': lead.pushed_to_purchase,
+        })
 
     @action(detail=True, methods=['post'], url_path='kseb-feasibility/documents')
     def kseb_feasibility_add_document(self, request, pk=None):
         """Upload the KSEB feasibility receipt photo/PDF."""
-        from .access import can_edit_kseb_feasibility
+        from .access import can_edit_kseb_feasibility, can_manage_kseb_feasibility
         lead = self.get_object()
-        if not can_edit_kseb_feasibility(request.user, lead):
+        admin_override = can_manage_kseb_feasibility(request.user)
+        if not (can_edit_kseb_feasibility(request.user, lead) or admin_override):
             return Response({'error': 'You do not have permission to edit this feasibility.'},
                             status=status.HTTP_403_FORBIDDEN)
         sv, _ = SiteVisit.objects.get_or_create(lead=lead)
-        if sv.kseb_feasibility_complete:
+        if sv.kseb_feasibility_complete and not admin_override:
             return Response({'error': 'KSEB feasibility is completed and locked.'},
                             status=status.HTTP_400_BAD_REQUEST)
         file = request.FILES.get('file')
@@ -822,12 +936,22 @@ class LeadViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['delete'], url_path='kseb-feasibility/documents/(?P<doc_id>[0-9]+)')
     def kseb_feasibility_delete_document(self, request, pk=None, doc_id=None):
-        """Delete a KSEB feasibility receipt."""
-        from .access import can_edit_kseb_feasibility
+        """Delete a KSEB feasibility receipt.
+
+        Respects the completion lock, which it used to ignore: the receipt is
+        the evidence the feasibility was taken, and a completed record should
+        not be able to lose it to anyone but the super admin.
+        """
+        from .access import can_edit_kseb_feasibility, can_manage_kseb_feasibility
         lead = self.get_object()
-        if not can_edit_kseb_feasibility(request.user, lead):
+        admin_override = can_manage_kseb_feasibility(request.user)
+        if not (can_edit_kseb_feasibility(request.user, lead) or admin_override):
             return Response({'error': 'You do not have permission to edit this feasibility.'},
                             status=status.HTTP_403_FORBIDDEN)
+        sv = getattr(lead, 'site_visit', None)
+        if sv and sv.kseb_feasibility_complete and not admin_override:
+            return Response({'error': 'KSEB feasibility is completed and locked.'},
+                            status=status.HTTP_400_BAD_REQUEST)
         try:
             doc = SiteVisitDocument.objects.get(pk=doc_id, site_visit__lead=lead,
                                                 doc_type='kseb_feasibility_receipt')

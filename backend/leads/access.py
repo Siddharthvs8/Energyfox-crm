@@ -338,6 +338,21 @@ def can_reopen_documentation(user):
             or getattr(user, 'role', '') == 'documentation_manager')
 
 
+def can_manage_kseb_feasibility(user):
+    """Who may change a *completed* KSEB feasibility, or delete it outright:
+    the super admin, and no one else.
+
+    Completing the feasibility locks it — it is what lets the customer be pushed
+    to purchase, and its dates go to accounts. So correcting it afterwards is an
+    override, not a routine edit, and it sits with the super admin like the other
+    unlocks (see can_reopen_site_visit, can_reopen_liasoning). Deliberately not
+    routed through ``custom_grant`` for the same reason.
+    """
+    if not user or not getattr(user, 'is_authenticated', False):
+        return False
+    return bool(getattr(user, 'is_superuser', False))
+
+
 def can_reopen_site_visit(user):
     """Who may unlock a signed-off site visit so it can be edited again: the
     super admin, and no one else.

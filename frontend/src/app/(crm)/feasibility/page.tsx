@@ -27,6 +27,10 @@ type Feasibility = {
   feasibility_due_date: string | null;
   receipts: Receipt[];
   can_edit: boolean;
+  /** Super admin only: edit a completed record, or delete it. */
+  can_manage?: boolean;
+  /** Lets the delete confirmation warn that the customer is already with purchase. */
+  pushed_to_purchase?: boolean;
 };
 
 const inputCls = "w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all disabled:opacity-70 disabled:cursor-not-allowed";
@@ -157,8 +161,14 @@ function FeasibilityForm({ lead, apiBase, authHeader, onChanged }: {
   const [saving, setSaving] = useState(false);
   const [completing, setCompleting] = useState(false);
   const [uploading, setUploading] = useState(false);
+  // A completed record is locked; the super admin unlocks it for one edit by
+  // choosing Edit, and it locks again when they save or cancel.
+  const [adminEditing, setAdminEditing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
-  const canEdit = lead.can_edit && !complete;
+  const canEdit = (lead.can_edit && !complete) || (!!lead.can_manage && adminEditing);
+  const hasData = !!(lead.po_signed_date || lead.kseb_feasibility_taken
+    || lead.kseb_feasibility_date || lead.kseb_feasibility_complete || (lead.receipts || []).length);
   const due = (() => {
     if (!poDate) return "";
     const d = new Date(poDate);
@@ -197,6 +207,48 @@ function FeasibilityForm({ lead, apiBase, authHeader, onChanged }: {
     else alert("Could not delete.");
   };
 
+  const cancelAdminEdit = () => {
+    // Put the fields back as they were: an abandoned edit must not leave
+    // unsaved values on screen looking as if they had been kept.
+    setPoDate(lead.po_signed_date || "");
+    setTaken(lead.kseb_feasibility_taken || "");
+    setKsebDate(lead.kseb_feasibility_date || "");
+    setAdminEditing(false);
+  };
+
+  const saveAdminEdit = async () => {
+    setSaving(true);
+    try {
+      if (await saveScalars()) {
+        setAdminEditing(false);
+        onChanged();
+        alert("Saved. The corrected dates have been sent to accounts.");
+      }
+    } finally { setSaving(false); }
+  };
+
+  const deleteFeasibility = async () => {
+    const name = `${lead.first_name} ${lead.last_name || ""}`.trim();
+    const warning = lead.pushed_to_purchase
+      ? ` ${name} has already been pushed to purchase and will stay there.`
+      : "";
+    if (!window.confirm(
+      `Delete the KSEB feasibility for ${name}? This clears the PO date, whether it was taken, `
+      + `the feasibility date and the receipts, and removes the dates from accounts.${warning}`,
+    )) return;
+    setDeleting(true);
+    try {
+      const r = await fetch(`${base}/kseb-feasibility/`, { method: "DELETE", headers: authHeader() });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(d.error || "Could not delete."); return; }
+      onChanged();
+      alert(d.still_in_queue
+        ? "KSEB feasibility deleted. The customer stays on this list because they are in documentation."
+        : "KSEB feasibility deleted. With no PO date the customer has left this list.");
+    } catch { alert("Network error while deleting."); }
+    finally { setDeleting(false); }
+  };
+
   const ready = !!poDate && taken === "yes" && !!ksebDate;
   const completeFeas = async () => {
     if (!ready) { alert("Record the PO date and the KSEB feasibility (taken + date) first."); return; }
@@ -212,8 +264,25 @@ function FeasibilityForm({ lead, apiBase, authHeader, onChanged }: {
   return (
     <div className="space-y-4">
       {complete && (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-semibold text-emerald-700">
-          ✓ Completed — PO &amp; feasibility dates sent to the accounts module.
+        <div className={`rounded-xl border px-4 py-2.5 text-xs font-semibold flex flex-wrap items-center justify-between gap-2 ${
+          adminEditing ? "border-amber-200 bg-amber-50 text-amber-800" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
+          <span>
+            {adminEditing
+              ? "Editing a completed feasibility — saving sends the corrected dates to accounts."
+              : "✓ Completed — PO & feasibility dates sent to the accounts module."}
+          </span>
+          {lead.can_manage && !adminEditing && (
+            <span className="flex items-center gap-2">
+              <button type="button" onClick={() => setAdminEditing(true)}
+                className="px-3 py-1 rounded-lg bg-white border border-emerald-200 text-emerald-700 hover:bg-emerald-100 transition">
+                Edit
+              </button>
+              <button type="button" onClick={deleteFeasibility} disabled={deleting}
+                className="px-3 py-1 rounded-lg bg-white border border-rose-200 text-rose-600 hover:bg-rose-50 disabled:opacity-50 transition">
+                {deleting ? "Deleting…" : "Delete"}
+              </button>
+            </span>
+          )}
         </div>
       )}
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -277,11 +346,38 @@ function FeasibilityForm({ lead, apiBase, authHeader, onChanged }: {
         </div>
       )}
 
-      {canEdit && (
+      {canEdit && !complete && (
         <div className="flex flex-wrap items-center gap-3 pt-1">
           <button onClick={save} disabled={saving || completing} className="px-5 py-2.5 bg-slate-800 text-white rounded-xl text-sm font-semibold hover:bg-slate-900 disabled:opacity-50 transition">{saving ? "Saving…" : "Save"}</button>
           <button onClick={completeFeas} disabled={completing || saving || !ready} title={!ready ? "PO date + feasibility taken + feasibility date required" : ""}
             className="px-5 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition">{completing ? "Completing…" : "Complete & send to Accounts"}</button>
+          {/* Delete is here too, for a record that was started but never
+              completed — a wrong PO date can put a customer on this list. */}
+          {lead.can_manage && hasData && (
+            <button onClick={deleteFeasibility} disabled={deleting || saving || completing}
+              className="px-5 py-2.5 bg-white border border-rose-200 text-rose-600 rounded-xl text-sm font-semibold hover:bg-rose-50 disabled:opacity-50 transition">
+              {deleting ? "Deleting…" : "Delete"}
+            </button>
+          )}
+        </div>
+      )}
+
+      {adminEditing && (
+        <div className="flex flex-wrap items-center gap-3 pt-1">
+          <button onClick={saveAdminEdit} disabled={saving || !ready}
+            title={!ready ? "A completed feasibility needs its PO date, taken = Yes and the feasibility date. Delete it instead to clear it." : ""}
+            className="px-5 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition">
+            {saving ? "Saving…" : "Save changes"}
+          </button>
+          <button onClick={cancelAdminEdit} disabled={saving}
+            className="px-5 py-2.5 bg-white border border-slate-200 text-slate-600 rounded-xl text-sm font-semibold hover:bg-slate-50 disabled:opacity-50 transition">
+            Cancel
+          </button>
+          {!ready && (
+            <span className="text-xs text-amber-600">
+              A completed feasibility needs all three. To clear it, use Delete.
+            </span>
+          )}
         </div>
       )}
       {!lead.can_edit && !complete && <p className="text-xs text-slate-400">Read-only — not your lead.</p>}
