@@ -21,6 +21,10 @@ import {
 type Line = { item: string; serial_numbers: string; quantity: string; rate: string };
 
 const blankLine = (): Line => ({ item: "", serial_numbers: "", quantity: "", rate: "" });
+
+/** Serials listed on a row of the table before "+N more". */
+const SERIALS_SHOWN = 2;
+
 const blankForm = () => ({
   invoice_no: "", date: todayISO(), customer: "", tax_percent: "", site: "", notes: "",
   lines: [blankLine()],
@@ -51,6 +55,13 @@ export default function StockDispatchPage() {
                                             settled: boolean | null; payments: PaymentRow[] }>(
     { total: 0, received: 0, exact: null, balance: null, settled: null, payments: [] });
   const [working, setWorking] = useState(false);
+  // Rows whose full serial list is open; the rest show the first few.
+  const [openSerials, setOpenSerials] = useState<Set<number>>(new Set());
+  const toggleSerials = (id: number) => setOpenSerials(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
 
   const lines: Line[] = form.lines;
   const setLine = (i: number, patch: Partial<Line>) =>
@@ -257,7 +268,7 @@ export default function StockDispatchPage() {
       <DataTable
         minWidth={880} compact
         columns={[
-          "Invoice No.", "Customer", "Date", "Item", "Serial No.",
+          "Invoice / Date", "Customer", "Item", "Serial No.",
           { label: "Qty", align: "right" }, { label: "Total", align: "right" },
           { label: "Payment", align: "center" },
           { label: "Actions", align: "right" },
@@ -266,37 +277,46 @@ export default function StockDispatchPage() {
         onRowClick={i => setPreview(filtered[i])}
         rowTitle="Open the invoice"
         rows={filtered.map(r => [
+          // The date sits under the invoice number rather than in a column of
+          // its own: the room is what lets Actions stay on the page.
           <span className="font-mono text-xs font-semibold text-slate-900 whitespace-nowrap">
             {r.invoice_no || "—"}
+            <span className="block font-normal text-[11px] text-slate-500">{r.date || "—"}</span>
             {r.status === "pending" && (
               <span className="block text-[9px] font-bold uppercase tracking-wider text-amber-600">
                 not yet shipped
               </span>
             )}
           </span>,
-          r.customer_name || "—",
-          <span className="font-mono text-xs text-slate-500 whitespace-nowrap">{r.date || "—"}</span>,
-          <div className="min-w-[120px]">
+          // DataTable makes every cell nowrap. The customer and the item label
+          // are allowed to wrap again so a long company name takes a second line
+          // rather than pushing Actions off the side of the page.
+          <span className="block min-w-[120px] whitespace-normal">{r.customer_name || "—"}</span>,
+          <div className="min-w-[110px]">
             <span className="font-mono text-xs whitespace-nowrap">{r.item_code}</span>
-            <span className="block text-[11px] text-slate-400">{r.item_label}</span>
+            <span className="block text-[11px] text-slate-400 whitespace-normal">{r.item_label}</span>
           </div>,
           (() => {
             const serials = serialsOf(r);
             if (!serials.length) return <span className="text-slate-300">—</span>;
-            // Wrapped rather than run out sideways, so the row grows downward
-            // instead of the table growing past the page. Joined with ", " —
-            // the stored form has no spaces, which leaves the browser nothing to
-            // wrap on, and that is what was stretching the column. break-words
-            // rather than break-all so a serial is never split down the middle.
+            // One serial to a line, the first few only: a ten-panel delivery
+            // listed in full made a row ten lines tall. "+N more" opens the rest
+            // in place, and hovering shows them all. The column is one serial
+            // wide, so it can no longer run over Qty, Total and Payment.
+            // A button to reveal a single serial would take the line the serial
+            // needs, so only collapse when it hides two or more.
+            const collapsible = serials.length > SERIALS_SHOWN + 1;
+            const open = openSerials.has(r.id);
+            const shown = open || !collapsible ? serials : serials.slice(0, SERIALS_SHOWN);
             return (
-              <div className="max-w-[180px]">
-                <span className="font-mono text-[10px] leading-relaxed text-slate-500 break-words">
-                  {serials.join(", ")}
-                </span>
-                {serials.length > 1 && (
-                  <span className="block text-[9px] font-semibold uppercase tracking-wider text-slate-300 mt-0.5">
-                    {serials.length} serials
-                  </span>
+              <div title={serials.join("\n")} className="font-mono text-[10px] leading-relaxed text-slate-500">
+                {shown.map((s, i) => <span key={i} className="block">{s}</span>)}
+                {collapsible && (
+                  <button type="button"
+                    onClick={e => { e.stopPropagation(); toggleSerials(r.id); }}
+                    className="mt-0.5 font-sans text-[10px] font-semibold text-indigo-600 hover:text-indigo-800">
+                    {open ? "Show less" : `+${serials.length - SERIALS_SHOWN} more`}
+                  </button>
                 )}
               </div>
             );
