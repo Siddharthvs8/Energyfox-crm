@@ -9,6 +9,7 @@ import Link from "next/link";
 import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCleanup";
 import { isSpectator } from "@/lib/spectator";
 import BdeTag from "@/components/BdeTag";
+import { RemarkSummary, RemarkSummaryData } from "@/components/DocumentationRemarks";
 type Stage2Lead = {
   /** Who did the site visit — shown as a tag on the row. */
   bde_name?: string | null;
@@ -30,6 +31,9 @@ type Stage2Lead = {
   subsidy_requested?: boolean;
   subsidy_pending?: boolean;
   pushed_at: string | null;
+  /** The latest remark — usually why the customer is held up. */
+  latest_remark?: RemarkSummaryData;
+  remark_count?: number;
 };
 
 /** The three buckets are disjoint: a signed-off customer whose subsidy has not
@@ -98,7 +102,9 @@ export default function DocumentationStage2Page() {
     if (!q) return true;
     return (`${l.first_name} ${l.last_name || ""}`.toLowerCase().includes(q)
       || (l.phone || "").toLowerCase().includes(q)
-      || (l.location || "").toLowerCase().includes(q));
+      || (l.location || "").toLowerCase().includes(q)
+      // A reason is worth searching by: "bank" finds everyone held up on one.
+      || (l.latest_remark?.body || "").toLowerCase().includes(q));
   };
 
   // Counts are of the search results, so the tabs can't disagree with the list.
@@ -135,7 +141,7 @@ export default function DocumentationStage2Page() {
         <input
           value={search}
           onChange={e => setSearch(e.target.value)}
-          placeholder="Search by name, phone or location…"
+          placeholder="Search by name, phone, location or remark…"
           className="w-full max-w-md bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all"
         />
         <span className="text-xs font-semibold text-slate-400 whitespace-nowrap flex-shrink-0">{filtered.length} customer{filtered.length === 1 ? "" : "s"}</span>
@@ -174,6 +180,7 @@ export default function DocumentationStage2Page() {
                     })()}
                   </div>
                   <p className="text-xs text-slate-500 mt-0.5 truncate">{l.phone || "—"} · {l.location || "No location"}{l.product_name ? ` · ${l.product_name}` : ""}</p>
+                  <RemarkSummary remark={l.latest_remark} since={l.pushed_at} pending={!l.is_complete} />
                 </div>
                 <div className="flex items-center gap-4 flex-shrink-0">
                   <div className="hidden md:block text-right">

@@ -8,6 +8,7 @@ import Link from "next/link";
 import DocumentationStage1Section from "./DocumentationStage1Section";
 
 import ActivityTimeline from "@/components/ActivityTimeline";
+import DocumentationRemarks from "@/components/DocumentationRemarks";
 import { DetailSkeleton } from "@/components/Skeleton";
 type Attachment = { label: string; url: string; is_image: boolean };
 type DocDetail = {
@@ -162,6 +163,10 @@ export default function DocumentationDetailPage({ params: paramsPromise }: { par
           </div>
         </div>
       )}
+
+      {/* Why it is held up — near the top, so it is the first thing whoever
+          picks the customer up reads. */}
+      <DocumentationRemarks leadId={data.id} stage="stage1" />
 
       {/* Customer details */}
       <div className="mt-5 bg-white border border-slate-200 rounded-2xl shadow-sm p-5">

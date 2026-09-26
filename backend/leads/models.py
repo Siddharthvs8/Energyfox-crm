@@ -813,13 +813,20 @@ class LeadNote(models.Model):
         written — and because the notes carried over from the old blob have no
         author to claim them.
         """
-        if not user or not getattr(user, 'is_authenticated', False):
-            return False
-        if getattr(user, 'is_spectator', False):
-            return False
-        if self.author_id and self.author_id == user.id:
-            return True
-        return bool(user.is_staff or getattr(user, 'is_general_manager', False))
+        return may_edit_authored_entry(self.author_id, user)
+
+
+def may_edit_authored_entry(author_id, user):
+    """The rule for anything written in someone's name — lead notes and
+    documentation remarks: the author may correct it, the admin tier may
+    override, and a view-only account may do neither."""
+    if not user or not getattr(user, 'is_authenticated', False):
+        return False
+    if getattr(user, 'is_spectator', False):
+        return False
+    if author_id and author_id == user.id:
+        return True
+    return bool(user.is_staff or getattr(user, 'is_general_manager', False))
 
 
 def resync_lead_notes(lead):
@@ -1375,6 +1382,51 @@ class DocumentationStage2Document(models.Model):
 
     def __str__(self):
         return f"{self.doc_type} — {self.stage2_id}"
+
+
+class DocumentationRemark(models.Model):
+    """A dated remark on a customer's documentation — usually why it is held up.
+
+    A customer can sit in documentation for days waiting on something outside
+    the desk: an Aadhaar the customer has not sent, a bank that has not
+    answered, a section office that is closed. The stage's own fields cannot
+    say that, so the reason lived in someone's head. A remark writes it down,
+    with who noted it and when, and the lists show the latest one so a manager
+    can see why a customer is stuck without opening it.
+
+    A log rather than one text box: the reason changes as the wait goes on, and
+    "waiting on the bank since the 12th" is only useful if the 12th is still
+    there. Stage 1 and Stage 2 keep separate logs — they are different desks
+    working different paperwork, often months apart.
+
+    Remarks are notes, not stage data, so a completed (locked) stage still
+    takes them.
+    """
+    STAGE_CHOICES = [('stage1', 'Documentation Stage 1'), ('stage2', 'Documentation Stage 2')]
+
+    lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name='documentation_remarks')
+    stage = models.CharField(max_length=10, choices=STAGE_CHOICES)
+    body = models.TextField()
+    author = models.ForeignKey('users.User', on_delete=models.SET_NULL,
+                               null=True, blank=True, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    edited_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        # Newest first: the latest remark is the current reason.
+        ordering = ['-created_at', '-id']
+        indexes = [models.Index(fields=['lead', 'stage', '-created_at'])]
+
+    def __str__(self):
+        return f"{self.get_stage_display()} remark on lead {self.lead_id}"
+
+    def save(self, *args, **kwargs):
+        self.body = (self.body or '').strip()
+        super().save(*args, **kwargs)
+
+    def may_be_edited_by(self, user):
+        return may_edit_authored_entry(self.author_id, user)
 
 
 class LiasoningService(models.Model):

@@ -7,7 +7,7 @@ from django.http import HttpResponse
 import csv
 import io
 import logging
-from .models import Lead, District, LeadNote, resync_lead_notes, IntegrationSettings, ActivityLog, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, LeadDocument, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, LiasoningDocument, Warranty, WarrantyDocument, EmergencyService, EmergencyServiceDocument, PeriodicMaintenance, MaintenanceVisit, MaintenanceVisitDocument, ModuleSeen, ReceiptVoucher
+from .models import Lead, District, LeadNote, resync_lead_notes, DocumentationRemark, IntegrationSettings, ActivityLog, LeadAttachment, Product, SiteVisit, DocumentationStage1, SiteVisitDocument, DocumentationStage1Document, LeadDocument, PaymentVerification, PurchaseLogistics, Project, ProjectDocument, ServiceEntry, TeamStatsConfig, BalancePayment, DocumentationStage2, DocumentationStage2Document, LiasoningService, LiasoningDocument, Warranty, WarrantyDocument, EmergencyService, EmergencyServiceDocument, PeriodicMaintenance, MaintenanceVisit, MaintenanceVisitDocument, ModuleSeen, ReceiptVoucher
 from .serializers import LeadSerializer, DistrictSerializer, IntegrationSettingsSerializer, LeadAttachmentSerializer, ProductSerializer, SiteVisitSerializer, DocumentationStage1Serializer, SiteVisitDocumentSerializer, DocumentationStage1DocumentSerializer, PaymentVerificationSerializer, PurchaseLogisticsSerializer, ProjectSerializer, ProjectDocumentSerializer, ServiceEntrySerializer, BalancePaymentSerializer, DocumentationStage2Serializer, DocumentationStage2DocumentSerializer, LiasoningServiceSerializer, LiasoningDocumentSerializer, WarrantySerializer, WarrantyDocumentSerializer, EmergencyServiceSerializer, EmergencyServiceDocumentSerializer, PeriodicMaintenanceSerializer, MaintenanceVisitSerializer, MaintenanceVisitDocumentSerializer, ReceiptVoucherSerializer
 from .document_kinds import SHARED_KIND_LABELS, kind_for
 # Module-level: the nine module payloads all report this one rule, and
@@ -1190,6 +1190,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             'can_reopen_stage1': can_assign_documentation(request.user),
             'attachments': attachments,
             'can_assign': can_assign_documentation(request.user),
+            **self._remark_summary(lead, 'stage1'),
         }
 
     @action(detail=False, methods=['get'], url_path='documentation-overview')
@@ -1370,7 +1371,8 @@ class LeadViewSet(viewsets.ModelViewSet):
                             status=status.HTTP_403_FORBIDDEN)
         qs = (Lead.objects.filter(pushed_to_documentation=True)
               .select_related('product', 'bde', 'documentation_staff', 'site_visit', 'documentation_stage1')
-              .prefetch_related('site_visit__documents', 'shared_documents')
+              .prefetch_related('site_visit__documents', 'shared_documents',
+                                self._remarks_prefetch('stage1'))
               .order_by('-pushed_to_documentation_at'))
         # Documentation staff see only the leads assigned to them; managers/admins see all pushed.
         if (not user.is_staff and not getattr(user, 'is_general_manager', False)
@@ -1397,6 +1399,179 @@ class LeadViewSet(viewsets.ModelViewSet):
             return Response({'error': 'This lead is not assigned to you.'},
                             status=status.HTTP_403_FORBIDDEN)
         return Response(self._documentation_payload(lead, request))
+
+    # ── Documentation remarks (Stage 1 and Stage 2) ──
+    REMARK_STAGES = {'stage1': 'Documentation Stage 1', 'stage2': 'Documentation Stage 2'}
+    REMARK_MAX_LENGTH = 2000
+
+    @staticmethod
+    def _remarks_prefetch(stage):
+        """One query for every row's remarks on a documentation list, rather
+        than one per customer."""
+        from django.db.models import Prefetch
+        return Prefetch('documentation_remarks',
+                        queryset=DocumentationRemark.objects.filter(stage=stage).select_related('author'),
+                        to_attr=f'{stage}_remarks')
+
+    @staticmethod
+    def _remark_author(remark):
+        a = remark.author
+        return (f"{a.first_name} {a.last_name}".strip() or a.username) if a else None
+
+    def _remark_summary(self, lead, stage):
+        """What a documentation list row shows: the latest remark — the current
+        reason a customer is held up — and how many there are in all."""
+        rows = getattr(lead, f'{stage}_remarks', None)
+        if rows is None:
+            qs = lead.documentation_remarks.filter(stage=stage).select_related('author')
+            latest, count = qs.first(), qs.count()
+        else:
+            latest, count = (rows[0] if rows else None), len(rows)
+        return {
+            'latest_remark': {
+                'body': latest.body,
+                'author_name': self._remark_author(latest),
+                'created_at': latest.created_at.isoformat(),
+            } if latest else None,
+            'remark_count': count,
+        }
+
+    def _remark_payload(self, remark, user):
+        return {
+            'id': remark.id,
+            'stage': remark.stage,
+            'body': remark.body,
+            'author': remark.author_id,
+            'author_name': self._remark_author(remark),
+            'created_at': remark.created_at.isoformat(),
+            'edited_at': remark.edited_at.isoformat() if remark.edited_at else None,
+            'can_edit': remark.may_be_edited_by(user),
+        }
+
+    def _remark_refusal(self, request, lead, stage):
+        """None when the user may see this stage's remarks, else the refusal.
+
+        The same doors as the stage itself: whoever can open a customer's
+        Stage 1 (or Stage 2) sees and adds its remarks — documentation staff
+        only on the customers assigned to them.
+        """
+        from .access import can_access_documentation, can_access_doc_stage2
+        user = request.user
+        if stage not in self.REMARK_STAGES:
+            return Response({'error': 'stage must be "stage1" or "stage2".'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        plain_doc_staff = (not user.is_staff and not getattr(user, 'is_general_manager', False)
+                           and getattr(user, 'role', '') == 'documentation_staff')
+        if stage == 'stage1':
+            if not can_access_documentation(user):
+                return Response({'error': 'You do not have access to documentation.'},
+                                status=status.HTTP_403_FORBIDDEN)
+            if not lead.pushed_to_documentation:
+                return Response({'error': 'This lead has not been pushed to documentation.'},
+                                status=status.HTTP_404_NOT_FOUND)
+            if plain_doc_staff and lead.documentation_staff_id != user.id:
+                return Response({'error': 'This lead is not assigned to you.'},
+                                status=status.HTTP_403_FORBIDDEN)
+        else:
+            if not can_access_doc_stage2(user):
+                return Response({'error': 'You do not have access to documentation.'},
+                                status=status.HTTP_403_FORBIDDEN)
+            if not lead.pushed_to_doc_stage2:
+                return Response({'error': 'This lead is not in Documentation Stage 2.'},
+                                status=status.HTTP_404_NOT_FOUND)
+            if self._doc_stage2_not_mine(user, lead):
+                return Response({'error': 'This lead is not assigned to you.'},
+                                status=status.HTTP_403_FORBIDDEN)
+        return None
+
+    def _clean_remark(self, request):
+        """The remark text, or the refusal for an empty or runaway one."""
+        body = str(request.data.get('body') or '').strip()
+        if not body:
+            return None, Response({'error': 'Write the remark before saving it.'},
+                                  status=status.HTTP_400_BAD_REQUEST)
+        if len(body) > self.REMARK_MAX_LENGTH:
+            return None, Response(
+                {'error': f'Keep a remark under {self.REMARK_MAX_LENGTH} characters.'},
+                status=status.HTTP_400_BAD_REQUEST)
+        return body, None
+
+    @action(detail=True, methods=['get', 'post'], url_path='documentation-remarks')
+    def documentation_remarks(self, request, pk=None):
+        """A customer's remarks for one documentation stage, newest first — or
+        add one. `stage` is "stage1" or "stage2" (query string on GET, body on
+        POST).
+
+        Open on a completed stage too: a remark is a note, not stage data, and
+        the lock is there to protect the paperwork.
+        """
+        from .access import is_view_only
+        lead = self.get_object()
+        stage = (request.query_params.get('stage') if request.method == 'GET'
+                 else request.data.get('stage'))
+        refusal = self._remark_refusal(request, lead, stage)
+        if refusal:
+            return refusal
+
+        if request.method == 'GET':
+            rows = lead.documentation_remarks.filter(stage=stage).select_related('author')
+            return Response({
+                'remarks': [self._remark_payload(r, request.user) for r in rows],
+                'can_add': not is_view_only(request.user),
+            })
+
+        if is_view_only(request.user):
+            return Response({'error': 'This is a view-only account.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        body, refusal = self._clean_remark(request)
+        if refusal:
+            return refusal
+        remark = DocumentationRemark.objects.create(
+            lead=lead, stage=stage, body=body, author=request.user)
+        ActivityLog.objects.create(
+            activity_type='note_added', lead=lead, actor=request.user,
+            description=f"{self.REMARK_STAGES[stage]} remark: {body}",
+            extra={'remark': remark.id, 'stage': stage})
+        return Response(self._remark_payload(remark, request.user), status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['patch', 'delete'],
+            url_path=r'documentation-remarks/(?P<remark_id>[0-9]+)')
+    def documentation_remark_detail(self, request, pk=None, remark_id=None):
+        """Correct or remove one remark — your own, or an admin's override, the
+        same rule as lead notes (see may_edit_authored_entry)."""
+        lead = self.get_object()
+        remark = lead.documentation_remarks.filter(pk=remark_id).select_related('author').first()
+        if remark is None:
+            return Response({'error': 'That remark is not on this customer.'},
+                            status=status.HTTP_404_NOT_FOUND)
+        refusal = self._remark_refusal(request, lead, remark.stage)
+        if refusal:
+            return refusal
+        if not remark.may_be_edited_by(request.user):
+            return Response({'error': 'You can only change the remarks you wrote.'},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        label = self.REMARK_STAGES[remark.stage]
+        if request.method == 'DELETE':
+            remark.delete()
+            ActivityLog.objects.create(
+                activity_type='note_added', lead=lead, actor=request.user,
+                description=f"{label} remark deleted: {remark.body}",
+                extra={'stage': remark.stage})
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        body, refusal = self._clean_remark(request)
+        if refusal:
+            return refusal
+        if body != remark.body:
+            remark.body = body
+            remark.edited_at = timezone.now()
+            remark.save(update_fields=['body', 'edited_at', 'updated_at'])
+            ActivityLog.objects.create(
+                activity_type='note_added', lead=lead, actor=request.user,
+                description=f"{label} remark edited: {body}",
+                extra={'remark': remark.id, 'stage': remark.stage})
+        return Response(self._remark_payload(remark, request.user))
 
     @action(detail=True, methods=['get', 'patch'], url_path='documentation-stage1')
     def documentation_stage1(self, request, pk=None):
@@ -3381,6 +3556,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             'doc_stage2_staff': lead.doc_stage2_staff_id,
             'doc_stage2_staff_name': name(lead.doc_stage2_staff),
             'can_assign': can_assign_documentation(request.user),
+            **self._remark_summary(lead, 'stage2'),
         }
 
     @action(detail=False, methods=['get'], url_path='documentation-stage2')
@@ -3392,6 +3568,7 @@ class LeadViewSet(viewsets.ModelViewSet):
         user = request.user
         qs = (Lead.objects.filter(pushed_to_doc_stage2=True)
               .select_related('product', 'bde', 'doc_stage2_staff', 'documentation_stage2')
+              .prefetch_related(self._remarks_prefetch('stage2'))
               .order_by('-pushed_to_doc_stage2_at'))
         # Documentation staff see only what the manager assigned them; managers
         # and admins see the whole queue.

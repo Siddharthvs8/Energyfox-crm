@@ -9996,3 +9996,200 @@ class MetaImportDeduplicationTests(TestCase):
             self.payload('7002', phone_number='9895700008'))
         self.assertFalse(dup)
         self.assertIsNotNone(lead)
+
+
+class DocumentationRemarkTests(TestCase):
+    """Remarks on a customer's documentation — why it is held up.
+
+    Each stage keeps its own dated log; the lists show the latest one. Who can
+    see and add them is whoever can open that stage for that customer, and
+    changing one follows the lead-notes rule: your own, or an admin's override.
+    """
+
+    def setUp(self):
+        self.admin = mk('dr_admin', 'admin')
+        self.manager = mk('dr_manager', 'documentation_manager')
+        self.staff1 = mk('dr_staff1', 'documentation_staff')   # has Stage 1
+        self.staff2 = mk('dr_staff2', 'documentation_staff')   # has Stage 2
+        self.bde = mk('dr_bde', 'bde')
+        self.spectator = mk('dr_spectator', 'spectator')
+        self.lead = Lead.objects.create(
+            first_name='Sreeja', last_name='Menon', phone='9847012345', status='converted',
+            bde=self.bde,
+            pushed_to_documentation=True, pushed_to_documentation_at=timezone.now(),
+            documentation_staff=self.staff1,
+            pushed_to_doc_stage2=True, pushed_to_doc_stage2_at=timezone.now(),
+            doc_stage2_staff=self.staff2)
+
+    def url(self, lead=None, suffix=''):
+        return f'/api/leads/{(lead or self.lead).id}/documentation-remarks/{suffix}'
+
+    def add(self, user, body, stage='stage1', lead=None):
+        return self.client.post(self.url(lead), data={'stage': stage, 'body': body},
+                                content_type='application/json', HTTP_AUTHORIZATION=token_for(user))
+
+    def read(self, user, stage='stage1', lead=None):
+        return self.client.get(self.url(lead) + f'?stage={stage}', HTTP_AUTHORIZATION=token_for(user))
+
+    def patch(self, user, remark_id, body):
+        return self.client.patch(self.url(suffix=f'{remark_id}/'), data={'body': body},
+                                 content_type='application/json', HTTP_AUTHORIZATION=token_for(user))
+
+    def delete(self, user, remark_id):
+        return self.client.delete(self.url(suffix=f'{remark_id}/'), HTTP_AUTHORIZATION=token_for(user))
+
+    # ── Adding and reading ──
+    def test_the_assigned_staff_can_note_why_it_is_held_up(self):
+        r = self.add(self.staff1, "  Waiting for the customer's Aadhaar  ")
+        self.assertEqual(r.status_code, 201, r.content[:200])
+        body = r.json()
+        self.assertEqual(body['body'], "Waiting for the customer's Aadhaar")
+        self.assertEqual(body['author'], self.staff1.id)
+        self.assertTrue(body['can_edit'])
+
+    def test_the_latest_remark_comes_first(self):
+        self.add(self.staff1, 'Waiting for the Aadhaar')
+        self.add(self.staff1, 'Aadhaar in, waiting on the bank')
+        rows = self.read(self.staff1).json()['remarks']
+        self.assertEqual([r['body'] for r in rows],
+                         ['Aadhaar in, waiting on the bank', 'Waiting for the Aadhaar'])
+
+    def test_the_two_stages_keep_separate_logs(self):
+        self.add(self.staff1, 'Stage 1 reason', stage='stage1')
+        self.add(self.staff2, 'Stage 2 reason', stage='stage2')
+        self.assertEqual([r['body'] for r in self.read(self.admin, 'stage1').json()['remarks']],
+                         ['Stage 1 reason'])
+        self.assertEqual([r['body'] for r in self.read(self.admin, 'stage2').json()['remarks']],
+                         ['Stage 2 reason'])
+
+    def test_a_completed_stage_still_takes_remarks(self):
+        """A remark is a note, not stage data — the lock protects the paperwork."""
+        from .models import DocumentationStage1
+        DocumentationStage1.objects.create(lead=self.lead, is_complete=True)
+        DocumentationStage2.objects.create(lead=self.lead, is_complete=True)
+        self.assertEqual(self.add(self.staff1, 'Signed off; bank copy still to file').status_code, 201)
+        self.assertEqual(self.add(self.staff2, 'Subsidy portal down', stage='stage2').status_code, 201)
+
+    def test_adding_a_remark_is_on_the_timeline(self):
+        from .models import ActivityLog
+        self.add(self.staff1, 'Waiting for the Aadhaar')
+        self.assertTrue(ActivityLog.objects.filter(
+            lead=self.lead, description='Documentation Stage 1 remark: Waiting for the Aadhaar').exists())
+
+    # ── Refusals ──
+    def test_an_empty_remark_is_refused(self):
+        self.assertEqual(self.add(self.staff1, '   ').status_code, 400)
+
+    def test_a_runaway_remark_is_refused(self):
+        self.assertEqual(self.add(self.staff1, 'x' * 2001).status_code, 400)
+
+    def test_an_unknown_stage_is_refused(self):
+        self.assertEqual(self.add(self.staff1, 'Hello', stage='stage3').status_code, 400)
+        self.assertEqual(self.read(self.staff1, stage='').status_code, 400)
+
+    # ── Who ──
+    def test_staff_see_only_the_customers_assigned_to_them(self):
+        """staff2 has this customer's Stage 2, not its Stage 1 — and the other
+        way round for staff1."""
+        self.assertEqual(self.read(self.staff2, 'stage1').status_code, 403)
+        self.assertEqual(self.add(self.staff2, 'Not mine', 'stage1').status_code, 403)
+        self.assertEqual(self.add(self.staff1, 'Not mine', 'stage2').status_code, 403)
+        self.assertEqual(self.add(self.staff2, 'Mine', 'stage2').status_code, 201)
+
+    def test_managers_and_admins_can_add_on_any_customer(self):
+        self.assertEqual(self.add(self.manager, 'Chased the customer').status_code, 201)
+        self.assertEqual(self.add(self.admin, 'Escalated', 'stage2').status_code, 201)
+
+    def test_outside_documentation_there_is_no_access(self):
+        self.assertEqual(self.read(self.bde).status_code, 403)
+        self.assertEqual(self.add(self.bde, 'Hello').status_code, 403)
+
+    def test_a_view_only_account_reads_but_cannot_add(self):
+        r = self.read(self.spectator)
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.json()['can_add'])
+        self.assertEqual(self.add(self.spectator, 'Watching').status_code, 403)
+        self.assertTrue(self.read(self.staff1).json()['can_add'])
+
+    def test_a_customer_not_yet_in_the_stage_has_no_remarks_to_take(self):
+        early = Lead.objects.create(first_name='Early', phone='9847000001', status='converted',
+                                    pushed_to_documentation=True, documentation_staff=self.staff1)
+        self.assertEqual(self.add(self.admin, 'Too soon', 'stage2', lead=early).status_code, 404)
+        self.assertEqual(self.add(self.admin, 'Fine', 'stage1', lead=early).status_code, 201)
+
+    # ── Changing a remark ──
+    def test_the_author_can_correct_their_remark(self):
+        rid = self.add(self.staff1, 'Waiting for the Aadhar').json()['id']
+        r = self.patch(self.staff1, rid, 'Waiting for the Aadhaar')
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertEqual(r.json()['body'], 'Waiting for the Aadhaar')
+        self.assertIsNotNone(r.json()['edited_at'])
+
+    def test_a_colleague_cannot_rewrite_it(self):
+        """The reason stays in the words of the person who gave it: the staff
+        member working the customer can read the manager's remark, not change
+        it."""
+        rid = self.add(self.manager, 'Customer asked us to hold until October').json()['id']
+        self.assertEqual(self.patch(self.staff1, rid, 'Something else').status_code, 403)
+        self.assertEqual(self.delete(self.staff1, rid).status_code, 403)
+        self.assertFalse(self.read(self.staff1).json()['remarks'][0]['can_edit'])
+
+    def test_the_documentation_manager_can_correct_the_team(self):
+        """The manager carries the general-manager flag, which is the admin
+        tier for anything written in someone's name — the same as lead notes."""
+        rid = self.add(self.staff1, 'Waiting for the Aadhar').json()['id']
+        self.assertEqual(self.patch(self.manager, rid, 'Waiting for the Aadhaar').status_code, 200)
+        self.assertEqual(self.delete(self.manager, rid).status_code, 204)
+
+    def test_an_admin_can_remove_any_remark(self):
+        from .models import DocumentationRemark
+        rid = self.add(self.staff1, 'Should not have been written').json()['id']
+        self.assertEqual(self.delete(self.admin, rid).status_code, 204)
+        self.assertFalse(DocumentationRemark.objects.filter(pk=rid).exists())
+
+    def test_a_remark_cannot_be_emptied(self):
+        rid = self.add(self.staff1, 'Waiting').json()['id']
+        self.assertEqual(self.patch(self.staff1, rid, '  ').status_code, 400)
+
+    def test_a_remark_is_reached_only_through_its_own_customer(self):
+        other = Lead.objects.create(first_name='Other', phone='9847000002', status='converted',
+                                    pushed_to_documentation=True, documentation_staff=self.staff1)
+        rid = self.add(self.staff1, 'On the other customer', lead=other).json()['id']
+        self.assertEqual(self.patch(self.staff1, rid, 'Moved').status_code, 404)
+
+    def test_losing_the_assignment_loses_the_remark(self):
+        """Reassigned away from the customer, the author can no longer reach
+        what they wrote on it — the stage's door, not authorship, comes first."""
+        rid = self.add(self.staff1, 'Waiting').json()['id']
+        Lead.objects.filter(pk=self.lead.pk).update(documentation_staff=self.staff2)
+        self.assertEqual(self.patch(self.staff1, rid, 'Still waiting').status_code, 403)
+
+    # ── What the lists show ──
+    def test_the_stage1_list_shows_the_latest_remark(self):
+        self.add(self.staff1, 'Waiting for the Aadhaar')
+        self.add(self.staff1, 'Waiting on the bank')
+        rows = self.client.get('/api/leads/documentation/',
+                               HTTP_AUTHORIZATION=token_for(self.admin)).json()
+        row = next(r for r in rows if r['id'] == self.lead.id)
+        self.assertEqual(row['latest_remark']['body'], 'Waiting on the bank')
+        self.assertEqual(row['latest_remark']['author_name'], 'dr_staff1')
+        self.assertEqual(row['remark_count'], 2)
+
+    def test_the_stage2_list_shows_its_own_latest_remark(self):
+        self.add(self.staff1, 'A stage 1 remark')
+        rows = self.client.get('/api/leads/documentation-stage2/',
+                               HTTP_AUTHORIZATION=token_for(self.admin)).json()
+        row = next(r for r in rows if r['id'] == self.lead.id)
+        self.assertIsNone(row['latest_remark'])
+        self.assertEqual(row['remark_count'], 0)
+        self.add(self.staff2, 'Portal down', 'stage2')
+        rows = self.client.get('/api/leads/documentation-stage2/',
+                               HTTP_AUTHORIZATION=token_for(self.admin)).json()
+        row = next(r for r in rows if r['id'] == self.lead.id)
+        self.assertEqual(row['latest_remark']['body'], 'Portal down')
+
+    def test_the_detail_pages_carry_the_summary_too(self):
+        self.add(self.staff2, 'Portal down', 'stage2')
+        r = self.client.get(f'/api/leads/{self.lead.id}/documentation-stage2-detail/',
+                            HTTP_AUTHORIZATION=token_for(self.staff2))
+        self.assertEqual(r.json()['latest_remark']['body'], 'Portal down')

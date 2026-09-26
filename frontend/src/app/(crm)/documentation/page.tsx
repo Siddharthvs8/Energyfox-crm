@@ -9,6 +9,7 @@ import Link from "next/link";
 import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCleanup";
 import { isSpectator } from "@/lib/spectator";
 import BdeTag from "@/components/BdeTag";
+import { RemarkSummary, RemarkSummaryData } from "@/components/DocumentationRemarks";
 type DocLead = {
   /** Who did the site visit — shown as a tag on the row. */
   bde_name?: string | null;
@@ -26,6 +27,11 @@ type DocLead = {
   attachments: { label: string }[];
   /** Stage 1 signed off — decides which tab the row lands in. */
   stage1_complete?: boolean;
+  /** When the customer was pushed to documentation. */
+  pushed_at?: string | null;
+  /** The latest remark — usually why the customer is held up. */
+  latest_remark?: RemarkSummaryData;
+  remark_count?: number;
 };
 
 export default function DocumentationPage() {
@@ -76,7 +82,9 @@ export default function DocumentationPage() {
     if (!q) return true;
     return (`${l.first_name} ${l.last_name || ""}`.toLowerCase().includes(q)
       || (l.phone || "").toLowerCase().includes(q)
-      || (l.location || "").toLowerCase().includes(q));
+      || (l.location || "").toLowerCase().includes(q)
+      // A reason is worth searching by: "bank" finds everyone held up on one.
+      || (l.latest_remark?.body || "").toLowerCase().includes(q));
   };
 
   // Counts are of the search results, so the tabs show where the matches went
@@ -99,7 +107,7 @@ export default function DocumentationPage() {
         <input
           value={search}
           onChange={e => setSearch(e.target.value)}
-          placeholder="Search by name, phone or location…"
+          placeholder="Search by name, phone, location or remark…"
           className="w-full max-w-md bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all"
         />
         <div className="inline-flex rounded-xl bg-slate-100 p-1">
@@ -148,6 +156,7 @@ export default function DocumentationPage() {
                     <span className="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{l.attachments.length} file{l.attachments.length === 1 ? "" : "s"}</span>
                   </div>
                   <p className="text-xs text-slate-500 mt-0.5 truncate">{l.phone || "—"} · {l.location || "No location"}{l.product_name ? ` · ${l.product_name}` : ""}</p>
+                  <RemarkSummary remark={l.latest_remark} since={l.pushed_at} pending={!l.stage1_complete} />
                 </div>
                 <div className="flex items-center gap-4 flex-shrink-0">
                   <div className="hidden sm:block text-right">

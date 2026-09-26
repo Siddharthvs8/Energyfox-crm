@@ -8,6 +8,7 @@ import Link from "next/link";
 import DocumentationStage2Section from "./DocumentationStage2Section";
 
 import ActivityTimeline from "@/components/ActivityTimeline";
+import DocumentationRemarks from "@/components/DocumentationRemarks";
 import { DetailSkeleton } from "@/components/Skeleton";
 type Stage2Detail = {
   id: number;
@@ -125,6 +126,10 @@ export default function DocumentationStage2DetailPage({ params: paramsPromise }:
           )}
         </div>
       </div>
+
+      {/* Why it is held up — near the top, so it is the first thing whoever
+          picks the customer up reads. */}
+      <DocumentationRemarks leadId={data.id} stage="stage2" />
 
       {/* Customer details */}
       <div className="mt-5 bg-white border border-slate-200 rounded-2xl shadow-sm p-5">
