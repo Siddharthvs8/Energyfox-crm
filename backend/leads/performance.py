@@ -243,9 +243,13 @@ class CompanyPerformanceView(APIView):
         """Not period-scoped: this is the state of the book today, and a date
         range cannot change where a customer currently is."""
         counts = {}
-        for lead in live_leads().only('id', 'bde', 'pushed_to_documentation',
-                                      'pushed_to_accounts', 'pushed_to_purchase',
-                                      'pushed_to_project', 'status'):
+        # The site visit's PO date comes in the same query: telling PO Signed
+        # from Site Visit reads it, and fetching it per lead would be a query
+        # for every customer at a BDE's desk.
+        for lead in (live_leads().select_related('site_visit')
+                     .only('id', 'bde', 'pushed_to_documentation', 'pushed_to_accounts',
+                           'pushed_to_purchase', 'pushed_to_project', 'status',
+                           'site_visit__po_signed_date')):
             stage = lead.pipeline_stage
             counts[stage] = counts.get(stage, 0) + 1
         return [{'stage': s, 'label': Lead.PIPELINE_STAGE_LABELS.get(s, s), 'count': n}
@@ -332,8 +336,10 @@ class CompanyPerformanceView(APIView):
                          key=lambda r: (-r['count'], r['name']))
 
         stages = {}
-        for lead in qs.only('id', 'value', 'bde', 'pushed_to_documentation', 'pushed_to_accounts',
-                            'pushed_to_purchase', 'pushed_to_project'):
+        for lead in (qs.select_related('site_visit')
+                     .only('id', 'value', 'bde', 'pushed_to_documentation', 'pushed_to_accounts',
+                           'pushed_to_purchase', 'pushed_to_project',
+                           'site_visit__po_signed_date')):
             hit = stages.setdefault(lead.pipeline_stage, {'count': 0, 'value': Decimal('0')})
             hit['count'] += 1
             hit['value'] += (lead.value or Decimal('0'))

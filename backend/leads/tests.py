@@ -10193,3 +10193,128 @@ class DocumentationRemarkTests(TestCase):
         r = self.client.get(f'/api/leads/{self.lead.id}/documentation-stage2-detail/',
                             HTTP_AUTHORIZATION=token_for(self.staff2))
         self.assertEqual(r.json()['latest_remark']['body'], 'Portal down')
+
+
+class PoSignedStageTests(TestCase):
+    """PO Signed is the stage between the site visit and documentation: the BDE
+    has the purchase order signed, and the customer has not been pushed to
+    documentation yet.
+
+    The stage a row wears (Lead.pipeline_stage) and the stage filter on the
+    lead list are two statements of one rule, so they are tested together: every
+    lead lands in exactly one stage, and the stage it is filtered into is the
+    stage it is tagged with.
+    """
+
+    def setUp(self):
+        from .models import SiteVisit
+        self.admin = mk('pos_admin', 'admin')
+        self.bde = mk('pos_bde', 'bde')
+        n = iter(range(1, 100))
+
+        def lead(name, bde=True, po=None, visit=True, **flags):
+            l = Lead.objects.create(first_name=name, phone=f'97470{next(n):05d}',
+                                    status='converted', bde=self.bde if bde else None, **flags)
+            if visit:
+                SiteVisit.objects.create(lead=l, po_signed_date=po)
+            return l
+
+        signed = date(2026, 9, 20)
+        self.tele = lead('Tele', bde=False, visit=False)
+        self.visit = lead('Visit')                                   # visit, no PO
+        self.no_record = lead('NoRecord', visit=False)               # BDE, no site visit row yet
+        self.po = lead('Signed', po=signed)
+        self.doc = lead('InDoc', po=signed, pushed_to_documentation=True)
+        self.acc = lead('InAccounts', po=signed, pushed_to_documentation=True, pushed_to_accounts=True)
+        self.pur = lead('InPurchase', po=signed, pushed_to_documentation=True,
+                        pushed_to_accounts=True, pushed_to_purchase=True)
+        self.proj = lead('InProject', po=signed, pushed_to_documentation=True, pushed_to_accounts=True,
+                         pushed_to_purchase=True, pushed_to_project=True)
+        # A PO date on a lead nobody handed to a BDE: no visit happened, so it
+        # stays with the tele caller rather than jumping ahead.
+        self.po_no_bde = lead('NoBdePo', bde=False, po=signed)
+        self.everyone = [self.tele, self.visit, self.no_record, self.po, self.doc,
+                         self.acc, self.pur, self.proj, self.po_no_bde]
+
+    def listed(self, stage):
+        r = self.client.get(f'/api/leads/?stage={stage}&page_size=200',
+                            HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        rows = body if isinstance(body, list) else body['results']
+        return {row['id'] for row in rows}
+
+    # ── The stage ──
+    def test_a_signed_po_moves_the_lead_out_of_site_visit(self):
+        self.assertEqual(self.po.pipeline_stage, 'po_signed')
+        self.assertEqual(Lead.PIPELINE_STAGE_LABELS['po_signed'], 'PO Signed')
+
+    def test_without_a_po_it_is_still_a_site_visit(self):
+        self.assertEqual(self.visit.pipeline_stage, 'site_visit')
+        self.assertEqual(self.no_record.pipeline_stage, 'site_visit')
+
+    def test_documentation_and_beyond_outrank_the_po(self):
+        self.assertEqual(Lead.objects.get(pk=self.doc.pk).pipeline_stage, 'documentation')
+        self.assertEqual(Lead.objects.get(pk=self.proj.pk).pipeline_stage, 'project')
+
+    def test_a_po_without_a_bde_stays_with_the_tele_caller(self):
+        self.assertEqual(Lead.objects.get(pk=self.po_no_bde.pk).pipeline_stage, 'tele_caller')
+
+    def test_clearing_the_po_date_puts_it_back(self):
+        from .models import SiteVisit
+        SiteVisit.objects.filter(lead=self.po).update(po_signed_date=None)
+        self.assertEqual(Lead.objects.get(pk=self.po.pk).pipeline_stage, 'site_visit')
+
+    def test_signing_on_the_site_visit_screen_moves_it(self):
+        r = self.client.patch(f'/api/leads/{self.visit.id}/site-visit/',
+                              data={'po_signed_date': '2026-09-25'}, content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.bde))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        self.assertIn(self.visit.id, self.listed('po_signed'))
+        self.assertNotIn(self.visit.id, self.listed('site_visit'))
+
+    # ── The filter ──
+    def test_the_filter_finds_the_signed_ones(self):
+        self.assertEqual(self.listed('po_signed'), {self.po.id})
+
+    def test_site_visit_no_longer_includes_them(self):
+        self.assertEqual(self.listed('site_visit'), {self.visit.id, self.no_record.id})
+
+    def test_every_lead_is_in_exactly_one_stage_and_it_matches_its_tag(self):
+        stages = [s for s, _ in Lead.PIPELINE_STAGES]
+        found = {s: self.listed(s) for s in stages}
+        for l in self.everyone:
+            homes = [s for s in stages if l.id in found[s]]
+            self.assertEqual(homes, [Lead.objects.get(pk=l.pk).pipeline_stage], l.first_name)
+
+    def test_the_rows_say_po_signed(self):
+        r = self.client.get(f'/api/leads/{self.po.id}/', HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.json()['pipeline_stage'], 'po_signed')
+        self.assertEqual(r.json()['pipeline_stage_label'], 'PO Signed')
+
+    # ── Company Performance ──
+    def test_the_pipeline_counts_po_signed(self):
+        from .performance import CompanyPerformanceView
+        rows = {p['stage']: p for p in CompanyPerformanceView()._pipeline()}
+        self.assertEqual(rows['po_signed']['count'], 1)
+        self.assertEqual(rows['po_signed']['label'], 'PO Signed')
+        self.assertEqual(rows['site_visit']['count'], 2)
+
+    def test_the_pipeline_reads_the_po_dates_in_one_query(self):
+        """One query for the book, not one per customer at a BDE's desk."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+        from .models import SiteVisit
+        from .performance import CompanyPerformanceView
+        for i in range(15):
+            l = Lead.objects.create(first_name=f'More{i}', phone=f'97471{i:05d}', bde=self.bde)
+            SiteVisit.objects.create(lead=l, po_signed_date=date(2026, 9, 1) if i % 2 else None)
+        with CaptureQueriesContext(connection) as ctx:
+            CompanyPerformanceView()._pipeline()
+        self.assertEqual(len(ctx.captured_queries), 1)
+
+    def test_a_deal_lost_after_the_po_is_reported_at_po_signed(self):
+        from .performance import CompanyPerformanceView
+        Lead.objects.filter(pk=self.po.pk).update(is_lost=True, lost_at=timezone.now())
+        by_stage = {r['stage']: r['count'] for r in CompanyPerformanceView()._lost(None, None)['by_stage']}
+        self.assertEqual(by_stage, {'po_signed': 1})

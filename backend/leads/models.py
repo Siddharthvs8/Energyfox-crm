@@ -276,6 +276,7 @@ class Lead(models.Model):
         ('purchase', 'Purchase & Logistics'),
         ('accounts', 'Accounts'),
         ('documentation', 'Documentation S1'),
+        ('po_signed', 'PO Signed'),
         ('site_visit', 'Site Visit'),
         ('tele_caller', 'Tele Caller'),
     ]
@@ -283,7 +284,12 @@ class Lead(models.Model):
 
     @property
     def pipeline_stage(self):
-        """The module/stage this lead is currently in (furthest reached)."""
+        """The module/stage this lead is currently in (furthest reached).
+
+        Mirrored by the `stage` filter on the lead list (LeadViewSet.get_queryset)
+        — change one and the other has to follow, or a lead filtered into a
+        stage would wear a different stage's tag.
+        """
         if self.pushed_to_project:
             return 'project'
         if self.pushed_to_purchase:
@@ -293,7 +299,14 @@ class Lead(models.Model):
         if self.pushed_to_documentation:
             return 'documentation'
         if self.bde_id:
-            return 'site_visit'
+            # The PO is signed on the BDE's site visit, and it is the step
+            # between the visit and documentation: the customer has committed
+            # and the KSEB feasibility clock is running. Looked up only for a
+            # lead at the BDE's desk, so the tele-caller majority never touches
+            # the site visit; the lists that show stages load it alongside
+            # (select_related('site_visit')).
+            sv = getattr(self, 'site_visit', None)
+            return 'po_signed' if sv is not None and sv.po_signed_date else 'site_visit'
         return 'tele_caller'
 
     # A value that was never read back, told apart from one that was read back

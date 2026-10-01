@@ -5227,19 +5227,31 @@ class LeadViewSet(viewsets.ModelViewSet):
                 queryset = queryset.filter(product_id=product_id)
 
         # Filter by fulfilment pipeline stage (the module a lead is currently in).
-        # Mirrors Lead.pipeline_stage: each stage excludes any further-advanced flag.
+        # Mirrors Lead.pipeline_stage exactly: each stage excludes every
+        # further-advanced one, so the stages split the book with no lead in two
+        # of them and none in neither — and the tag on a row always names the
+        # stage it was filtered into.
         stage = self.request.query_params.get('stage')
         if stage:
-            stage_filters = {
-                'project': {'pushed_to_project': True},
-                'purchase': {'pushed_to_purchase': True, 'pushed_to_project': False},
-                'accounts': {'pushed_to_accounts': True, 'pushed_to_purchase': False},
-                'documentation': {'pushed_to_documentation': True, 'pushed_to_accounts': False},
-                'site_visit': {'bde__isnull': False, 'pushed_to_documentation': False},
-                'tele_caller': {'bde__isnull': True},
+            from django.db.models import Q
+            not_pushed = Q(pushed_to_documentation=False, pushed_to_accounts=False,
+                           pushed_to_purchase=False, pushed_to_project=False)
+            at_bde = not_pushed & Q(bde__isnull=False)
+            stage_q = {
+                'project': Q(pushed_to_project=True),
+                'purchase': Q(pushed_to_purchase=True, pushed_to_project=False),
+                'accounts': Q(pushed_to_accounts=True, pushed_to_purchase=False,
+                              pushed_to_project=False),
+                'documentation': Q(pushed_to_documentation=True, pushed_to_accounts=False,
+                                   pushed_to_purchase=False, pushed_to_project=False),
+                'po_signed': at_bde & Q(site_visit__po_signed_date__isnull=False),
+                # isnull=True across the reverse one-to-one is a LEFT JOIN, so a
+                # lead with no site visit record at all lands here too.
+                'site_visit': at_bde & Q(site_visit__po_signed_date__isnull=True),
+                'tele_caller': not_pushed & Q(bde__isnull=True),
             }.get(stage)
-            if stage_filters:
-                queryset = queryset.filter(**stage_filters)
+            if stage_q is not None:
+                queryset = queryset.filter(stage_q)
 
         # Filter by campaign
         campaign_id = self.request.query_params.get('campaign')
