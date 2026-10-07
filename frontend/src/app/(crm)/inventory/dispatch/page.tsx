@@ -248,6 +248,11 @@ export default function StockDispatchPage() {
     `${r.invoice_no || ""} ${r.item_code || ""} ${r.item_label || ""} ${r.customer_name || ""} ${r.serial_numbers || ""}`
       .toLowerCase().includes(term));
 
+  // Lines per invoice, counted over the whole list rather than the search
+  // results, so a search cannot make one line of a delivery look like all of it.
+  const linesOn: Record<string, number> = {};
+  for (const r of list) if (r.invoice_no) linesOn[r.invoice_no] = (linesOn[r.invoice_no] || 0) + 1;
+
   return (
     <StockPage
       title="Sales / Dispatches" loading={loading} denied={denied}
@@ -322,7 +327,18 @@ export default function StockDispatchPage() {
             );
           })(),
           <span className="tabular-nums">{num(r.quantity)}</span>,
-          <span className="tabular-nums font-semibold">{rupee(r.total)}</span>,
+          // The billed figure is the invoice's, rounded to the rupee as it is
+          // printed — so a delivery of one line shows exactly that. A line of a
+          // longer delivery keeps its own exact amount: the rounding belongs to
+          // the invoice as a whole, and rounding each line would not add up to it.
+          (linesOn[r.invoice_no] || 1) > 1 ? (
+            <span className="tabular-nums font-semibold"
+              title={r.invoice_total ? `Line amount. Invoice total ${rupee(r.invoice_total)}` : undefined}>
+              {rupee(r.total)}
+            </span>
+          ) : (
+            <span className="tabular-nums font-semibold">{rupee(r.invoice_total ?? r.total)}</span>
+          ),
           r.status === "pending" ? (
             <button onClick={e => { e.stopPropagation(); openPayments(r); }}
               title={`${rupee(r.amount_received)} received · ${rupee(r.balance)} owing`}

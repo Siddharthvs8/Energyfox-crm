@@ -4110,3 +4110,108 @@ class RetailInventoryAccessTests(TestCase):
     def test_signed_out_is_still_signed_out(self):
         for url in self.ENDPOINTS:
             self.assertEqual(self.client.get(url).status_code, 401, url)
+
+
+class PaymentsBoardRoundingTests(TestCase):
+    """Inventory → Payments reports the invoice at the rounded figure the
+    customer was billed — the one the invoice prints and every other payment
+    screen reconciles against (payment_state) — not the exact arithmetic."""
+
+    URL = '/api/stock-payments/'
+
+    def setUp(self):
+        self.admin = mk('pr_admin', 'superadmin')
+        self.customer = StockCustomer.objects.create(name='Energyfox Consultants Pvt Ltd')
+        self.item = StockItem.objects.create(code='PR-PNL', category='Solar Panel',
+                                             opening_stock=Decimal('1000'),
+                                             unit_cost=Decimal('100'))
+
+    def board(self):
+        r = self.client.get(self.URL, HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        return r.json()['sections']
+
+    def row(self, number):
+        for name, section in self.board().items():
+            for r in section['rows']:
+                if r['number'] == number:
+                    return name, r
+        self.fail(f'{number} is not on the board')
+
+    def dispatch(self, invoice_no, rate, qty='1'):
+        StockDispatch.objects.create(invoice_no=invoice_no, date=timezone.localdate(),
+                                     customer=self.customer, item=self.item,
+                                     quantity=Decimal(qty), rate=Decimal(rate),
+                                     tax_percent=Decimal('0'), status=StockDispatch.PENDING)
+
+    def paid(self, amount, *, invoice_no='', quote=None):
+        DispatchPayment.objects.create(invoice_no=invoice_no, quote=quote,
+                                       invoice_total=Decimal(amount), amount_received=Decimal(amount),
+                                       mode='cash', paid_on=timezone.localdate(),
+                                       verified_by=self.admin)
+
+    def test_the_invoice_column_is_the_billed_round_figure(self):
+        """The screenshot: 5,000.50 billed and paid as 5,001."""
+        self.dispatch('IN-061', '5000.50')
+        self.paid('5001', invoice_no='IN-061')
+        section, r = self.row('IN-061')
+        self.assertEqual(section, 'fully_paid')
+        self.assertEqual(r['invoice_total'], '5001.00')
+        self.assertEqual(r['received'], '5001.00')
+        self.assertEqual(r['balance'], '0.00')
+
+    def test_an_invoice_rounded_down_and_paid_is_fully_paid(self):
+        """2,252.25 is billed 2,252. Against the exact total it sat under
+        Partially Paid owing 25 paise."""
+        self.dispatch('IN-DOWN', '2252.25')
+        self.paid('2252', invoice_no='IN-DOWN')
+        section, r = self.row('IN-DOWN')
+        self.assertEqual(section, 'fully_paid')
+        self.assertEqual(r['invoice_total'], '2252.00')
+        self.assertEqual(r['balance'], '0.00')
+
+    def test_paying_the_exact_figure_also_settles_it(self):
+        """A customer who sent the exact 95,794.65 their copy showed owes nothing —
+        nobody transfers 35 paise."""
+        self.dispatch('IN-EXACT', '95794.65')
+        self.paid('95794.65', invoice_no='IN-EXACT')
+        section, r = self.row('IN-EXACT')
+        self.assertEqual(section, 'fully_paid')
+        self.assertEqual(r['invoice_total'], '95795.00')
+        self.assertEqual(r['balance'], '0.00')
+
+    def test_a_part_payment_owes_against_the_billed_figure(self):
+        self.dispatch('IN-PART', '5000.50')
+        self.paid('2000', invoice_no='IN-PART')
+        section, r = self.row('IN-PART')
+        self.assertEqual(section, 'partially_paid')
+        self.assertEqual(r['balance'], '3001.00')
+
+    def test_a_delivery_of_several_lines_is_rounded_once(self):
+        """Rounded on the whole delivery: 1,000.30 + 1,000.30 is billed 2,001,
+        not 1,000 + 1,000."""
+        self.dispatch('IN-TWO', '1000.30')
+        self.dispatch('IN-TWO', '1000.30')
+        self.paid('2001', invoice_no='IN-TWO')
+        _section, r = self.row('IN-TWO')
+        self.assertEqual(r['invoice_total'], '2001.00')
+
+    def test_a_proforma_is_rounded_too(self):
+        q = StockQuote.objects.create(customer=self.customer, quote_date=timezone.localdate())
+        StockQuoteItem.objects.create(quote=q, item=self.item, quantity=Decimal('1'),
+                                      unit_price=Decimal('4999.60'))
+        self.paid('1000', quote=q)
+        section, r = self.row(q.number)
+        self.assertEqual(section, 'partially_paid')
+        self.assertEqual(r['invoice_total'], '5000.00')
+        self.assertEqual(r['balance'], '4000.00')
+
+    def test_the_section_totals_add_the_billed_figures(self):
+        self.dispatch('IN-T1', '5000.50')
+        self.dispatch('IN-T2', '2252.25')
+        self.paid('5001', invoice_no='IN-T1')
+        self.paid('2252', invoice_no='IN-T2')
+        totals = self.board()['fully_paid']['totals']
+        self.assertEqual(totals['count'], 2)
+        self.assertEqual(Decimal(totals['invoice_total']), Decimal('7253'))
+        self.assertEqual(Decimal(totals['balance']), Decimal('0'))

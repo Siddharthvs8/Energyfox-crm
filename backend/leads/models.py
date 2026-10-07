@@ -140,6 +140,11 @@ class Lead(models.Model):
         related_name='bde_leads',
         help_text="BDE assigned for the site visit",
     )
+    # When the lead reached the site visit stage: stamped as it gets a BDE
+    # after having none, and left alone when one BDE hands it to another — the
+    # stage did not change, only who is working it. Set in save() and in the
+    # bulk assignment path (LeadViewSet._stamp_owner_role), which skips save().
+    bde_assigned_at = models.DateTimeField(null=True, blank=True)
     # ── Documentation handoff ──
     pushed_to_documentation = models.BooleanField(default=False, db_index=True)
     pushed_to_documentation_at = models.DateTimeField(null=True, blank=True)
@@ -320,6 +325,9 @@ class Lead(models.Model):
     # Same for the district, so the check below runs on a change rather than on
     # every save of every lead.
     _loaded_district = _UNREAD
+    # And the BDE, so save() can tell a lead getting its first BDE (it reaches
+    # the site visit stage) from one passed between BDEs.
+    _loaded_bde_id = _UNREAD
 
     @classmethod
     def from_db(cls, db, field_names, values):
@@ -335,6 +343,7 @@ class Lead(models.Model):
         loaded = dict(zip(field_names, values))
         obj._loaded_assigned_to_id = loaded.get('assigned_to_id', cls._UNREAD)
         obj._loaded_district = loaded.get('district', cls._UNREAD)
+        obj._loaded_bde_id = loaded.get('bde_id', cls._UNREAD)
         return obj
 
     def save(self, *args, **kwargs):
@@ -389,6 +398,18 @@ class Lead(models.Model):
         elif role == 'bde' and (owner_changed or not self.bde_id) and self.bde_id != owner.id:
             self.bde_id = owner.id
             stamped.append('bde')
+        # Reaching the site visit stage is getting a BDE after having none —
+        # on creation, or after being taken back from one. An unread BDE means
+        # the row came back without the column, so there is nothing to compare.
+        if self._state.adding:
+            had_bde = False
+        elif self._loaded_bde_id is self._UNREAD:
+            had_bde = None
+        else:
+            had_bde = bool(self._loaded_bde_id)
+        if self.bde_id and had_bde is False:
+            self.bde_assigned_at = timezone.now()
+            stamped.append('bde_assigned_at')
         if stamped:
             update_fields = kwargs.get('update_fields')
             if update_fields is not None:
@@ -396,6 +417,7 @@ class Lead(models.Model):
         super().save(*args, **kwargs)
         self._loaded_assigned_to_id = self.assigned_to_id
         self._loaded_district = self.district
+        self._loaded_bde_id = self.bde_id
 
     def __str__(self):
         # `last_name` is nullable, so a customer with only a first name used to

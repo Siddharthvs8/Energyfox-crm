@@ -5253,6 +5253,17 @@ class LeadViewSet(viewsets.ModelViewSet):
             if stage_q is not None:
                 queryset = queryset.filter(stage_q)
 
+        # Filter by the stage a lead reached, and when ("PO Signed this week").
+        # Unlike `stage` above, which is where the lead is now, this keeps a lead
+        # that has since moved on: signed this week and already in documentation
+        # still counts as signed this week.
+        stage_reached = (self.request.query_params.get('stage_reached') or '').strip()
+        if stage_reached:
+            queryset = self._filter_stage_reached(
+                queryset, stage_reached,
+                self.request.query_params.get('stage_reached_after'),
+                self.request.query_params.get('stage_reached_before'))
+
         # Filter by campaign
         campaign_id = self.request.query_params.get('campaign')
         if campaign_id:
@@ -5433,7 +5444,58 @@ class LeadViewSet(viewsets.ModelViewSet):
         if role == 'tele_caller':
             queryset.filter(tele_caller__isnull=True).update(tele_caller=target_user)
         elif role == 'bde':
+            # A lead getting its first BDE reaches the site visit stage now; one
+            # moving over from another BDE keeps the day it first reached it.
+            # Same rule as Lead.save().
+            queryset.filter(bde__isnull=True).update(bde=target_user,
+                                                     bde_assigned_at=timezone.now())
             queryset.exclude(bde=target_user).update(bde=target_user)
+
+    @staticmethod
+    def _filter_stage_reached(queryset, stage, after=None, before=None):
+        """Leads that reached `stage`, optionally between two days (inclusive).
+
+        Each stage is dated by the moment a lead arrives in it: coming in (Tele
+        Caller), getting a BDE (Site Visit), the PO signed date on the site visit
+        (PO Signed), and each push onward (Documentation S1 to Project). A
+        hand-over that was later undone does not count — the stage's own flag
+        must still be set.
+
+        Days are the business's days: a timestamp is compared by its date in
+        the site's time zone (IST), so a push at 11 pm counts on that day, not
+        the next one in UTC. The matching date is annotated as
+        `stage_reached_at`, so each row can say when it got there.
+        """
+        from django.db.models import F, Q
+        from django.utils.dateparse import parse_date
+        reached = {
+            'tele_caller': ('created_at', Q()),
+            'site_visit': ('bde_assigned_at', Q(bde__isnull=False)),
+            'po_signed': ('site_visit__po_signed_date', Q(site_visit__po_signed_date__isnull=False)),
+            'documentation': ('pushed_to_documentation_at', Q(pushed_to_documentation=True)),
+            'accounts': ('pushed_to_accounts_at', Q(pushed_to_accounts=True)),
+            'purchase': ('pushed_to_purchase_at', Q(pushed_to_purchase=True)),
+            'project': ('pushed_to_project_at', Q(pushed_to_project=True)),
+        }.get(stage)
+        if reached is None:
+            return queryset
+        field, still_there = reached
+        queryset = queryset.filter(still_there).annotate(stage_reached_at=F(field))
+
+        def day(raw):
+            try:
+                return parse_date(raw) if raw else None
+            except ValueError:          # well-formed but impossible, e.g. 2026-02-30
+                return None
+
+        # The PO date is already a plain date; the rest are timestamps.
+        on_day = field if field == 'site_visit__po_signed_date' else f'{field}__date'
+        start, end = day(after), day(before)
+        if start:
+            queryset = queryset.filter(**{f'{on_day}__gte': start})
+        if end:
+            queryset = queryset.filter(**{f'{on_day}__lte': end})
+        return queryset
 
     @staticmethod
     def _assignable_user_ids(user):

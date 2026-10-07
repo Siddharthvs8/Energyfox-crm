@@ -10318,3 +10318,238 @@ class PoSignedStageTests(TestCase):
         Lead.objects.filter(pk=self.po.pk).update(is_lost=True, lost_at=timezone.now())
         by_stage = {r['stage']: r['count'] for r in CompanyPerformanceView()._lost(None, None)['by_stage']}
         self.assertEqual(by_stage, {'po_signed': 1})
+
+
+class StageReachedFilterTests(TestCase):
+    """The advanced "stage reached" filter: leads that reached a stage within a
+    period — "PO Signed, this week" — whether or not they have moved on since.
+
+    Each stage is dated by the moment a lead arrives in it; days are IST days.
+    """
+
+    def setUp(self):
+        from .models import SiteVisit
+        self.admin = mk('sr_admin', 'admin')
+        self.bde = mk('sr_bde', 'bde')
+        self.bde2 = mk('sr_bde2', 'bde')
+        self.caller = mk('sr_caller', 'tele_caller')
+        self.n = iter(range(1, 200))
+        self.SiteVisit = SiteVisit
+
+    def lead(self, name, **fields):
+        return Lead.objects.create(first_name=name, phone=f'98950{next(self.n):05d}',
+                                   status='converted', **fields)
+
+    def at(self, y, m, d, hh=12, mm=0):
+        """A moment in IST, the business's clock."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        return datetime(y, m, d, hh, mm, tzinfo=ZoneInfo('Asia/Kolkata'))
+
+    def signed(self, name, po, **flags):
+        l = self.lead(name, bde=self.bde, **flags)
+        self.SiteVisit.objects.create(lead=l, po_signed_date=po)
+        return l
+
+    def ids(self, stage, after=None, before=None, extra=''):
+        q = f'/api/leads/?stage_reached={stage}&page_size=200'
+        if after:
+            q += f'&stage_reached_after={after}'
+        if before:
+            q += f'&stage_reached_before={before}'
+        r = self.client.get(q + extra, HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        body = r.json()
+        rows = body if isinstance(body, list) else body['results']
+        return {row['id']: row for row in rows}
+
+    # ── PO Signed ──
+    def test_po_signed_this_week_includes_those_that_moved_on(self):
+        """The example: signed this week, and already pushed to documentation."""
+        still = self.signed('Still', date(2026, 10, 6))
+        moved = self.signed('Moved', date(2026, 10, 7), pushed_to_documentation=True,
+                            pushed_to_documentation_at=self.at(2026, 10, 7))
+        last_week = self.signed('LastWeek', date(2026, 9, 30))
+        found = self.ids('po_signed', '2026-10-05', '2026-10-11')
+        self.assertEqual(set(found), {still.id, moved.id})
+        self.assertNotIn(last_week.id, found)
+
+    def test_the_row_says_when_the_stage_was_reached(self):
+        l = self.signed('Dated', date(2026, 10, 6))
+        self.assertEqual(self.ids('po_signed', '2026-10-06', '2026-10-06')[l.id]['stage_reached_at'],
+                         '2026-10-06')
+
+    def test_without_dates_it_is_reached_at_any_time(self):
+        a = self.signed('A', date(2026, 1, 3))
+        b = self.signed('B', date(2026, 10, 6))
+        self.lead('NeverSigned', bde=self.bde)
+        self.assertEqual(set(self.ids('po_signed')), {a.id, b.id})
+
+    # ── The pushed stages ──
+    def test_documentation_is_dated_by_the_push(self):
+        pushed = self.lead('Pushed', bde=self.bde, pushed_to_documentation=True,
+                           pushed_to_documentation_at=self.at(2026, 10, 2))
+        self.lead('Earlier', bde=self.bde, pushed_to_documentation=True,
+                  pushed_to_documentation_at=self.at(2026, 9, 2))
+        self.assertEqual(set(self.ids('documentation', '2026-10-01', '2026-10-31')), {pushed.id})
+
+    def test_a_hand_over_that_was_undone_does_not_count(self):
+        self.lead('PulledBack', bde=self.bde, pushed_to_documentation=False,
+                  pushed_to_documentation_at=self.at(2026, 10, 2))
+        self.assertEqual(self.ids('documentation', '2026-10-01', '2026-10-31'), {})
+
+    def test_each_later_stage_has_its_own_date(self):
+        l = self.lead('AllTheWay', bde=self.bde,
+                      pushed_to_documentation=True, pushed_to_documentation_at=self.at(2026, 8, 1),
+                      pushed_to_accounts=True, pushed_to_accounts_at=self.at(2026, 8, 10),
+                      pushed_to_purchase=True, pushed_to_purchase_at=self.at(2026, 9, 1),
+                      pushed_to_project=True, pushed_to_project_at=self.at(2026, 10, 3))
+        self.assertIn(l.id, self.ids('accounts', '2026-08-10', '2026-08-10'))
+        self.assertNotIn(l.id, self.ids('accounts', '2026-09-01', '2026-09-30'))
+        self.assertIn(l.id, self.ids('purchase', '2026-09-01', '2026-09-30'))
+        self.assertIn(l.id, self.ids('project', '2026-10-01', '2026-10-31'))
+
+    def test_days_are_ist_days(self):
+        """11:30 pm IST on the 6th is still the 6th, though it is 6 pm UTC; and
+        12:30 am IST on the 7th is the 7th, though UTC still says the 6th."""
+        late = self.lead('Late', bde=self.bde, pushed_to_documentation=True,
+                         pushed_to_documentation_at=self.at(2026, 10, 6, 23, 30))
+        early = self.lead('Early', bde=self.bde, pushed_to_documentation=True,
+                          pushed_to_documentation_at=self.at(2026, 10, 7, 0, 30))
+        self.assertEqual(set(self.ids('documentation', '2026-10-06', '2026-10-06')), {late.id})
+        self.assertEqual(set(self.ids('documentation', '2026-10-07', '2026-10-07')), {early.id})
+
+    # ── Tele caller and site visit ──
+    def test_tele_caller_is_dated_by_arrival(self):
+        new = self.lead('New', assigned_to=self.caller)
+        old = self.lead('Old', assigned_to=self.caller)
+        Lead.objects.filter(pk=old.pk).update(created_at=self.at(2026, 1, 1))
+        today = timezone.localdate().isoformat()
+        found = self.ids('tele_caller', today, today)
+        self.assertIn(new.id, found)
+        self.assertNotIn(old.id, found)
+
+    def test_assigning_a_bde_dates_the_site_visit(self):
+        l = self.lead('ToVisit', assigned_to=self.caller)
+        r = self.client.post(f'/api/leads/{l.id}/assign-bde/', data={'bde': self.bde.id},
+                             content_type='application/json', HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        l.refresh_from_db()
+        self.assertIsNotNone(l.bde_assigned_at)
+        today = timezone.localdate().isoformat()
+        self.assertIn(l.id, self.ids('site_visit', today, today))
+
+    def test_passing_between_bdes_keeps_the_first_date(self):
+        l = self.lead('Passed', bde=self.bde)
+        first = l.bde_assigned_at
+        self.assertIsNotNone(first)
+        l.bde = self.bde2
+        l.save(update_fields=['bde'])
+        l.refresh_from_db()
+        self.assertEqual(l.bde_assigned_at, first)
+
+    def test_taken_back_and_given_again_is_dated_again(self):
+        l = self.lead('Again', bde=self.bde)
+        Lead.objects.filter(pk=l.pk).update(bde_assigned_at=self.at(2026, 1, 1))
+        l = Lead.objects.get(pk=l.pk)
+        l.bde = None
+        l.save(update_fields=['bde'])
+        l.bde = self.bde2
+        l.save(update_fields=['bde'])
+        l.refresh_from_db()
+        self.assertEqual(timezone.localtime(l.bde_assigned_at).date(), timezone.localdate())
+
+    def test_handing_the_lead_itself_to_a_bde_dates_it(self):
+        """The owner field, not the Assign BDE button — save() stamps the BDE."""
+        l = self.lead('Owned', assigned_to=self.caller)
+        l = Lead.objects.get(pk=l.pk)
+        l.assigned_to = self.bde
+        l.save()
+        l.refresh_from_db()
+        self.assertEqual(l.bde_id, self.bde.id)
+        self.assertIsNotNone(l.bde_assigned_at)
+
+    def test_bulk_assignment_dates_it_too(self):
+        """queryset.update() skips save(), so the bulk path stamps on its own —
+        and keeps the date of a lead moving over from another BDE."""
+        fresh = self.lead('Fresh', assigned_to=self.caller)
+        moving = self.lead('Moving', bde=self.bde2)
+        Lead.objects.filter(pk=moving.pk).update(bde_assigned_at=self.at(2026, 3, 3))
+        r = self.client.post('/api/leads/bulk_assign/',
+                             data={'ids': [fresh.id, moving.id], 'user_id': self.bde.id},
+                             content_type='application/json', HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        fresh.refresh_from_db()
+        moving.refresh_from_db()
+        self.assertEqual(fresh.bde_id, self.bde.id)
+        self.assertIsNotNone(fresh.bde_assigned_at)
+        self.assertEqual(moving.bde_id, self.bde.id)
+        self.assertEqual(moving.bde_assigned_at, self.at(2026, 3, 3))
+
+    def test_the_hand_over_date_cannot_be_edited(self):
+        l = self.lead('Locked', bde=self.bde)
+        before = l.bde_assigned_at
+        self.client.patch(f'/api/leads/{l.id}/', data={'bde_assigned_at': '2020-01-01T00:00:00Z'},
+                          content_type='application/json', HTTP_AUTHORIZATION=token_for(self.admin))
+        l.refresh_from_db()
+        self.assertEqual(l.bde_assigned_at, before)
+
+    # ── Combining, and bad input ──
+    def test_it_combines_with_where_the_lead_is_now(self):
+        """Signed this week and already in documentation."""
+        self.signed('Waiting', date(2026, 10, 6))
+        moved = self.signed('InDoc', date(2026, 10, 6), pushed_to_documentation=True,
+                            pushed_to_documentation_at=self.at(2026, 10, 7))
+        found = self.ids('po_signed', '2026-10-05', '2026-10-11', extra='&stage=documentation')
+        self.assertEqual(set(found), {moved.id})
+
+    def test_bad_dates_and_stages_do_not_break_the_list(self):
+        l = self.signed('Any', date(2026, 10, 6))
+        self.assertIn(l.id, self.ids('po_signed', '2026-02-30', 'not-a-date'))
+        self.assertIn(l.id, self.ids('no_such_stage'))
+
+    # ── Dating the hand-overs made before this existed ──
+    def test_the_migration_dates_old_hand_overs_from_the_log(self):
+        import importlib
+        from django.apps import apps
+        from .models import ActivityLog
+        backfill = importlib.import_module(
+            'leads.migrations.0080_lead_bde_assigned_at').date_the_existing_hand_overs
+        by_button = self.lead('ByButton', bde=self.bde)
+        by_bde_note = self.lead('ByNote', bde=self.bde)
+        no_trace = self.lead('NoTrace', bde=self.bde)
+        Lead.objects.filter(pk__in=[by_button.pk, by_bde_note.pk, no_trace.pk]).update(bde_assigned_at=None)
+        log = ActivityLog.objects.create(activity_type='note_added', lead=by_button,
+                                         description='Assigned to BDE: sr_bde')
+        ActivityLog.objects.filter(pk=log.pk).update(created_at=self.at(2026, 5, 5))
+        note = ActivityLog.objects.create(activity_type='note_added', lead=by_bde_note,
+                                          actor=self.bde, description='Visited the roof')
+        ActivityLog.objects.filter(pk=note.pk).update(created_at=self.at(2026, 6, 6))
+        backfill(apps, None)
+        for l in (by_button, by_bde_note, no_trace):
+            l.refresh_from_db()
+        self.assertEqual(by_button.bde_assigned_at, self.at(2026, 5, 5))
+        self.assertEqual(by_bde_note.bde_assigned_at, self.at(2026, 6, 6))
+        self.assertIsNone(no_trace.bde_assigned_at)
+
+    def test_a_late_trace_is_pulled_back_to_what_must_have_come_after(self):
+        """The BDE's first note can postdate the hand-over; the lead cannot have
+        been pushed to documentation, or had its PO signed, before it had a BDE."""
+        import importlib
+        from django.apps import apps
+        from .models import ActivityLog
+        backfill = importlib.import_module(
+            'leads.migrations.0080_lead_bde_assigned_at').date_the_existing_hand_overs
+        pushed = self.lead('PushedFirst', bde=self.bde, pushed_to_documentation=True,
+                           pushed_to_documentation_at=self.at(2026, 6, 23, 15, 0))
+        signed = self.signed('SignedFirst', date(2026, 7, 1))
+        Lead.objects.filter(pk__in=[pushed.pk, signed.pk]).update(bde_assigned_at=None)
+        for l, when in ((pushed, self.at(2026, 6, 24)), (signed, self.at(2026, 7, 9))):
+            log = ActivityLog.objects.create(activity_type='note_added', lead=l, actor=self.bde,
+                                             description='Late note')
+            ActivityLog.objects.filter(pk=log.pk).update(created_at=when)
+        backfill(apps, None)
+        pushed.refresh_from_db()
+        signed.refresh_from_db()
+        self.assertEqual(pushed.bde_assigned_at, self.at(2026, 6, 23, 15, 0))
+        self.assertEqual(signed.bde_assigned_at, self.at(2026, 7, 1, 0, 0))

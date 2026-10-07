@@ -1785,29 +1785,33 @@ class StockPaymentsView(APIView):
         }
 
     @staticmethod
-    def _classify(received, total, has_credit):
+    def _classify(state, has_credit):
         if has_credit:
             return 'credit'
-        return 'fully_paid' if total > 0 and received >= total else 'partially_paid'
+        return 'fully_paid' if state['fully_paid'] else 'partially_paid'
 
     def _row(self, *, number, kind, customer, date, total, payments, status, status_label):
         received = sum((p.amount_received or Decimal('0') for p in payments), Decimal('0'))
-        total = to_money(total) or Decimal('0')
-        balance = total - received
+        # Through payment_state, like every other payment screen: the invoice is
+        # the rounded figure the customer was billed (5,000.50 is billed 5,001),
+        # and either that or the exact arithmetic settles it. Against the exact
+        # total, an invoice rounded down — 2,252.25 billed 2,252 — paid in full
+        # would sit under Partially Paid owing 25 paise for ever.
+        state = payment_state(total, received)
         modes = []
         for p in payments:                       # ordered oldest first, kept that way
             if p.mode not in modes:
                 modes.append(p.mode)
         paid_dates = [p.paid_on.isoformat() for p in payments if p.paid_on]
         return {
-            '_section': self._classify(received, total, any(p.mode == 'credit' for p in payments)),
+            '_section': self._classify(state, any(p.mode == 'credit' for p in payments)),
             'number': number,
             'kind': kind,                        # 'invoice' | 'proforma'
             'customer': customer,
             'date': date.isoformat() if date else None,
-            'invoice_total': str(total),
-            'received': str(received),
-            'balance': str(balance if balance > 0 else Decimal('0')),
+            'invoice_total': state['invoice_total'],
+            'received': state['amount_received'],
+            'balance': state['balance'],
             'modes': modes,
             'payment_count': len(payments),
             'last_paid_on': max(paid_dates) if paid_dates else None,

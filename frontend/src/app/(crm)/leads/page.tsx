@@ -4,7 +4,7 @@ import { getApiBase } from "@/lib/mock-data";
 import { useLeadStatuses } from "@/hooks/useLeadStatuses";
 import { useDistricts, districtOptions } from "@/hooks/useDistricts";
 import { FALLBACK_STATUS_META, getLatestNote } from "@/lib/lead-statuses";
-import { STAGE_META, STAGE_OPTIONS, StageTag } from "@/lib/pipeline-stages";
+import { STAGE_META, STAGE_OPTIONS, STAGE_REACHED_BASIS, StageReachedTag, StageTag } from "@/lib/pipeline-stages";
 
 import React, { useState, useEffect, useRef, Suspense } from "react";
 import Link from "next/link";
@@ -271,6 +271,14 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   const [statusChangeParam, setStatusChangeParam] = useState("2");
   const [statusChangeFromD, setStatusChangeFromD] = useState("");
   const [statusChangeToD,   setStatusChangeToD]   = useState("");
+  // Stage reached, and when — who got to a stage in a period, whether or not
+  // they have moved on since ("PO Signed, this week"). `stageFilter` above is
+  // where a lead is now.
+  const [stageReached,      setStageReached]      = useState("all");
+  const [stageReachedType,  setStageReachedType]  = useState("all");
+  const [stageReachedParam, setStageReachedParam] = useState("7");
+  const [stageReachedFrom,  setStageReachedFrom]  = useState("");
+  const [stageReachedTo,    setStageReachedTo]    = useState("");
   const [activityType,      setActivityType]      = useState("all");
   const [hasActivityDays,   setHasActivityDays]   = useState("");
   const [noActivityDays,    setNoActivityDays]    = useState("");
@@ -389,6 +397,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
     modType, modParam, modFrom, modTo,
     valueMin, valueMax, companyFilter,
     statusChangeFrom, statusChangeTo, statusChangeType, statusChangeParam, statusChangeFromD, statusChangeToD,
+    stageReached, stageReachedType, stageReachedParam, stageReachedFrom, stageReachedTo,
     activityType, hasActivityDays, noActivityDays, page,
     sortField, sortOrder, showArchived
   ]);
@@ -547,6 +556,11 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
     buildDateParams(q, createdType, createdParam, createdFrom, createdTo, "created");
     buildDateParams(q, modType, modParam, modFrom, modTo, "modified");
     buildDateParams(q, statusChangeType, statusChangeParam, statusChangeFromD, statusChangeToD, "status_change");
+    // The period means nothing without a stage, so it is only sent with one.
+    if (stageReached !== "all") {
+      q.append("stage_reached", stageReached);
+      buildDateParams(q, stageReachedType, stageReachedParam, stageReachedFrom, stageReachedTo, "stage_reached");
+    }
 
     if (sortField) {
       q.append("ordering", `${sortOrder === "desc" ? "-" : ""}${sortField}`);
@@ -1083,6 +1097,7 @@ This cannot be undone.`)) return;
     districtFilter !== "all", productFilter !== "all", stageFilter !== "all", metaIntegrationFilter !== "all",
     createdType !== "all", modType !== "all", !!valueMin, !!valueMax, !!companyFilter,
     statusChangeFrom !== "all", statusChangeTo !== "all", statusChangeType !== "all",
+    stageReached !== "all",
     activityType !== "all", !!hasActivityDays, !!noActivityDays
   ].filter(Boolean).length;
 
@@ -1094,6 +1109,8 @@ This cannot be undone.`)) return;
     setValueMin(""); setValueMax(""); setCompanyFilter(""); setSearch("");
     setStatusChangeFrom("all"); setStatusChangeTo("all"); setStatusChangeType("all");
     setStatusChangeParam("2"); setStatusChangeFromD(""); setStatusChangeToD("");
+    setStageReached("all"); setStageReachedType("all"); setStageReachedParam("7");
+    setStageReachedFrom(""); setStageReachedTo("");
     setActivityType("all"); setHasActivityDays(""); setNoActivityDays("");
     setPage(1);
   };
@@ -1412,6 +1429,58 @@ This cannot be undone.`)) return;
                 <input type="text" placeholder="Contains..." value={companyFilter} onChange={e => setCompanyFilter(e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-700 outline-none focus:border-indigo-400" />
               </div>
               
+              {/* Stage Reached — who got to a stage in a period, whether or not
+                  they have moved on since. Dated by the stage's own moment of
+                  arrival, which the hint under it spells out. */}
+              <div className="sm:col-span-2 lg:col-span-4 bg-emerald-50/50 border border-emerald-100 rounded-xl p-3">
+                <label className="block text-[10px] font-bold text-emerald-700 uppercase tracking-widest mb-2 flex items-center gap-1.5">
+                  <I.Activity className="w-3 h-3" /> Stage Reached
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <select value={stageReached} onChange={e => { setStageReached(e.target.value); setPage(1); }}
+                    aria-label="Stage reached"
+                    className="dropdown-premium w-full !text-xs !py-1.5 !px-2 !pr-7 !rounded-lg">
+                    <option value="all">Any Stage</option>
+                    {STAGE_OPTIONS.map(st => <option key={st} value={st}>{STAGE_META[st].label}</option>)}
+                  </select>
+
+                  <div className="sm:col-span-2 flex flex-wrap items-start gap-2">
+                    <select value={stageReachedType} onChange={e => { setStageReachedType(e.target.value); setPage(1); }}
+                      disabled={stageReached === "all"} aria-label="When the stage was reached"
+                      className="dropdown-premium w-40 flex-shrink-0 !text-xs !py-1.5 !px-2 !pr-7 !rounded-lg disabled:opacity-50 disabled:cursor-not-allowed">
+                      <option value="all">At Any Time</option>
+                      <option value="today">Today</option>
+                      <option value="yesterday">Yesterday</option>
+                      <option value="this_week">This Week</option>
+                      <option value="this_month">This Month</option>
+                      <option value="previous">Previous</option>
+                      <option value="between">Between</option>
+                    </select>
+                    {stageReached !== "all" && stageReachedType === "previous" && (
+                      <div className="flex items-center gap-1.5">
+                        <input type="number" min="0" value={stageReachedParam} onChange={e => setStageReachedParam(e.target.value)}
+                          className="w-14 bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-emerald-400" />
+                        <span className="text-xs text-slate-500 font-medium">days</span>
+                      </div>
+                    )}
+                    {stageReached !== "all" && stageReachedType === "between" && (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <input type="date" value={stageReachedFrom} onChange={e => setStageReachedFrom(e.target.value)}
+                          aria-label="From" className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs outline-none" />
+                        <span className="text-slate-400">-</span>
+                        <input type="date" value={stageReachedTo} onChange={e => setStageReachedTo(e.target.value)}
+                          aria-label="To" className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs outline-none" />
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <p className="mt-2 text-[11px] text-slate-500">
+                  {stageReached === "all"
+                    ? "Choose a stage, then when it was reached — for example PO Signed, This Week."
+                    : `Counted from ${STAGE_REACHED_BASIS[stageReached]}. Includes leads that have moved on to a later stage since.`}
+                </p>
+              </div>
+
               {/* Status Change History */}
               <div className="sm:col-span-2 lg:col-span-4 bg-indigo-50/50 border border-indigo-100 rounded-xl p-3">
                 <label className="block text-[10px] font-bold text-indigo-700 uppercase tracking-widest mb-2 flex items-center gap-1.5">
@@ -1632,6 +1701,7 @@ This cannot be undone.`)) return;
                     {/* Where it is */}
                     <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
                       <StageTag stage={lead.pipeline_stage} />
+                      {stageReached !== "all" && <StageReachedTag stage={stageReached} at={lead.stage_reached_at} />}
                       <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-semibold ${src.bg} ${src.text}`}>
                         {getSourceLabel(lead.source)}
                       </span>
@@ -1769,7 +1839,10 @@ This cannot be undone.`)) return;
                             <div className="min-w-0">
                               <p className="text-[13px] font-semibold text-slate-800 leading-tight">{lead.first_name} {lead.last_name}</p>
                               <p className="text-[11px] text-slate-400 truncate max-w-[180px]">{lead.email || lead.phone || "—"}</p>
-                              <div className="mt-1"><StageTag stage={lead.pipeline_stage} /></div>
+                              <div className="mt-1 flex flex-wrap items-center gap-1">
+                                <StageTag stage={lead.pipeline_stage} />
+                                {stageReached !== "all" && <StageReachedTag stage={stageReached} at={lead.stage_reached_at} />}
+                              </div>
                               {lead.next_task && <TaskTag task={lead.next_task} />}
                             </div>
                           </div>

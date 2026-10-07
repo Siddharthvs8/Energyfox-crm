@@ -502,13 +502,22 @@ class LeadSerializer(serializers.ModelSerializer):
     can_mark_lost = serializers.SerializerMethodField()
     can_edit_status = serializers.SerializerMethodField()
     is_closed_deal = serializers.SerializerMethodField()
+    # When the lead reached the stage the list was filtered by ("stage reached"
+    # filter) — present only on rows from that filter, so a row can say when.
+    stage_reached_at = serializers.SerializerMethodField()
     status = serializers.CharField(required=False)
 
     class Meta:
         model = Lead
         fields = '__all__'
         # Trash is driven only by the dedicated trash/restore actions, never a plain PATCH.
-        read_only_fields = ['is_trashed', 'trashed_at', 'trashed_by']
+        # bde_assigned_at is the record of when the site visit stage was
+        # reached, so it is written by the hand-over itself, never by an edit.
+        read_only_fields = ['is_trashed', 'trashed_at', 'trashed_by', 'bde_assigned_at']
+
+    def get_stage_reached_at(self, obj):
+        when = getattr(obj, 'stage_reached_at', None)
+        return when.isoformat() if when else None
 
     def get_pipeline_stage_label(self, obj):
         return Lead.PIPELINE_STAGE_LABELS.get(obj.pipeline_stage, obj.pipeline_stage)
