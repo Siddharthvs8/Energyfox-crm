@@ -588,7 +588,10 @@ def inline_image(f):
 
 
 def money(v):
-    return str(Decimal(v or 0).quantize(Decimal('0.01')))
+    # Half up, like every other figure on the document: Decimal's default is
+    # banker's rounding, which printed 100.485 as 100.48 beside a payment screen
+    # that reads it as 100.49.
+    return str(Decimal(v or 0).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
 
 
 def document_chrome(request, side='b2c'):
@@ -664,6 +667,13 @@ def summarise_lines(rows):
     return lines, summary
 
 
+def billed(total):
+    """What a document is billed at, as the email that carries it states it:
+    the rounded grand total the PDF prints, not the raw arithmetic — which
+    reached the customer as "Rs. 124254.0000"."""
+    return money(round_off_for(total)[0])
+
+
 def totals_block(taxable, discount, tax, grand):
     """The figures under the table, with the rounding the document prints.
 
@@ -675,12 +685,15 @@ def totals_block(taxable, discount, tax, grand):
     from leads.receipts import amount_in_words
     grand = grand or Decimal('0')
     rounded, _adjustment = round_off_for(grand)
+    # The round-off is taken from the value as printed, so the two printed
+    # lines always add up to the grand total beneath them.
+    value = Decimal(money(grand))
     return {
         'taxable': money(taxable),
         'discount': money(discount),
         'tax': money(tax),
-        'invoice_value': money(grand),
-        'round_off': money(rounded - grand),
+        'invoice_value': money(value),
+        'round_off': money(rounded - value),
         'grand_total': money(rounded),
         'in_words': amount_in_words(rounded),
     }
@@ -807,9 +820,13 @@ class ProformaDocumentMixin:
         """
         quote = self.get_object()
         party = self.proforma_party(quote)
+        # The discount comes off each line pro rata, so the taxable value, the
+        # GST and the HSN summary are all on the discounted price — the printed
+        # lines used to carry the full price and add up to more than the total.
+        keep = Decimal('1') - (quote.discount_percent or Decimal('0')) / Decimal('100')
         lines, hsn_summary = summarise_lines([
             dict(zip(('particulars', 'hsn', 'unit'), self.proforma_line(li)),
-                 qty=li.quantity or 0, taxable=li.line_total or Decimal('0'),
+                 qty=li.quantity or 0, taxable=(li.line_total or Decimal('0')) * keep,
                  gst_rate=quote.tax_percent or Decimal('0'))
             for li in quote.items.all()
         ])
@@ -845,7 +862,7 @@ class ProformaDocumentMixin:
         """Store the generated PDF and send it to the customer."""
         quote = self.get_object()
         payload, code = deliver_document(
-            request, holder=quote, number=quote.number, amount=quote.total,
+            request, holder=quote, number=quote.number, amount=billed(quote.total),
             party=self.proforma_party(quote), noun='Proforma Invoice',
             channel=self.SEND_CHANNEL,
             # Retail quotes hang off a lead; wholesale ones do not.
@@ -933,7 +950,7 @@ class SalesOrderViewSet(viewsets.ModelViewSet):
 
 
 # ─── Stock register ─────────────────────────────────────────────────────────
-from decimal import Decimal  # noqa: E402
+from decimal import Decimal, ROUND_HALF_UP  # noqa: E402
 from django.db import transaction  # noqa: E402
 from django.db.models import Sum, OuterRef, Subquery, DecimalField, Value, F, Exists  # noqa: E402
 from django.db.models.functions import Coalesce  # noqa: E402
@@ -942,7 +959,7 @@ from rest_framework.views import APIView  # noqa: E402
 
 from .models import (StockItem, StockCustomer, GoodsReceipt, StockDispatch,  # noqa: E402
                      StockQuote, StockQuoteItem, StockPurchaseOrder, DispatchPayment,
-                     LIVE_QUOTE_STATUSES,
+                     LIVE_QUOTE_STATUSES, document_number_in_use,
                      next_stock_po_number, next_document_number, financial_year)
 from .serializers import (  # noqa: E402
     StockItemSerializer, StockCustomerSerializer,
@@ -1450,16 +1467,32 @@ class StockDispatchViewSet(_MovementViewSet):
             return Response({'error': 'Add at least one product with a quantity.'},
                             status=status.HTTP_400_BAD_REQUEST)
 
+        # An id that names nothing used to get as far as the commit and come
+        # back as a bare 500; say which one is wrong instead.
+        item_ids = {str(item_id) for item_id, *_rest in lines}
+        known = {str(pk) for pk in StockItem.objects.filter(
+            pk__in=[i for i in item_ids if i.isdigit()]).values_list('pk', flat=True)}
+        if item_ids - known:
+            return Response({'error': 'One of the products is no longer in the item master. '
+                                      'Pick it again.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        customer_id = data.get('customer') or None
+        if customer_id and not StockCustomer.objects.filter(
+                pk=customer_id if str(customer_id).isdigit() else None).exists():
+            return Response({'error': 'That customer no longer exists. Pick one again.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
         # The same arithmetic the modal shows: goods value, then tax on top,
         # rounded once at the end. Rounding per row instead would leave the
         # popup demanding a total a paisa away from the one on screen.
         invoice_total = to_money(goods + (goods * tax_percent / Decimal('100')))
 
         dispatch_date = to_date(data.get('date')) or timezone.localdate()
-        customer_id = data.get('customer') or None
         invoice_no = (str(data.get('invoice_no') or '').strip()
                       or next_document_number('IN', on=dispatch_date))
-        if StockDispatch.objects.filter(invoice_no=invoice_no).exists():
+        # Payments count too: a deleted delivery leaves its payments under its
+        # number, and a new delivery typed in under it would inherit them.
+        if document_number_in_use('IN', invoice_no):
             return Response({'error': f'{invoice_no} already exists.'},
                             status=status.HTTP_400_BAD_REQUEST)
 
@@ -1500,11 +1533,9 @@ class StockDispatchViewSet(_MovementViewSet):
     # ── Money, then goods ──
     @staticmethod
     def invoice_total_for(rows):
-        """What a delivery's rows come to, tax included — one rounding, at the
-        end, so the figure matches the one the screen adds up."""
-        goods = sum((r.amount or Decimal('0') for r in rows), Decimal('0'))
-        tax = sum((r.tax_amount or Decimal('0') for r in rows), Decimal('0'))
-        return to_money(goods + tax) or Decimal('0')
+        """What a delivery's rows come to, discount off and tax included — one
+        rounding, at the end, so the figure matches the one the screen adds up."""
+        return to_money(sum((r.total or Decimal('0') for r in rows), Decimal('0'))) or Decimal('0')
 
     def _invoice_rows(self, invoice_no):
         return list(StockDispatch.objects.filter(invoice_no=invoice_no)
@@ -1635,11 +1666,14 @@ class StockDispatchViewSet(_MovementViewSet):
             'hsn': r.item.hsn,
             'qty': r.quantity or 0,
             'unit': r.item.unit,
-            'taxable': r.amount or Decimal('0'),
+            # Net of any discount carried over from the proforma, like the
+            # proforma's own lines.
+            'taxable': r.taxable_amount or Decimal('0'),
             'gst_rate': r.tax_percent or Decimal('0'),
         } for r in rows])
 
-        taxable = sum((r.amount or Decimal('0') for r in rows), Decimal('0'))
+        taxable = sum((r.taxable_amount or Decimal('0') for r in rows), Decimal('0'))
+        discount = sum((r.discount_amount or Decimal('0') for r in rows), Decimal('0'))
         tax = sum((r.tax_amount or Decimal('0') for r in rows), Decimal('0'))
 
         return Response({
@@ -1656,7 +1690,7 @@ class StockDispatchViewSet(_MovementViewSet):
             'ship_to': {**party, 'address': dispatch.site or party['address']},
             'lines': lines,
             'hsn_summary': hsn_summary,
-            'totals': totals_block(taxable, Decimal('0'), tax, taxable + tax),
+            'totals': totals_block(taxable, discount, tax, taxable + tax),
             'terms': ['Goods once dispatched will not be taken back.'],
         })
 
@@ -1665,13 +1699,12 @@ class StockDispatchViewSet(_MovementViewSet):
         """Store the generated invoice and send it to the customer."""
         dispatch = self.get_object()
         rows = self._document_rows(dispatch)
-        amount = sum((r.total or Decimal('0') for r in rows), Decimal('0'))
         # The file lives on the first row of the group, so re-sending any row of
         # a multi-item delivery finds the same document.
         payload, code = deliver_document(
             request, holder=rows[0], number=dispatch.invoice_no or f'DSP-{dispatch.pk}',
-            amount=amount, party=self._party(dispatch.customer), noun='Invoice',
-            channel='b2b')
+            amount=billed(self.invoice_total_for(rows)),
+            party=self._party(dispatch.customer), noun='Invoice', channel='b2b')
         return Response(payload, status=code)
 
 
@@ -1940,7 +1973,9 @@ class StockSummaryView(APIView):
             included; goods receipts carry no tax field."""
             line = F('quantity') * F('rate')
             if model is StockDispatch:
-                line = line * (Value(Decimal('1')) + F('tax_percent') / Value(Decimal('100')))
+                line = (line
+                        * (Value(Decimal('1')) - F('discount_percent') / Value(Decimal('100')))
+                        * (Value(Decimal('1')) + F('tax_percent') / Value(Decimal('100'))))
             return model.objects.filter(**filters).aggregate(
                 t=Coalesce(Sum(line, output_field=_MONEY),
                            Value(Decimal('0')), output_field=_MONEY))['t']
@@ -2155,6 +2190,34 @@ class StockQuoteViewSet(ProformaDocumentMixin, viewsets.ModelViewSet):
     # stock movement — so removing the proforma takes the offer off the books
     # without unwinding the sale. See StockQuoteDeletionTests.
 
+    def destroy(self, request, *args, **kwargs):
+        """Refuse to delete a proforma that is still holding verified payments.
+
+        The payments hang off the proforma until it converts, and deleting it
+        cascades to them — so anyone who could delete a proforma could erase a
+        record that only a super admin may remove one at a time (see
+        StockPaymentView). A super admin may still push it through with
+        `?force=1`, having been told what goes with it.
+        """
+        quote = self.get_object()
+        payments = list(quote.payments.all())
+        if payments:
+            forcing = str(request.query_params.get('force', '')).lower() in ('1', 'true', 'yes')
+            may_force = bool(getattr(request.user, 'is_superuser', False))
+            if not (forcing and may_force):
+                received = sum((p.amount_received for p in payments), Decimal('0'))
+                detail = (f'{quote.number} has {len(payments)} verified payment'
+                          f'{"s" if len(payments) != 1 else ""} totalling ₹{money(received)} '
+                          f'recorded against it.')
+                detail += (' Deleting it deletes those payment records too.' if may_force else
+                           ' Only a super admin can delete it while those payments stand.')
+                return Response({'error': detail, 'payments': len(payments),
+                                 'can_force': may_force},
+                                status=status.HTTP_400_BAD_REQUEST)
+            logger.warning('Proforma %s deleted with %d payment(s) by %s', quote.number,
+                           len(payments), getattr(request.user, 'username', 'unknown'))
+        return super().destroy(request, *args, **kwargs)
+
     def proforma_party(self, quote):
         """A wholesale invoice is addressed to the trade customer."""
         c = quote.customer
@@ -2221,48 +2284,58 @@ class StockQuoteViewSet(ProformaDocumentMixin, viewsets.ModelViewSet):
         happen once, too — a second call would take the same goods out twice.
         """
         quote = self.get_object()
-        if quote.status == 'converted':
-            return Response({'error': f'{quote.number} has already been dispatched.'},
-                            status=status.HTTP_400_BAD_REQUEST)
-        lines = list(quote.items.all())
-        if not lines:
-            return Response({'error': 'Add at least one line before dispatching.'},
-                            status=status.HTTP_400_BAD_REQUEST)
-
-        dispatch_date = quote.quote_date or timezone.localdate()
-        # A final payment may come with the request, so the last instalment and
-        # the dispatch can be one action from the screen.
-        if request.data.get('payment'):
-            payment, error = check_payment(
-                request.data.get('payment'), quote.total,
-                already_received=DispatchPayment.received_for(quote=quote),
-                paid_on_default=dispatch_date)
-            if error:
-                return Response(error, status=status.HTTP_400_BAD_REQUEST)
-            DispatchPayment.objects.create(
-                quote=quote,
-                verified_by=request.user if request.user.is_authenticated else None,
-                **payment)
-
-        state = payment_state(quote.total, DispatchPayment.received_for(quote=quote))
-        if not state['fully_paid']:
-            return Response({
-                'error': (f"₹{state['balance']} of ₹{state['invoice_total']} is still "
-                          f"owing on {quote.number}. The invoice must be settled in "
-                          f"full before the goods can leave."),
-                **state,
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-        # The dispatch is a sale, so it takes its own number from the invoice
-        # series rather than carrying the proforma's. One number for the whole
-        # set — the rows of a delivery share it — with the proforma recorded in
-        # the note so the two stay traceable.
-        invoice_no = next_document_number('IN', on=dispatch_date)
         with transaction.atomic():
+            # Locked for the whole check-and-write. Two clicks on Dispatch used to
+            # both read "not converted yet" and each take the goods out of stock.
+            quote = StockQuote.objects.select_for_update().get(pk=quote.pk)
+            if quote.status == 'converted':
+                return Response({'error': f'{quote.number} has already been dispatched.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+            lines = list(quote.items.select_related('item'))
+            if not lines:
+                return Response({'error': 'Add at least one line before dispatching.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+
+            # The sale happens now, when the goods leave — not on the day the
+            # proforma was raised. Dated from the proforma, a March offer
+            # converted in April was invoiced weeks back in last year's series.
+            dispatch_date = timezone.localdate()
+            # A final payment may come with the request, so the last instalment
+            # and the dispatch can be one action from the screen. Kept even if
+            # it does not settle the invoice: the money did arrive.
+            if request.data.get('payment'):
+                payment, error = check_payment(
+                    request.data.get('payment'), quote.total,
+                    already_received=DispatchPayment.received_for(quote=quote),
+                    paid_on_default=dispatch_date)
+                if error:
+                    return Response(error, status=status.HTTP_400_BAD_REQUEST)
+                DispatchPayment.objects.create(
+                    quote=quote,
+                    verified_by=request.user if request.user.is_authenticated else None,
+                    **payment)
+
+            state = payment_state(quote.total, DispatchPayment.received_for(quote=quote))
+            if not state['fully_paid']:
+                return Response({
+                    'error': (f"₹{state['balance']} of ₹{state['invoice_total']} is still "
+                              f"owing on {quote.number}. The invoice must be settled in "
+                              f"full before the goods can leave."),
+                    **state,
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # The dispatch is a sale, so it takes its own number from the invoice
+            # series rather than carrying the proforma's. One number for the whole
+            # set — the rows of a delivery share it — with the proforma recorded
+            # in the note so the two stay traceable.
+            invoice_no = next_document_number('IN', on=dispatch_date)
             created = [
                 StockDispatch.objects.create(
                     invoice_no=invoice_no, date=dispatch_date, customer=quote.customer,
                     item=line.item, quantity=line.quantity, rate=line.unit_price,
+                    # The discount travels with the goods, so the invoice bills
+                    # what the proforma was paid at rather than the list price.
+                    discount_percent=quote.discount_percent or Decimal('0'),
                     tax_percent=quote.tax_percent or Decimal('0'),
                     site=quote.site, notes=f"From quote {quote.number}",
                     created_by=request.user if request.user.is_authenticated else None,

@@ -4215,3 +4215,206 @@ class PaymentsBoardRoundingTests(TestCase):
         self.assertEqual(totals['count'], 2)
         self.assertEqual(Decimal(totals['invoice_total']), Decimal('7253'))
         self.assertEqual(Decimal(totals['balance']), Decimal('0'))
+
+
+class B2BDocumentBugfixTests(TestCase):
+    """Regressions in the wholesale proforma → dispatch → payment chain."""
+
+    def setUp(self):
+        self.admin = mk('fix_admin', 'superadmin')
+        self.accounts = mk('fix_accounts', 'accounts_b2b')
+        self.customer = StockCustomer.objects.create(name='Harbour Solar', gstin='32AAAAA0000A1Z5',
+                                                     site_address='Kochi', state='Kerala')
+        self.other = StockCustomer.objects.create(name='Hill Resorts')
+        self.panel = StockItem.objects.create(code='FX-PNL', category='Solar Panel', brand='Waaree',
+                                              model_name='540W', opening_stock=Decimal('100'),
+                                              hsn='8541')
+
+    def auth(self, user=None):
+        return {'HTTP_AUTHORIZATION': token_for(user or self.admin)}
+
+    def post(self, url, body=None, user=None):
+        return self.client.post(url, data=body or {}, content_type='application/json',
+                                **self.auth(user))
+
+    def discounted_quote(self, quote_date=None):
+        """10 × 11,200 less 10%, plus 18% GST = 1,18,944."""
+        q = StockQuote.objects.create(customer=self.customer, site='Kochi',
+                                      quote_date=quote_date or timezone.localdate(),
+                                      discount_percent=Decimal('10'), tax_percent=Decimal('18'))
+        StockQuoteItem.objects.create(quote=q, item=self.panel, quantity=Decimal('10'),
+                                      unit_price=Decimal('11200'))
+        return q
+
+    def convert_paid(self, q):
+        r = self.post(f'/api/stock-quotes/{q.id}/convert/', paid_in_full(q))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        return r.json()['invoice_no']
+
+    # ── Converting a discounted proforma ──
+    def test_the_invoice_keeps_the_proformas_discount(self):
+        q = self.discounted_quote()
+        self.assertEqual(q.total, Decimal('118944'))
+        invoice_no = self.convert_paid(q)
+        rows = list(StockDispatch.objects.filter(invoice_no=invoice_no))
+        self.assertEqual(rows[0].discount_percent, Decimal('10'))
+        self.assertEqual(sum(r.total for r in rows), Decimal('118944'))
+
+    def test_a_paid_discounted_proforma_is_not_left_owing_once_dispatched(self):
+        q = self.discounted_quote()
+        invoice_no = self.convert_paid(q)
+        r = self.client.get(f'/api/stock-dispatches/verify-payment/?invoice_no={invoice_no}',
+                            **self.auth())
+        self.assertTrue(r.json()['fully_paid'], r.json())
+        self.assertEqual(r.json()['balance'], '0.00')
+        board = self.client.get('/api/stock-payments/', **self.auth()).json()['sections']
+        self.assertIn(invoice_no, [row['number'] for row in board['fully_paid']['rows']])
+
+    def test_the_printed_invoice_bills_the_discounted_figure(self):
+        q = self.discounted_quote()
+        invoice_no = self.convert_paid(q)
+        d = StockDispatch.objects.get(invoice_no=invoice_no)
+        doc = self.client.get(f'/api/stock-dispatches/{d.id}/invoice/', **self.auth()).json()
+        self.assertEqual(doc['totals']['grand_total'], '118944.00')
+        self.assertEqual(doc['totals']['discount'], '11200.00')
+        self.assertEqual(doc['lines'][0]['taxable'], '100800.00')
+
+    def test_the_dashboard_counts_the_sale_at_its_discounted_value(self):
+        self.convert_paid(self.discounted_quote())
+        r = self.client.get('/api/stock-summary/', **self.auth()).json()
+        self.assertEqual(Decimal(r['period_sales']), Decimal('118944'))
+
+    def test_the_invoice_is_dated_the_day_the_goods_leave(self):
+        q = self.discounted_quote(quote_date=timezone.localdate() - timedelta(days=40))
+        invoice_no = self.convert_paid(q)
+        d = StockDispatch.objects.filter(invoice_no=invoice_no).first()
+        self.assertEqual(d.date, timezone.localdate())
+        self.assertTrue(invoice_no.startswith(series_key('IN', timezone.localdate())), invoice_no)
+
+    # ── The printed proforma ──
+    def test_the_proforma_lines_add_up_to_its_total_under_a_discount(self):
+        q = self.discounted_quote()
+        doc = self.client.get(f'/api/stock-quotes/{q.id}/proforma/', **self.auth()).json()
+        lines_total = sum(Decimal(li['total']) for li in doc['lines'])
+        self.assertEqual(lines_total, Decimal(doc['totals']['invoice_value']))
+        hsn_taxable = sum(Decimal(h['taxable']) for h in doc['hsn_summary'])
+        self.assertEqual(hsn_taxable, Decimal(doc['totals']['taxable']))
+
+    def test_the_proforma_email_states_the_billed_figure(self):
+        import shutil
+        import tempfile
+        q = StockQuote.objects.create(customer=self.customer, quote_date=timezone.localdate(),
+                                      tax_percent=Decimal('18'))
+        StockQuoteItem.objects.create(quote=q, item=self.panel, quantity=Decimal('3'),
+                                      unit_price=Decimal('271.05'))     # 959.517 → 960
+        media = tempfile.mkdtemp(prefix='fix-test-')
+        try:
+            with self.settings(MEDIA_ROOT=media), patch('messaging.email.send_and_log') as send:
+                send.return_value = type('L', (), {'status': 'sent', 'error': ''})()
+                self.client.post(f'/api/stock-quotes/{q.id}/send/', {
+                    'pdf': SimpleUploadedFile('pi.pdf', b'%PDF-1.4', content_type='application/pdf'),
+                    'channels': 'email', 'email': 'buyer@example.com'}, **self.auth())
+        finally:
+            shutil.rmtree(media, ignore_errors=True)
+        self.assertIn('Rs. 960.00', send.call_args.kwargs['body'])
+
+    # ── Rounding: the document and the payment screen agree ──
+    def test_a_sub_paisa_tail_rounds_the_same_everywhere(self):
+        from inventory.models import round_off_for
+        from inventory.views import payment_state, totals_block
+        exact = Decimal('100.495')
+        self.assertEqual(round_off_for(exact)[0], Decimal('101'))
+        printed = totals_block(exact, Decimal('0'), Decimal('0'), exact)
+        self.assertEqual(printed['grand_total'], payment_state(exact, 0)['invoice_total'])
+        self.assertEqual(Decimal(printed['invoice_value']) + Decimal(printed['round_off']),
+                         Decimal(printed['grand_total']))
+
+    # ── Deleting a proforma that holds payments ──
+    def _quote_with_a_payment(self):
+        q = self.discounted_quote()
+        r = self.post(f'/api/stock-quotes/{q.id}/verify-payment/',
+                      {'payment': {'amount_received': '5000', 'mode': 'upi'}})
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        return q
+
+    def test_a_proforma_holding_payments_is_not_deleted_out_from_under_them(self):
+        q = self._quote_with_a_payment()
+        r = self.client.delete(f'/api/stock-quotes/{q.id}/', **self.auth(self.accounts))
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(r.json()['can_force'])
+        self.assertTrue(StockQuote.objects.filter(pk=q.pk).exists())
+        self.assertEqual(DispatchPayment.received_for(quote=q), Decimal('5000'))
+
+    def test_a_super_admin_must_confirm_and_can_then_delete_it(self):
+        q = self._quote_with_a_payment()
+        r = self.client.delete(f'/api/stock-quotes/{q.id}/', **self.auth())
+        self.assertEqual(r.status_code, 400)
+        self.assertTrue(r.json()['can_force'])
+        r = self.client.delete(f'/api/stock-quotes/{q.id}/?force=1', **self.auth())
+        self.assertEqual(r.status_code, 204)
+
+    def test_a_proforma_with_no_payments_still_deletes_at_once(self):
+        q = self.discounted_quote()
+        self.assertEqual(self.client.delete(f'/api/stock-quotes/{q.id}/',
+                                            **self.auth(self.accounts)).status_code, 204)
+
+    # ── Editing a dispatch row ──
+    def raise_delivery(self, payment=None):
+        body = {'date': str(timezone.localdate()), 'customer': self.customer.id,
+                'tax_percent': '18', 'site': 'Kochi',
+                'lines': [{'item': self.panel.id, 'quantity': '1', 'rate': '1000'},
+                          {'item': self.panel.id, 'quantity': '2', 'rate': '1000'}]}
+        if payment:
+            body['payment'] = payment
+        r = self.post('/api/stock-dispatches/dispatch/', body)
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        return r.json()['invoice_no']
+
+    def patch_row(self, row, body):
+        return self.client.patch(f'/api/stock-dispatches/{row.id}/', data=body,
+                                 content_type='application/json', **self.auth())
+
+    def test_editing_a_lines_invoice_details_edits_the_whole_invoice(self):
+        invoice_no = self.raise_delivery()
+        first = StockDispatch.objects.filter(invoice_no=invoice_no).order_by('id').first()
+        r = self.patch_row(first, {'customer': self.other.id, 'tax_percent': '5', 'site': 'Munnar'})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        for row in StockDispatch.objects.filter(invoice_no=invoice_no):
+            self.assertEqual((row.customer_id, row.tax_percent, row.site),
+                             (self.other.id, Decimal('5'), 'Munnar'))
+
+    def test_an_invoice_number_cannot_be_blanked(self):
+        invoice_no = self.raise_delivery()
+        row = StockDispatch.objects.filter(invoice_no=invoice_no).first()
+        self.assertEqual(self.patch_row(row, {'invoice_no': ''}).status_code, 400)
+        self.assertEqual(StockDispatch.objects.filter(invoice_no=invoice_no).count(), 2)
+
+    def test_renaming_an_invoice_takes_its_lines_and_payments_with_it(self):
+        invoice_no = self.raise_delivery(payment={'amount_received': '1000', 'mode': 'cash'})
+        row = StockDispatch.objects.filter(invoice_no=invoice_no).first()
+        r = self.patch_row(row, {'invoice_no': 'REN2627-IN950'})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(StockDispatch.objects.filter(invoice_no='REN2627-IN950').count(), 2)
+        self.assertEqual(DispatchPayment.received_for(invoice_no='REN2627-IN950'), Decimal('1000'))
+        self.assertFalse(DispatchPayment.objects.filter(invoice_no=invoice_no).exists())
+
+    def test_an_invoice_cannot_be_renamed_onto_another(self):
+        a = self.raise_delivery()
+        b = self.raise_delivery()
+        row = StockDispatch.objects.filter(invoice_no=a).first()
+        self.assertEqual(self.patch_row(row, {'invoice_no': b}).status_code, 400)
+
+    # ── Raising a delivery ──
+    def test_an_unknown_product_is_a_clear_refusal_not_a_crash(self):
+        r = self.post('/api/stock-dispatches/dispatch/', {
+            'lines': [{'item': 987654, 'quantity': '1', 'rate': '10'}]})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(StockDispatch.objects.count(), 0)
+
+    def test_a_deleted_deliverys_number_does_not_hand_its_payments_on(self):
+        invoice_no = self.raise_delivery(payment={'amount_received': '1000', 'mode': 'cash'})
+        StockDispatch.objects.filter(invoice_no=invoice_no).delete()
+        r = self.post('/api/stock-dispatches/dispatch/', {
+            'invoice_no': invoice_no,
+            'lines': [{'item': self.panel.id, 'quantity': '1', 'rate': '10'}]})
+        self.assertEqual(r.status_code, 400, r.content[:300])

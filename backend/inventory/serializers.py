@@ -1,5 +1,6 @@
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
+from django.db import transaction
 from rest_framework import serializers
 from .models import (
     Vendor,
@@ -588,6 +589,8 @@ class GoodsReceiptSerializer(_MovementSerializer):
 
 class StockDispatchSerializer(_MovementSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True, default=None)
+    discount_amount = serializers.DecimalField(max_digits=16, decimal_places=2, read_only=True)
+    taxable_amount = serializers.DecimalField(max_digits=16, decimal_places=2, read_only=True)
     tax_amount = serializers.DecimalField(max_digits=16, decimal_places=2, read_only=True)
     total = serializers.DecimalField(max_digits=16, decimal_places=2, read_only=True)
     # The payment that released this delivery, joined on by invoice number in
@@ -631,9 +634,11 @@ class StockDispatchSerializer(_MovementSerializer):
             self._total_cache = {}
         if obj.invoice_no not in self._total_cache:
             rows = StockDispatch.objects.filter(invoice_no=obj.invoice_no)
+            # To paise, as `settlement` takes it, so this list and the payment
+            # screen are rounding the same figure.
             self._total_cache[obj.invoice_no] = sum(
-                ((r.amount or Decimal('0')) + (r.tax_amount or Decimal('0')) for r in rows),
-                Decimal('0'))
+                (r.total or Decimal('0') for r in rows), Decimal('0')
+            ).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
         return self._total_cache[obj.invoice_no]
 
     def _invoice_total(self, obj):
@@ -673,10 +678,56 @@ class StockDispatchSerializer(_MovementSerializer):
         total = self._invoice_total(obj)
         return bool(total > 0 and self._received(obj) >= self._settles_at(obj))
 
+    # Fields that describe the invoice rather than the line. A delivery is
+    # several rows under one number, and the printed invoice reads its header
+    # off whichever row was opened — so editing one row's customer, date, site
+    # or tax has to edit all of them, or the invoice depends on which line you
+    # clicked and its rows are taxed at different rates.
+    INVOICE_FIELDS = ('date', 'customer', 'site', 'tax_percent', 'discount_percent')
+
+    def validate_invoice_no(self, value):
+        value = (value or '').strip()
+        current = (self.instance.invoice_no or '') if self.instance is not None else None
+        if current is None or value == current:
+            return value
+        # Payments are filed under the number, and the rows of a delivery are
+        # found by it: blanking it orphaned both.
+        if not value:
+            raise serializers.ValidationError(
+                'An invoice needs its number — its payments are filed under it.')
+        from .models import document_number_in_use
+        if document_number_in_use('IN', value):
+            raise serializers.ValidationError(
+                f'{value} is already in use. Renaming onto another invoice would merge '
+                f'two deliveries.')
+        return value
+
+    def update(self, instance, validated_data):
+        old_no = instance.invoice_no
+        with transaction.atomic():
+            instance = super().update(instance, validated_data)
+            if not old_no:
+                return instance
+            siblings = StockDispatch.objects.filter(invoice_no=old_no).exclude(pk=instance.pk)
+            shared = {f: validated_data[f] for f in self.INVOICE_FIELDS if f in validated_data}
+            new_no = instance.invoice_no
+            if new_no != old_no:
+                # The whole delivery is renamed, payments with it — a rename of
+                # one row would split the invoice in two.
+                from .models import DispatchPayment, absorb_document_number
+                shared['invoice_no'] = new_no
+                DispatchPayment.objects.filter(invoice_no=old_no).update(invoice_no=new_no)
+                absorb_document_number('IN', new_no, on=instance.date)
+            if shared:
+                siblings.update(**shared)
+        return instance
+
     class Meta:
         model = StockDispatch
         fields = ['id', 'invoice_no', 'date', 'customer', 'customer_name', 'item', 'item_code',
-                  'item_label', 'item_hsn', 'quantity', 'rate', 'amount', 'tax_percent', 'tax_amount', 'total',
+                  'item_label', 'item_hsn', 'quantity', 'rate', 'amount',
+                  'discount_percent', 'discount_amount', 'taxable_amount',
+                  'tax_percent', 'tax_amount', 'total',
                   'serial_numbers', 'site', 'notes', 'pdf',
                   'payment_verified', 'payment_amount', 'payment_mode',
                   'payment_reference', 'payment_paid_on',

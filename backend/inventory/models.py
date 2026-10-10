@@ -108,6 +108,7 @@ class _NumberedDoc(models.Model):
 
 # ─── Rounding ───────────────────────────────────────────────────────────────
 RUPEE = Decimal('1')
+PAISE = Decimal('0.01')
 
 
 def round_off_for(total):
@@ -121,9 +122,15 @@ def round_off_for(total):
 
     Returns (grand_total, round_off): 95794.65 -> (95795, +0.35),
     153430.20 -> (153430, -0.20).
+
+    The total is brought to paise before it is rounded to the rupee, because
+    that is what payment verification does (see `settlement`). Rounding the raw
+    arithmetic straight to the rupee disagrees with it on a tail like 100.495 —
+    the invoice printed ₹100 while the payment screen demanded ₹101.
     """
     total = Decimal(total or 0)
-    grand = total.quantize(RUPEE, rounding=ROUND_HALF_UP)
+    grand = (total.quantize(PAISE, rounding=ROUND_HALF_UP)
+             .quantize(RUPEE, rounding=ROUND_HALF_UP))
     return grand, grand - total
 
 
@@ -307,6 +314,11 @@ def document_number_in_use(kind, number):
     }.get(kind, (None, None))
     if not model:
         return False
+    if (kind == 'IN' and apps.get_model('inventory', 'DispatchPayment')
+            .objects.filter(invoice_no=number).exists()):
+        # A deleted delivery leaves its payments behind under its number; a new
+        # delivery given that number would inherit them and read as paid.
+        return True
     return apps.get_model('inventory', model).objects.filter(**{field: number}).exists()
 
 
@@ -1173,6 +1185,10 @@ class StockDispatch(_StockMovement):
     # GST on the line. `amount` stays the pre-tax figure so the stock ledger keeps
     # valuing movements at their goods value; `total` is what the customer pays.
     tax_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    # The discount the proforma was agreed at, carried over when it converts.
+    # Without it the invoice billed the undiscounted price: the customer had
+    # paid the proforma's total, and the delivery sat "owing" the discount.
+    discount_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     # Serials of the units that went out on this line, printed on the invoice.
     # Free text so a range ("SN001-SN010") reads as well as a list.
     serial_numbers = models.TextField(blank=True, default='')
@@ -1197,13 +1213,23 @@ class StockDispatch(_StockMovement):
                 absorb_document_number('IN', self.invoice_no, on=self.date)
         super().save(*args, **kwargs)
 
+    # Discount, then tax on what is left — the proforma's own order, so a
+    # converted delivery adds up to exactly the figure that was paid.
+    @property
+    def discount_amount(self):
+        return (self.amount * (self.discount_percent or Decimal('0'))) / Decimal('100')
+
+    @property
+    def taxable_amount(self):
+        return self.amount - self.discount_amount
+
     @property
     def tax_amount(self):
-        return (self.amount * (self.tax_percent or Decimal('0'))) / Decimal('100')
+        return (self.taxable_amount * (self.tax_percent or Decimal('0'))) / Decimal('100')
 
     @property
     def total(self):
-        return self.amount + self.tax_amount
+        return self.taxable_amount + self.tax_amount
 
     def __str__(self):
         return self.invoice_no or f"Dispatch #{self.pk}"

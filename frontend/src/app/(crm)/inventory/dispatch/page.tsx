@@ -27,6 +27,9 @@ const SERIALS_SHOWN = 2;
 
 const blankForm = () => ({
   invoice_no: "", date: todayISO(), customer: "", tax_percent: "", site: "", notes: "",
+  // Only ever set by editing a delivery converted from a discounted proforma;
+  // shown so the form's total is that row's real one.
+  discount_percent: "",
   lines: [blankLine()],
 });
 
@@ -70,11 +73,17 @@ export default function StockDispatchPage() {
   // Live totals, mirroring the server: goods value, then tax on top.
   const totalOf = (rows: Line[]) => {
     const goodsValue = rows.reduce((s, l) => s + (Number(l.quantity) || 0) * (Number(l.rate) || 0), 0);
-    return goodsValue + goodsValue * (Number(form.tax_percent) || 0) / 100;
+    const net = goodsValue - goodsValue * (Number(form.discount_percent) || 0) / 100;
+    return net + net * (Number(form.tax_percent) || 0) / 100;
   };
   const goods = lines.reduce((s, l) => s + (Number(l.quantity) || 0) * (Number(l.rate) || 0), 0);
-  const taxValue = goods * (Number(form.tax_percent) || 0) / 100;
-  const grand = goods + taxValue;
+  const discountValue = goods * (Number(form.discount_percent) || 0) / 100;
+  const taxValue = (goods - discountValue) * (Number(form.tax_percent) || 0) / 100;
+  // Billed in whole rupees, as the invoice and the payment screen bill it —
+  // the form showed ₹95,794.65 and then asked for ₹95,795.
+  const exactTotal = goods - discountValue + taxValue;
+  const grand = Math.round(exactTotal);
+  const roundOff = grand - exactTotal;
 
   const openCreate = () => { setEditing(null); setForm(blankForm()); setShow(true); };
 
@@ -84,6 +93,7 @@ export default function StockDispatchPage() {
     setForm({
       invoice_no: r.invoice_no || "", date: r.date || todayISO(),
       customer: r.customer || "", tax_percent: r.tax_percent ?? "",
+      discount_percent: Number(r.discount_percent) ? r.discount_percent : "",
       site: r.site || "", notes: r.notes || "",
       lines: [{
         item: String(r.item || ""), serial_numbers: r.serial_numbers || "",
@@ -193,7 +203,9 @@ export default function StockDispatchPage() {
   const api = getApiBase(APP_SLUG);
   const authHeader = () => ({ Authorization: `Bearer ${localStorage.getItem(`${APP_SLUG}_access`)}` });
 
-  const docName = (r: any) => proformaFileName(r.invoice_no || `DSP-${r.id}`);
+  // Named for the customer as well, like the copy the server emails — see
+  // safe_doc_name. The download used to be the bare number.
+  const docName = (r: any) => proformaFileName(r.invoice_no || `DSP-${r.id}`, r.customer_name);
 
   /** The serials on a row, as entered — comma or newline separated. */
   const serialsOf = (r: any): string[] =>
@@ -384,7 +396,10 @@ export default function StockDispatchPage() {
         <Row>
           <Fld label="Invoice No.">
             {/* Issued from this year's series on save; typing one overrides it. */}
+            {/* Once issued it can be renamed but not cleared — the payments
+                are filed under it. Renaming renames the whole delivery. */}
             <input value={form.invoice_no} onChange={e => setForm({ ...form, invoice_no: e.target.value })}
+              required={!!editing}
               className={`${FIELD} font-mono`} placeholder="Auto — REN2627-IN001" />
           </Fld>
           <Fld label="Date *">
@@ -433,9 +448,12 @@ export default function StockDispatchPage() {
             ))}
           </div>
           {editing ? (
+            /* The old hint said to add a product as a new dispatch on the same
+               invoice number, which New Dispatch refuses as already in use. */
             <p className="mt-2 text-xs text-slate-400">
-              A dispatch is stored per product, so editing changes this row only.
-              Add another product as a new dispatch on the same invoice number.
+              A dispatch is stored per product, so the product, serials, quantity and rate
+              change on this row only. The invoice number, date, customer, tax and site
+              belong to the whole invoice and change on every line of it.
             </p>
           ) : (
             <button type="button"
@@ -456,7 +474,12 @@ export default function StockDispatchPage() {
 
         <div className="flex items-center justify-between gap-4 pt-3 border-t border-slate-100 text-sm">
           <span className="text-xs text-slate-400 tabular-nums">
-            Goods {rupee(goods)} · Tax {rupee(taxValue)}
+            Goods {rupee(goods)}
+            {discountValue > 0 && <> · Discount −{rupee(discountValue)}</>}
+            {" "}· Tax {rupee(taxValue)}
+            {Math.abs(roundOff) >= 0.005 && (
+              <> · Round off {roundOff > 0 ? "+" : "−"}{rupee(Math.abs(roundOff))}</>
+            )}
           </span>
           <span className="font-bold text-slate-900 tabular-nums">Total {rupee(grand)}</span>
         </div>
@@ -479,7 +502,7 @@ export default function StockDispatchPage() {
               <div className="flex items-center justify-between rounded-xl bg-slate-50 border border-slate-200 px-4 py-3">
                 <span className="text-sm font-semibold text-slate-600">Invoice total</span>
                 <span className="text-lg font-bold text-slate-900 tabular-nums">
-                  {rupee(totalOf(pendingLines || []))}
+                  {rupee(Math.round(totalOf(pendingLines || [])))}
                 </span>
               </div>
             </div>

@@ -59,10 +59,19 @@ export default function StockQuotesPage() {
   const [dispatching, setDispatching] = useState(false);
   // Where the proforma's money stands, straight from the server so the two
   // never disagree about what is still owing.
-  const [position, setPosition] = useState<{ received: number; exact: number | null;
-                                            balance: number | null; settled: boolean | null;
-                                            payments: PaymentRow[] }>(
-    { received: 0, exact: null, balance: null, settled: null, payments: [] });
+  const [position, setPosition] = useState<{ total: number | null; received: number;
+                                            exact: number | null; balance: number | null;
+                                            settled: boolean | null; payments: PaymentRow[] }>(
+    { total: null, received: 0, exact: null, balance: null, settled: null, payments: [] });
+
+  /** The server's reading of a proforma's money, as the payment screen shows it. */
+  const positionFrom = (d: any) => ({
+    total: d.invoice_total != null ? Number(d.invoice_total) : null,
+    received: Number(d.amount_received || 0),
+    exact: d.exact_total != null ? Number(d.exact_total) : null,
+    balance: d.balance != null ? Number(d.balance) : null,
+    settled: d.fully_paid ?? null, payments: d.payments || [],
+  });
 
   const lines = form.items;
   const setLine = (i: number, patch: Partial<Line>) =>
@@ -88,10 +97,14 @@ export default function StockQuotesPage() {
       efc_ref_no: q.efc_ref_no || "",
       discount_percent: q.discount_percent ?? "", tax_percent: q.tax_percent ?? "",
       notes: q.notes || "",
-      items: (q.items || []).map((l: any) => ({
-        item: String(l.item), description: l.description || "",
-        quantity: String(l.quantity), unit_price: String(l.unit_price),
-      })) || [blankLine()],
+      // An empty list is truthy, so `|| [blankLine()]` never fired and a
+      // proforma saved without lines opened with no row to type into.
+      items: q.items?.length
+        ? q.items.map((l: any) => ({
+            item: String(l.item), description: l.description || "",
+            quantity: String(l.quantity), unit_price: String(l.unit_price),
+          }))
+        : [blankLine()],
     });
     setShow(true);
   };
@@ -119,15 +132,22 @@ export default function StockQuotesPage() {
   /** Selecting a customer pulls their delivery details across. */
   const pickCustomer = (id: string) => {
     const c = customerList.find(x => String(x.id) === String(id));
-    setForm((f: any) => ({
-      ...f,
-      customer: id,
-      // Only fill what has not been typed over, so a deliberate override stands.
-      ship_to_state: f.ship_to_state && f.ship_to_state !== HOME_STATE
-        ? f.ship_to_state : (c?.state || HOME_STATE),
-      ship_to_gstin: f.ship_to_gstin || c?.gstin || "",
-      site: f.site || c?.site_address || "",
-    }));
+    setForm((f: any) => {
+      const prev = customerList.find(x => String(x.id) === String(f.customer));
+      // A field still showing what the previous customer filled in is theirs,
+      // not an override — so it follows the new pick. Only filling empty
+      // fields left customer A's GSTIN and site on customer B's invoice.
+      const follows = (current: string, previous?: string) =>
+        !current || current === (previous || "");
+      return {
+        ...f,
+        customer: id,
+        ship_to_state: f.ship_to_state === HOME_STATE || follows(f.ship_to_state, prev?.state)
+          ? (c?.state || HOME_STATE) : f.ship_to_state,
+        ship_to_gstin: follows(f.ship_to_gstin, prev?.gstin) ? (c?.gstin || "") : f.ship_to_gstin,
+        site: follows(f.site, prev?.site_address) ? (c?.site_address || "") : f.site,
+      };
+    });
   };
 
   const api = getApiBase(APP_SLUG);
@@ -184,17 +204,11 @@ export default function StockQuotesPage() {
 
   /** Open the payment screen for a proforma, showing what it has taken so far. */
   const openPayments = async (q: any) => {
-    setPosition({ received: 0, exact: null, balance: null, settled: null, payments: [] });
+    setPosition({ total: null, received: 0, exact: null, balance: null, settled: null, payments: [] });
     setToDispatch(q);
     try {
       const r = await fetch(`${api}/api/stock-quotes/${q.id}/verify-payment/`, { headers: authHeader() });
-      if (r.ok) {
-        const d = await r.json();
-        setPosition({ received: Number(d.amount_received || 0),
-                      exact: d.exact_total != null ? Number(d.exact_total) : null,
-                      balance: d.balance != null ? Number(d.balance) : null,
-                      settled: d.fully_paid ?? null, payments: d.payments || [] });
-      }
+      if (r.ok) setPosition(positionFrom(await r.json()));
     } catch { /* the modal still opens, showing nothing taken yet */ }
   };
 
@@ -206,10 +220,7 @@ export default function StockQuotesPage() {
     const d = await act(`stock-quotes/${q.id}/verify-payment`, { payment });
     setDispatching(false);
     if (!d) return;                            // refused; the message is shown
-    setPosition({ received: Number(d.amount_received || 0),
-                  exact: d.exact_total != null ? Number(d.exact_total) : null,
-                  balance: d.balance != null ? Number(d.balance) : null,
-                  settled: d.fully_paid ?? null, payments: d.payments || [] });
+    setPosition(positionFrom(d));
   };
 
   /** Settled: put the goods out. The server checks the balance again. */
@@ -431,7 +442,9 @@ export default function StockQuotesPage() {
           is the proforma's own, which is what the server checks against. */}
       <PaymentVerificationModal
         show={!!toDispatch}
-        invoiceTotal={Number(toDispatch?.grand_total ?? toDispatch?.total ?? 0)}
+        // The server's billed figure once it has answered — the one the balance
+        // and the dispatch check are worked out against — and the list's until then.
+        invoiceTotal={position.total ?? Number(toDispatch?.grand_total ?? toDispatch?.total ?? 0)}
         alreadyReceived={position.received}
         exactTotal={position.exact}
         serverBalance={position.balance}
