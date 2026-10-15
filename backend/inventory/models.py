@@ -252,6 +252,11 @@ class DocumentNumberSeries(models.Model):
 
     One row per series (REN2627-PI, REN2627-IN, REN2627-PO …), so 1 April opens
     a new counter and every series starts again at 001 on its own.
+
+    Invoices (REN<fy>-IN) do not count from here: they run on from the last
+    invoice on the books, so the series has no gaps — see CONTINUOUS_SERIES.
+    Their row is still the lock that keeps two deliveries saved at once from
+    taking the same number, and records the last one issued.
     """
     key = models.CharField(max_length=40, unique=True, db_index=True)
     last_seq = models.PositiveIntegerField(default=0)
@@ -302,16 +307,29 @@ class DocumentNumberSeries(models.Model):
             return row.last_seq
 
 
+# Where each kind of document keeps its number.
+_DOCUMENT_FIELDS = {
+    'IN': ('StockDispatch', 'invoice_no'),
+    'PI': ('StockQuote', 'number'),
+    'PO': ('StockPurchaseOrder', 'number'),
+}
+
+# Series that run without gaps: the next number follows the last document on
+# the books rather than a counter that only moves forward. Invoices, because
+# they are filed — GST wants them consecutive, and a counter that kept every
+# number it ever handed out jumped from IN024 to IN066 once deleted and
+# renamed deliveries had used numbers up. Proformas and purchase orders keep
+# the forward-only counter: nobody files those, and a number that was on a
+# quote sent to a customer is better never seen again.
+CONTINUOUS_SERIES = {'IN'}
+
+
 # How to tell whether a number is already on a document, per series. The counter
 # is the fast path; this is the backstop that makes a duplicate impossible even
 # when the counter has drifted behind numbers it never issued.
 def document_number_in_use(kind, number):
     from django.apps import apps
-    model, field = {
-        'IN': ('StockDispatch', 'invoice_no'),
-        'PI': ('StockQuote', 'number'),
-        'PO': ('StockPurchaseOrder', 'number'),
-    }.get(kind, (None, None))
+    model, field = _DOCUMENT_FIELDS.get(kind, (None, None))
     if not model:
         return False
     if (kind == 'IN' and apps.get_model('inventory', 'DispatchPayment')
@@ -336,13 +354,62 @@ def next_document_number(kind, on=None):
     counter only moves forward, but it can still fall behind: a number typed by
     hand into the dispatch form never passes through it. Skipping what is taken
     means the series heals itself instead of colliding.
+
+    Invoices are the exception: see CONTINUOUS_SERIES and _next_continuous.
     """
     key = series_key(kind, on)
+    if kind in CONTINUOUS_SERIES:
+        return _next_continuous(kind, key)
     for _ in range(_MAX_NUMBER_ATTEMPTS):
         candidate = f"{key}{DocumentNumberSeries.issue(key):03d}"
         if not document_number_in_use(kind, candidate):
             return candidate
     raise RuntimeError(f"Could not find a free number in the {key} series.")
+
+
+def _highest_on_the_books(kind, key):
+    """The highest sequence on a document that exists in this series, or 0."""
+    from django.apps import apps
+    model, field = _DOCUMENT_FIELDS[kind]
+    numbers = (apps.get_model('inventory', model).objects
+               .filter(**{f'{field}__startswith': key})
+               .order_by().values_list(field, flat=True).distinct())
+    tails = (str(n)[len(key):] for n in numbers)
+    return max((int(t) for t in tails if t.isdigit()), default=0)
+
+
+def _first_free_after(kind, key, seq):
+    """The first number above `seq` that nothing is filed under."""
+    for _ in range(_MAX_NUMBER_ATTEMPTS):
+        seq += 1
+        if not document_number_in_use(kind, f"{key}{seq:03d}"):
+            return seq
+    raise RuntimeError(f"Could not find a free number in the {key} series.")
+
+
+def _next_continuous(kind, key):
+    """The number after the last document on the books — 24 then 25, 26, 27.
+
+    Counted from the documents that exist, so a number used by a delivery that
+    was deleted or renamed is not lost: deleting the latest invoice hands its
+    number to the next one. A gap in the middle is not refilled — that would
+    put a later sale between two earlier ones. A number with payments still
+    filed under it is skipped, or the new invoice would inherit them and read
+    as paid.
+
+    The series row is locked for the rest of the caller's transaction, so a
+    caller that issues the number and writes the document in one transaction
+    cannot hand the same number to a second delivery saved at the same moment.
+    """
+    from django.db import transaction
+    with transaction.atomic():
+        DocumentNumberSeries.objects.get_or_create(key=key)
+        row = DocumentNumberSeries.objects.select_for_update().get(key=key)
+        seq = _first_free_after(kind, key, _highest_on_the_books(kind, key))
+        # The counter now just records the last number issued.
+        row.last_seq = seq
+        row.save(update_fields=['last_seq', 'updated_at'])
+        return f"{key}{seq:03d}"
 
 
 def absorb_document_number(kind, number, on=None):
@@ -358,6 +425,8 @@ def absorb_document_number(kind, number, on=None):
 def peek_document_number(kind, on=None):
     """The number the next document would take, without spending it."""
     key = series_key(kind, on)
+    if kind in CONTINUOUS_SERIES:
+        return f"{key}{_first_free_after(kind, key, _highest_on_the_books(kind, key)):03d}"
     return f"{key}{DocumentNumberSeries.peek(key):03d}"
 
 
@@ -1204,13 +1273,19 @@ class StockDispatch(_StockMovement):
         # A delivery of several products is several rows sharing one invoice
         # number, so only a row that arrives without one mints it — the client
         # sends the number it got back on the rest of the set.
-        if self._state.adding:
-            if not self.invoice_no:
+        if self._state.adding and not self.invoice_no:
+            from django.db import transaction
+            # Issued and written in one transaction: the invoice series is
+            # counted from the rows on the books, and its lock has to last
+            # until this row is one of them.
+            with transaction.atomic():
                 self.invoice_no = next_document_number('IN', on=self.date)
-            else:
-                # Typed by hand, or carried over from the set: tell the counter,
-                # so the series cannot issue this number to someone else later.
-                absorb_document_number('IN', self.invoice_no, on=self.date)
+                super().save(*args, **kwargs)
+            return
+        if self._state.adding:
+            # Typed by hand, or carried over from the set: tell the counter,
+            # so the series cannot issue this number to someone else later.
+            absorb_document_number('IN', self.invoice_no, on=self.date)
         super().save(*args, **kwargs)
 
     # Discount, then tax on what is left — the proforma's own order, so a

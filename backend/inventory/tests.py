@@ -999,16 +999,14 @@ class DocumentNumbersAreSpentOnceTests(TestCase):
         self.assertEqual(StockPurchaseOrder.objects.count(), 0)
         self.assertEqual(self.order().number, 'REN2627-PO004')
 
-    def test_it_holds_for_proformas_and_invoices_too(self):
+    def test_it_holds_for_proformas_too(self):
+        """Invoices are the exception — they run on without gaps; see
+        InvoiceNumbersRunOnTests."""
         q = StockQuote.objects.create(customer=self.customer, quote_date=date(2026, 8, 3))
-        d = StockDispatch.objects.create(item=self.item, customer=self.customer,
-                                         date=date(2026, 8, 3), quantity=1, rate=Decimal('10'))
-        self.assertEqual((q.number, d.invoice_no), ('REN2627-PI001', 'REN2627-IN001'))
-        q.delete(); d.delete()
+        self.assertEqual(q.number, 'REN2627-PI001')
+        q.delete()
         q2 = StockQuote.objects.create(customer=self.customer, quote_date=date(2026, 8, 3))
-        d2 = StockDispatch.objects.create(item=self.item, customer=self.customer,
-                                          date=date(2026, 8, 3), quantity=1, rate=Decimal('10'))
-        self.assertEqual((q2.number, d2.invoice_no), ('REN2627-PI002', 'REN2627-IN002'))
+        self.assertEqual(q2.number, 'REN2627-PI002')
 
     def test_the_new_year_still_starts_at_001(self):
         """Spending numbers in one year must not carry into the next."""
@@ -2169,11 +2167,12 @@ class DocumentNumbersAreNeverReusedTests(TestCase):
         self.assertTrue(self.dispatch().invoice_no.endswith('IN001'))
         self.assertTrue(self.dispatch().invoice_no.endswith('IN002'))
 
-    def test_a_deleted_number_is_not_handed_out_again(self):
-        """It went to a customer; deleting our copy does not unspend it."""
+    def test_deleting_the_latest_invoice_hands_its_number_on(self):
+        """Invoices run without gaps, so the next one takes the freed number —
+        unless payments are still filed under it (InvoiceNumbersRunOnTests)."""
         first = self.dispatch()
         first.delete()
-        self.assertTrue(self.dispatch().invoice_no.endswith('IN002'))
+        self.assertTrue(self.dispatch().invoice_no.endswith('IN001'))
 
     # ── A number typed by hand ──
     def test_a_typed_number_moves_the_counter_past_itself(self):
@@ -4418,3 +4417,196 @@ class B2BDocumentBugfixTests(TestCase):
             'invoice_no': invoice_no,
             'lines': [{'item': self.panel.id, 'quantity': '1', 'rate': '10'}]})
         self.assertEqual(r.status_code, 400, r.content[:300])
+
+
+class InvoiceNumbersRunOnTests(TestCase):
+    """B2B invoice numbers run on from the last invoice on the books — 24, then
+    25, 26, 27 — whatever the proforma series or the old counter says.
+
+    Invoices are filed, so the series has to be continuous. The forward-only
+    counter kept every number it ever handed out: deliveries deleted or renamed
+    left it far ahead of the books, and the next invoice after IN024 was IN066.
+    """
+
+    def setUp(self):
+        self.admin = mk('inv_admin', 'superadmin')
+        self.customer = StockCustomer.objects.create(name='Energyfox Consultants Pvt Ltd')
+        self.item = StockItem.objects.create(code='INV-PNL', category='Solar Panel',
+                                             opening_stock=Decimal('1000'),
+                                             unit_cost=Decimal('100'))
+        self.today = timezone.localdate()
+        self.key = series_key('IN', self.today)
+
+    def invoice(self, invoice_no='', on=None):
+        return StockDispatch.objects.create(invoice_no=invoice_no, date=on or self.today,
+                                            customer=self.customer, item=self.item,
+                                            quantity=Decimal('1'), rate=Decimal('100'))
+
+    def books(self, *seqs):
+        for seq in seqs:
+            self.invoice(f'{self.key}{seq:03d}')
+
+    def payment_on(self, invoice_no):
+        DispatchPayment.objects.create(invoice_no=invoice_no, invoice_total=Decimal('100'),
+                                       amount_received=Decimal('100'), mode='cash',
+                                       paid_on=self.today, verified_by=self.admin)
+
+    def post_dispatch(self, **extra):
+        body = {'customer': self.customer.id, 'date': self.today.isoformat(),
+                'lines': [{'item': self.item.id, 'quantity': '1', 'rate': '100'}], **extra}
+        return self.client.post('/api/stock-dispatches/dispatch/', data=body,
+                                content_type='application/json',
+                                HTTP_AUTHORIZATION=token_for(self.admin))
+
+    # ── The report ──
+    def test_proformas_do_not_move_the_invoice_series(self):
+        """60 proformas and 24 invoices: the next invoice is 25, not 61."""
+        for _ in range(60):
+            StockQuote.objects.create(customer=self.customer, quote_date=self.today)
+        self.books(*range(1, 25))
+        self.assertEqual(self.invoice().invoice_no, f'{self.key}025')
+        self.assertEqual(self.invoice().invoice_no, f'{self.key}026')
+
+    def test_a_counter_that_ran_ahead_of_the_books_is_ignored(self):
+        """What production had: the counter at 65 while the books stopped at 24."""
+        self.books(*range(1, 25))
+        DocumentNumberSeries.objects.update_or_create(key=self.key, defaults={'last_seq': 65})
+        self.assertEqual(self.invoice().invoice_no, f'{self.key}025')
+
+    def test_renaming_the_stray_invoice_down_closes_the_gap(self):
+        """IN066 renamed to IN025 from the edit form: its payment goes with it,
+        and the next invoice is 026."""
+        self.books(*range(1, 25))
+        stray = self.invoice(f'{self.key}066')
+        self.payment_on(stray.invoice_no)
+        r = self.client.patch(f'/api/stock-dispatches/{stray.id}/',
+                              data={'invoice_no': f'{self.key}025'}, content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertTrue(DispatchPayment.objects.filter(invoice_no=f'{self.key}025').exists())
+        self.assertEqual(self.invoice().invoice_no, f'{self.key}026')
+
+    # ── Deleting ──
+    def test_deleting_the_latest_invoice_frees_its_number(self):
+        self.invoice()
+        last = self.invoice()
+        last.delete()
+        self.assertEqual(self.invoice().invoice_no, f'{self.key}002')
+
+    def test_a_gap_in_the_middle_is_not_refilled(self):
+        """Filling it would put a later sale between two earlier ones."""
+        self.invoice()
+        middle = self.invoice()
+        self.invoice()
+        middle.delete()
+        self.assertEqual(self.invoice().invoice_no, f'{self.key}004')
+
+    def test_a_number_with_payments_still_under_it_is_skipped(self):
+        """A new invoice under it would inherit the money and read as paid."""
+        self.invoice()
+        last = self.invoice()
+        self.payment_on(last.invoice_no)
+        last.delete()
+        self.assertEqual(self.invoice().invoice_no, f'{self.key}003')
+
+    # ── Both ways an invoice is raised ──
+    def test_new_dispatch_takes_the_next_number_on_the_books(self):
+        self.books(*range(1, 25))
+        DocumentNumberSeries.objects.update_or_create(key=self.key, defaults={'last_seq': 65})
+        r = self.post_dispatch()
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        self.assertEqual(r.json()['invoice_no'], f'{self.key}025')
+
+    def test_dispatching_a_proforma_takes_the_next_number_too(self):
+        self.books(*range(1, 25))
+        q = StockQuote.objects.create(customer=self.customer, quote_date=self.today)
+        StockQuoteItem.objects.create(quote=q, item=self.item, quantity=Decimal('1'),
+                                      unit_price=Decimal('100'))
+        r = self.client.post(f'/api/stock-quotes/{q.id}/convert/', data=paid_in_full(q),
+                             content_type='application/json',
+                             HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(r.json()['invoice_no'], f'{self.key}025')
+
+    def test_a_save_that_fails_gives_its_number_back(self):
+        """The old counter spent a number even when the delivery was never
+        written — one more way the gaps opened."""
+        self.books(1)
+        r = self.post_dispatch(payment={'amount_received': '0', 'mode': 'cash'})
+        self.assertEqual(r.status_code, 400, r.content[:300])
+        self.assertEqual(self.post_dispatch().json()['invoice_no'], f'{self.key}002')
+
+    # ── The form's preview ──
+    def test_the_form_can_preview_the_next_number_without_spending_it(self):
+        self.books(*range(1, 25))
+        for _ in range(2):
+            r = self.client.get('/api/stock-dispatches/next-number/',
+                                HTTP_AUTHORIZATION=token_for(self.admin))
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.json()['number'], f'{self.key}025')
+        self.assertEqual(self.invoice().invoice_no, f'{self.key}025')
+
+    def test_the_preview_follows_the_date_into_its_financial_year(self):
+        self.invoice(on=date(2026, 8, 3))
+        r = self.client.get('/api/stock-dispatches/next-number/?date=2027-04-01',
+                            HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.json()['number'], 'REN2728-IN001')
+
+    # ── The year ──
+    def test_each_financial_year_runs_on_its_own(self):
+        self.assertEqual(self.invoice(on=date(2026, 8, 3)).invoice_no, 'REN2627-IN001')
+        self.assertEqual(self.invoice(on=date(2026, 8, 4)).invoice_no, 'REN2627-IN002')
+        self.assertEqual(self.invoice(on=date(2027, 4, 1)).invoice_no, 'REN2728-IN001')
+        self.assertEqual(self.invoice(on=date(2027, 3, 31)).invoice_no, 'REN2627-IN003')
+
+
+class InvoiceSeriesReportTests(TestCase):
+    """`manage.py invoice_series` — a read-only look at the invoice series, for
+    checking the live books before and after tidying them."""
+
+    def setUp(self):
+        self.admin = mk('isr_admin', 'superadmin')
+        self.customer = StockCustomer.objects.create(name='Energyfox Consultants Pvt Ltd')
+        self.item = StockItem.objects.create(code='ISR-PNL', category='Solar Panel',
+                                             opening_stock=Decimal('1000'),
+                                             unit_cost=Decimal('100'))
+        self.today = timezone.localdate()
+        self.key = series_key('IN', self.today)
+
+    def report(self):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        call_command('invoice_series', stdout=out)
+        return out.getvalue()
+
+    def test_it_shows_what_production_looked_like(self):
+        for seq in list(range(1, 25)) + [66]:
+            StockDispatch.objects.create(invoice_no=f'{self.key}{seq:03d}', date=self.today,
+                                         customer=self.customer, item=self.item,
+                                         quantity=Decimal('1'), rate=Decimal('100'))
+        for seq, amount in ((54, '95256'), (55, '160256')):
+            DispatchPayment.objects.create(invoice_no=f'{self.key}{seq:03d}',
+                                           invoice_total=Decimal(amount),
+                                           amount_received=Decimal(amount), mode='bank',
+                                           paid_on=self.today, verified_by=self.admin)
+        text = self.report()
+        self.assertIn(f'25 invoice(s) on the books, highest {self.key}066', text)
+        self.assertIn('Missing below it: 025-065', text)
+        self.assertIn(f'Next invoice: {self.key}067', text)
+        self.assertIn(f'{self.key}054: 1 payment(s), Rs. 95,256.00', text)
+        self.assertIn(f'{self.key}055: 1 payment(s), Rs. 160,256.00', text)
+
+    def test_it_changes_nothing(self):
+        StockDispatch.objects.create(invoice_no='', date=self.today, customer=self.customer,
+                                     item=self.item, quantity=Decimal('1'), rate=Decimal('100'))
+        before = list(DocumentNumberSeries.objects.values_list('key', 'last_seq'))
+        self.report()
+        self.report()
+        self.assertEqual(list(DocumentNumberSeries.objects.values_list('key', 'last_seq')), before)
+        self.assertEqual(StockDispatch.objects.count(), 1)
+
+    def test_an_empty_year_says_so(self):
+        text = self.report()
+        self.assertIn('no invoices yet', text)
+        self.assertIn(f'Next invoice: {self.key}001', text)

@@ -960,7 +960,8 @@ from rest_framework.views import APIView  # noqa: E402
 from .models import (StockItem, StockCustomer, GoodsReceipt, StockDispatch,  # noqa: E402
                      StockQuote, StockQuoteItem, StockPurchaseOrder, DispatchPayment,
                      LIVE_QUOTE_STATUSES, document_number_in_use,
-                     next_stock_po_number, next_document_number, financial_year)
+                     next_stock_po_number, next_document_number, peek_document_number,
+                     financial_year)
 from .serializers import (  # noqa: E402
     StockItemSerializer, StockCustomerSerializer,
     GoodsReceiptSerializer, StockDispatchSerializer, StockQuoteSerializer,
@@ -1488,15 +1489,20 @@ class StockDispatchViewSet(_MovementViewSet):
         invoice_total = to_money(goods + (goods * tax_percent / Decimal('100')))
 
         dispatch_date = to_date(data.get('date')) or timezone.localdate()
-        invoice_no = (str(data.get('invoice_no') or '').strip()
-                      or next_document_number('IN', on=dispatch_date))
-        # Payments count too: a deleted delivery leaves its payments under its
-        # number, and a new delivery typed in under it would inherit them.
-        if document_number_in_use('IN', invoice_no):
-            return Response({'error': f'{invoice_no} already exists.'},
-                            status=status.HTTP_400_BAD_REQUEST)
+        typed_no = str(data.get('invoice_no') or '').strip()
 
         with transaction.atomic():
+            # Issued inside the transaction that writes the rows: the invoice
+            # series runs on from the rows on the books, so its lock has to last
+            # until these are among them — and a delivery that fails below
+            # gives its number back instead of leaving a gap.
+            invoice_no = typed_no or next_document_number('IN', on=dispatch_date)
+            # Payments count too: a deleted delivery leaves its payments under its
+            # number, and a new delivery typed in under it would inherit them.
+            if document_number_in_use('IN', invoice_no):
+                transaction.set_rollback(True)
+                return Response({'error': f'{invoice_no} already exists.'},
+                                status=status.HTTP_400_BAD_REQUEST)
             rows = [
                 StockDispatch.objects.create(
                     invoice_no=invoice_no, date=dispatch_date, customer_id=customer_id,
@@ -1529,6 +1535,17 @@ class StockDispatchViewSet(_MovementViewSet):
                 self.get_queryset().filter(id__in=[r.id for r in rows]),
                 many=True, context={'request': request}).data,
         }, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=['get'], url_path='next-number')
+    def next_number(self, request):
+        """The number the next delivery will take, so the form can show it.
+
+        A preview, not a reservation: it is issued for real when the delivery is
+        saved, and two people with the form open at once are each shown the same
+        number — whoever saves second is given the one after it.
+        """
+        on = to_date(request.query_params.get('date')) or timezone.localdate()
+        return Response({'number': peek_document_number('IN', on=on)})
 
     # ── Money, then goods ──
     @staticmethod

@@ -8,7 +8,7 @@
  * invoice for it, using the same template the proforma does with the wording
  * changed, because a dispatch is the sale rather than the offer.
  */
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
 import { buildProformaPdf, proformaFileName } from "@/lib/proformaPdf";
@@ -202,6 +202,23 @@ export default function StockDispatchPage() {
 
   const api = getApiBase(APP_SLUG);
   const authHeader = () => ({ Authorization: `Bearer ${localStorage.getItem(`${APP_SLUG}_access`)}` });
+
+  // The number a new delivery will take, shown in the empty field. Fetched for
+  // the form's date, since 1 April starts a new series. Only a preview: the
+  // number is issued when the delivery is saved, so two people with the form
+  // open at once see the same one and the second to save gets the next.
+  const [nextNo, setNextNo] = useState("");
+  useEffect(() => {
+    if (!show || editing) return;
+    let live = true;
+    fetch(`${api}/api/stock-dispatches/next-number/?date=${encodeURIComponent(form.date || "")}`,
+      { headers: authHeader() })
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (live && d?.number) setNextNo(d.number); })
+      .catch(() => {});
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [show, editing, form.date]);
 
   // Named for the customer as well, like the copy the server emails — see
   // safe_doc_name. The download used to be the bare number.
@@ -400,7 +417,8 @@ export default function StockDispatchPage() {
                 are filed under it. Renaming renames the whole delivery. */}
             <input value={form.invoice_no} onChange={e => setForm({ ...form, invoice_no: e.target.value })}
               required={!!editing}
-              className={`${FIELD} font-mono`} placeholder="Auto — REN2627-IN001" />
+              className={`${FIELD} font-mono`}
+              placeholder={editing ? "" : `Auto — ${nextNo || "next in the series"}`} />
           </Fld>
           <Fld label="Date *">
             <input type="date" required value={form.date}
