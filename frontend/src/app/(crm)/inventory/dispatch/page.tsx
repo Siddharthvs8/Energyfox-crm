@@ -34,7 +34,7 @@ const blankForm = () => ({
 });
 
 export default function StockDispatchPage() {
-  const { dispatches, items, customers, loading, denied, readOnly, save, act, remove, reload } =
+  const { dispatches, items, customers, loading, denied, readOnly, isSuperadmin, save, act, remove, reload } =
     useStock(["dispatches", "items", "customers"], "dispatch");
   const itemList: any[] = items || [];
   const customerList: any[] = customers || [];
@@ -220,6 +220,42 @@ export default function StockDispatchPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [show, editing, form.date]);
 
+  // Invoices that jumped past numbers never used — the old counter put IN066
+  // straight after IN024. The super admin can put them back in sequence; the
+  // server works out the moves, here they are only shown and confirmed.
+  type Move = { from: string; to: string; customer: string | null; date: string | null };
+  const [jump, setJump] = useState<Move[]>([]);
+  const [renumbering, setRenumbering] = useState(false);
+  useEffect(() => {
+    if (!isSuperadmin) return;
+    let live = true;
+    fetch(`${api}/api/stock-dispatches/numbering/`, { headers: authHeader() })
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (live) setJump(d?.moves || []); })
+      .catch(() => {});
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSuperadmin, dispatches]);
+
+  const renumber = async () => {
+    const pairs = jump.map(m => `${m.from} → ${m.to}`).join("\n");
+    if (!window.confirm(
+      `Renumber so the invoices run on without a gap?\n\n${pairs}\n\n`
+      + "Each invoice keeps its lines and payments; only the number changes. "
+      + "If one has already gone to the customer, send them the renumbered copy.",
+    )) return;
+    setRenumbering(true);
+    try {
+      const r = await fetch(`${api}/api/stock-dispatches/numbering/`, { method: "POST", headers: authHeader() });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(d.error || "Could not renumber the invoices."); return; }
+      setJump([]);
+      reload();
+      alert(`Renumbered. The next invoice will be ${d.next_number}.`);
+    } catch { alert("Network error — nothing was renumbered."); }
+    finally { setRenumbering(false); }
+  };
+
   // Named for the customer as well, like the copy the server emails — see
   // safe_doc_name. The download used to be the bare number.
   const docName = (r: any) => proformaFileName(r.invoice_no || `DSP-${r.id}`, r.customer_name);
@@ -289,6 +325,24 @@ export default function StockDispatchPage() {
       action={readOnly ? undefined : <AddButton label="New Dispatch" onClick={openCreate} />}>
 
       <SearchBar value={search} onChange={setSearch} placeholder="Search dispatches..." />
+
+      {isSuperadmin && jump.length > 0 && (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5">
+          <span>
+            <b>Invoice numbers out of sequence:</b>{" "}
+            {jump.map((m, i) => (
+              <span key={m.from} className="font-mono whitespace-nowrap">
+                {i ? ", " : ""}{m.from} → {m.to}
+              </span>
+            ))}
+            . The numbers in between were never used. Renumbering keeps each invoice&apos;s lines and payments.
+          </span>
+          <button type="button" onClick={renumber} disabled={renumbering}
+            className="px-3 py-1.5 rounded-lg bg-amber-600 text-white font-semibold hover:bg-amber-700 disabled:opacity-50 transition">
+            {renumbering ? "Renumbering…" : "Renumber"}
+          </button>
+        </div>
+      )}
 
       {/* A pending delivery is stock held, not stock gone — worth saying once at
           the top rather than leaving it to be inferred from the badges. */}

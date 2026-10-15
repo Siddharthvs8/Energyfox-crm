@@ -705,6 +705,13 @@ class StockDispatchSerializer(_MovementSerializer):
     def update(self, instance, validated_data):
         old_no = instance.invoice_no
         with transaction.atomic():
+            target = validated_data.get('invoice_no', old_no)
+            if old_no and target and target != old_no:
+                # Payments left under the new number by an earlier delivery step
+                # aside first — once this row carries the number they would be
+                # swept in below with this delivery's own.
+                from .models import park_stranded_payments
+                park_stranded_payments(target)
             instance = super().update(instance, validated_data)
             if not old_no:
                 return instance

@@ -5,11 +5,11 @@
 
 Invoices run on from the last one on the books (see inventory.models
 CONTINUOUS_SERIES), so the things worth knowing are: the highest invoice, the
-numbers missing below it, and payments filed under a number that has no
-invoice. Those payments are left behind when a delivery is deleted, or when
-one was renamed before renaming carried its payments along (10 Oct 2026). The
-series skips any number they sit under, so the new invoice cannot inherit
-them — which leaves a gap when the series gets there.
+numbers missing below it, any invoices that jumped past unused numbers (the
+super admin can put those back from Sales / Dispatches), and payments filed
+under a number that has no invoice. Those are left behind when a delivery is
+deleted, or was renamed before renaming carried its payments along (10 Oct
+2026); they are moved aside to UNLINKED-<number> when the number is used again.
 """
 from decimal import Decimal
 
@@ -17,7 +17,8 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 
-from inventory.models import DispatchPayment, StockDispatch, peek_document_number, series_key
+from inventory.models import (UNLINKED_PREFIX, DispatchPayment, StockDispatch, invoice_jump,
+                              peek_document_number, series_key)
 
 
 def ranges(seqs):
@@ -74,11 +75,16 @@ class Command(BaseCommand):
         missing = [s for s in range(1, top + 1) if s not in invoices]
         if missing:
             write(f'Missing below it: {ranges(missing)}')
+        jump = invoice_jump(on)
+        if jump:
+            write('Out of sequence (Renumber on Sales / Dispatches puts them back): '
+                  + ', '.join(f'{old} -> {new}' for old, new in jump))
         write(f'Next invoice: {peek_document_number("IN", on=on)}')
 
         if stray:
             write('')
-            write('Payments filed under a number with no invoice (the series skips these numbers):')
+            write('Payments filed under a number with no invoice '
+                  '(moved aside to UNLINKED-<number> when the number is used):')
             for s in sorted(stray):
                 payments = stray[s]
                 total = sum((p.amount_received or Decimal('0') for p in payments), Decimal('0'))
@@ -86,3 +92,13 @@ class Command(BaseCommand):
                 modes = sorted({p.mode for p in payments})
                 write(f'  {key}{s:03d}: {len(payments)} payment(s), Rs. {total:,.2f}, '
                       f'paid {", ".join(days) or "-"}, {"/".join(modes)}')
+
+        aside = (DispatchPayment.objects.filter(invoice_no__startswith=f'{UNLINKED_PREFIX}{key}')
+                 .order_by('invoice_no', 'id'))
+        if aside.exists():
+            write('')
+            write('Already moved aside (no invoice):')
+            for number in sorted(set(aside.values_list('invoice_no', flat=True))):
+                group = [p for p in aside if p.invoice_no == number]
+                total = sum((p.amount_received or Decimal('0') for p in group), Decimal('0'))
+                write(f'  {number}: {len(group)} payment(s), Rs. {total:,.2f}')

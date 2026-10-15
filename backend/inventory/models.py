@@ -321,7 +321,36 @@ _DOCUMENT_FIELDS = {
 # renamed deliveries had used numbers up. Proformas and purchase orders keep
 # the forward-only counter: nobody files those, and a number that was on a
 # quote sent to a customer is better never seen again.
+#
+# Only an invoice holds an invoice number. Payments left under a number by a
+# delivery that was deleted, or renamed before renaming carried its payments
+# along (10 Oct 2026), are moved aside when the number is used again — see
+# park_stranded_payments — rather than blocking it for ever.
 CONTINUOUS_SERIES = {'IN'}
+
+# Where payments left under an invoice number with no invoice go once that
+# number is wanted: still listed on the Payments page, no longer on the number.
+UNLINKED_PREFIX = 'UNLINKED-'
+
+
+def unlinked_key(number):
+    # DispatchPayment.invoice_no holds 30 characters.
+    return f"{UNLINKED_PREFIX}{number}"[:30]
+
+
+def park_stranded_payments(number):
+    """Move payments filed under `number` aside when no invoice carries it.
+
+    Left where they are, a new invoice given the number would inherit the money
+    and read as paid; skipping the number instead leaves a gap in a series that
+    is filed. Moved aside they keep their amounts, dates and references and stay
+    on the Payments page, under UNLINKED-<number>. Returns how many moved.
+    """
+    from django.apps import apps
+    if apps.get_model('inventory', 'StockDispatch').objects.filter(invoice_no=number).exists():
+        return 0
+    return (apps.get_model('inventory', 'DispatchPayment').objects
+            .filter(invoice_no=number).update(invoice_no=unlinked_key(number)))
 
 
 # How to tell whether a number is already on a document, per series. The counter
@@ -332,11 +361,9 @@ def document_number_in_use(kind, number):
     model, field = _DOCUMENT_FIELDS.get(kind, (None, None))
     if not model:
         return False
-    if (kind == 'IN' and apps.get_model('inventory', 'DispatchPayment')
-            .objects.filter(invoice_no=number).exists()):
-        # A deleted delivery leaves its payments behind under its number; a new
-        # delivery given that number would inherit them and read as paid.
-        return True
+    # Payments left under an invoice number do not hold it: they are moved aside
+    # when it is used (park_stranded_payments), so a new invoice cannot inherit
+    # them and the series need not jump past them.
     return apps.get_model('inventory', model).objects.filter(**{field: number}).exists()
 
 
@@ -378,24 +405,14 @@ def _highest_on_the_books(kind, key):
     return max((int(t) for t in tails if t.isdigit()), default=0)
 
 
-def _first_free_after(kind, key, seq):
-    """The first number above `seq` that nothing is filed under."""
-    for _ in range(_MAX_NUMBER_ATTEMPTS):
-        seq += 1
-        if not document_number_in_use(kind, f"{key}{seq:03d}"):
-            return seq
-    raise RuntimeError(f"Could not find a free number in the {key} series.")
-
-
 def _next_continuous(kind, key):
     """The number after the last document on the books — 24 then 25, 26, 27.
 
     Counted from the documents that exist, so a number used by a delivery that
     was deleted or renamed is not lost: deleting the latest invoice hands its
     number to the next one. A gap in the middle is not refilled — that would
-    put a later sale between two earlier ones. A number with payments still
-    filed under it is skipped, or the new invoice would inherit them and read
-    as paid.
+    put a later sale between two earlier ones. Payments left under the number
+    are moved aside first, so the new invoice does not inherit them.
 
     The series row is locked for the rest of the caller's transaction, so a
     caller that issues the number and writes the document in one transaction
@@ -405,11 +422,52 @@ def _next_continuous(kind, key):
     with transaction.atomic():
         DocumentNumberSeries.objects.get_or_create(key=key)
         row = DocumentNumberSeries.objects.select_for_update().get(key=key)
-        seq = _first_free_after(kind, key, _highest_on_the_books(kind, key))
+        seq = _highest_on_the_books(kind, key) + 1
+        number = f"{key}{seq:03d}"
+        park_stranded_payments(number)
         # The counter now just records the last number issued.
         row.last_seq = seq
         row.save(update_fields=['last_seq', 'updated_at'])
-        return f"{key}{seq:03d}"
+        return number
+
+
+def invoice_jump(on=None):
+    """The newest invoices that sit past a run of unused numbers, and the
+    numbers they belong at: [('REN2627-IN066', 'REN2627-IN025')].
+
+    The forward-only counter this series replaced handed out numbers far past
+    the last invoice — IN066 straight after IN024. Only the top of the series
+    is looked at, and only when putting it right moves no more invoices than
+    the numbers it recovers: one number missing in the middle (a deleted
+    invoice) is not worth renumbering everything issued after it.
+    """
+    from django.apps import apps
+    key = series_key('IN', on)
+    numbers = (apps.get_model('inventory', 'StockDispatch').objects
+               .filter(invoice_no__startswith=key)
+               .order_by().values_list('invoice_no', flat=True).distinct())
+    seqs = sorted({int(t) for t in (str(n)[len(key):] for n in numbers) if t.isdigit()})
+    for i in range(len(seqs) - 1, -1, -1):
+        below = seqs[i - 1] if i else 0
+        if seqs[i] - below > 1:
+            tail = seqs[i:]
+            if len(tail) > seqs[i] - below - 1:
+                return []
+            return [(f"{key}{seq:03d}", f"{key}{below + 1 + n:03d}") for n, seq in enumerate(tail)]
+    return []
+
+
+def renumber_invoice(old, new):
+    """Move a whole delivery — every row and every payment — to another number.
+
+    Payments left under the new number by an earlier delivery step aside first,
+    or they would be swept into this one.
+    """
+    from django.apps import apps
+    park_stranded_payments(new)
+    rows = apps.get_model('inventory', 'StockDispatch').objects.filter(invoice_no=old).update(invoice_no=new)
+    apps.get_model('inventory', 'DispatchPayment').objects.filter(invoice_no=old).update(invoice_no=new)
+    return rows
 
 
 def absorb_document_number(kind, number, on=None):
@@ -426,7 +484,7 @@ def peek_document_number(kind, on=None):
     """The number the next document would take, without spending it."""
     key = series_key(kind, on)
     if kind in CONTINUOUS_SERIES:
-        return f"{key}{_first_free_after(kind, key, _highest_on_the_books(kind, key)):03d}"
+        return f"{key}{_highest_on_the_books(kind, key) + 1:03d}"
     return f"{key}{DocumentNumberSeries.peek(key):03d}"
 
 
@@ -1283,8 +1341,11 @@ class StockDispatch(_StockMovement):
                 super().save(*args, **kwargs)
             return
         if self._state.adding:
-            # Typed by hand, or carried over from the set: tell the counter,
-            # so the series cannot issue this number to someone else later.
+            # Typed by hand, or carried over from the set. A number no delivery
+            # carries yet may still have payments left under it by one that was
+            # deleted or renamed; they step aside rather than be inherited.
+            park_stranded_payments(self.invoice_no)
+            # Tell the counter too, so it never issues this number elsewhere.
             absorb_document_number('IN', self.invoice_no, on=self.date)
         super().save(*args, **kwargs)
 

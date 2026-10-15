@@ -1497,8 +1497,9 @@ class StockDispatchViewSet(_MovementViewSet):
             # until these are among them — and a delivery that fails below
             # gives its number back instead of leaving a gap.
             invoice_no = typed_no or next_document_number('IN', on=dispatch_date)
-            # Payments count too: a deleted delivery leaves its payments under its
-            # number, and a new delivery typed in under it would inherit them.
+            # A typed number another delivery already carries is refused. Payments
+            # a deleted delivery left under it do not hold it: they step aside as
+            # the first row is saved (StockDispatch.save), so nothing is inherited.
             if document_number_in_use('IN', invoice_no):
                 transaction.set_rollback(True)
                 return Response({'error': f'{invoice_no} already exists.'},
@@ -1546,6 +1547,55 @@ class StockDispatchViewSet(_MovementViewSet):
         """
         on = to_date(request.query_params.get('date')) or timezone.localdate()
         return Response({'number': peek_document_number('IN', on=on)})
+
+    @action(detail=False, methods=['get', 'post'], url_path='numbering')
+    def numbering(self, request):
+        """Invoices that jumped past unused numbers, and putting them back.
+
+        The forward-only counter the invoice series used to run on handed out
+        numbers far past the last invoice — IN066 straight after IN024. GET says
+        which of this year's invoices sit past such a jump and the numbers they
+        belong at; POST renumbers them, rows and payments together. Renaming an
+        issued invoice is the super admin's call, so both are theirs alone.
+        """
+        from .models import DocumentNumberSeries, invoice_jump, renumber_invoice, series_key
+        if not request.user.is_superuser:
+            return Response({'error': 'Only the super admin can renumber invoices.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        today = timezone.localdate()
+        series = series_key('IN', today)
+
+        def describe(moves):
+            out = []
+            for old, new in moves:
+                rows = list(StockDispatch.objects.filter(invoice_no=old)
+                            .select_related('customer').order_by('id'))
+                head = rows[0] if rows else None
+                out.append({
+                    'from': old, 'to': new,
+                    'date': head.date.isoformat() if head and head.date else None,
+                    'customer': head.customer.name if head and head.customer else None,
+                    'lines': len(rows),
+                })
+            return out
+
+        if request.method == 'GET':
+            return Response({'series': series, 'moves': describe(invoice_jump(today))})
+
+        with transaction.atomic():
+            # The series lock, so a delivery saved meanwhile cannot take one of
+            # the numbers being moved into.
+            DocumentNumberSeries.objects.get_or_create(key=series)
+            DocumentNumberSeries.objects.select_for_update().get(key=series)
+            moves = invoice_jump(today)       # worked out again under the lock
+            described = describe(moves)
+            for old, new in moves:
+                renumber_invoice(old, new)
+        for old, new in moves:
+            logger.warning('Invoice %s renumbered to %s by %s', old, new,
+                           getattr(request.user, 'username', 'unknown'))
+        return Response({'series': series, 'renumbered': described,
+                         'next_number': peek_document_number('IN', on=today)})
 
     # ── Money, then goods ──
     @staticmethod
@@ -1900,8 +1950,11 @@ class StockPaymentsView(APIView):
                 customer=head.customer.name if head and head.customer else None,
                 date=head.date if head else None,
                 total=total, payments=paid,
-                status=head.status if head else StockDispatch.RELEASED,
-                status_label=head.get_status_display() if head else 'Released',
+                # No delivery carries this number: the payments were left
+                # behind by one deleted or renamed, or set aside as UNLINKED-…
+                # when the number was used again. Not a released delivery.
+                status=head.status if head else 'unlinked',
+                status_label=head.get_status_display() if head else 'No invoice',
             ))
         return out
 

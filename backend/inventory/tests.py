@@ -4411,12 +4411,18 @@ class B2BDocumentBugfixTests(TestCase):
         self.assertEqual(StockDispatch.objects.count(), 0)
 
     def test_a_deleted_deliverys_number_does_not_hand_its_payments_on(self):
+        """The number can be used again — invoices run without gaps — but the
+        old delivery's payment steps aside to UNLINKED-<number> rather than
+        being inherited by the new one."""
         invoice_no = self.raise_delivery(payment={'amount_received': '1000', 'mode': 'cash'})
         StockDispatch.objects.filter(invoice_no=invoice_no).delete()
         r = self.post('/api/stock-dispatches/dispatch/', {
             'invoice_no': invoice_no,
             'lines': [{'item': self.panel.id, 'quantity': '1', 'rate': '10'}]})
-        self.assertEqual(r.status_code, 400, r.content[:300])
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        self.assertFalse(DispatchPayment.objects.filter(invoice_no=invoice_no).exists())
+        self.assertTrue(DispatchPayment.objects.filter(
+            invoice_no=f'UNLINKED-{invoice_no}', amount_received=Decimal('1000')).exists())
 
 
 class InvoiceNumbersRunOnTests(TestCase):
@@ -4501,13 +4507,19 @@ class InvoiceNumbersRunOnTests(TestCase):
         middle.delete()
         self.assertEqual(self.invoice().invoice_no, f'{self.key}004')
 
-    def test_a_number_with_payments_still_under_it_is_skipped(self):
-        """A new invoice under it would inherit the money and read as paid."""
+    def test_payments_left_under_a_freed_number_step_aside(self):
+        """The number is used again — a gap is worse in a filed series — but the
+        money left under it moves to UNLINKED-…, so the new invoice does not
+        inherit it and read as paid."""
         self.invoice()
         last = self.invoice()
         self.payment_on(last.invoice_no)
         last.delete()
-        self.assertEqual(self.invoice().invoice_no, f'{self.key}003')
+        fresh = self.invoice()
+        self.assertEqual(fresh.invoice_no, f'{self.key}002')
+        self.assertFalse(DispatchPayment.objects.filter(invoice_no=fresh.invoice_no).exists())
+        self.assertTrue(DispatchPayment.objects.filter(
+            invoice_no=f'UNLINKED-{self.key}002', amount_received=Decimal('100')).exists())
 
     # ── Both ways an invoice is raised ──
     def test_new_dispatch_takes_the_next_number_on_the_books(self):
@@ -4610,3 +4622,154 @@ class InvoiceSeriesReportTests(TestCase):
         text = self.report()
         self.assertIn('no invoices yet', text)
         self.assertIn(f'Next invoice: {self.key}001', text)
+
+
+class InvoiceSeriesRepairTests(TestCase):
+    """Getting the live books back to 24, 25, 26 — and keeping them there.
+
+    The live series had IN066 straight after IN024, and payments left under
+    numbers in between by deliveries renamed before 10 Oct 2026. Those payments
+    used to hold their numbers, so neither a new invoice nor a rename could take
+    25. Now only an invoice holds a number: left-behind payments step aside to
+    UNLINKED-<number>, and the super admin can move the jumped invoices back.
+    """
+
+    URL = '/api/stock-dispatches/numbering/'
+
+    def setUp(self):
+        self.superadmin = mk('isr2_super', 'superadmin')
+        self.admin = mk('isr2_admin', 'admin')
+        self.customer = StockCustomer.objects.create(name='Energyfox Consultants Pvt Ltd')
+        self.item = StockItem.objects.create(code='REP-PNL', category='Solar Panel',
+                                             opening_stock=Decimal('1000'),
+                                             unit_cost=Decimal('100'))
+        self.today = timezone.localdate()
+        self.key = series_key('IN', self.today)
+
+    def no(self, seq):
+        return f'{self.key}{seq:03d}'
+
+    def invoice(self, invoice_no='', rate='100'):
+        return StockDispatch.objects.create(invoice_no=invoice_no, date=self.today,
+                                            customer=self.customer, item=self.item,
+                                            quantity=Decimal('1'), rate=Decimal(rate))
+
+    def books(self, *seqs):
+        for seq in seqs:
+            self.invoice(self.no(seq))
+
+    def pay(self, invoice_no, amount):
+        DispatchPayment.objects.create(invoice_no=invoice_no, invoice_total=Decimal(amount),
+                                       amount_received=Decimal(amount), mode='bank',
+                                       paid_on=self.today, verified_by=self.superadmin)
+
+    def received(self, invoice_no):
+        return sum(DispatchPayment.objects.filter(invoice_no=invoice_no)
+                   .values_list('amount_received', flat=True), Decimal('0'))
+
+    def auth(self, user=None):
+        return {'HTTP_AUTHORIZATION': token_for(user or self.superadmin)}
+
+    # ── New invoices ──
+    def test_after_24_comes_25_even_with_payments_left_at_25(self):
+        """What the live site was hitting: a payment stranded at 25 by an old
+        rename held the number, so the series could not get past it."""
+        self.books(*range(1, 25))
+        self.pay(self.no(25), '95256')
+        fresh = self.invoice()
+        self.assertEqual(fresh.invoice_no, self.no(25))
+        self.assertEqual(self.received(self.no(25)), Decimal('0'))
+        self.assertEqual(self.received(f'UNLINKED-{self.no(25)}'), Decimal('95256'))
+
+    def test_the_preview_says_25_and_moves_nothing(self):
+        self.books(*range(1, 25))
+        self.pay(self.no(25), '95256')
+        r = self.client.get('/api/stock-dispatches/next-number/', **self.auth())
+        self.assertEqual(r.json()['number'], self.no(25))
+        self.assertEqual(self.received(self.no(25)), Decimal('95256'))
+
+    def test_a_typed_number_does_not_inherit_payments_left_under_it(self):
+        self.books(1)
+        self.pay(self.no(5), '5000')
+        r = self.client.post('/api/stock-dispatches/dispatch/', data={
+            'customer': self.customer.id, 'date': self.today.isoformat(), 'invoice_no': self.no(5),
+            'lines': [{'item': self.item.id, 'quantity': '1', 'rate': '100'}],
+        }, content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        self.assertEqual(self.received(self.no(5)), Decimal('0'))
+        self.assertEqual(self.received(f'UNLINKED-{self.no(5)}'), Decimal('5000'))
+
+    # ── Renaming from the edit form ──
+    def test_renaming_66_onto_25_works_and_carries_its_own_payment(self):
+        self.books(*range(1, 25))
+        stray = self.invoice(self.no(66), rate='5000')
+        self.pay(self.no(66), '5250')
+        self.pay(self.no(25), '95256')            # left behind by an old rename
+        r = self.client.patch(f'/api/stock-dispatches/{stray.id}/',
+                              data={'invoice_no': self.no(25)}, content_type='application/json',
+                              **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(self.received(self.no(25)), Decimal('5250'))
+        self.assertEqual(self.received(f'UNLINKED-{self.no(25)}'), Decimal('95256'))
+        self.assertEqual(self.invoice().invoice_no, self.no(26))
+
+    def test_renaming_onto_another_invoice_is_still_refused(self):
+        self.books(1, 2)
+        second = StockDispatch.objects.get(invoice_no=self.no(2))
+        r = self.client.patch(f'/api/stock-dispatches/{second.id}/',
+                              data={'invoice_no': self.no(1)}, content_type='application/json',
+                              **self.auth())
+        self.assertEqual(r.status_code, 400)
+
+    # ── The super admin's Renumber ──
+    def test_it_finds_the_jump(self):
+        self.books(*range(1, 25), 66)
+        moves = self.client.get(self.URL, **self.auth()).json()['moves']
+        self.assertEqual([(m['from'], m['to']) for m in moves], [(self.no(66), self.no(25))])
+        self.assertEqual(moves[0]['customer'], 'Energyfox Consultants Pvt Ltd')
+
+    def test_renumber_puts_66_at_25_with_everything_it_carries(self):
+        self.books(*range(1, 25))
+        self.invoice(self.no(66), rate='5000')
+        self.invoice(self.no(66), rate='250')     # a second line of the same delivery
+        self.pay(self.no(66), '5250')
+        self.pay(self.no(25), '95256')            # left behind by an old rename
+        r = self.client.post(self.URL, **self.auth())
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(StockDispatch.objects.filter(invoice_no=self.no(25)).count(), 2)
+        self.assertFalse(StockDispatch.objects.filter(invoice_no=self.no(66)).exists())
+        self.assertEqual(self.received(self.no(25)), Decimal('5250'))
+        self.assertEqual(self.received(f'UNLINKED-{self.no(25)}'), Decimal('95256'))
+        self.assertEqual(r.json()['next_number'], self.no(26))
+        self.assertEqual(self.invoice().invoice_no, self.no(26))
+        self.assertEqual(self.client.get(self.URL, **self.auth()).json()['moves'], [])
+
+    def test_several_jumped_invoices_keep_their_order(self):
+        self.books(*range(1, 25), 66, 67)
+        self.client.post(self.URL, **self.auth())
+        self.assertTrue(StockDispatch.objects.filter(invoice_no=self.no(25)).exists())
+        self.assertTrue(StockDispatch.objects.filter(invoice_no=self.no(26)).exists())
+        self.assertFalse(StockDispatch.objects.filter(invoice_no__in=[self.no(66), self.no(67)]).exists())
+
+    def test_one_number_missing_in_the_middle_is_left_alone(self):
+        """Renumbering thirteen issued invoices to close one gap is not a fix."""
+        self.books(*range(1, 11), *range(12, 25))
+        self.assertEqual(self.client.get(self.URL, **self.auth()).json()['moves'], [])
+
+    def test_a_tidy_series_has_nothing_to_move(self):
+        self.books(*range(1, 25))
+        self.assertEqual(self.client.get(self.URL, **self.auth()).json()['moves'], [])
+
+    def test_only_the_super_admin(self):
+        self.books(*range(1, 25), 66)
+        self.assertEqual(self.client.get(self.URL, **self.auth(self.admin)).status_code, 403)
+        self.assertEqual(self.client.post(self.URL, **self.auth(self.admin)).status_code, 403)
+        self.assertTrue(StockDispatch.objects.filter(invoice_no=self.no(66)).exists())
+
+    # ── The Payments page ──
+    def test_payments_with_no_invoice_say_so(self):
+        self.pay(self.no(54), '95256')
+        rows = self.client.get('/api/stock-payments/', **self.auth()).json()['sections']['fully_paid']['rows']
+        row = next(r for r in rows if r['number'] == self.no(54))
+        self.assertEqual(row['status'], 'unlinked')
+        self.assertEqual(row['status_label'], 'No invoice')
