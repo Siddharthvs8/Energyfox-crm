@@ -28,6 +28,7 @@ type Project = {
   system_type: string; system_type_display: string;
   price_dcr: string; price_non_dcr: string; subsidy_amount: string;
   tax_percent: string; price_includes_tax: boolean;
+  bde_incentive: string; telecaller_incentive: string;
   pricing: Record<string, { price: string; base_amount: string; tax_amount: string; total: string }>;
   lines: Line[]; line_count: number; quoted_count: number;
 };
@@ -174,7 +175,7 @@ export default function ProjectsPage() {
   const [creating, setCreating] = useState(false);
   const [preview, setPreview] = useState<Project | null>(null);
   const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState({ name: "", system_type: "", capacity: "", price_dcr: "", price_non_dcr: "", subsidy_amount: "", tax_percent: "", notes: "", price_includes_tax: false });
+  const [form, setForm] = useState({ name: "", system_type: "", capacity: "", price_dcr: "", price_non_dcr: "", subsidy_amount: "", tax_percent: "", notes: "", price_includes_tax: false, bde_incentive: "", telecaller_incentive: "" });
   const [lines, setLines] = useState<Line[]>([]);
 
   const auth = () => ({ Authorization: `Bearer ${localStorage.getItem(`${domain}_access`)}` });
@@ -193,7 +194,7 @@ export default function ProjectsPage() {
 
   const openNew = () => {
     setCreating(true); setEditing(null);
-    setForm({ name: "", system_type: "", capacity: "", price_dcr: "", price_non_dcr: "", subsidy_amount: "", tax_percent: "", notes: "", price_includes_tax: false });
+    setForm({ name: "", system_type: "", capacity: "", price_dcr: "", price_non_dcr: "", subsidy_amount: "", tax_percent: "", notes: "", price_includes_tax: false, bde_incentive: "", telecaller_incentive: "" });
     setLines([]);
   };
   const openEdit = (p: Project) => {
@@ -205,6 +206,8 @@ export default function ProjectsPage() {
       subsidy_amount: Number(p.subsidy_amount) ? String(Number(p.subsidy_amount)) : "",
       tax_percent: p.tax_percent && Number(p.tax_percent) ? String(Number(p.tax_percent)) : "",
       price_includes_tax: !!p.price_includes_tax,
+      bde_incentive: Number(p.bde_incentive) ? String(Number(p.bde_incentive)) : "",
+      telecaller_incentive: Number(p.telecaller_incentive) ? String(Number(p.telecaller_incentive)) : "",
     });
     setLines((p.lines || []).map(l => ({ ...l })));
   };
@@ -224,6 +227,8 @@ export default function ProjectsPage() {
       price_non_dcr: form.price_non_dcr || 0,
       subsidy_amount: form.subsidy_amount || 0,
       tax_percent: form.tax_percent || 0,
+      bde_incentive: form.bde_incentive || 0,
+      telecaller_incentive: form.telecaller_incentive || 0,
       lines: lines.filter(l => l.item_name.trim()).map((l, i) => ({ ...l, position: i })),
     };
     const url = editing ? `${api}/api/projects/${editing.id}/` : `${api}/api/projects/`;
@@ -383,6 +388,12 @@ export default function ProjectsPage() {
                         {p.price_includes_tax ? "incl." : "plus"} {Number(p.tax_percent)}% tax
                       </span>
                     )}
+                    {(Number(p.bde_incentive) > 0 || Number(p.telecaller_incentive) > 0) && (
+                      <span className="block text-[10px] font-semibold text-emerald-600 mt-0.5"
+                        title="Sales incentives, paid when the customer finishes paying">
+                        Incentive · BDE ₹{money(p.bde_incentive)} · TC ₹{money(p.telecaller_incentive)}
+                      </span>
+                    )}
                   </td>
                   <td className="py-4 px-6 text-center text-slate-600">{p.line_count}</td>
                   <td className="py-4 px-6 text-center text-slate-400">{p.quoted_count || "—"}</td>
@@ -498,6 +509,31 @@ export default function ProjectsPage() {
                     })}
                   </div>
                 )}
+              </div>
+
+              {/* ── What selling it pays the team ── */}
+              <div className="border border-emerald-200 bg-emerald-50/40 rounded-xl px-4 py-4">
+                <p className="text-sm font-bold text-slate-800">Sales incentives</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Paid on the Rewards page to the deal's BDE and tele caller, in the month the customer finishes paying.
+                </p>
+                <div className="mt-3 grid sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className={labelCls}>BDE incentive (₹)</label>
+                    <input type="number" min="0" step="0.01" value={form.bde_incentive}
+                      onChange={e => setForm({ ...form, bde_incentive: e.target.value })}
+                      placeholder="2000" className={inputCls} />
+                  </div>
+                  <div>
+                    <label className={labelCls}>Tele caller incentive (₹)</label>
+                    <input type="number" min="0" step="0.01" value={form.telecaller_incentive}
+                      onChange={e => setForm({ ...form, telecaller_incentive: e.target.value })}
+                      placeholder="500" className={inputCls} />
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Paid only when a tele caller worked the deal.
+                    </p>
+                  </div>
+                </div>
               </div>
 
               <SpecEditor lines={lines} onChange={setLines} />

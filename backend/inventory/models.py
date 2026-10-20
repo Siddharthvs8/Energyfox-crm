@@ -647,6 +647,11 @@ class ProjectSpec(models.Model):
     # base that tax is added to. Solar is quoted both ways and the difference is
     # the tax itself, so it is recorded rather than assumed.
     price_includes_tax = models.BooleanField(default=False)
+    # What selling this package pays the sales team, on top of reward points.
+    # Earned by the deal's BDE and tele caller in the month its customer
+    # finishes paying (see rewards.engine.incentives_between).
+    bde_incentive = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    telecaller_incentive = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     notes = models.TextField(blank=True, default='')
     # Retired rather than deleted: a proforma issued last year still names the
     # project it was built from, and that record should not go blank.

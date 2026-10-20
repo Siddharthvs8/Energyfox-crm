@@ -190,7 +190,7 @@ class ProjectSpecSerializer(serializers.ModelSerializer):
         model = ProjectSpec
         fields = ['id', 'name', 'system_type', 'system_type_display', 'capacity', 'subsidy_amount',
                   'price_dcr', 'price_non_dcr', 'tax_percent', 'price_includes_tax',
-                  'pricing',
+                  'pricing', 'bde_incentive', 'telecaller_incentive',
                   'notes', 'is_active', 'lines',
                   'line_count', 'quoted_count', 'created_at', 'updated_at']
         read_only_fields = ['created_at', 'updated_at']

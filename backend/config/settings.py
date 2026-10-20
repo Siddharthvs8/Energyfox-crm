@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     'inventory',
     'messaging',
     'audit',
+    'rewards',
 ]
 
 MIDDLEWARE = [

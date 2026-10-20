@@ -167,6 +167,13 @@ const Nav = {
       <path d="M18 4H6v5c0 3.31 2.69 6 6 6s6-2.69 6-6V4z"></path>
     </svg>
   ),
+  Rewards: () => (
+    <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+      <rect x="3" y="8" width="18" height="4" rx="1" />
+      <path d="M12 8v13M19 12v7a2 2 0 01-2 2H7a2 2 0 01-2-2v-7" />
+      <path d="M7.5 8a2.5 2.5 0 010-5C11 3 12 8 12 8s1-5 4.5-5a2.5 2.5 0 010 5" />
+    </svg>
+  ),
   Inventory: () => (
     <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
       <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z" />
@@ -692,6 +699,7 @@ export default function DashboardLayout({
     { href: `/tasks`,         label: "Tasks",           Icon: Nav.Tasks },
     { inventoryGroup: true },
     { href: `/leaderboard`,    label: "Leaderboard",     Icon: Nav.Leaderboard },
+    { href: `/rewards`,       label: "Rewards",         Icon: Nav.Rewards, rewardsFeature: true },
     { href: `/my-performance`,label: "My Performance",  Icon: Nav.MyPerformance, hideForManager: true },
     { href: `/team-performance`,label: "Team Performance",Icon: Nav.Team, managerOnly: true },
     { href: `/company-performance`, label: "Company Performance", Icon: Nav.CompanyPerformance,
@@ -727,7 +735,8 @@ export default function DashboardLayout({
     { href: `/settings`,      label: "Settings",        Icon: Nav.Settings, adminOnly: true },
   ];
 
-  // Documentation team (staff/manager) get a focused view — only the Documentation page.
+  // Documentation team (staff/manager) get a focused view — the documentation
+  // modules; the manager also gets KSEB Feasibility and Liasoning & Service.
   const isDocOnly = ["documentation_staff", "documentation_manager"].includes(currentUser?.role);
   // Accounts staff get a focused view — only the Accounts page.
   const isAccountsOnly = ["accounts_staff", "accounts_manager"].includes(currentUser?.role);
@@ -775,6 +784,14 @@ export default function DashboardLayout({
       return !!item.inB2B;   // wholesale side is Inventory (the group, above) + Team
     }
     if (isDocOnly) {
+      // The documentation manager also oversees KSEB feasibility and Liasoning
+      // & Service, as an admin does. The server already lets them in — the role
+      // carries the general-manager flag — so only the sidebar needed telling.
+      // Documentation staff keep the focused view.
+      if (currentUser?.role === "documentation_manager"
+          && (item.feasibilityFeature || item.liasoningFeature)) {
+        return true;
+      }
       return !!item.docFeature || !!item.docStage2Feature || !!item.warrantyFeature;
     }
     if (isLiasoningOnly) {
@@ -842,6 +859,11 @@ export default function DashboardLayout({
     }
     if (item.docTracker) {
       return true;   // read-only documentation tracker — everyone except the doc team
+    }
+    if (item.rewardsFeature) {
+      // The sales team plays; admins and super admins run it. Mirrors the
+      // server's rule in rewards/views.py.
+      return ["bde", "tele_caller", "admin", "superadmin"].includes(currentUser?.role);
     }
     if (item.feasibilityFeature) {
       // BDE's KSEB feasibility task list — BDEs plus their managers / admins.

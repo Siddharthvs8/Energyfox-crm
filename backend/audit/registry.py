@@ -21,6 +21,7 @@ CATEGORY_BY_APP = {
     'organization': 'Settings',
     'messaging': 'Messaging',
     'ai_manager': 'Targets',
+    'rewards': 'Rewards',
 }
 
 # Where the app is too coarse. The leads app holds the whole pipeline, so a
@@ -68,6 +69,8 @@ AUDITED = {
     'inventory.Vendor', 'inventory.StockItem',
     # ── Company settings ──
     'organization.OrgSettings',
+    # ── The rewards game's rules (targets, prizes, the points split) ──
+    'rewards.RewardSettings', 'rewards.RewardTier',
 }
 
 # Never recorded, whatever else says. Passwords and tokens must not reach a log

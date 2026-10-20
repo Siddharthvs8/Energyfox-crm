@@ -10553,3 +10553,85 @@ class StageReachedFilterTests(TestCase):
         signed.refresh_from_db()
         self.assertEqual(pushed.bde_assigned_at, self.at(2026, 6, 23, 15, 0))
         self.assertEqual(signed.bde_assigned_at, self.at(2026, 7, 1, 0, 0))
+
+
+class DocumentationManagerOversightTests(TestCase):
+    """The documentation manager works KSEB Feasibility and Liasoning & Service
+    the way an admin does.
+
+    The role carries the general-manager flag, so the server let it in already;
+    the sidebar's documentation-only view was what kept the pages out of sight.
+    These pin the server side down so a later change cannot quietly take it away.
+    The super admin's overrides stay the super admin's.
+    """
+
+    def setUp(self):
+        from .models import SiteVisit
+        self.manager = mk('dmo_manager', 'documentation_manager')
+        self.staff = mk('dmo_staff', 'documentation_staff')
+        self.admin = mk('dmo_admin', 'admin')
+        bde1, bde2 = mk('dmo_bde1', 'bde'), mk('dmo_bde2', 'bde')
+        self.signed = []
+        for n, bde in enumerate((bde1, bde2)):
+            lead = Lead.objects.create(first_name=f'Signed{n}', phone=f'98471{n:05d}',
+                                       status='converted', bde=bde)
+            SiteVisit.objects.create(lead=lead, po_signed_date=date(2026, 10, 15))
+            self.signed.append(lead)
+        self.live = Lead.objects.create(first_name='Live', phone='9847199999', status='converted',
+                                        pushed_to_liasoning=True,
+                                        pushed_to_liasoning_at=timezone.now())
+
+    def get(self, url, user=None):
+        return self.client.get(url, HTTP_AUTHORIZATION=token_for(user or self.manager))
+
+    def patch(self, url, data, user=None):
+        return self.client.patch(url, data=data, content_type='application/json',
+                                 HTTP_AUTHORIZATION=token_for(user or self.manager))
+
+    # ── KSEB Feasibility ──
+    def test_sees_every_bdes_feasibility_like_an_admin(self):
+        mine = {r['id'] for r in self.get('/api/leads/bde-feasibility/').json()}
+        theirs = {r['id'] for r in self.get('/api/leads/bde-feasibility/', self.admin).json()}
+        self.assertEqual(mine, {l.id for l in self.signed})
+        self.assertEqual(mine, theirs)
+
+    def test_can_fill_in_a_feasibility(self):
+        r = self.patch(f'/api/leads/{self.signed[0].id}/kseb-feasibility/',
+                       {'kseb_feasibility_taken': 'yes'})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+
+    def test_a_completed_feasibility_stays_the_super_admins_to_change(self):
+        from .models import SiteVisit
+        SiteVisit.objects.filter(lead=self.signed[0]).update(
+            kseb_feasibility_taken='yes', kseb_feasibility_date=date(2026, 10, 16),
+            kseb_feasibility_complete=True)
+        r = self.patch(f'/api/leads/{self.signed[0].id}/kseb-feasibility/',
+                       {'kseb_feasibility_date': '2026-10-17'})
+        self.assertEqual(r.status_code, 400)
+
+    # ── Liasoning & Service ──
+    def test_opens_the_liasoning_queue_and_works_a_record(self):
+        r = self.get('/api/leads/liasoning/')
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(self.live.id, {row['id'] for row in r.json()})
+        self.assertEqual(self.get(f'/api/leads/{self.live.id}/liasoning-detail/').status_code, 200)
+        r = self.patch(f'/api/leads/{self.live.id}/liasoning-record/',
+                       {'annexure3_completed': True, 'annexure3_remark': 'filed at the section'})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertTrue(LiasoningService.objects.get(lead=self.live).annexure3_completed)
+
+    def test_opens_the_rest_of_liasoning_and_service(self):
+        for url in ('/api/leads/discom-followup/', '/api/leads/periodic-maintenance/',
+                    '/api/emergency-services/'):
+            self.assertEqual(self.get(url).status_code, 200, url)
+
+    def test_reopening_completed_liasoning_stays_the_super_admins(self):
+        LiasoningService.objects.create(lead=self.live, is_complete=True)
+        r = self.client.post(f'/api/leads/{self.live.id}/reopen-liasoning/',
+                             HTTP_AUTHORIZATION=token_for(self.manager))
+        self.assertEqual(r.status_code, 403)
+
+    # ── Only the manager ──
+    def test_documentation_staff_do_not_get_these_modules(self):
+        self.assertEqual(self.get('/api/leads/liasoning/', self.staff).status_code, 403)
+        self.assertEqual(self.get('/api/leads/bde-feasibility/', self.staff).json(), [])

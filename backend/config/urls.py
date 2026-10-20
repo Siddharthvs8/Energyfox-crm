@@ -77,6 +77,7 @@ urlpatterns = [
     # is the credential; see leads/tracking.py.
     path('api/track/<str:token>/', TrackingLinkView.as_view(), name='public-tracking'),
     path('api/campaigns/', include('campaigns.urls')),
+    path('api/rewards/', include('rewards.urls')),
     path('api/automations/', include('automations.urls')),
     path('api/whatsapp/', include('messaging.urls')),
     path('api/email/', include('messaging.email_urls')),
