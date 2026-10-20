@@ -7,11 +7,12 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from leads.models import BalancePayment, Lead, PaymentVerification, ReceiptVoucher
+from leads.models import ActivityLog, BalancePayment, Lead, PaymentVerification, ReceiptVoucher
 from users.models import User
 
 from . import engine
-from .models import ContestResult, RewardMonth, RewardSettings, RewardStanding, RewardTier
+from .models import (ContestResult, ExcludedPayment, RewardMonth, RewardSettings, RewardStanding,
+                     RewardTier)
 
 IST = ZoneInfo('Asia/Kolkata')
 _seq = count(1)
@@ -413,3 +414,174 @@ class RewardsApiTests(GameTestCase):
         self.assertEqual(contest['status'], 'running')
         self.assertEqual(contest['board'][0]['user'], self.bde.id)
         self.assertEqual(contest['bumpers'][0]['prize'], 'Car')
+
+
+class LedgerSafeguardTests(GameTestCase):
+    """Money lands in the month it came in, whatever accounts did afterwards."""
+    JULY = (date(2026, 7, 1), date(2026, 7, 31))
+    AUG = (date(2026, 8, 1), date(2026, 8, 31))
+    OCT = (date(2026, 10, 1), date(2026, 10, 31))
+
+    def note_verified(self, lead, on):
+        log = ActivityLog.objects.create(activity_type='note_added', lead=lead,
+                                         description=f'{engine.VERIFIED_NOTE} Anu.')
+        ActivityLog.objects.filter(pk=log.pk).update(created_at=at(on))
+
+    def verify_again(self, lead, on):
+        """Reopen and complete again: the verification takes the new day, and a
+        lead verified before receipts existed gets a first receipt dated that
+        day for everything received so far."""
+        pv = PaymentVerification.objects.get(lead=lead)
+        pv.completed_at = at(on)
+        pv.save(update_fields=['completed_at'])
+        if not ReceiptVoucher.objects.filter(lead=lead, is_initial=True).exists():
+            n = next(_seq)
+            ReceiptVoucher.objects.create(lead=lead, is_initial=True, number=f'ER/T/{n}', fy='T',
+                                          seq=n, date=on, amount=pv.amount_received)
+
+    def test_verifying_again_leaves_the_first_payment_where_it_was(self):
+        lead = self.deal('300000', bde=self.bde)
+        self.paid(lead, '100000', date(2026, 7, 10), receipt=False)
+        self.note_verified(lead, date(2026, 7, 10))
+        self.instalment(lead, '50000', date(2026, 8, 5))
+        self.verify_again(lead, date(2026, 10, 17))
+        self.assertEqual(self.points(*self.OCT), {})
+        self.assertEqual(self.points(*self.JULY), {self.bde.id: Decimal('100000')})
+        self.assertEqual(self.points(*self.AUG), {self.bde.id: Decimal('50000')})
+
+    def test_with_no_note_it_counts_no_later_than_the_balance_payment_after_it(self):
+        lead = self.deal('300000', bde=self.bde)
+        self.paid(lead, '100000', date(2026, 7, 10), receipt=False)
+        self.instalment(lead, '50000', date(2026, 8, 5))
+        self.verify_again(lead, date(2026, 10, 17))
+        self.assertEqual(self.points(*self.OCT), {})
+        # Counted once each: the receipt for 1,50,000 is not counted on top.
+        self.assertEqual(self.points(*self.AUG), {self.bde.id: Decimal('150000')})
+
+    def test_a_corrected_first_payment_counts_as_corrected(self):
+        lead = self.deal('300000', bde=self.bde)
+        pv = self.paid(lead, '500000', date(2026, 10, 3))   # typed a zero too many
+        pv.amount_received = Decimal('50000')
+        pv.save(update_fields=['amount_received'])
+        self.assertEqual(self.points(*self.OCT), {self.bde.id: Decimal('50000')})
+
+    def test_never_more_than_the_receipt(self):
+        lead = self.deal('300000', bde=self.bde)
+        pv = self.paid(lead, '50000', date(2026, 10, 3))
+        pv.amount_received = Decimal('80000')
+        pv.save(update_fields=['amount_received'])
+        self.assertEqual(self.points(*self.OCT), {self.bde.id: Decimal('50000')})
+
+    def test_the_note_read_here_is_the_one_accounts_leave(self):
+        admin = mk('rw_acc_admin', 'admin')
+        lead = self.deal('300000', bde=self.bde, pushed_to_accounts=True)
+        PaymentVerification.objects.create(lead=lead, amount_received=Decimal('100000'),
+                                           payment_mode='cash')
+        r = self.client.post(f'/api/leads/{lead.id}/complete-payment-verification/',
+                             HTTP_AUTHORIZATION=token_for(admin))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertTrue(ActivityLog.objects.filter(
+            lead=lead, description__startswith=engine.VERIFIED_NOTE).exists())
+
+
+class StatementTests(GameTestCase):
+    OCT = (date(2026, 10, 1), date(2026, 10, 31))
+
+    def lines(self, user):
+        return engine.statement(user, *self.OCT, RewardSettings.load())
+
+    def test_every_payment_behind_the_points(self):
+        shared = self.deal('200000', bde=self.bde, caller=self.caller)
+        self.paid(shared, '100000', date(2026, 10, 3))
+        self.instalment(shared, '40000', date(2026, 10, 9))
+        alone = self.deal('80000', bde=self.bde)
+        self.paid(alone, '80000', date(2026, 10, 5))
+
+        lines = self.lines(self.bde)
+        self.assertEqual([(l['kind'], l['on'], l['points'], l['share']) for l in lines], [
+            ('balance', '2026-10-09', '30000.00', '75.00'),
+            ('first', '2026-10-05', '80000.00', '100.00'),
+            ('first', '2026-10-03', '75000.00', '75.00'),
+        ])
+        self.assertEqual(lines[2]['partner'], 'Chitra Caller')
+        self.assertEqual(lines[2]['deal_value'], '200000.00')
+        self.assertTrue(lines[2]['receipt'])
+        counted = sum(Decimal(l['points']) for l in lines if l['status'] == 'counted')
+        self.assertEqual(counted, self.points(*self.OCT)[self.bde.id])
+
+    def test_a_tele_caller_sees_their_share(self):
+        lead = self.deal('100000', bde=self.bde, caller=self.caller)
+        self.paid(lead, '100000', date(2026, 10, 3))
+        [line] = self.lines(self.caller)
+        self.assertEqual((line['as'], line['share'], line['points'], line['partner']),
+                         ('tele_caller', '25.00', '25000.00', 'Arun BDE'))
+
+    def test_what_does_not_count_is_listed_with_the_reason(self):
+        lead = self.deal('100000', bde=self.bde, is_lost=True)
+        self.paid(lead, '50000', date(2026, 10, 3))
+        [line] = self.lines(self.bde)
+        self.assertEqual((line['status'], line['reason']), ('lost', 'The deal was marked lost.'))
+
+    def test_it_shows_when_the_po_was_signed(self):
+        from leads.models import SiteVisit
+        lead = self.deal('100000', bde=self.bde)
+        SiteVisit.objects.create(lead=lead, po_signed_date=date(2026, 8, 20))
+        self.paid(lead, '100000', date(2026, 10, 3))
+        self.assertEqual(self.lines(self.bde)[0]['po_signed'], '2026-08-20')
+
+
+class ExclusionTests(GameTestCase):
+    URL = '/api/rewards/exclusions/'
+
+    def setUp(self):
+        super().setUp()
+        self.admin = mk('rw_ex_admin', 'admin')
+        self.today = timezone.localdate()
+        self.lead = self.deal('300000', bde=self.bde)
+        self.paid(self.lead, '200000', self.today)
+        self.key = f'first:{self.lead.id}'
+
+    def month_points(self):
+        start, end = engine.month_bounds(self.today.replace(day=1))
+        return self.points(start, end)
+
+    def take_out(self, user=None, **body):
+        return self.client.post(self.URL, data={'key': self.key, 'reason': 'Paid in August', **body},
+                                content_type='application/json',
+                                HTTP_AUTHORIZATION=token_for(user or self.admin))
+
+    def test_an_admin_takes_a_payment_out_and_puts_it_back(self):
+        self.assertEqual(self.take_out().status_code, 201)
+        self.assertEqual(self.month_points(), {})
+        me = self.client.get('/api/rewards/', HTTP_AUTHORIZATION=token_for(self.bde)).json()['me']
+        self.assertEqual(Decimal(me['points']), 0)
+        [line] = me['statement']
+        self.assertEqual((line['status'], line['reason'], line['excluded_by']),
+                         ('excluded', 'Paid in August', engine.display_name(self.admin)))
+
+        r = self.client.delete(f'{self.URL}?key={self.key}', HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 204)
+        self.assertEqual(self.month_points(), {self.bde.id: Decimal('200000')})
+
+    def test_the_contest_stops_counting_it_too(self):
+        RewardSettings.objects.filter(pk=1).update(
+            contest_start=self.today.replace(day=1),
+            contest_end=self.today.replace(year=self.today.year + 1))
+        self.take_out()
+        rows = engine.contest_table(RewardSettings.load(), self.today)
+        self.assertEqual(next(r for r in rows if r['user'] == self.bde.id)['points'], 0)
+
+    def test_only_admins(self):
+        self.assertEqual(self.take_out(user=self.bde).status_code, 403)
+        self.assertFalse(ExcludedPayment.objects.exists())
+
+    def test_it_needs_a_reason_and_a_real_payment(self):
+        self.assertEqual(self.take_out(reason='  ').status_code, 400)
+        self.assertEqual(self.take_out(key='first:999999').status_code, 404)
+        self.assertEqual(self.take_out(key='nonsense').status_code, 404)
+
+    def test_a_balance_payment_can_be_taken_out_on_its_own(self):
+        self.instalment(self.lead, '50000', self.today)
+        bp = BalancePayment.objects.get(lead=self.lead)
+        self.assertEqual(self.take_out(key=f'balance:{bp.id}').status_code, 201)
+        self.assertEqual(self.month_points(), {self.bde.id: Decimal('200000')})

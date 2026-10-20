@@ -18,7 +18,7 @@ from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.db.models import Q, Sum
+from django.db.models import Min, Q, Sum
 from django.utils import timezone
 
 from .models import (PARTICIPANT_ROLES, ContestResult, RewardMonth, RewardSettings,
@@ -47,11 +47,32 @@ def _day(dt):
 
 
 # ─── The ledger ──────────────────────────────────────────────────────────────
+# The note LeadViewSet.complete_payment_verification leaves on a lead every time
+# accounts verify its payment. The earliest is when the payment was first
+# verified, whatever happened to the verification afterwards.
+VERIFIED_NOTE = 'Payment verification completed by'
+
+
 @dataclass(frozen=True)
 class Payment:
+    """One payment received.
+
+    `on` is the day it counts on and `booked` the day accounts verified or
+    recorded it: the same day, unless the payment was verified again later.
+    """
     lead_id: int
     on: date
     amount: Decimal
+    kind: str = 'balance'               # 'first' — taken at verification — or 'balance'
+    ref: int | None = None              # the balance payment's id
+    receipt: str = ''                   # the number on its money receipt
+    booked: date | None = None
+    receipt_amount: Decimal | None = None   # what its receipt says, when that is not what counts
+
+    @property
+    def key(self):
+        """Names the payment for an admin taking it out of the game."""
+        return f'first:{self.lead_id}' if self.kind == 'first' else f'balance:{self.ref}'
 
 
 def ledger(start=None, end=None, lead_ids=None):
@@ -64,53 +85,72 @@ def ledger(start=None, end=None, lead_ids=None):
     completed — and each balance payment after it is its own entry. A first
     payment accounts have not verified is not counted: until they do, it is a
     figure someone typed rather than money in the bank.
+
+    Two things accounts do to a verification afterwards would otherwise put
+    money in the wrong month or count it twice, so the first payment is
+    guarded against both:
+
+    * Verifying it again. Reopening a verification and completing it again
+      stamps it with that day — and on a lead verified before receipts
+      existed, issues a receipt dated that day for everything received so
+      far, balance payments included. So the first payment counts on the day
+      the lead was first verified, and never later than a balance payment
+      that came after it.
+    * Correcting it. A receipt is never reissued, so a figure corrected after
+      the receipt was printed stays wrong on the receipt. The first payment
+      counts as what the verification says now — everything received less the
+      balance payments — and never more than its receipt.
     """
-    from leads.models import BalancePayment, PaymentVerification, ReceiptVoucher
+    from leads.models import ActivityLog, BalancePayment, PaymentVerification, ReceiptVoucher
 
     def in_window(day):
         return day is not None and (start is None or day >= start) and (end is None or day <= end)
 
     out = []
-    # First payments, dated by their receipt. If a lead somehow has two, the
-    # earliest is the real one — so all of a lead's are read, not just those
-    # that fall in the window.
-    receipts = ReceiptVoucher.objects.filter(is_initial=True,
-                                             lead__payment_verification__is_complete=True)
+    verified = PaymentVerification.objects.filter(is_complete=True)
     if lead_ids is not None:
-        receipts = receipts.filter(lead_id__in=lead_ids)
-    if start is not None or end is not None:
-        dated = ReceiptVoucher.objects.filter(is_initial=True)
-        if start is not None:
-            dated = dated.filter(date__gte=start)
-        if end is not None:
-            dated = dated.filter(date__lte=end)
-        receipts = receipts.filter(lead_id__in=dated.values('lead_id'))
-    first = {}
-    for r in receipts.order_by('lead_id', 'created_at', 'id'):
-        first.setdefault(r.lead_id, r)
-    for r in first.values():
-        if r.amount > 0 and in_window(r.date):
-            out.append(Payment(r.lead_id, r.date, r.amount))
-
-    # First payments on leads verified before receipts existed: dated by the
-    # verification, worth whatever of the running total is not balance payments.
-    older = (PaymentVerification.objects.filter(is_complete=True)
-             .exclude(lead__receipt_vouchers__is_initial=True))
-    if lead_ids is not None:
-        older = older.filter(lead_id__in=lead_ids)
+        verified = verified.filter(lead_id__in=lead_ids)
     if start is not None:
-        older = older.filter(Q(completed_at__date__gte=start)
-                             | Q(completed_at__isnull=True, created_at__date__gte=start))
-    if end is not None:
-        older = older.filter(Q(completed_at__date__lte=end)
-                             | Q(completed_at__isnull=True, created_at__date__lte=end))
-    for pv in older.annotate(later=Sum('lead__balance_payments__amount')):
-        amount = (pv.amount_received or ZERO) - (pv.later or ZERO)
-        day = _day(pv.completed_at or pv.created_at)
-        if amount > 0 and in_window(day):
-            out.append(Payment(pv.lead_id, day, amount))
+        # A first payment never counts later than the day it was booked, so one
+        # booked before the window cannot fall in it.
+        initial = ReceiptVoucher.objects.filter(is_initial=True)
+        verified = verified.filter(
+            Q(lead_id__in=initial.filter(date__gte=start).values('lead_id'))
+            | (~Q(lead_id__in=initial.values('lead_id'))
+               & (Q(completed_at__date__gte=start)
+                  | Q(completed_at__isnull=True, created_at__date__gte=start))))
+    verified = list(verified.only('lead_id', 'amount_received', 'completed_at', 'created_at'))
 
-    later = BalancePayment.objects.all()
+    ids = [pv.lead_id for pv in verified]
+    receipts = {}
+    # If a lead somehow has two first receipts, the earliest is the real one.
+    for r in (ReceiptVoucher.objects.filter(is_initial=True, lead_id__in=ids)
+              .order_by('lead_id', 'created_at', 'id')):
+        receipts.setdefault(r.lead_id, r)
+    balances = {row['lead_id']: row for row in
+                BalancePayment.objects.filter(lead_id__in=ids).order_by()
+                .values('lead_id').annotate(total=Sum('amount'), first=Min('created_at'))}
+    first_verified = dict(ActivityLog.objects.filter(lead_id__in=ids, description__startswith=VERIFIED_NOTE)
+                          .order_by().values('lead_id').annotate(first=Min('created_at'))
+                          .values_list('lead_id', 'first'))
+
+    for pv in verified:
+        receipt = receipts.get(pv.lead_id)
+        balance = balances.get(pv.lead_id) or {}
+        amount = (pv.amount_received or ZERO) - (balance.get('total') or ZERO)
+        if receipt is not None:
+            booked = receipt.date
+            amount = min(amount, receipt.amount)
+        else:
+            booked = _day(pv.completed_at or pv.created_at)
+        on = min(d for d in (booked, _day(first_verified.get(pv.lead_id)), _day(balance.get('first'))) if d)
+        if amount > 0 and in_window(on):
+            out.append(Payment(
+                pv.lead_id, on, amount, kind='first', booked=booked,
+                receipt=receipt.number if receipt else '',
+                receipt_amount=receipt.amount if receipt is not None and receipt.amount != amount else None))
+
+    later = BalancePayment.objects.select_related('receipt')
     if lead_ids is not None:
         later = later.filter(lead_id__in=lead_ids)
     if start is not None:
@@ -119,7 +159,10 @@ def ledger(start=None, end=None, lead_ids=None):
         later = later.filter(created_at__date__lte=end)
     for bp in later:
         if bp.amount and bp.amount > 0:
-            out.append(Payment(bp.lead_id, _day(bp.created_at), bp.amount))
+            receipt = getattr(bp, 'receipt', None)
+            day = _day(bp.created_at)
+            out.append(Payment(bp.lead_id, day, bp.amount, ref=bp.id, booked=day,
+                               receipt=receipt.number if receipt else ''))
     return out
 
 
@@ -130,6 +173,26 @@ def counting_deals(lead_ids):
     if not ids:
         return {}
     return {lead.id: lead for lead in Lead.objects.filter(id__in=ids, is_trashed=False, is_lost=False)}
+
+
+def taken_out():
+    """The payments admins have taken out of the game: {key: ExcludedPayment}."""
+    from .models import ExcludedPayment
+    return {e.key: e for e in ExcludedPayment.objects.select_related('excluded_by')}
+
+
+def payment_lead(key):
+    """The lead a payment key belongs to, or None if it names no payment."""
+    from leads.models import BalancePayment, Lead
+    kind, _, ref = str(key or '').partition(':')
+    if not ref.isdigit():
+        return None
+    if kind == 'first':
+        return Lead.objects.filter(pk=int(ref), payment_verification__is_complete=True).first()
+    if kind == 'balance':
+        bp = BalancePayment.objects.select_related('lead').filter(pk=int(ref)).first()
+        return bp.lead if bp else None
+    return None
 
 
 def shares(lead, amount, bde_share):
@@ -154,16 +217,97 @@ def points_between(start, end, rules):
     """{user_id: {'points': Decimal, 'leads': set}} for payments in the window."""
     payments = ledger(start, end)
     deals = counting_deals(p.lead_id for p in payments)
+    out_of_game = taken_out()
     tally = defaultdict(lambda: {'points': ZERO, 'leads': set()})
     for p in payments:
         lead = deals.get(p.lead_id)
-        if lead is None:
+        if lead is None or p.key in out_of_game:
             continue
         for user_id, points in shares(lead, p.amount, rules.bde_share):
             if points > 0:
                 tally[user_id]['points'] += points
                 tally[user_id]['leads'].add(lead.id)
     return tally
+
+
+def statement(user, start, end, rules):
+    """The payments behind someone's points in a window, newest first.
+
+    What each payment was, how it was shared and whether it counts, so that
+    any figure on the board can be traced to the money behind it — and a
+    payment that should not be there can be found and taken out. Payments that
+    do not count are listed too, with the reason, so nothing is missing
+    without an explanation.
+    """
+    from leads.models import BalancePayment, Lead
+
+    def money(value):
+        return str((value or ZERO).quantize(CENT))
+
+    payments = ledger(start, end)
+    leads = {lead.id: lead for lead in
+             Lead.objects.filter(id__in={p.lead_id for p in payments})
+             .select_related('bde', 'tele_caller', 'site_visit', 'payment_verification__completed_by')}
+    recorded = {bp.id: bp for bp in BalancePayment.objects
+                .filter(id__in=[p.ref for p in payments if p.kind == 'balance'])
+                .select_related('recorded_by')}
+    out_of_game = taken_out()
+
+    lines = []
+    for p in payments:
+        lead = leads.get(p.lead_id)
+        if lead is None:
+            continue
+        points = next((share for uid, share in shares(lead, p.amount, rules.bde_share)
+                       if uid == user.id), ZERO)
+        if points <= 0:
+            continue
+        as_bde = lead.bde_id == user.id
+        shared = bool(lead.bde_id and lead.tele_caller_id and lead.bde_id != lead.tele_caller_id)
+        partner = (lead.tele_caller if as_bde else lead.bde) if shared else None
+        percent = (rules.bde_share if as_bde else rules.telecaller_share) if shared else Decimal('100')
+
+        if p.kind == 'first':
+            pv = getattr(lead, 'payment_verification', None)
+            by = pv.completed_by if pv else None
+            site_visit = getattr(lead, 'site_visit', None)
+            po_signed = site_visit.po_signed_date if site_visit else None
+        else:
+            bp = recorded.get(p.ref)
+            by, po_signed = (bp.recorded_by if bp else None), None
+
+        exclusion = None
+        if lead.is_trashed:
+            status, reason = 'deleted', 'The lead was deleted.'
+        elif lead.is_lost:
+            status, reason = 'lost', 'The deal was marked lost.'
+        elif p.key in out_of_game:
+            exclusion = out_of_game[p.key]
+            status, reason = 'excluded', exclusion.reason
+        else:
+            status, reason = 'counted', ''
+
+        lines.append({
+            'key': p.key, 'kind': p.kind, 'on': p.on.isoformat(),
+            # Only when it differs: the payment was verified again on this day.
+            'booked': p.booked.isoformat() if p.booked and p.booked != p.on else None,
+            'receipt': p.receipt,
+            'receipt_amount': money(p.receipt_amount) if p.receipt_amount is not None else None,
+            'lead': lead.id, 'customer': _customer(lead), 'deal_value': money(lead.value),
+            'amount': money(p.amount), 'share': money(percent),
+            'as': 'bde' if as_bde else 'tele_caller',
+            'partner': display_name(partner) if partner else None,
+            'points': money(points),
+            'by': display_name(by) if by else None,
+            'po_signed': po_signed.isoformat() if po_signed else None,
+            'status': status, 'reason': reason,
+            'excluded_by': (display_name(exclusion.excluded_by)
+                            if exclusion is not None and exclusion.excluded_by else None),
+            'excluded_on': (_day(exclusion.excluded_at).isoformat()
+                            if exclusion is not None else None),
+        })
+    lines.sort(key=lambda line: (line['on'], line['key']), reverse=True)
+    return lines
 
 
 # ─── Incentives ──────────────────────────────────────────────────────────────

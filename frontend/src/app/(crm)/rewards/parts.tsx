@@ -1,9 +1,10 @@
 "use client";
 /** Rewards — the pieces the player's and the admin's views are built from. */
 import React, { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import {
-  BoardRow, Climb, Contest, Dashboard, IncentiveDeal, Me, MEDALS, Medal, PodiumRow, Tier,
-  day, inr, num, pts, roleLabel, short, targetFor,
+  BoardRow, Climb, Contest, Dashboard, IncentiveDeal, Me, MEDALS, Medal, PodiumRow, StatementLine, Tier,
+  day, dayMonth, daysBetween, excludePayment, includePayment, inr, num, pts, roleLabel, short, targetFor,
 } from "./lib";
 
 // ─── Small things ────────────────────────────────────────────────────────────
@@ -355,6 +356,156 @@ export function IncentivesCard({ incentives, preview }: { incentives: { total: s
         </ul>
       )}
     </Card>
+  );
+}
+
+// ─── Where the points came from ──────────────────────────────────────────────
+const TAKE_OUT_REASONS = ["Paid before this month, verified late", "Not this person's deal", "Entered by mistake"];
+
+/** Every payment behind someone's points this month, newest first. An admin
+ *  can take one out of the game, with a reason the player sees, or count it
+ *  again. */
+export function PointsStatement({ lines, total, monthLabel, admin, onChanged, limit }: {
+  lines: StatementLine[]; total: string; monthLabel: string;
+  admin?: boolean; onChanged?: () => void; limit?: number;
+}) {
+  const [all, setAll] = useState(false);
+  const counted = lines.filter(l => l.status === "counted").length;
+  const visible = limit && !all ? lines.slice(0, limit) : lines;
+  return (
+    <Card className="p-4 sm:p-5">
+      <div className="px-1">
+        <CardHeader title="Where the points came from"
+          subtitle={`Every payment in ${monthLabel}: money received × share.`}
+          icon={<Icon.Rupee />}
+          right={
+            <div className="shrink-0 text-right">
+              <p className="text-sm font-black text-slate-900 tabular-nums">{pts(total)}</p>
+              <p className="whitespace-nowrap text-[10px] text-slate-400">from {counted} {counted === 1 ? "payment" : "payments"}</p>
+            </div>
+          } />
+      </div>
+      {lines.length === 0 ? (
+        <p className="mt-5 mb-2 px-1 text-center text-sm text-slate-400">No payments yet this month. Points arrive the day accounts verify a customer&apos;s money.</p>
+      ) : (
+        <ol className="mt-3 divide-y divide-slate-100">
+          {visible.map(l => <StatementRow key={l.key} line={l} admin={admin} onChanged={onChanged} />)}
+        </ol>
+      )}
+      {limit && lines.length > limit && (
+        <button type="button" onClick={() => setAll(v => !v)} className="mt-2 w-full rounded-xl py-2 text-xs font-semibold text-indigo-600 hover:bg-indigo-50">
+          {all ? "Show the latest only" : `Show all ${lines.length} payments`}
+        </button>
+      )}
+    </Card>
+  );
+}
+
+function StatementRow({ line: l, admin, onChanged }: { line: StatementLine; admin?: boolean; onChanged?: () => void }) {
+  const [asking, setAsking] = useState(false);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const counted = l.status === "counted";
+  // A PO signed in an earlier month than the payment counts in: often money
+  // paid back then and verified late — worth an admin's second look.
+  const lateBy = l.kind === "first" && l.po_signed && l.po_signed.slice(0, 7) < l.on.slice(0, 7)
+    ? daysBetween(l.po_signed, l.on) : 0;
+  const dealValue = num(l.deal_value);
+  const on = new Date(`${l.on}T00:00:00`);
+
+  const takeOut = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!reason.trim() || busy) return;
+    setBusy(true); setError("");
+    const r = await excludePayment(l.key, reason.trim());
+    setBusy(false);
+    if (r.ok) { setAsking(false); setReason(""); onChanged?.(); } else setError(r.error || "");
+  };
+  const putBack = async () => {
+    setBusy(true); setError("");
+    const r = await includePayment(l.key);
+    setBusy(false);
+    if (r.ok) onChanged?.(); else setError(r.error || "");
+  };
+
+  return (
+    <li className="px-1 py-3">
+      <div className="grid grid-cols-[auto_1fr_auto] items-start gap-3">
+        <span className="flex w-11 flex-col items-center rounded-xl bg-slate-50 py-1.5 ring-1 ring-slate-100" title={day(l.on)}>
+          <span className="text-sm font-black leading-none text-slate-800">{on.getDate()}</span>
+          <span className="mt-0.5 text-[10px] font-semibold uppercase text-slate-400">{on.toLocaleDateString("en-IN", { month: "short" })}</span>
+        </span>
+        <div className="min-w-0">
+          <Link href={admin ? `/accounts/${l.lead}` : `/leads/${l.lead}`}
+            className="block truncate text-sm font-semibold text-slate-900 hover:text-indigo-600">{l.customer}</Link>
+          <p className="mt-0.5 text-[11px] text-slate-600">
+            {l.kind === "first" ? "First payment" : "Balance payment"} <b className="font-semibold text-slate-800">{inr(l.amount)}</b>
+            {dealValue > 0 && <> of a {inr(dealValue)} deal</>}
+            {" · "}{Math.round(num(l.share))}%{l.partner ? `, shared with ${l.partner}` : l.as === "bde" ? ", sold alone" : ""}
+          </p>
+          <p className="mt-0.5 text-[11px] text-slate-400">
+            {[
+              l.receipt && `Receipt ${l.receipt}`,
+              l.by && `${l.kind === "first" ? "verified" : "recorded"} by ${l.by}`,
+              l.booked && `verified again ${dayMonth(l.booked)}`,
+              l.receipt_amount && `receipt printed for ${inr(l.receipt_amount)}`,
+            ].filter(Boolean).join(" · ")}
+          </p>
+          {l.kind === "first" && l.po_signed && (lateBy > 0 && admin ? (
+            <p className="mt-1 inline-flex rounded-md bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-800 ring-1 ring-amber-200">
+              PO signed {dayMonth(l.po_signed)}, verified {lateBy} days later
+            </p>
+          ) : (
+            <p className="mt-0.5 text-[11px] text-slate-400">PO signed {dayMonth(l.po_signed)}</p>
+          ))}
+          {!counted && (
+            <p className="mt-1 text-[11px] font-medium text-rose-600">
+              Not counted: {l.reason}{l.excluded_by ? ` (${l.excluded_by}${l.excluded_on ? `, ${dayMonth(l.excluded_on)}` : ""})` : ""}
+            </p>
+          )}
+        </div>
+        <div className="text-right">
+          <p className={`text-sm font-bold tabular-nums ${counted ? "text-emerald-600" : "text-slate-400 line-through"}`}>+{pts(l.points)}</p>
+          <p className="text-[10px] text-slate-400">points</p>
+          {admin && counted && !asking && (
+            <button type="button" onClick={() => setAsking(true)} className="mt-1 whitespace-nowrap text-[11px] font-semibold text-rose-600 hover:underline">Don&apos;t count</button>
+          )}
+          {admin && l.status === "excluded" && (
+            <button type="button" onClick={putBack} disabled={busy} className="mt-1 whitespace-nowrap text-[11px] font-semibold text-indigo-600 hover:underline disabled:opacity-50">
+              {busy ? "Counting…" : "Count again"}
+            </button>
+          )}
+        </div>
+      </div>
+      {asking && (
+        <form onSubmit={takeOut} className="animate-fade-in-up mt-3 rounded-2xl bg-rose-50/70 p-3 ring-1 ring-rose-100 sm:ml-14">
+          <label htmlFor={`why-${l.key}`} className="text-xs font-semibold text-slate-800">Why shouldn&apos;t this payment count?</label>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {TAKE_OUT_REASONS.map(r => (
+              <button key={r} type="button" onClick={() => setReason(r)}
+                className={`rounded-full px-2.5 py-1 text-[11px] font-medium ring-1 transition ${reason === r ? "bg-rose-600 text-white ring-rose-600" : "bg-white text-slate-600 ring-slate-200 hover:ring-rose-300"}`}>
+                {r}
+              </button>
+            ))}
+          </div>
+          <input id={`why-${l.key}`} value={reason} onChange={e => setReason(e.target.value)} maxLength={200} autoFocus
+            placeholder="Or write your own reason"
+            className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-rose-300 focus:outline-none focus:ring-2 focus:ring-rose-100" />
+          <p className="mt-1.5 text-[11px] text-slate-500">The payment stays as it is in accounts; only the game stops counting it. The player sees your reason.</p>
+          {error && <p className="mt-1 text-[11px] font-medium text-rose-600">{error}</p>}
+          <div className="mt-2 flex gap-2">
+            <button type="submit" disabled={!reason.trim() || busy}
+              className="rounded-xl bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-50">
+              {busy ? "Taking it out…" : "Take it out"}
+            </button>
+            <button type="button" onClick={() => { setAsking(false); setError(""); }}
+              className="rounded-xl px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-white">Cancel</button>
+          </div>
+        </form>
+      )}
+      {!asking && error && <p className="mt-1 text-right text-[11px] font-medium text-rose-600">{error}</p>}
+    </li>
   );
 }
 

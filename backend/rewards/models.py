@@ -159,6 +159,31 @@ class RewardStanding(models.Model):
         return f'{self.reward_month} #{self.rank} {self.name}'
 
 
+class ExcludedPayment(models.Model):
+    """A payment an admin has taken out of the game, and why.
+
+    For money that is right in accounts but should not score: paid long before
+    and only verified now, or on a deal that was not this person's. Accounts
+    keep the payment as it is; only the game stops counting it. A month that
+    has already closed keeps what was announced; what is still live — this
+    month, the contest — no longer counts it.
+    """
+    # Names the payment as the statement lists it: 'first:<lead id>' for the
+    # one taken at verification, 'balance:<balance payment id>' for the rest.
+    key = models.CharField(max_length=40, unique=True)
+    lead = models.ForeignKey('leads.Lead', on_delete=models.CASCADE, related_name='+')
+    reason = models.CharField(max_length=200)
+    excluded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+                                    null=True, blank=True, related_name='+')
+    excluded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-excluded_at']
+
+    def __str__(self):
+        return f'{self.key}: {self.reason}'
+
+
 class ContestResult(models.Model):
     """A finished contest: who won the bumper prizes and the coin champion's."""
     name = models.CharField(max_length=120, blank=True, default='')

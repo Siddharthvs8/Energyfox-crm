@@ -14,7 +14,7 @@ import Link from "next/link";
 import { Dashboard, inr, loadDashboard, pts } from "./lib";
 import {
   Cabinet, Card, CardHeader, Coin, ContestCard, HallOfFame, Hero, Icon, IncentivesCard,
-  Leaderboard, Moments, Podium, RewardsSkeleton, TierLadder,
+  Leaderboard, Moments, PointsStatement, Podium, RewardsSkeleton, TierLadder,
 } from "./parts";
 import RewardSettingsForm from "./settings";
 
@@ -69,7 +69,7 @@ export default function RewardsPage() {
       {tab === "overview"
         ? <AdminOverview data={data} onOpen={setOpen} onConfigure={() => setTab("settings")} />
         : <RewardSettingsForm onSaved={load} />}
-      {open !== null && <PlayerModal user={open} onClose={() => setOpen(null)} />}
+      {open !== null && <PlayerModal user={open} onClose={() => setOpen(null)} onChanged={load} />}
     </div>
   );
 }
@@ -87,6 +87,7 @@ function PlayerView({ data }: { data: Dashboard }) {
         <div className="lg:col-span-2 space-y-6">
           <Leaderboard rows={data.board} title={`${data.month.label} leaderboard`}
             subtitle="Live — points from money received this month." limit={10} />
+          <PointsStatement lines={me.statement} total={me.points} monthLabel={data.month.label} limit={6} />
           {data.contest && <ContestCard contest={data.contest} />}
         </div>
         <div className="space-y-6">
@@ -112,6 +113,7 @@ function HowItWorks({ rules }: { rules: Dashboard["rules"] }) {
         <li className="flex gap-2"><span>🪜</span><span>Reach a tier to unlock its reward. Every tier opens again on the 1st.</span></li>
         <li className="flex gap-2"><span>🏆</span><span>The month's top three win prizes and <span className="inline-flex items-center gap-0.5 font-semibold text-amber-700"><Coin size={11} />{coins}</span> coins.</span></li>
         <li className="flex gap-2"><span>🎯</span><span>Incentives are paid per project when your customer finishes paying.</span></li>
+        <li className="flex gap-2"><span>🧾</span><span>Every payment behind your points is listed under <b className="text-slate-800">Where the points came from</b>.</span></li>
       </ul>
     </Card>
   );
@@ -146,7 +148,7 @@ function AdminOverview({ data, onOpen, onConfigure }: { data: Dashboard; onOpen:
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
           <Leaderboard rows={data.board} title={`${data.month.label} — live table`}
-            subtitle={`${data.month.days_left} ${data.month.days_left === 1 ? "day" : "days"} left · click anyone to open their card`}
+            subtitle={`${data.month.days_left} ${data.month.days_left === 1 ? "day" : "days"} left · click anyone to see every payment behind their points`}
             onOpen={onOpen} showMoney />
         </div>
         <div className="space-y-6">
@@ -169,13 +171,22 @@ function Kpi({ label, value, hint, accent }: { label: string; value: string; hin
   );
 }
 
-function PlayerModal({ user, onClose }: { user: number; onClose: () => void }) {
+function PlayerModal({ user, onClose, onChanged }: { user: number; onClose: () => void; onChanged: () => void }) {
   const [data, setData] = useState<Dashboard | null>(null);
   const [error, setError] = useState("");
+  const [version, setVersion] = useState(0);
   useEffect(() => {
-    loadDashboard(user).then(r => (r.data ? setData(r.data) : setError(r.error || "Could not open that card.")))
-      .catch(() => setError("Network error."));
-  }, [user]);
+    let live = true;   // a slower, older answer must not overwrite a newer one
+    loadDashboard(user)
+      .then(r => {
+        if (!live) return;
+        if (r.data) { setData(r.data); setError(""); } else setError(r.error || "Could not open that card.");
+      })
+      .catch(() => { if (live) setError("Network error."); });
+    return () => { live = false; };
+  }, [user, version]);
+  // A payment taken out or put back changes this card and the table behind it.
+  const changed = () => { setVersion(v => v + 1); onChanged(); };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
@@ -196,6 +207,8 @@ function PlayerModal({ user, onClose }: { user: number; onClose: () => void }) {
           <>
             <Hero me={me} month={data.month} preview />
             <TierLadder tiers={data.tiers} climb={me.tier} role={me.role} points={me.points} />
+            <PointsStatement lines={me.statement} total={me.points} monthLabel={data.month.label}
+              admin onChanged={changed} />
             <div className="grid gap-4 lg:grid-cols-2">
               <IncentivesCard incentives={me.incentives} preview />
               <Cabinet me={me} />

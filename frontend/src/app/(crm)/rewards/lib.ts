@@ -39,6 +39,18 @@ export type HistoryRow = {
   prize: string; coins: number; rewards: string[]; tier: string;
 };
 
+/** One payment behind someone's points. `on` is the day it counts on; `booked`
+ * is set only when accounts verified it again on a later day. */
+export type StatementLine = {
+  key: string; kind: "first" | "balance"; on: string; booked: string | null;
+  receipt: string; receipt_amount: string | null;
+  lead: number; customer: string; deal_value: string;
+  amount: string; share: string; as: "bde" | "tele_caller"; partner: string | null;
+  points: string; by: string | null; po_signed: string | null;
+  status: "counted" | "excluded" | "lost" | "deleted"; reason: string;
+  excluded_by: string | null; excluded_on: string | null;
+};
+
 export type Me = {
   user: number; name: string; role: string; rank: number; of: number;
   points: string; deals: number; tier: Climb;
@@ -46,6 +58,7 @@ export type Me = {
   coins: number; rewards_total: number;
   history: HistoryRow[];
   contest_wins: { contest: string; rank: number | null; prize: string; coin_champion?: boolean }[];
+  statement: StatementLine[];
 };
 
 export type ContestRow = {
@@ -109,6 +122,12 @@ export const short = (v: string | number | null | undefined) =>
 export const roleLabel = (r: string) => (r === "bde" ? "BDE" : r === "tele_caller" ? "Tele caller" : r);
 export const day = (iso: string) =>
   new Date(`${iso}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+/** 20 Aug — for dates inside the month on screen. */
+export const dayMonth = (iso: string) =>
+  new Date(`${iso}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+/** Whole days from one ISO date to another. */
+export const daysBetween = (from: string, to: string) =>
+  Math.round((new Date(`${to}T00:00:00`).getTime() - new Date(`${from}T00:00:00`).getTime()) / 86_400_000);
 
 /** A tier's target for someone in `role` — tele callers may climb a lower ladder. */
 export const targetFor = (t: Tier, role: string) =>
@@ -120,7 +139,7 @@ export const MEDALS: Record<Medal, { emoji: string; label: string; ring: string;
   bronze: { emoji: "🥉", label: "Bronze", ring: "from-orange-300 to-orange-600", soft: "bg-orange-50", text: "text-orange-700" },
 };
 
-// ── The two calls ──
+// ── The calls ──
 async function call(path: string, init?: RequestInit) {
   const token = localStorage.getItem(`${APP_SLUG}_access`);
   return fetch(`${getApiBase(APP_SLUG)}/api/rewards/${path}`, {
@@ -145,6 +164,22 @@ export async function saveSettings(body: Partial<Settings>): Promise<{ ok: boole
   const data = await r.json().catch(() => ({}));
   if (r.ok) return { ok: true, data };
   return { ok: false, errors: flattenErrors(data) };
+}
+
+/** Admins: take a payment out of the game. The player sees the reason. */
+export async function excludePayment(key: string, reason: string): Promise<{ ok: boolean; error?: string }> {
+  const r = await call("exclusions/", { method: "POST", body: JSON.stringify({ key, reason }) });
+  if (r.ok) return { ok: true };
+  const body = await r.json().catch(() => ({}));
+  return { ok: false, error: body.error || "Could not take that payment out." };
+}
+
+/** Admins: count a payment that was taken out again. */
+export async function includePayment(key: string): Promise<{ ok: boolean; error?: string }> {
+  const r = await call(`exclusions/?key=${encodeURIComponent(key)}`, { method: "DELETE" });
+  if (r.ok) return { ok: true };
+  const body = await r.json().catch(() => ({}));
+  return { ok: false, error: body.error || "Could not put that payment back." };
 }
 
 /** DRF errors, nested or not, as plain sentences. */

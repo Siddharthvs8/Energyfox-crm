@@ -69,8 +69,9 @@ AUDITED = {
     'inventory.Vendor', 'inventory.StockItem',
     # ── Company settings ──
     'organization.OrgSettings',
-    # ── The rewards game's rules (targets, prizes, the points split) ──
-    'rewards.RewardSettings', 'rewards.RewardTier',
+    # ── The rewards game's rules (targets, prizes, the points split), and the
+    #    payments admins take out of it ──
+    'rewards.RewardSettings', 'rewards.RewardTier', 'rewards.ExcludedPayment',
 }
 
 # Never recorded, whatever else says. Passwords and tokens must not reach a log

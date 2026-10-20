@@ -4,6 +4,8 @@
                                  ?user=<id> to open one player's card.
     GET /api/rewards/settings/   the rules — admins.
     PUT /api/rewards/settings/   change them — admins.
+    POST   /api/rewards/exclusions/            take a payment out of the game — admins.
+    DELETE /api/rewards/exclusions/?key=<key>  put it back — admins.
 
 The sales team (BDEs and tele callers) play; admins and super admins run it.
 Everyone sees the table's points and ranks — that is the game — but a person's
@@ -19,7 +21,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import engine
-from .models import PARTICIPANT_ROLES, ContestResult, RewardMonth, RewardSettings, RewardStanding
+from .models import (PARTICIPANT_ROLES, ContestResult, ExcludedPayment, RewardMonth, RewardSettings,
+                     RewardStanding)
 from .serializers import RewardSettingsSerializer
 
 HALL_OF_FAME_MONTHS = 6
@@ -92,7 +95,7 @@ class RewardsView(APIView):
                        if t.target_telecaller is not None else None} for t in rungs],
             'board': [self._board_row(r, admin or r['user'] == viewer.id, viewer, subject)
                       for r in rows],
-            'me': self._me(subject, mine, rows, rules, today) if mine else None,
+            'me': self._me(subject, mine, rows, rules, start, end) if mine else None,
             'last_month': self._last_month(first),
             'hall_of_fame': self._hall_of_fame(),
             'contest': self._contest(rules, today, subject),
@@ -123,7 +126,7 @@ class RewardsView(APIView):
             out['incentives'] = money(row['incentives'])
         return out
 
-    def _me(self, subject, mine, rows, rules, today):
+    def _me(self, subject, mine, rows, rules, start, end):
         past = list(RewardStanding.objects.filter(user=subject)
                     .select_related('reward_month')
                     .order_by('-reward_month__year', '-reward_month__month'))
@@ -160,6 +163,9 @@ class RewardsView(APIView):
             'rewards_total': won_before + len(mine['tier']['rewards']),
             'history': history,
             'contest_wins': contest_wins,
+            # Every payment behind this month's points, so the figure above it
+            # can be checked against the money.
+            'statement': engine.statement(subject, start, end, rules),
         }
 
     @staticmethod
@@ -238,6 +244,47 @@ class RewardsView(APIView):
             'tiers_unlocked': sum(r['tier']['reached'] for r in rows),
             'incentives': money(sum((r['incentives'] for r in rows), Decimal('0'))),
         }
+
+
+class ExclusionsView(APIView):
+    """Take a payment out of the game, or put it back. Admins and super admins.
+
+    A payment is named as the statement lists it: `first:<lead id>` for the
+    one taken at verification, `balance:<id>` for a balance payment. The
+    reason is required — the player sees it on their statement.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        if not is_admin(request.user):
+            return Response({'error': 'Only admins can change what counts.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        key = str(request.data.get('key') or '').strip()
+        reason = ' '.join(str(request.data.get('reason') or '').split())
+        lead = engine.payment_lead(key)
+        if lead is None:
+            return Response({'error': 'That payment was not found.'}, status=status.HTTP_404_NOT_FOUND)
+        if not reason:
+            return Response({'error': 'Say why it should not count — the player sees the reason.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if len(reason) > 200:
+            return Response({'error': 'Keep the reason under 200 characters.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        exclusion, _ = ExcludedPayment.objects.update_or_create(
+            key=key, defaults={'lead': lead, 'reason': reason, 'excluded_by': request.user})
+        return Response({'key': exclusion.key, 'reason': exclusion.reason,
+                         'excluded_by': engine.display_name(request.user)},
+                        status=status.HTTP_201_CREATED)
+
+    def delete(self, request):
+        if not is_admin(request.user):
+            return Response({'error': 'Only admins can change what counts.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        exclusion = ExcludedPayment.objects.filter(key=request.query_params.get('key', '')).first()
+        if exclusion is None:
+            return Response({'error': 'That payment already counts.'}, status=status.HTTP_404_NOT_FOUND)
+        exclusion.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class RewardSettingsView(APIView):
