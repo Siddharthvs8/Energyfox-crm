@@ -6,23 +6,30 @@
     PUT /api/rewards/settings/   change them — admins.
     POST   /api/rewards/exclusions/            take a payment out of the game — admins.
     DELETE /api/rewards/exclusions/?key=<key>  put it back — admins.
+    POST   /api/rewards/gift-images/           upload a gift's picture — admins.
 
 The sales team (BDEs and tele callers) play; admins and super admins run it.
 Everyone sees the table's points and ranks — that is the game — but a person's
 incentives are money, and only they and the admins see theirs.
 """
+import os
+import uuid
 from datetime import date
 from decimal import Decimal
+from io import BytesIO
 
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
 from django.utils import timezone
-from rest_framework import permissions, status
+from rest_framework import parsers, permissions, serializers, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import engine
-from .models import (PARTICIPANT_ROLES, ContestResult, ExcludedPayment, RewardMonth, RewardSettings,
-                     RewardStanding)
+from .models import (GIFT_DIR, PARTICIPANT_ROLES, ContestResult, ExcludedPayment, RewardMonth,
+                     RewardSettings, RewardStanding, RewardTier)
 from .serializers import RewardSettingsSerializer
 
 HALL_OF_FAME_MONTHS = 6
@@ -90,9 +97,7 @@ class RewardsView(APIView):
                 'days_left': (end - today).days + 1,
             },
             'rules': self._rules(rules),
-            'tiers': [{'id': t.id, 'name': t.name, 'reward': t.reward, 'target': money(t.target),
-                       'target_telecaller': money(t.target_telecaller)
-                       if t.target_telecaller is not None else None} for t in rungs],
+            'tiers': [self._tier(t) for t in rungs],
             'board': [self._board_row(r, admin or r['user'] == viewer.id, viewer, subject)
                       for r in rows],
             'me': self._me(subject, mine, rows, rules, start, end) if mine else None,
@@ -103,6 +108,20 @@ class RewardsView(APIView):
         })
 
     # ── Pieces ──
+    @staticmethod
+    def _tier(tier):
+        gift = tier.reward_type == RewardTier.GIFT
+        return {
+            'id': tier.id, 'name': tier.name,
+            'reward': tier.reward_label,          # in words, wherever text goes
+            'reward_type': tier.reward_type,
+            'reward_amount': money(tier.reward_amount) if tier.reward_amount is not None else None,
+            # A path under /media, or a full address when media is on S3.
+            'image': tier.reward_image.url if gift and tier.reward_image else None,
+            'target': money(tier.target),
+            'target_telecaller': money(tier.target_telecaller) if tier.target_telecaller is not None else None,
+        }
+
     @staticmethod
     def _rules(rules):
         return {
@@ -295,13 +314,69 @@ class RewardSettingsView(APIView):
         if not is_admin(request.user):
             return Response({'error': 'Only admins can see the reward settings.'},
                             status=status.HTTP_403_FORBIDDEN)
-        return Response(RewardSettingsSerializer(RewardSettings.load()).data)
+        return Response(RewardSettingsSerializer(RewardSettings.load(), context={'request': request}).data)
 
     def put(self, request):
         if not is_admin(request.user):
             return Response({'error': 'Only admins can change the reward settings.'},
                             status=status.HTTP_403_FORBIDDEN)
-        serializer = RewardSettingsSerializer(RewardSettings.load(), data=request.data, partial=True)
+        serializer = RewardSettingsSerializer(RewardSettings.load(), data=request.data, partial=True,
+                                              context={'request': request})
         serializer.is_valid(raise_exception=True)
         serializer.save(updated_by=request.user)
         return Response(serializer.data)
+
+
+class GiftImageView(APIView):
+    """Upload a gift's picture. Admins and super admins.
+
+    The ladder is saved whole, so the picture goes up first: this returns the
+    stored name to send as the tier's `reward_image`, and a URL to preview it.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [parsers.MultiPartParser, parsers.FormParser]
+    MAX_BYTES = 5 * 1024 * 1024
+    FORMATS = {'.jpg': 'JPEG', '.jpeg': 'JPEG', '.png': 'PNG', '.webp': 'WEBP'}
+    # A reward card shows the picture a few hundred pixels across.
+    LONG_SIDE = 1200
+    # A small file can still unpack into an enormous picture.
+    MAX_PIXELS = 40_000_000
+
+    def post(self, request):
+        if not is_admin(request.user):
+            return Response({'error': 'Only admins can add reward pictures.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        upload = request.FILES.get('image')
+        if upload is None:
+            return Response({'error': 'Choose a picture to upload.'}, status=status.HTTP_400_BAD_REQUEST)
+        ext = os.path.splitext(upload.name or '')[1].lower()
+        if ext not in self.FORMATS:
+            return Response({'error': 'Use a JPG, PNG or WebP picture.'}, status=status.HTTP_400_BAD_REQUEST)
+        if upload.size > self.MAX_BYTES:
+            return Response({'error': 'Keep the picture under 5 MB.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            serializers.ImageField().run_validation(upload)
+            picture = self._fit(upload, ext)
+        except (serializers.ValidationError, DjangoValidationError, ValueError, OSError):
+            return Response({'error': 'That file is not a picture we can show.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        name = default_storage.save(f'{GIFT_DIR}{uuid.uuid4().hex}{ext}', picture)
+        return Response({'path': name, 'url': default_storage.url(name)}, status=status.HTTP_201_CREATED)
+
+    def _fit(self, upload, ext):
+        """The picture, upright and no larger than a card needs — phone photos
+        run to megabytes, and every player downloads it. Saving it afresh also
+        drops what the camera wrote into it, such as where it was taken."""
+        from PIL import Image, ImageOps
+        upload.seek(0)
+        image = Image.open(upload)
+        if image.width * image.height > self.MAX_PIXELS:
+            raise ValueError('picture too large')
+        image = ImageOps.exif_transpose(image)
+        image.thumbnail((self.LONG_SIDE, self.LONG_SIDE))
+        fmt = self.FORMATS[ext]
+        if fmt == 'JPEG' and image.mode not in ('RGB', 'L'):
+            image = image.convert('RGB')
+        out = BytesIO()
+        image.save(out, fmt, **({'quality': 85} if fmt in ('JPEG', 'WEBP') else {'optimize': True}))
+        return ContentFile(out.getvalue())

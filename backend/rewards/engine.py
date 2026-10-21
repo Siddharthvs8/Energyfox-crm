@@ -386,8 +386,8 @@ def ladder():
 def tier_dict(tier, role):
     if tier is None:
         return None
-    return {'id': tier.id, 'name': tier.name, 'reward': tier.reward,
-            'target': str(tier.target_for(role))}
+    return {'id': tier.id, 'name': tier.name, 'reward': tier.reward_label,
+            'reward_type': tier.reward_type, 'target': str(tier.target_for(role))}
 
 
 def climb(points, role, rungs):
@@ -400,7 +400,7 @@ def climb(points, role, rungs):
         'of': len(rungs),
         'current': tier_dict(current, role),
         'next': tier_dict(upcoming, role),
-        'rewards': [t.reward for t in reached if t.reward],
+        'rewards': [t.reward_label for t in reached if t.reward_label],
         'needed': None,
         'progress': 1.0 if rungs and upcoming is None else 0.0,
     }

@@ -20,9 +20,28 @@ from django.utils import timezone
 
 PARTICIPANT_ROLES = ('bde', 'tele_caller')
 
+# Where gift pictures are stored. They are uploaded before the tier that shows
+# them is saved (the ladder is saved whole, so a tier is not there to upload to).
+GIFT_DIR = 'rewards/gifts/'
+
 
 def first_of_this_month():
     return timezone.localdate().replace(day=1)
+
+
+def rupees(amount):
+    """1500000 → '15,00,000' — grouped the way rupees are written here."""
+    amount = Decimal(amount)
+    whole = int(abs(amount))
+    paise = int((abs(amount) - whole) * 100)
+    digits = str(whole)
+    if len(digits) > 3:
+        head, groups = digits[:-3], [digits[-3:]]
+        while len(head) > 2:
+            groups.insert(0, head[-2:])
+            head = head[:-2]
+        digits = ','.join([head] + groups) if head else ','.join(groups)
+    return ('-' if amount < 0 else '') + digits + (f'.{paise:02d}' if paise else '')
 
 
 class RewardSettings(models.Model):
@@ -90,14 +109,25 @@ class RewardSettings(models.Model):
 class RewardTier(models.Model):
     """One rung of the monthly ladder: reach the target, unlock the reward.
 
+    The reward is cash — an amount — or a gift: what it is, and a picture of
+    it if the admins have one.
+
     The tele caller target is optional. A tele caller earns only their share of
     each deal, so a ladder sized for BDEs would sit out of their reach; setting
     a lower target for them keeps the same rewards within it. Left blank, it is
     the same target for everyone.
     """
+    CASH, GIFT = 'cash', 'gift'
+    REWARD_TYPES = [(CASH, 'Cash'), (GIFT, 'Gift')]
+
     position = models.PositiveIntegerField(default=0)
     name = models.CharField(max_length=60)
-    reward = models.CharField(max_length=200, blank=True, default='')
+    reward_type = models.CharField(max_length=10, choices=REWARD_TYPES, default=GIFT)
+    reward = models.CharField(max_length=200, blank=True, default='')        # the gift
+    reward_amount = models.DecimalField(max_digits=12, decimal_places=2,     # the cash
+                                        null=True, blank=True)
+    reward_image = models.ImageField(upload_to=GIFT_DIR, max_length=255,    # the gift's picture
+                                     null=True, blank=True)
     target = models.DecimalField(max_digits=14, decimal_places=2)
     target_telecaller = models.DecimalField(max_digits=14, decimal_places=2,
                                             null=True, blank=True)
@@ -107,6 +137,14 @@ class RewardTier(models.Model):
 
     def __str__(self):
         return f'{self.name} ({self.target})'
+
+    @property
+    def reward_label(self):
+        """The reward in words — '₹5,000 cash' or the gift — for banners,
+        notifications and the record of a closed month."""
+        if self.reward_type == self.CASH:
+            return f'₹{rupees(self.reward_amount)} cash' if self.reward_amount else ''
+        return self.reward
 
     def target_for(self, role):
         if role == 'tele_caller' and self.target_telecaller is not None:

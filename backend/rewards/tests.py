@@ -585,3 +585,115 @@ class ExclusionTests(GameTestCase):
         bp = BalancePayment.objects.get(lead=self.lead)
         self.assertEqual(self.take_out(key=f'balance:{bp.id}').status_code, 201)
         self.assertEqual(self.month_points(), {self.bde.id: Decimal('200000')})
+
+
+class CashOrGiftTests(GameTestCase):
+    """A tier's reward is cash — an amount — or a gift, with a picture if wanted."""
+    URL = '/api/rewards/'
+
+    def setUp(self):
+        import shutil
+        import tempfile
+        from django.test import override_settings
+        super().setUp()
+        self.admin = mk('rw_gift_admin', 'admin')
+        media = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, media, ignore_errors=True)
+        overridden = override_settings(MEDIA_ROOT=media)
+        overridden.enable()
+        self.addCleanup(overridden.disable)
+
+    def put(self, tiers, user=None):
+        return self.client.put(self.URL + 'settings/', data={'tiers': tiers}, content_type='application/json',
+                               HTTP_AUTHORIZATION=token_for(user or self.admin))
+
+    def picture(self, name='watch.png', size=(1600, 900)):
+        from io import BytesIO
+        from PIL import Image
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        out = BytesIO()
+        Image.new('RGB', size, (200, 30, 60)).save(out, 'PNG')
+        return SimpleUploadedFile(name, out.getvalue(), content_type='image/png')
+
+    def upload(self, file, user=None):
+        return self.client.post(self.URL + 'gift-images/', data={'image': file},
+                                HTTP_AUTHORIZATION=token_for(user or self.admin))
+
+    def test_cash_is_an_amount(self):
+        r = self.put([{'name': 'Starter', 'reward_type': 'cash', 'reward_amount': '5000', 'target': '100000'}])
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        tier = RewardTier.objects.get()
+        self.assertEqual((tier.reward_type, tier.reward_amount, tier.reward_label),
+                         ('cash', Decimal('5000'), '₹5,000 cash'))
+        climb = engine.climb(Decimal('150000'), 'bde', engine.ladder())
+        self.assertEqual(climb['rewards'], ['₹5,000 cash'])
+
+    def test_cash_needs_an_amount(self):
+        r = self.put([{'name': 'Starter', 'reward_type': 'cash', 'target': '100000'}])
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('cash amount', str(r.json()))
+
+    def test_a_gift_with_its_picture(self):
+        up = self.upload(self.picture())
+        self.assertEqual(up.status_code, 201, up.content[:300])
+        path = up.json()['path']
+        self.assertTrue(path.startswith('rewards/gifts/') and path.endswith('.png'))
+        r = self.put([{'name': 'Pro', 'reward_type': 'gift', 'reward': 'Smartwatch',
+                       'reward_image': path, 'target': '200000'}])
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        saved = r.json()['tiers'][0]
+        self.assertEqual((saved['reward'], saved['reward_image']), ('Smartwatch', path))
+        self.assertTrue(saved['reward_image_url'].endswith(path))
+        # The team sees the picture on the ladder.
+        tier = self.client.get(self.URL, HTTP_AUTHORIZATION=token_for(self.bde)).json()['tiers'][0]
+        self.assertEqual((tier['reward'], tier['reward_type']), ('Smartwatch', 'gift'))
+        self.assertTrue(tier['image'].endswith(path))
+
+    def test_the_picture_is_shrunk_to_what_a_card_needs(self):
+        from PIL import Image
+        from django.core.files.storage import default_storage
+        path = self.upload(self.picture(size=(4000, 3000))).json()['path']
+        with default_storage.open(path) as f:
+            self.assertEqual(max(Image.open(f).size), 1200)
+
+    def test_switching_to_cash_drops_the_gift(self):
+        path = self.upload(self.picture()).json()['path']
+        r = self.put([{'name': 'Pro', 'reward_type': 'cash', 'reward_amount': '10000',
+                       'reward': 'Smartwatch', 'reward_image': path, 'target': '200000'}])
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        tier = RewardTier.objects.get()
+        self.assertEqual((tier.reward, bool(tier.reward_image)), ('', False))
+
+    def test_a_pictured_gift_needs_a_name(self):
+        path = self.upload(self.picture()).json()['path']
+        r = self.put([{'name': 'Pro', 'reward_type': 'gift', 'reward_image': path, 'target': '200000'}])
+        self.assertEqual(r.status_code, 400)
+
+    def test_only_pictures_that_were_uploaded(self):
+        r = self.put([{'name': 'Pro', 'reward_type': 'gift', 'reward': 'Watch',
+                       'reward_image': '../settings.py', 'target': '200000'}])
+        self.assertEqual(r.status_code, 400)
+        r = self.put([{'name': 'Pro', 'reward_type': 'gift', 'reward': 'Watch',
+                       'reward_image': 'rewards/gifts/never-uploaded.png', 'target': '200000'}])
+        self.assertEqual(r.status_code, 400)
+
+    def test_uploads_are_pictures_from_admins(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        self.assertEqual(self.upload(self.picture(), user=self.bde).status_code, 403)
+        fake = SimpleUploadedFile('watch.png', b'not a picture', content_type='image/png')
+        self.assertEqual(self.upload(fake).status_code, 400)
+        svg = SimpleUploadedFile('watch.svg', b'<svg/>', content_type='image/svg+xml')
+        self.assertEqual(self.upload(svg).status_code, 400)
+
+    def test_a_reward_written_as_a_number_becomes_cash(self):
+        import importlib
+        migration = importlib.import_module('rewards.migrations.0003_reward_cash_or_gift')
+        for text, amount in (('5000', Decimal('5000')), ('₹5,000', Decimal('5000')),
+                             ('Rs. 5000/-', Decimal('5000')), ('5000 cash', Decimal('5000')),
+                             ('Smartwatch', None), ('', None), ('nan', None), ('Vouchers', None)):
+            self.assertEqual(migration.cash_amount(text), amount, text)
+
+    def test_rupees_are_grouped_the_indian_way(self):
+        from .models import rupees
+        self.assertEqual([rupees(v) for v in ('999', '5000', '100000', '1500000', '5000.5')],
+                         ['999', '5,000', '1,00,000', '15,00,000', '5,000.50'])

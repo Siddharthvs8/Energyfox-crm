@@ -1,17 +1,43 @@
 from decimal import Decimal
 
+from django.core.files.storage import default_storage
 from rest_framework import serializers
 
-from .models import RewardSettings, RewardTier
+from .models import GIFT_DIR, RewardSettings, RewardTier
 
 MAX_TIERS = 10
 
 
+class GiftImageField(serializers.Field):
+    """A gift's picture, uploaded beforehand (POST /api/rewards/gift-images/):
+    sent as the stored name that upload returned, and read back the same way."""
+
+    def to_internal_value(self, data):
+        name = str(data or '').strip()
+        if not name:
+            return ''
+        if not name.startswith(GIFT_DIR) or '..' in name or '\\' in name:
+            raise serializers.ValidationError('Upload the picture again.')
+        if not default_storage.exists(name):
+            raise serializers.ValidationError('That picture is no longer there — upload it again.')
+        return name
+
+    def to_representation(self, value):
+        return value.name if value else None
+
+
 class TierSerializer(serializers.ModelSerializer):
+    reward_image = GiftImageField(required=False, allow_null=True)
+    reward_image_url = serializers.SerializerMethodField()
+
     class Meta:
         model = RewardTier
-        fields = ['id', 'position', 'name', 'reward', 'target', 'target_telecaller']
+        fields = ['id', 'position', 'name', 'reward_type', 'reward', 'reward_amount',
+                  'reward_image', 'reward_image_url', 'target', 'target_telecaller']
         read_only_fields = ['id', 'position']
+
+    def get_reward_image_url(self, tier):
+        return tier.reward_image.url if tier.reward_image else None
 
     def validate_name(self, value):
         value = (value or '').strip()
@@ -28,6 +54,21 @@ class TierSerializer(serializers.ModelSerializer):
         if value is not None and value <= 0:
             raise serializers.ValidationError('Leave it blank, or make it more than zero.')
         return value
+
+    def validate(self, attrs):
+        """Cash is an amount; a gift is a name, with a picture if there is one.
+        Whatever belongs to the other kind is dropped, so a tier switched from
+        a gift to cash does not keep the gift's picture."""
+        if attrs.get('reward_type', RewardTier.GIFT) == RewardTier.CASH:
+            amount = attrs.get('reward_amount')
+            if amount is None or amount <= 0:
+                raise serializers.ValidationError({'reward_amount': 'Enter the cash amount.'})
+            attrs.update(reward='', reward_image='')
+        else:
+            attrs.update(reward=(attrs.get('reward') or '').strip(), reward_amount=None)
+            if attrs.get('reward_image') and not attrs['reward']:
+                raise serializers.ValidationError({'reward': 'Name the gift in the picture.'})
+        return attrs
 
 
 class RewardSettingsSerializer(serializers.ModelSerializer):
@@ -47,7 +88,7 @@ class RewardSettingsSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
-        data['tiers'] = TierSerializer(RewardTier.objects.all(), many=True).data
+        data['tiers'] = TierSerializer(RewardTier.objects.all(), many=True, context=self.context).data
         return data
 
     def validate_bde_share(self, value):
@@ -93,7 +134,10 @@ class RewardSettingsSerializer(serializers.ModelSerializer):
             # The ladder is saved whole, in the order it was sent.
             RewardTier.objects.all().delete()
             RewardTier.objects.bulk_create([
-                RewardTier(position=n, name=t['name'], reward=t.get('reward', '') or '',
+                RewardTier(position=n, name=t['name'],
+                           reward_type=t.get('reward_type', RewardTier.GIFT),
+                           reward=t.get('reward', '') or '', reward_amount=t.get('reward_amount'),
+                           reward_image=t.get('reward_image') or None,
                            target=t['target'], target_telecaller=t.get('target_telecaller'))
                 for n, t in enumerate(tiers)])
         return instance
