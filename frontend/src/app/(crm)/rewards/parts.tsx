@@ -4,7 +4,7 @@ import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   BoardRow, Climb, Contest, Dashboard, IncentiveDeal, Me, MEDALS, Medal, PodiumRow, StatementLine, Tier,
-  day, dayMonth, daysBetween, excludePayment, includePayment, inr, num, pts, roleLabel, short, targetFor,
+  day, dayMonth, daysBetween, excludePayment, includePayment, inr, mediaSrc, num, pts, roleLabel, short, targetFor,
 } from "./lib";
 
 // ─── Small things ────────────────────────────────────────────────────────────
@@ -149,7 +149,9 @@ export function Hero({ me, month, preview }: { me: Me; month: Dashboard["month"]
                 </div>
                 <div className="mt-2"><Bar value={climb.progress} className="bg-white" track="bg-white/20" label={`Progress to ${climb.next?.name}`} /></div>
                 {climb.next?.reward && (
-                  <p className="mt-2 text-xs text-white/85 inline-flex items-center gap-1.5"><Icon.Gift size={13} /> Unlocks {climb.next.reward}</p>
+                  <p className="mt-2 text-xs text-white/85 inline-flex items-center gap-1.5">
+                    {climb.next.reward_type === "cash" ? <Icon.Rupee size={13} /> : <Icon.Gift size={13} />} Unlocks {climb.next.reward}
+                  </p>
                 )}
               </>
             )}
@@ -214,16 +216,45 @@ export function TierLadder({ tiers, climb, role, points }: { tiers: Tier[]; clim
               <p className={`mt-2 text-base font-bold ${reached ? "text-emerald-800" : next ? "text-indigo-900" : "text-slate-700"}`}>{t.name}</p>
               <p className="text-xs text-slate-500 tabular-nums">{pts(target)} pts</p>
               {next && <div className="mt-2"><Bar value={pct} label={`Progress to ${t.name}`} /></div>}
-              {t.reward && (
-                <p className={`mt-3 flex items-start gap-1.5 text-xs font-medium ${reached ? "text-emerald-700" : "text-slate-600"}`}>
-                  <Icon.Gift size={13} className="mt-0.5 shrink-0" /><span>{t.reward}</span>
-                </p>
-              )}
+              <TierReward tier={t} state={reached ? "reached" : next ? "next" : "locked"} />
             </li>
           );
         })}
       </ol>
     </Card>
+  );
+}
+
+/** What a rung pays: cash as an amount, a gift by name and — when the admins
+ *  added one — its picture, greyed out until the tier is within reach. */
+function TierReward({ tier, state }: { tier: Tier; state: "reached" | "next" | "locked" }) {
+  if (!tier.reward) return null;
+  if (tier.reward_type === "cash") {
+    return (
+      <p className={`mt-3 inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold tabular-nums ${
+        state === "reached" ? "bg-emerald-600 text-white" : "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200"}`}>
+        <Icon.Rupee size={12} /> {inr(tier.reward_amount)} cash
+      </p>
+    );
+  }
+  return (
+    <div className="mt-3">
+      {tier.image && (
+        <div className="relative overflow-hidden rounded-xl bg-slate-100 ring-1 ring-slate-200/70">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={mediaSrc(tier.image)} alt={tier.reward} loading="lazy"
+            className={`h-24 w-full object-cover transition duration-500 ${state === "locked" ? "grayscale opacity-60" : ""}`} />
+          {state === "locked" && (
+            <span className="absolute inset-0 flex items-center justify-center">
+              <span className="rounded-full bg-white/90 p-1.5 text-slate-500 shadow-sm"><Icon.Lock size={14} /></span>
+            </span>
+          )}
+        </div>
+      )}
+      <p className={`mt-2 flex items-start gap-1.5 text-xs font-medium ${state === "reached" ? "text-emerald-700" : "text-slate-600"}`}>
+        <Icon.Gift size={13} className="mt-0.5 shrink-0" /><span>{tier.reward}</span>
+      </p>
+    </div>
   );
 }
 
@@ -510,8 +541,9 @@ function StatementRow({ line: l, admin, onChanged }: { line: StatementLine; admi
 }
 
 // ─── The rewards cabinet ─────────────────────────────────────────────────────
-export function Cabinet({ me }: { me: Me }) {
-  const unlocked = me.tier.rewards;
+export function Cabinet({ me, tiers }: { me: Me; tiers: Tier[] }) {
+  // The ladder climbs, so the rungs reached are the first ones.
+  const unlocked = tiers.slice(0, me.tier.reached).filter(t => t.reward);
   return (
     <Card className="p-5">
       <CardHeader title="Your rewards" subtitle={`${me.rewards_total} won in all`} icon={<Icon.Spark />} />
@@ -520,9 +552,14 @@ export function Cabinet({ me }: { me: Me }) {
         <p className="mt-1.5 text-xs text-slate-500">Reach your first tier to unlock a reward.</p>
       ) : (
         <ul className="mt-2 flex flex-wrap gap-1.5">
-          {unlocked.map((r, i) => (
-            <li key={i} className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">
-              <Icon.Gift size={12} /> {r}
+          {unlocked.map(t => (
+            <li key={t.id} className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 py-1 pl-1.5 pr-2.5 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">
+              {t.reward_type === "cash" ? <Icon.Rupee size={12} />
+                : t.image
+                  // eslint-disable-next-line @next/next/no-img-element
+                  ? <img src={mediaSrc(t.image)} alt="" className="h-5 w-5 rounded-full object-cover" />
+                  : <Icon.Gift size={12} />}
+              {t.reward}
             </li>
           ))}
         </ul>
@@ -685,7 +722,7 @@ export function HallOfFame({ months, narrow }: { months: Dashboard["hall_of_fame
 
 // ─── Moments ─────────────────────────────────────────────────────────────────
 /** A banner for a tier unlocked since the last visit, or a medal won last month. */
-export function Moments({ me, monthKey, lastMonth }: { me: Me; monthKey: string; lastMonth: Dashboard["last_month"] }) {
+export function Moments({ me, monthKey, lastMonth, tiers }: { me: Me; monthKey: string; lastMonth: Dashboard["last_month"]; tiers: Tier[] }) {
   const tierKey = `rewards_tiers_${me.user}_${monthKey}`;
   const medal = lastMonth?.podium.find(p => p.user === me.user);
   const medalKey = medal ? `rewards_medal_${me.user}_${lastMonth!.key}` : "";
@@ -711,17 +748,24 @@ export function Moments({ me, monthKey, lastMonth }: { me: Me; monthKey: string;
       {tierNews && me.tier.current && (
         <Banner tone="violet" onClose={dismissTier}
           title={`🎉 You unlocked ${me.tier.current.name}!`}
-          text={me.tier.current.reward ? `Your reward: ${me.tier.current.reward}` : "Keep going — the next tier is waiting."} />
+          text={me.tier.current.reward ? `Your reward: ${me.tier.current.reward}` : "Keep going — the next tier is waiting."}
+          image={tiers.find(t => t.id === me.tier.current?.id)?.image} />
       )}
     </div>
   );
 }
 
-function Banner({ tone, title, text, onClose }: { tone: "amber" | "violet"; title: string; text: string; onClose: () => void }) {
+function Banner({ tone, title, text, onClose, image }: {
+  tone: "amber" | "violet"; title: string; text: string; onClose: () => void; image?: string | null;
+}) {
   const look = tone === "amber" ? "from-amber-400 to-orange-500" : "from-violet-500 to-fuchsia-500";
   return (
     <div className={`animate-scale-in flex items-center justify-between gap-3 rounded-2xl bg-gradient-to-r ${look} px-4 py-3 text-white shadow-md`} role="status">
-      <div className="min-w-0">
+      {image && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={mediaSrc(image)} alt="" className="h-12 w-12 shrink-0 rounded-xl object-cover ring-2 ring-white/40" />
+      )}
+      <div className="min-w-0 flex-1">
         <p className="text-sm font-bold">{title}</p>
         <p className="text-xs text-white/90">{text}</p>
       </div>

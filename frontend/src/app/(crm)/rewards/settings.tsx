@@ -1,10 +1,16 @@
 "use client";
 /** Rewards → Configuration: the rules of the game, admins only. */
-import React, { useEffect, useMemo, useState } from "react";
-import { Settings, loadSettings, pts, saveSettings } from "./lib";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { RewardType, Settings, loadSettings, mediaSrc, pts, saveSettings, uploadGiftImage } from "./lib";
 import { Card, CardHeader, Coin, Icon } from "./parts";
 
-type TierDraft = { key: string; name: string; reward: string; target: string; target_telecaller: string };
+/** A tier as it is being edited. Both kinds of reward are kept while the admin
+ * switches between them; only the chosen one is saved. */
+type TierDraft = {
+  key: string; name: string; target: string; target_telecaller: string;
+  reward_type: RewardType; reward: string; reward_amount: string;
+  reward_image: string; reward_image_url: string;
+};
 type Draft = {
   bde_share: string;
   gold_prize: string; silver_prize: string; bronze_prize: string;
@@ -28,8 +34,11 @@ function toDraft(s: Settings): Draft {
     contest_target: clean(s.contest_target),
     bumper_first: s.bumper_first, bumper_second: s.bumper_second, bumper_third: s.bumper_third,
     coin_champion_prize: s.coin_champion_prize,
-    tiers: s.tiers.map(t => ({ key: newKey(), name: t.name, reward: t.reward, target: clean(t.target),
-                               target_telecaller: clean(t.target_telecaller) })),
+    tiers: s.tiers.map(t => ({
+      key: newKey(), name: t.name, target: clean(t.target), target_telecaller: clean(t.target_telecaller),
+      reward_type: t.reward_type || "gift", reward: t.reward, reward_amount: clean(t.reward_amount),
+      reward_image: t.reward_image || "", reward_image_url: t.reward_image_url || "",
+    })),
   };
 }
 
@@ -43,8 +52,13 @@ function toPayload(d: Draft) {
     contest_target: orNull(d.contest_target),
     bumper_first: d.bumper_first.trim(), bumper_second: d.bumper_second.trim(), bumper_third: d.bumper_third.trim(),
     coin_champion_prize: d.coin_champion_prize.trim(),
-    tiers: d.tiers.map(t => ({ name: t.name.trim(), reward: t.reward.trim(), target: t.target || "0",
-                               target_telecaller: orNull(t.target_telecaller) })),
+    tiers: d.tiers.map(t => ({
+      name: t.name.trim(), target: t.target || "0", target_telecaller: orNull(t.target_telecaller),
+      reward_type: t.reward_type,
+      ...(t.reward_type === "cash"
+        ? { reward: "", reward_amount: orNull(t.reward_amount), reward_image: null }
+        : { reward: t.reward.trim(), reward_amount: null, reward_image: t.reward_image || null }),
+    })),
   };
 }
 
@@ -92,7 +106,11 @@ export default function RewardSettingsForm({ onSaved }: { onSaved: () => void })
     const last = d.tiers[d.tiers.length - 1];
     const target = last ? String(Math.round(Number(last.target || 0) * 1.5) || 100000) : "100000";
     const tc = last?.target_telecaller ? String(Math.round(Number(last.target_telecaller) * 1.5)) : "";
-    return { ...d, tiers: [...d.tiers, { key: newKey(), name: `Tier ${d.tiers.length + 1}`, reward: "", target, target_telecaller: tc }] };
+    return { ...d, tiers: [...d.tiers, {
+      key: newKey(), name: `Tier ${d.tiers.length + 1}`, target, target_telecaller: tc,
+      // A new rung pays the way the one below it does.
+      reward_type: last?.reward_type || "cash", reward: "", reward_amount: "", reward_image: "", reward_image_url: "",
+    }] };
   });
   const removeTier = (i: number) => setDraft(d => (d ? { ...d, tiers: d.tiers.filter((_, n) => n !== i) } : d));
 
@@ -157,10 +175,7 @@ export default function RewardSettingsForm({ onSaved }: { onSaved: () => void })
                   <label className={LABEL} htmlFor={`tier-name-${t.key}`}>Name</label>
                   <input id={`tier-name-${t.key}`} value={t.name} onChange={e => setTier(i, { name: e.target.value })} className={FIELD} placeholder="e.g. Gold" />
                 </div>
-                <div>
-                  <label className={LABEL} htmlFor={`tier-reward-${t.key}`}>Reward</label>
-                  <input id={`tier-reward-${t.key}`} value={t.reward} onChange={e => setTier(i, { reward: e.target.value })} className={FIELD} placeholder="e.g. Smartwatch" />
-                </div>
+                <RewardPicker tier={t} index={i} onChange={patch => setTier(i, patch)} />
                 <div>
                   <label className={LABEL} htmlFor={`tier-target-${t.key}`}>Target (points)</label>
                   <input id={`tier-target-${t.key}`} type="number" min="1" value={t.target} onChange={e => setTier(i, { target: e.target.value })} className={FIELD} />
@@ -307,6 +322,90 @@ export default function RewardSettingsForm({ onSaved }: { onSaved: () => void })
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── A tier's reward: cash or a gift ─────────────────────────────────────────
+function RewardPicker({ tier, index, onChange }: { tier: TierDraft; index: number; onChange: (patch: Partial<TierDraft>) => void }) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState("");
+  const cash = tier.reward_type === "cash";
+
+  const choose = async (file: File | undefined) => {
+    if (!file) return;
+    setError("");
+    if (!/^image\/(png|jpe?g|webp)$/.test(file.type)) { setError("Use a JPG, PNG or WebP picture."); return; }
+    if (file.size > 5 * 1024 * 1024) { setError("Keep the picture under 5 MB."); return; }
+    setUploading(true);
+    try {
+      const r = await uploadGiftImage(file);
+      if (r.ok) onChange({ reward_image: r.path || "", reward_image_url: r.url || "" });
+      else setError(r.error || "The picture could not be uploaded.");
+    } catch { setError("Network error — the picture was not uploaded."); }
+    finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";   // so the same file can be chosen again
+    }
+  };
+
+  return (
+    <div>
+      {/* The switch sits in the label row, so the field below lines up with
+          the tier's other fields. */}
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500"
+          htmlFor={cash ? `tier-amount-${tier.key}` : `tier-reward-${tier.key}`}>Reward</label>
+        <div role="radiogroup" aria-label={`Tier ${index + 1} reward`} className="-my-1 inline-flex rounded-lg bg-slate-100 p-0.5">
+          {(["cash", "gift"] as const).map(kind => (
+            <button key={kind} type="button" role="radio" aria-checked={tier.reward_type === kind}
+              onClick={() => { onChange({ reward_type: kind }); setError(""); }}
+              className={`rounded-md px-2 py-0.5 text-[11px] font-semibold transition ${tier.reward_type === kind
+                ? "bg-white text-indigo-700 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>
+              {kind === "cash" ? "💵 Cash" : "🎁 Gift"}
+            </button>
+          ))}
+        </div>
+      </div>
+      {cash ? (
+        <>
+          <div className="relative">
+            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">₹</span>
+            <input id={`tier-amount-${tier.key}`} type="number" min="1" inputMode="numeric" value={tier.reward_amount}
+              onChange={e => onChange({ reward_amount: e.target.value })} className={`${FIELD} pl-7`} placeholder="Amount" />
+          </div>
+          {Number(tier.reward_amount) > 0 && <p className="mt-1 text-[11px] text-slate-400 tabular-nums">₹{pts(tier.reward_amount)} cash</p>}
+        </>
+      ) : (
+        <>
+          <input id={`tier-reward-${tier.key}`} value={tier.reward} onChange={e => onChange({ reward: e.target.value })}
+            className={FIELD} placeholder="e.g. Smartwatch" maxLength={200} />
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            {tier.reward_image_url ? (
+              <>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={mediaSrc(tier.reward_image_url)} alt={tier.reward || "The gift"}
+                  className="h-12 w-12 shrink-0 rounded-xl object-cover ring-1 ring-slate-200" />
+                <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading}
+                  className="text-xs font-semibold text-indigo-600 hover:underline disabled:opacity-50">
+                  {uploading ? "Uploading…" : "Change photo"}
+                </button>
+                <button type="button" onClick={() => onChange({ reward_image: "", reward_image_url: "" })} disabled={uploading}
+                  className="text-xs font-semibold text-rose-500 hover:underline disabled:opacity-50">Remove</button>
+              </>
+            ) : (
+              <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-dashed border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:border-indigo-300 hover:text-indigo-700 disabled:opacity-50">
+                {uploading ? "Uploading…" : <>📷 Add a photo <span className="font-normal text-slate-400">(optional)</span></>}
+              </button>
+            )}
+            <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden"
+              aria-label={`Photo of the gift for tier ${index + 1}`} onChange={e => choose(e.target.files?.[0])} />
+          </div>
+          {error && <p className="mt-1 text-[11px] font-medium text-rose-600" role="alert">{error}</p>}
+        </>
+      )}
     </div>
   );
 }

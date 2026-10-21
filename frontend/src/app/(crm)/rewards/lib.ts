@@ -5,12 +5,17 @@ import { compactINR } from "@/lib/format";
 
 export type Medal = "gold" | "silver" | "bronze";
 
+export type RewardType = "cash" | "gift";
+
+/** A rung of the ladder. `reward` is the reward in words ("₹5,000 cash" or the
+ * gift); `image` is the gift's picture, if it has one. */
 export type Tier = {
   id: number; name: string; reward: string;
+  reward_type: RewardType; reward_amount: string | null; image: string | null;
   target: string; target_telecaller: string | null;
 };
 
-export type TierRef = { id: number; name: string; reward: string; target: string };
+export type TierRef = { id: number; name: string; reward: string; reward_type: RewardType; target: string };
 
 export type Climb = {
   reached: number; of: number;
@@ -107,7 +112,11 @@ export type Settings = {
   contest_target: string | null;
   bumper_first: string; bumper_second: string; bumper_third: string;
   coin_champion_prize: string;
-  tiers: { id?: number; name: string; reward: string; target: string; target_telecaller: string | null }[];
+  tiers: {
+    id?: number; name: string; target: string; target_telecaller: string | null;
+    reward_type: RewardType; reward: string; reward_amount: string | null;
+    reward_image: string | null; reward_image_url?: string | null;
+  }[];
   updated_at: string;
 };
 
@@ -164,6 +173,24 @@ export async function saveSettings(body: Partial<Settings>): Promise<{ ok: boole
   const data = await r.json().catch(() => ({}));
   if (r.ok) return { ok: true, data };
   return { ok: false, errors: flattenErrors(data) };
+}
+
+/** An uploaded picture's address: a path under the API's /media, or a full
+ * address when media is kept on S3. */
+export const mediaSrc = (url: string | null | undefined) =>
+  !url ? "" : /^(https?:|blob:|data:)/.test(url) ? url : `${getApiBase(APP_SLUG)}${url}`;
+
+/** Admins: upload a gift's picture. Returns the stored name to save on the tier. */
+export async function uploadGiftImage(file: File): Promise<{ ok: boolean; path?: string; url?: string; error?: string }> {
+  const token = localStorage.getItem(`${APP_SLUG}_access`);
+  const body = new FormData();
+  body.append("image", file);
+  // No Content-Type header: the browser sets the multipart boundary itself.
+  const r = await fetch(`${getApiBase(APP_SLUG)}/api/rewards/gift-images/`, {
+    method: "POST", headers: { Authorization: `Bearer ${token}` }, body,
+  });
+  const data = await r.json().catch(() => ({}));
+  return r.ok ? { ok: true, path: data.path, url: data.url } : { ok: false, error: data.error || "The picture could not be uploaded." };
 }
 
 /** Admins: take a payment out of the game. The player sees the reason. */

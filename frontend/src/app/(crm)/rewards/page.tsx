@@ -80,7 +80,7 @@ function PlayerView({ data }: { data: Dashboard }) {
   if (!me) return null;
   return (
     <div className={PAGE}>
-      <Moments me={me} monthKey={data.month.key} lastMonth={data.last_month} />
+      <Moments me={me} monthKey={data.month.key} lastMonth={data.last_month} tiers={data.tiers} />
       <Hero me={me} month={data.month} />
       <TierLadder tiers={data.tiers} climb={me.tier} role={me.role} points={me.points} />
       <div className="grid gap-6 lg:grid-cols-3">
@@ -93,7 +93,7 @@ function PlayerView({ data }: { data: Dashboard }) {
         <div className="space-y-6">
           <Podium title="Last month's champions" label={data.last_month?.label} podium={data.last_month?.podium || []} />
           <IncentivesCard incentives={me.incentives} />
-          <Cabinet me={me} />
+          <Cabinet me={me} tiers={data.tiers} />
           <HowItWorks rules={data.rules} />
         </div>
       </div>
@@ -211,7 +211,7 @@ function PlayerModal({ user, onClose, onChanged }: { user: number; onClose: () =
               admin onChanged={changed} />
             <div className="grid gap-4 lg:grid-cols-2">
               <IncentivesCard incentives={me.incentives} preview />
-              <Cabinet me={me} />
+              <Cabinet me={me} tiers={data.tiers} />
             </div>
           </>
         )}
