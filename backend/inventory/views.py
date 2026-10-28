@@ -48,8 +48,9 @@ def can_access_retail_inventory(user):
 
 # A BDE and a tele caller do not get the inventory module, but both quote: they
 # raise a quotation from a lead's own page, and that needs the quotation itself
-# and the projects it is built from. Nothing else — not suppliers, not
-# purchases, not the stock lists.
+# and the projects it is built from. They also browse the project catalogue in
+# Inventory → Project, read-only. Nothing else — not suppliers, not purchases,
+# not the stock lists.
 QUOTING_ROLES = ('bde', 'tele_caller')
 
 
@@ -64,7 +65,8 @@ class RetailInventoryAccess(permissions.BasePermission):
     Two tiers, because "can raise a quotation" and "can see the module" are
     different questions: the admin tier gets everything, while the roles that
     quote reach only the endpoints a quotation needs. A viewset opts into the
-    second by setting ``open_to_quoting_roles``.
+    second by setting ``open_to_quoting_roles``, and makes it read-only for
+    them with ``quoting_roles_read_only``.
 
     The spectator keeps its bargain: it reads everything and writes nothing.
     """
@@ -77,8 +79,12 @@ class RetailInventoryAccess(permissions.BasePermission):
             return False
         if can_access_retail_inventory(user):
             return True
-        return (getattr(view, 'open_to_quoting_roles', False)
-                and user.role in QUOTING_ROLES)
+        if not (getattr(view, 'open_to_quoting_roles', False) and user.role in QUOTING_ROLES):
+            return False
+        if request.method not in permissions.SAFE_METHODS and getattr(view, 'quoting_roles_read_only', False):
+            self.message = 'This is read-only for BDEs and tele callers.'
+            return False
+        return True
 
 
 class SuppliersAccess(permissions.BasePermission):
@@ -115,9 +121,11 @@ class ProjectViewSet(viewsets.ModelViewSet):
     """
     serializer_class = ProjectSpecSerializer
     permission_classes = [permissions.IsAuthenticated, RetailInventoryAccess]
-    # Reachable from a lead page by whoever may quote there, without
-    # handing them the rest of the module.
+    # Readable by whoever may quote — picked on a lead's quotation, and browsed
+    # in Inventory → Project — without handing them the rest of the module.
+    # Only readable: the catalogue is the admins' to change.
     open_to_quoting_roles = True
+    quoting_roles_read_only = True
     queryset = ProjectSpec.objects.all()
 
     def get_queryset(self):

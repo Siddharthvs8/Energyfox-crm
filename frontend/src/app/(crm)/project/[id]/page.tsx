@@ -8,6 +8,7 @@ import Link from "next/link";
 import ProjectSection from "./ProjectSection";
 
 import ActivityTimeline from "@/components/ActivityTimeline";
+import SiteVisitDetails, { type SiteVisitData } from "@/components/SiteVisitDetails";
 import { DeadlineBanner, type DeadlineInfo } from "@/components/ProjectDeadline";
 import { DetailSkeleton } from "@/components/Skeleton";
 
@@ -25,6 +26,7 @@ type ProjectDetail = DeadlineInfo & {
   can_edit_project: boolean;
   can_assign: boolean;
   can_reopen_project: boolean;
+  site_visit: SiteVisitData;
 };
 
 export default function ProjectDetailPage({ params: paramsPromise }: { params: Promise<{ id: string }> }) {
@@ -88,9 +90,13 @@ export default function ProjectDetailPage({ params: paramsPromise }: { params: P
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-[1100px]">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <Link href="/project" className="text-sm text-indigo-600 hover:underline">← Back to Project</Link>
-        <ActivityTimeline leadId={params.id} />
+        <div className="flex flex-wrap items-center gap-2">
+          <SiteVisitDetails siteVisit={data.site_visit} customer={`${data.first_name} ${data.last_name || ""}`.trim()}
+            phone={data.phone} productName={data.product_name} bdeName={data.bde_name} />
+          <ActivityTimeline leadId={params.id} />
+        </div>
       </div>
 
       <div className="mt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">

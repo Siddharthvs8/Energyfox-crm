@@ -4031,6 +4031,28 @@ class RetailInventoryAccessTests(TestCase):
             for url in ('/api/quotations/', '/api/projects/'):
                 self.assertEqual(self.reach(role, url), 200, f'{role} -> {url}')
 
+    def test_the_roles_that_quote_read_projects_but_do_not_change_them(self):
+        """Inventory → Project is open to them to browse, and only to browse."""
+        project = self.client.post(
+            '/api/projects/', data={'name': '3kW On-Grid', 'price_dcr': '150000'},
+            content_type='application/json', HTTP_AUTHORIZATION=token_for(self.user('admin'))).json()
+        url = f"/api/projects/{project['id']}/"
+        for role in self.QUOTING:
+            auth = {'HTTP_AUTHORIZATION': token_for(self.user(role))}
+            self.assertEqual(self.client.get(url, **auth).status_code, 200, role)
+            self.assertEqual(self.client.get('/api/projects/?all=true', **auth).status_code, 200, role)
+            for method, target in (('post', '/api/projects/'), ('patch', url), ('put', url),
+                                   ('delete', url), ('post', f'{url}duplicate/')):
+                r = getattr(self.client, method)(target, data={'name': 'Changed'},
+                                                 content_type='application/json', **auth)
+                self.assertEqual(r.status_code, 403, f'{role} {method} {target}')
+        self.assertEqual(self.client.get(url, HTTP_AUTHORIZATION=token_for(self.user('admin'))).json()['name'],
+                         '3kW On-Grid')
+        # The admins still keep it.
+        r = self.client.patch(url, data={'name': '3kW On-Grid (2026)'}, content_type='application/json',
+                              HTTP_AUTHORIZATION=token_for(self.user('admin')))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+
     def test_every_other_role_is_turned_away(self):
         for role in self.BLOCKED:
             for url in self.ENDPOINTS:
@@ -4066,9 +4088,10 @@ class RetailInventoryAccessTests(TestCase):
     def test_a_tele_caller_can_actually_raise_a_quotation(self):
         """Read access alone would be a panel they could open and not use."""
         bde = self.user('tele_caller')
+        # The catalogue is the admins'; the tele caller quotes from it.
         project = self.client.post(
             '/api/projects/', data={'name': '5kW', 'price_dcr': '200000', 'tax_percent': '18'},
-            content_type='application/json', HTTP_AUTHORIZATION=token_for(bde))
+            content_type='application/json', HTTP_AUTHORIZATION=token_for(self.user('admin')))
         self.assertEqual(project.status_code, 201, project.content[:200])
         r = self.client.post(
             '/api/quotations/',

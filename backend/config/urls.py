@@ -12,6 +12,7 @@ from leads.views import LeadViewSet
 from leads.performance import CompanyPerformanceView
 from leads.tracking import TrackingLinkView
 from leads.webhooks import meta_leads_webhook
+from leads.works import WorksView
 from tasks.views import TaskViewSet
 from users.views import (UserViewSet, SubscriptionStatusView, WorkspaceTeamViewSet,
                          TenantSettingsView, BranchViewSet, CustomRoleViewSet,
@@ -73,6 +74,8 @@ urlpatterns = [
     path('api/converted-analytics/', ConvertedAnalyticsView.as_view(), name='converted-analytics'),
     path('api/company-performance/', CompanyPerformanceView.as_view(),
          name='company-performance'),
+    # The pipeline around a desk's own stage; see leads/works.py.
+    path('api/works/', WorksView.as_view(), name='works'),
     # The customer's own tracking page. Open on purpose — the token in the URL
     # is the credential; see leads/tracking.py.
     path('api/track/<str:token>/', TrackingLinkView.as_view(), name='public-tracking'),

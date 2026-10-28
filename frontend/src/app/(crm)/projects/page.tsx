@@ -174,6 +174,12 @@ export default function ProjectsPage() {
   const [editing, setEditing] = useState<Project | null>(null);   // null = closed
   const [creating, setCreating] = useState(false);
   const [preview, setPreview] = useState<Project | null>(null);
+  // BDEs and tele callers browse the catalogue they quote from; changing it is
+  // the admins' job. The server refuses them the same (ProjectViewSet's
+  // `quoting_roles_read_only`). Read-only until the role is known, so the
+  // editing controls never flash up for someone who cannot use them.
+  const [role, setRole] = useState<string | null>(null);
+  const readOnly = role === null || ["bde", "tele_caller"].includes(role);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ name: "", system_type: "", capacity: "", price_dcr: "", price_non_dcr: "", subsidy_amount: "", tax_percent: "", notes: "", price_includes_tax: false, bde_incentive: "", telecaller_incentive: "" });
   const [lines, setLines] = useState<Line[]>([]);
@@ -183,7 +189,11 @@ export default function ProjectsPage() {
   const load = useCallback(async () => {
     if (!localStorage.getItem(`${domain}_access`)) { router.push(`/login`); return; }
     try {
-      const r = await fetch(`${api}/api/projects/?all=true`, { headers: auth() });
+      const [me, r] = await Promise.all([
+        fetch(`${api}/api/users/me/`, { headers: auth() }).then(x => (x.ok ? x.json() : null)).catch(() => null),
+        fetch(`${api}/api/projects/?all=true`, { headers: auth() }),
+      ]);
+      setRole(me?.role || "");
       if (!r.ok) { setError("Failed to load projects."); return; }
       const d = await r.json();
       setProjects(Array.isArray(d) ? d : d.results || []);
@@ -278,11 +288,14 @@ export default function ProjectsPage() {
      screen — the server only sees `en_phase`, never the "EN-PHASE" the row
      shows. Every word has to appear somewhere, in any order, so "10 hybrid"
      and "hybrid 10" both find the 10kW hybrid. */
+  // Someone who only quotes sees what is still sold; retired projects are the
+  // admins' to bring back.
+  const catalogue = readOnly ? projects.filter(p => p.is_active) : projects;
   const shown = (() => {
     const text = search.trim().toLowerCase();
-    if (!text) return projects;
+    if (!text) return catalogue;
     const words = text.split(/\s+/);
-    return projects.filter(p => {
+    return catalogue.filter(p => {
       const hay = [p.name, p.capacity, p.system_type_display, p.system_type]
         .filter(Boolean).join(" ").toLowerCase();
       return words.every(w => hay.includes(w));
@@ -299,18 +312,29 @@ export default function ProjectsPage() {
             Pick one on a quotation and its specification is copied across.
           </p>
         </div>
-        <button onClick={openNew}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl text-sm font-semibold transition-colors flex items-center gap-2 shadow-sm">
-          <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>
-          New Project
-        </button>
+        {readOnly ? (
+          <span className="self-start sm:self-auto inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-500"
+            title="Projects are managed by the admins">
+            <svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" />
+            </svg>
+            View only
+          </span>
+        ) : (
+          <button onClick={openNew}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl text-sm font-semibold transition-colors flex items-center gap-2 shadow-sm">
+            <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>
+            New Project
+          </button>
+        )}
       </div>
 
       {error && <div className="mb-6 p-4 bg-red-50 text-red-600 rounded-xl text-sm border border-red-100">{error}</div>}
 
       {/* Above the list, because a missing template is not visible from a
-          project row — it only shows up when someone tries to send one. */}
-      <ProposalTemplates />
+          project row — it only shows up when someone tries to send one. The
+          artwork is the admins' to upload, so it is theirs to see. */}
+      {!readOnly && <ProposalTemplates />}
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <input value={search} onChange={e => setSearch(e.target.value)}
@@ -318,7 +342,7 @@ export default function ProjectsPage() {
           className="flex-1 min-w-[240px] max-w-md bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition" />
         <span className="text-xs font-semibold text-slate-400 whitespace-nowrap flex-shrink-0">
           {shown.length} project{shown.length === 1 ? "" : "s"}
-          {search.trim() && projects.length !== shown.length ? ` of ${projects.length}` : ""}
+          {search.trim() && catalogue.length !== shown.length ? ` of ${catalogue.length}` : ""}
         </span>
         {search.trim() && (
           <button onClick={() => setSearch("")}
@@ -353,7 +377,10 @@ export default function ProjectsPage() {
                     ) : (
                       <>
                         <p className="font-medium text-slate-900">No projects yet</p>
-                        <p className="text-sm mt-1">Create one, and it becomes selectable on every quotation.</p>
+                        <p className="text-sm mt-1">
+                          {readOnly ? "The admins have not added any projects yet."
+                            : "Create one, and it becomes selectable on every quotation."}
+                        </p>
                       </>
                     )}
                   </td>
@@ -398,10 +425,16 @@ export default function ProjectsPage() {
                   <td className="py-4 px-6 text-center text-slate-600">{p.line_count}</td>
                   <td className="py-4 px-6 text-center text-slate-400">{p.quoted_count || "—"}</td>
                   <td className="py-4 px-6 text-right whitespace-nowrap">
-                    <button onClick={() => setPreview(p)} className="text-slate-500 hover:text-slate-800 text-sm font-medium mr-4">View</button>
-                    <button onClick={() => openEdit(p)} className="text-indigo-600 hover:text-indigo-900 text-sm font-medium mr-4">Edit</button>
-                    <button onClick={() => duplicate(p)} className="text-slate-500 hover:text-slate-800 text-sm font-medium mr-4">Duplicate</button>
-                    <button onClick={() => remove(p)} className="text-rose-600 hover:text-rose-900 text-sm font-medium">Delete</button>
+                    <button onClick={() => setPreview(p)}
+                      className={readOnly ? "text-indigo-600 hover:text-indigo-900 text-sm font-medium"
+                        : "text-slate-500 hover:text-slate-800 text-sm font-medium mr-4"}>View</button>
+                    {!readOnly && (
+                      <>
+                        <button onClick={() => openEdit(p)} className="text-indigo-600 hover:text-indigo-900 text-sm font-medium mr-4">Edit</button>
+                        <button onClick={() => duplicate(p)} className="text-slate-500 hover:text-slate-800 text-sm font-medium mr-4">Duplicate</button>
+                        <button onClick={() => remove(p)} className="text-rose-600 hover:text-rose-900 text-sm font-medium">Delete</button>
+                      </>
+                    )}
                   </td>
                 </tr>
               ))}

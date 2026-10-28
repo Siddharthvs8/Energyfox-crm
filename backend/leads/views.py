@@ -491,6 +491,18 @@ class LeadViewSet(viewsets.ModelViewSet):
             'deal_value': lead.value,
         }
 
+    def _site_visit_for_reading(self, lead, request):
+        """The site visit as the BDE left it — fields, photos and documents —
+        for the stages after it that only read it (purchase, project). None
+        when there was no visit: read here, never created as the BDE's own
+        screen does on opening."""
+        sv = getattr(lead, 'site_visit', None)
+        if sv is None:
+            return None
+        data = SiteVisitSerializer(sv, context={'request': request}).data
+        data.update(self._site_visit_deal(lead, sv))
+        return data
+
     @staticmethod
     def _sync_feasibility_reminder(lead, sv):
         """When the PO is signed but KSEB feasibility is not taken, ensure the BDE
@@ -3061,7 +3073,10 @@ class LeadViewSet(viewsets.ModelViewSet):
                 and lead.purchase_staff_id != user.id):
             return Response({'error': 'This lead is not assigned to you.'},
                             status=status.HTTP_403_FORBIDDEN)
-        return Response(self._purchase_payload(lead, request))
+        # The site visit rides along on the detail only, not on every queue row:
+        # the page shows it read-only behind "View site visit details".
+        return Response({**self._purchase_payload(lead, request),
+                         'site_visit': self._site_visit_for_reading(lead, request)})
 
     @action(detail=True, methods=['get', 'patch'], url_path='purchase-logistics')
     def purchase_logistics(self, request, pk=None):
@@ -3319,7 +3334,10 @@ class LeadViewSet(viewsets.ModelViewSet):
                 and getattr(user, 'role', '') == 'project_manager'
                 and lead.project_manager_id != user.id):
             return Response({'error': 'This lead is not assigned to you.'}, status=status.HTTP_403_FORBIDDEN)
-        return Response(self._project_payload(lead, request))
+        # Read-only, behind "View site visit details" — the installation team
+        # works from the BDE's survey: roof, structure, cabling, photos.
+        return Response({**self._project_payload(lead, request),
+                         'site_visit': self._site_visit_for_reading(lead, request)})
 
     @action(detail=True, methods=['get', 'patch'], url_path='project-record')
     def project_record(self, request, pk=None):

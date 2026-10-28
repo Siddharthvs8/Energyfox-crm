@@ -204,6 +204,11 @@ const Nav = {
       <rect x="8" y="2" width="8" height="4" rx="1" /><path d="M9 14l2 2 4-4" />
     </svg>
   ),
+  Works: () => (
+    <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+      <rect x="3" y="3" width="18" height="18" rx="2" /><path d="M8 7v7M12 7v10M16 7v4" />
+    </svg>
+  ),
   Sun: () => (
     <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
       <circle cx="12" cy="12" r="4" />
@@ -250,6 +255,11 @@ const CLOSED_DEALS_ROLES = [
   "superadmin", "admin", "coo", "sales_manager", "leads_manager",
   "branch_manager", "bde", "tele_caller",
 ];
+
+// Who gets Works: the three desks that own a stage in the middle of the
+// pipeline, since the page is split at the viewer's own stage. Mirrors
+// leads.works.DESKS.
+const WORKS_ROLES = ["documentation_manager", "accounts_manager", "project_manager"];
 
 // The four modules a field user touches every day. On a phone they are the
 // bottom tab bar and everything else stays behind the hamburger, so the work a
@@ -709,6 +719,9 @@ export default function DashboardLayout({
     { href: `/meta`,          label: "Meta Integration",Icon: Nav.Meta, strictAdminOnly: true, leadsDeskFeature: true },
     { href: `/team`,          label: "Team",            Icon: Nav.Team, inB2B: true },
     { href: `/branches`,      label: "Branches",        Icon: Nav.Admin, adminOnly: true },
+    // Placed above the desks' own modules, so it heads each of their sidebars:
+    // it is the overview their queue sits inside.
+    { href: `/works`,         label: "Works",           Icon: Nav.Works, worksFeature: true },
     { href: `/documentation`, label: "Documentation Stage 1", Icon: Nav.Quote, docFeature: true },
     // The read-only tracker sits directly above Stage 2: for everyone who sees
     // it (admins and general managers — the doc team have their own queue and
@@ -760,15 +773,19 @@ export default function DashboardLayout({
   // B2B is the stock register, so its staff always have the group. On the retail
   // side it is the admin/GM module it always was.
   //
-  // A BDE and a tele caller are deliberately not here: they raise quotations
-  // from a lead's own page, which needs no sidebar entry. The server draws the
-  // same line (RetailInventoryAccess plus `open_to_quoting_roles`); if this
-  // changes, change that too, or a module hidden here stays open to a call.
+  // A BDE and a tele caller get one entry in it, read-only: Project, the
+  // catalogue they quote from. They raise the quotation itself from a lead's own
+  // page, which needs no sidebar entry. The server draws the same line
+  // (RetailInventoryAccess: `open_to_quoting_roles`, and `quoting_roles_read_only`
+  // on projects); if this changes, change that too, or a module hidden here
+  // stays open to a call.
+  const projectsOnly = !isB2BOnly && bizMode !== "b2b" && !onCustomRole
+    && ["bde", "tele_caller"].includes(currentUser?.role);
   const canSeeInventory = isB2BOnly || bizMode === "b2b"
     ? true
     : onCustomRole
       ? grantedPerms.includes("inventory")
-      : seesAllModules;
+      : seesAllModules || projectsOnly;
 
   // Manager features visible to manager, general manager, and admin
   const navItems = allNavItems.filter(item => {
@@ -782,6 +799,10 @@ export default function DashboardLayout({
     }
     if (bizMode === "b2b") {
       return !!item.inB2B;   // wholesale side is Inventory (the group, above) + Team
+    }
+    // Ahead of the focused views below, each of which would otherwise drop it.
+    if (item.worksFeature) {
+      return WORKS_ROLES.includes(currentUser?.role);
     }
     if (isDocOnly) {
       // The documentation manager also oversees KSEB feasibility and Liasoning
@@ -934,7 +955,7 @@ export default function DashboardLayout({
     // rather than a filter, because an order is a different thing from an offer
     // and nobody should have to remember to switch a dropdown to find one.
     { href: `/converted-orders`, label: "Converted Orders", Icon: Nav.StockOut },
-  ];
+  ].filter(i => !projectsOnly || i.href === `/projects`);
 
   // The wholesale side's Inventory module is the stock register — that is the
   // whole of B2B, so it keeps its own sub-modules.

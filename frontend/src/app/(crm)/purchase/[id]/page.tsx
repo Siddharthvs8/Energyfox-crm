@@ -8,6 +8,7 @@ import Link from "next/link";
 import PurchaseLogisticsSection from "./PurchaseLogisticsSection";
 
 import ActivityTimeline from "@/components/ActivityTimeline";
+import SiteVisitDetails, { type SiteVisitData } from "@/components/SiteVisitDetails";
 import { DetailSkeleton } from "@/components/Skeleton";
 type PaymentVerification = {
   deal_value: string | number | null;
@@ -37,6 +38,7 @@ type PurchaseDetail = {
   can_edit_purchase: boolean;
   can_assign: boolean;
   can_reopen_purchase: boolean;
+  site_visit: SiteVisitData;
 };
 
 const PAYMENT_MODE_LABELS: Record<string, string> = { cash: "Cash", cheque: "Cheque", card: "Card", upi: "UPI" };
@@ -105,9 +107,13 @@ export default function PurchaseDetailPage({ params: paramsPromise }: { params: 
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-[1100px]">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <Link href="/purchase" className="text-sm text-indigo-600 hover:underline">← Back to Purchase &amp; Logistics</Link>
-        <ActivityTimeline leadId={params.id} />
+        <div className="flex flex-wrap items-center gap-2">
+          <SiteVisitDetails siteVisit={data.site_visit} customer={`${data.first_name} ${data.last_name || ""}`.trim()}
+            phone={data.phone} productName={data.product_name} bdeName={data.bde_name} />
+          <ActivityTimeline leadId={params.id} />
+        </div>
       </div>
 
       {/* Header */}

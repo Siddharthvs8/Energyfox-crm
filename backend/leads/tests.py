@@ -10635,3 +10635,67 @@ class DocumentationManagerOversightTests(TestCase):
     def test_documentation_staff_do_not_get_these_modules(self):
         self.assertEqual(self.get('/api/leads/liasoning/', self.staff).status_code, 403)
         self.assertEqual(self.get('/api/leads/bde-feasibility/', self.staff).json(), [])
+
+
+class SiteVisitForLaterStagesTests(TestCase):
+    """Purchase and project open the BDE's site visit read-only, from their own
+    customer pages ("View site visit details")."""
+
+    def setUp(self):
+        import shutil
+        import tempfile
+        from django.test import override_settings
+        from .models import Project, SiteVisit, SiteVisitDocument
+        media = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, media, ignore_errors=True)
+        overridden = override_settings(MEDIA_ROOT=media)
+        overridden.enable()
+        self.addCleanup(overridden.disable)
+
+        self.purchase = mk('svr_purchase', 'purchase_staff')
+        self.other_purchase = mk('svr_purchase2', 'purchase_staff')
+        self.pm = mk('svr_pm', 'project_manager')
+        self.bde = mk('svr_bde', 'bde')
+        self.lead = Lead.objects.create(
+            first_name='Anitha', last_name='VR', phone='9496418336', status='converted', bde=self.bde,
+            value=Decimal('215000'),
+            pushed_to_purchase=True, pushed_to_purchase_at=timezone.now(), purchase_staff=self.purchase,
+            pushed_to_project=True, pushed_to_project_at=timezone.now(), project_manager=self.pm)
+        Project.objects.create(lead=self.lead)
+        self.sv = SiteVisit.objects.create(
+            lead=self.lead, site_visit_complete=True, roof_type='rcc', rcc_roof_types=['flat', 'slope'],
+            phase='3ph', plant_capacity='5 kW', structure_type='custom', custom_structure_height='2 m',
+            product_price=Decimal('230000'), discount=Decimal('15000'), po_signed_date=date(2026, 10, 10))
+        SiteVisitDocument.objects.create(
+            site_visit=self.sv, doc_type='photo_site',
+            file=SimpleUploadedFile('roof.jpg', b'jpeg-bytes', content_type='image/jpeg'))
+
+    def get(self, path, user):
+        return self.client.get(f'/api/leads/{self.lead.id}/{path}/', HTTP_AUTHORIZATION=token_for(user))
+
+    def test_purchase_sees_the_whole_site_visit(self):
+        r = self.get('purchase-detail', self.purchase)
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        sv = r.json()['site_visit']
+        self.assertEqual((sv['roof_type'], sv['rcc_roof_types'], sv['phase'], sv['plant_capacity']),
+                         ('rcc', ['flat', 'slope'], '3ph', '5 kW'))
+        self.assertEqual((sv['product_price'], sv['discount'], sv['po_signed_date']),
+                         ('230000.00', '15000.00', '2026-10-10'))
+        self.assertTrue(sv['site_visit_complete'])
+        self.assertEqual([d['doc_type'] for d in sv['documents']], ['photo_site'])
+        self.assertTrue(sv['documents'][0]['file'].endswith('.jpg'))
+
+    def test_the_project_manager_sees_it_too(self):
+        r = self.get('project-detail', self.pm)
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(r.json()['site_visit']['custom_structure_height'], '2 m')
+
+    def test_not_for_purchase_staff_it_is_not_assigned_to(self):
+        self.assertEqual(self.get('purchase-detail', self.other_purchase).status_code, 403)
+
+    def test_no_visit_reads_as_none_and_is_not_created(self):
+        from .models import SiteVisit
+        self.sv.delete()
+        r = self.get('purchase-detail', self.purchase)
+        self.assertIsNone(r.json()['site_visit'])
+        self.assertFalse(SiteVisit.objects.filter(lead=self.lead).exists())
