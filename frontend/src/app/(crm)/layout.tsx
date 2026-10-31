@@ -355,8 +355,8 @@ export default function DashboardLayout({
   // in a notification) is sent to the only module the mode carries.
   useEffect(() => {
     if (bizMode !== "b2b") return;
-    // Referral Rewards too: wholesale staff can refer a customer like anyone.
-    const allowed = [`/inventory`, `/team`, `/referral-rewards`];
+    // Tasks and Referral Rewards too: every role has those.
+    const allowed = [`/inventory`, `/team`, `/tasks`, `/referral-rewards`];
     if (!allowed.some(p => pathname === p || pathname.startsWith(`${p}/`))) router.replace(`/inventory`);
   }, [bizMode, pathname, router]);
 
@@ -713,7 +713,8 @@ export default function DashboardLayout({
     { href: `/closed-deals`,  label: "Closed Deals",    Icon: Nav.Trophy, closedDealsFeature: true, leadsDeskFeature: true, perm: "closed-deals" },
     { href: `/campaigns`,     label: "Campaigns",       Icon: Nav.Campaigns, managerFeature: true, leadsDeskFeature: true },
     { href: `/calls`,         label: "Calls",           Icon: Nav.Phone },
-    { href: `/tasks`,         label: "Tasks",           Icon: Nav.Tasks },
+    // Anyone can be given a task, so everyone has the module.
+    { href: `/tasks`,         label: "Tasks",           Icon: Nav.Tasks, everyoneFeature: true, inB2B: true },
     { inventoryGroup: true },
     { href: `/leaderboard`,    label: "Leaderboard",     Icon: Nav.Leaderboard },
     { href: `/rewards`,       label: "Rewards",         Icon: Nav.Rewards, rewardsFeature: true },
@@ -797,14 +798,16 @@ export default function DashboardLayout({
       : seesAllModules || projectsOnly;
 
   // Manager features visible to manager, general manager, and admin
-  const navItems = allNavItems.filter(item => {
+  const visibleItems = allNavItems.filter(item => {
     if (item.inventoryGroup) {
       return canSeeInventory;
     }
-    // Personal, not a module: what the customers someone referred earned them.
-    // Every role sees their own — a custom user type and the focused desks
-    // included — so it is decided before any of the rules below. The server
-    // answers every signed-in user (rewards.views.ReferralRewardsView).
+    // What every role has, whatever else it is limited to: Tasks (anyone can be
+    // given one) and Referral Rewards (anyone can refer a customer). Decided
+    // before any of the rules below, so a custom user type, the focused desks
+    // and the wholesale side all keep them. The server answers every signed-in
+    // user for both (tasks.views.TaskViewSet, rewards.views.ReferralRewardsView),
+    // each scoped to what that person may see.
     if (item.everyoneFeature) {
       return true;
     }
@@ -940,6 +943,15 @@ export default function DashboardLayout({
     }
     return true;
   });
+
+  // A sidebar cut down to one desk, a custom user type or the wholesale side
+  // leads with that person's own modules; Tasks and Referral Rewards, which
+  // everyone has, follow them rather than pushing them down the list.
+  const narrowSidebar = onCustomRole || bizMode === "b2b" || isDocOnly || isAccountsOnly
+    || isPurchaseOnly || isPmOnly || isLiasoningOnly || isLeadsDeskOnly;
+  const navItems = narrowSidebar
+    ? [...visibleItems.filter(i => !i.everyoneFeature), ...visibleItems.filter(i => i.everyoneFeature)]
+    : visibleItems;
 
   // ── Mobile tab bar ──
   // Built from the already-filtered sidebar list, in TAB_BAR_HREFS order, so a

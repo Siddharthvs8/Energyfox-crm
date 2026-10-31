@@ -197,6 +197,11 @@ export default function RolesSection({ domain, isAdmin }: { domain: string; isAd
               <p className="text-sm font-bold text-slate-800 mb-2">
                 {kind === "modules" ? "Modules they can open" : "What they can do"}
               </p>
+              {kind === "modules" && (
+                <p className="-mt-1 mb-2 text-xs text-slate-400">
+                  Tasks and Referral Rewards are not listed: every user has them.
+                </p>
+              )}
               <div className="space-y-3">
                 {Object.entries(byGroup(catalog?.[kind] || [])).map(([group, perms]) => {
                   const all = perms.every(p => form.permissions.includes(p.key));

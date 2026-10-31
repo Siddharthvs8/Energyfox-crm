@@ -16,7 +16,8 @@ MODULE_PERMISSIONS = [
     ('closed-deals', 'Closed Deals', 'Core'),
     ('campaigns', 'Campaigns', 'Core'),
     ('calls', 'Calls', 'Core'),
-    ('tasks', 'Tasks', 'Core'),
+    # Not Tasks: every user has it, whatever their role (layout.tsx,
+    # `everyoneFeature`), so there is nothing to grant. Referral Rewards the same.
 
     ('documentation', 'Documentation Stage 1', 'Documentation'),
     ('documentation-stage2', 'Documentation Stage 2', 'Documentation'),
