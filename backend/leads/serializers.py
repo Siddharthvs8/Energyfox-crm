@@ -485,6 +485,7 @@ class LeadSerializer(serializers.ModelSerializer):
     # The tele caller who worked the lead, which is not the same as the current
     # owner once it has been handed to a BDE — both are shown as its owners.
     tele_caller_name = serializers.SerializerMethodField()
+    referred_by_name = serializers.SerializerMethodField()
     can_edit_site_visit = serializers.SerializerMethodField()
     # Whether this viewer may unlock a signed-off site visit, and whether one is
     # currently unlocked — the two the site-visit screen needs to decide between
@@ -596,6 +597,10 @@ class LeadSerializer(serializers.ModelSerializer):
             return f"{owner.first_name} {owner.last_name}".strip() or owner.username
         return None
 
+    def get_referred_by_name(self, obj):
+        u = obj.referred_by
+        return (f"{u.first_name} {u.last_name}".strip() or u.username) if u else None
+
     def _request_user(self):
         request = self.context.get('request')
         return request.user if request else None
@@ -699,6 +704,13 @@ class LeadSerializer(serializers.ModelSerializer):
                 if not bde:
                     raise serializers.ValidationError(
                         {"status": "Assign a BDE to this lead before marking it Converted."})
+        # A referrer belongs to the Referral source and no other. Moving a lead
+        # to another source takes the name off it, so a lead never reads
+        # "Website, referred by Anu".
+        source = data.get('source', self.instance.source if self.instance else 'manual')
+        if source != 'referral' and (data.get('referred_by')
+                                     or getattr(self.instance, 'referred_by_id', None)):
+            data['referred_by'] = None
         return data
 
 class MetaSyncScheduleSerializer(serializers.ModelSerializer):

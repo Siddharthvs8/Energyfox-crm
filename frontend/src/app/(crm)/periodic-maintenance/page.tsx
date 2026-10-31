@@ -15,7 +15,12 @@ type ScheduledRow = {
   next_due: string | null; next_sequence: number | null;
 };
 type EligibleRow = { id: number; first_name: string; last_name: string | null; phone: string | null;
-                     location: string | null; bde_name?: string | null };
+                     location: string | null; bde_name?: string | null;
+                     // The day their warranty certificate was generated, if it has been.
+                     warranty_date: string | null;
+                     // What the schedule is waiting on; null when the warranty
+                     // date is known and they can be put on it from that day.
+                     awaiting: "liasoning" | "certificate" | "completion_date" | null };
 
 /** Every visit still to be done, across all customers, soonest first. */
 type UpcomingRow = {
@@ -146,13 +151,16 @@ export default function PeriodicMaintenancePage() {
     finally { setImporting(false); if (importRef.current) importRef.current.value = ""; }
   };
 
-  const schedule = async (id: number) => {
-    setSchedulingId(id);
+  /** Put a customer on the schedule by hand. One the CRM installed starts from
+   *  their warranty date, which the server knows; a past customer needs the
+   *  day their project was completed. */
+  const schedule = async (row: EligibleRow) => {
+    setSchedulingId(row.id);
     try {
-      const r = await fetch(`${getApiBase(domain)}/api/leads/${id}/schedule-maintenance/`, {
+      const r = await fetch(`${getApiBase(domain)}/api/leads/${row.id}/schedule-maintenance/`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
-        body: JSON.stringify({ start_date: startDates[id] || today() }),
+        body: JSON.stringify(row.awaiting === "completion_date" ? { start_date: startDates[row.id] } : {}),
       });
       if (r.ok) load();
       else { const e = await r.json().catch(() => ({})); alert(e.error || "Could not schedule."); }
@@ -186,7 +194,7 @@ export default function PeriodicMaintenancePage() {
       <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Periodic Maintenance</h1>
-          <p className="text-sm text-slate-500 mt-1">Subsidy-redeemed / completed customers are scheduled for 5 years of maintenance with a tenure gap of 6 months.</p>
+          <p className="text-sm text-slate-500 mt-1">Customers are scheduled automatically from the day their warranty certificate is generated: 5 years of maintenance, a visit every 6 months.</p>
         </div>
         {/* Past customers: the ones installed before this CRM, who are still
             owed visits. Their schedule counts from the day the project finished. */}
@@ -295,7 +303,7 @@ export default function PeriodicMaintenancePage() {
         <div className="inline-flex rounded-xl bg-slate-100 p-1">
           {([["upcoming", "Upcoming Maintenance", fUpcoming.length],
              ["scheduled", "Scheduled Customers", fScheduled.length],
-             ["schedule", "Schedule a Customer", fEligible.length]] as const).map(([key, label, count]) => {
+             ["schedule", "Not Yet Scheduled", fEligible.length]] as const).map(([key, label, count]) => {
             // Upcoming reads red while something is actually due, matching the
             // sidebar badge.
             const alarm = key === "upcoming" && dueNow > 0;
@@ -340,7 +348,7 @@ export default function PeriodicMaintenancePage() {
           {tab === "upcoming" && (fUpcoming.length === 0 ? (
             <div className="bg-white border border-dashed border-slate-200 rounded-2xl p-10 text-center text-sm text-slate-400">
               {scheduled.length === 0
-                ? "Nothing scheduled yet — schedule a customer under Schedule a Customer."
+                ? "Nothing scheduled yet. Customers are scheduled automatically when their warranty certificate is generated."
                 : upcoming.length === 0
                   ? "Every scheduled visit is done."
                   : "No visits match your search."}
@@ -410,7 +418,7 @@ export default function PeriodicMaintenancePage() {
           {tab === "scheduled" && (fScheduled.length === 0 ? (
             <div className="bg-white border border-dashed border-slate-200 rounded-2xl p-10 text-center text-sm text-slate-400">
               {scheduled.length === 0
-                ? "No customers scheduled yet — schedule one under Schedule a Customer."
+                ? "No customers scheduled yet. They are scheduled automatically when their warranty certificate is generated."
                 : "No customers match your search."}
             </div>
           ) : (
@@ -463,44 +471,80 @@ export default function PeriodicMaintenancePage() {
           ))}
 
           {/* ── Not yet scheduled ──
-              Installed customers waiting to be put on a plan. */}
-          {tab === "schedule" && (fEligible.length === 0 ? (
-            <div className="bg-white border border-dashed border-slate-200 rounded-2xl p-10 text-center text-sm text-slate-400">
-              {eligible.length === 0
-                ? "Every installed customer is already scheduled."
-                : "No customers match your search."}
-            </div>
-          ) : (
-            <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-              <table className="w-full text-sm">
-                <tbody>
+              A customer the CRM installed is put on the schedule by their
+              warranty certificate being generated, from that day, so there is
+              nothing to pick here: each row says what it is still waiting on.
+              A past customer, added by hand, has no warranty in the CRM and is
+              scheduled from the day their project was completed. */}
+          {tab === "schedule" && (
+            <>
+              <p className="mb-4 -mt-1 text-xs text-slate-500">
+                Customers installed through the CRM go on the schedule automatically the day their
+                warranty certificate is generated: 10 visits, one every 6 months from that date.
+              </p>
+              {fEligible.length === 0 ? (
+                <div className="bg-white border border-dashed border-slate-200 rounded-2xl p-10 text-center text-sm text-slate-400">
+                  {eligible.length === 0
+                    ? "Every installed customer is already scheduled."
+                    : "No customers match your search."}
+                </div>
+              ) : (
+                <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden divide-y divide-slate-50">
                   {fEligible.map(r => (
-                    <tr key={r.id} className="border-b border-slate-50 hover:bg-slate-50/60">
-                      <td className="px-5 py-3">
+                    <div key={r.id} className="px-5 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-4 hover:bg-slate-50/60">
+                      <div className="min-w-0">
                         <span className="flex items-center gap-2 flex-wrap">
-                          <p className="font-semibold text-slate-800">{r.first_name} {r.last_name}</p>
+                          <p className="font-semibold text-sm text-slate-800">{r.first_name} {r.last_name}</p>
                           <BdeTag name={r.bde_name} />
                         </span>
                         <p className="text-[11px] text-slate-400">{r.phone || "—"}{r.location ? ` · ${r.location}` : ""}</p>
-                      </td>
-                      <td className="px-5 py-3">
-                        <input type="date" value={startDates[r.id] || today()}
-                          onChange={e => setStartDates(p => ({ ...p, [r.id]: e.target.value }))}
-                          className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all" />
-                      </td>
-                      <td className="px-5 py-3 text-right">
-                        <button onClick={() => schedule(r.id)} disabled={schedulingId === r.id}
-                          title="10 visits, one every 6 months, from the start date"
-                          className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-semibold hover:bg-indigo-700 disabled:opacity-50 transition">
-                          {schedulingId === r.id ? "Scheduling…" : "Schedule (5 yrs / 6 mo)"}
-                        </button>
-                      </td>
-                    </tr>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                        {r.awaiting === "liasoning" && (
+                          <span className="px-2.5 py-1 rounded-full bg-slate-100 text-slate-500 text-[11px] font-semibold"
+                            title="The warranty desk gets the customer once liasoning is signed off">
+                            Waiting for liasoning to finish
+                          </span>
+                        )}
+                        {r.awaiting === "certificate" && (
+                          <span className="px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 text-[11px] font-semibold"
+                            title="Generating it in Warranty schedules this customer from that day">
+                            Warranty certificate not generated yet
+                          </span>
+                        )}
+                        {/* Only when the certificate is already on file — the
+                            schedule was removed, and this puts it back. */}
+                        {r.awaiting === null && r.warranty_date && (
+                          <button onClick={() => schedule(r)} disabled={schedulingId === r.id}
+                            title="10 visits, one every 6 months, from the warranty date"
+                            className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-semibold hover:bg-indigo-700 disabled:opacity-50 transition">
+                            {schedulingId === r.id
+                              ? "Scheduling…"
+                              : `Schedule from warranty date (${new Date(r.warranty_date).toLocaleDateString("en-IN")})`}
+                          </button>
+                        )}
+                        {r.awaiting === "completion_date" && (
+                          <>
+                            <label className="text-[11px] font-semibold text-slate-400" htmlFor={`done-${r.id}`}>
+                              Past customer · project completed
+                            </label>
+                            <input id={`done-${r.id}`} type="date" value={startDates[r.id] || ""} max={today()}
+                              onChange={e => setStartDates(p => ({ ...p, [r.id]: e.target.value }))}
+                              className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all" />
+                            <button onClick={() => schedule(r)} disabled={schedulingId === r.id || !startDates[r.id]}
+                              title="10 visits, one every 6 months, from the day the project was completed"
+                              className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-semibold hover:bg-indigo-700 disabled:opacity-50 transition">
+                              {schedulingId === r.id ? "Scheduling…" : "Schedule (5 yrs / 6 mo)"}
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
                   ))}
-                </tbody>
-              </table>
-            </div>
-          ))}
+                </div>
+              )}
+            </>
+          )}
         </>
       )}
     </div>

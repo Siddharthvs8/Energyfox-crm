@@ -12,6 +12,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { getSourceLabel, formatCurrency } from "@/lib/mock-data";
 import FilterBar, { FilterField } from "@/components/FilterBar";
 import { Skeleton, SkeletonRegion, Spinner } from "@/components/Skeleton";
+import StaffPicker from "@/components/StaffPicker";
 
 function formatRelativeTime(dateStr: string) {
   if (!dateStr) return "";
@@ -332,7 +333,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   const [pendingTasks,   setPendingTasks]   = useState<PendingTask[]>([]);
   const blankPendingTask: Omit<PendingTask, "_key"> = { title: "", priority: "medium", due_date: "", due_time: "", assignee_id: "" };
 
-  const blank = { first_name: "", last_name: "", email: "", phone: "", company: "", district: "", installation_location: "", source: "manual", status: "new", value: "0", notes: "", assigned_to: "", product: "" };
+  const blank = { first_name: "", last_name: "", email: "", phone: "", company: "", district: "", installation_location: "", source: "manual", referred_by: "", status: "new", value: "0", notes: "", assigned_to: "", product: "" };
   const [form, setForm] = useState(blank);
   const [currentUser, setCurrentUser] = useState<any>(null);
   // ─── Dynamic lead statuses (standard + tenant custom) ──────────────────────
@@ -870,7 +871,9 @@ This cannot be undone.`)) return;
       ...form,
       notes: finalNotes,
       assigned_to: form.assigned_to ? parseInt(form.assigned_to) : null,
-      product: form.product ? parseInt(form.product) : null
+      product: form.product ? parseInt(form.product) : null,
+      // Only a Referral lead names a referrer; the server clears it otherwise.
+      referred_by: form.source === "referral" && form.referred_by ? parseInt(form.referred_by) : null,
     };
     delete (payload as any).value;  // deal value is entered by the BDE during the site visit, not the tele caller
     const method = editingLead ? "PATCH" : "POST";
@@ -931,7 +934,7 @@ This cannot be undone.`)) return;
   const openAdd  = () => { setEditingLead(null); setForm(blank); setPendingTasks([]); setNewEditNote(""); setShowModal(true); };
   const openEdit = (lead: any) => {
     setEditingLead(lead);
-    setForm({ first_name: lead.first_name || "", last_name: lead.last_name || "", email: lead.email || "", phone: lead.phone || "", company: lead.company || "", district: lead.district || "", installation_location: lead.installation_location || "", source: lead.source || "manual", status: lead.status || "new", value: (lead.value || 0).toString(), notes: lead.notes || "", assigned_to: lead.assigned_to?.toString() || "", product: lead.product?.toString() || "" });
+    setForm({ first_name: lead.first_name || "", last_name: lead.last_name || "", email: lead.email || "", phone: lead.phone || "", company: lead.company || "", district: lead.district || "", installation_location: lead.installation_location || "", source: lead.source || "manual", referred_by: lead.referred_by?.toString() || "", status: lead.status || "new", value: (lead.value || 0).toString(), notes: lead.notes || "", assigned_to: lead.assigned_to?.toString() || "", product: lead.product?.toString() || "" });
     setPendingTasks([]);
     setNewEditNote("");
     setShowModal(true);
@@ -1704,6 +1707,7 @@ This cannot be undone.`)) return;
                       {stageReached !== "all" && <StageReachedTag stage={stageReached} at={lead.stage_reached_at} />}
                       <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-semibold ${src.bg} ${src.text}`}>
                         {getSourceLabel(lead.source)}
+                        {lead.source === "referral" && lead.referred_by_name ? ` · ${lead.referred_by_name}` : ""}
                       </span>
                       {lead.next_task && <TaskTag task={lead.next_task} />}
                     </div>
@@ -1861,6 +1865,10 @@ This cannot be undone.`)) return;
                           </span>
                           {lead.meta_integration_name && (
                             <span className="block mt-1 text-[10px] font-medium text-blue-600 truncate max-w-[140px]">{lead.meta_integration_name}</span>
+                          )}
+                          {lead.source === "referral" && lead.referred_by_name && (
+                            <span className="block mt-1 text-[10px] font-medium text-purple-600 truncate max-w-[140px]"
+                              title={`Referred by ${lead.referred_by_name}`}>by {lead.referred_by_name}</span>
                           )}
                         </td>
 
@@ -2198,6 +2206,15 @@ This cannot be undone.`)) return;
                     <div className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"><I.ChevronDown /></div>
                   </div>
                 </div>
+                {/* Full width, straight under Source, and only for a referral:
+                    the member of staff who sent the customer our way. */}
+                {form.source === "referral" && (
+                  <div className="col-span-2">
+                    <label className={LABEL}>Referred By</label>
+                    <StaffPicker value={form.referred_by} onChange={id => setForm({ ...form, referred_by: id })}
+                      currentName={editingLead?.referred_by_name} inputClassName={FIELD} />
+                  </div>
+                )}
                 <div>
                   <label className={LABEL}>Status</label>
                   <div className="relative">
@@ -2423,6 +2440,7 @@ This cannot be undone.`)) return;
                     { label: "District", val: viewLead.district || "—" },
                     { label: "Source",   val: (() => { const s = SOURCE_META[viewLead.source] || { bg: "bg-slate-100", text: "text-slate-600" }; return <span className={`px-2 py-0.5 rounded-md text-[11px] font-semibold ${s.bg} ${s.text}`}>{getSourceLabel(viewLead.source)}</span>; })() },
                     ...(viewLead.meta_integration_name ? [{ label: "Meta Account", val: viewLead.meta_integration_name }] : []),
+                    ...(viewLead.source === "referral" && viewLead.referred_by_name ? [{ label: "Referred By", val: viewLead.referred_by_name }] : []),
                     { label: "Value",    val: formatCurrency(viewLead.value) },
                     { label: "Assigned", val: viewLead.assigned_to_name || "Unassigned" },
                   ].map(({ label, val }) => (

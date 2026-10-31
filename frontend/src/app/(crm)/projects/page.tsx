@@ -28,7 +28,7 @@ type Project = {
   system_type: string; system_type_display: string;
   price_dcr: string; price_non_dcr: string; subsidy_amount: string;
   tax_percent: string; price_includes_tax: boolean;
-  bde_incentive: string; telecaller_incentive: string;
+  bde_incentive: string; telecaller_incentive: string; referral_reward: string;
   pricing: Record<string, { price: string; base_amount: string; tax_amount: string; total: string }>;
   lines: Line[]; line_count: number; quoted_count: number;
 };
@@ -181,7 +181,7 @@ export default function ProjectsPage() {
   const [role, setRole] = useState<string | null>(null);
   const readOnly = role === null || ["bde", "tele_caller"].includes(role);
   const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState({ name: "", system_type: "", capacity: "", price_dcr: "", price_non_dcr: "", subsidy_amount: "", tax_percent: "", notes: "", price_includes_tax: false, bde_incentive: "", telecaller_incentive: "" });
+  const [form, setForm] = useState({ name: "", system_type: "", capacity: "", price_dcr: "", price_non_dcr: "", subsidy_amount: "", tax_percent: "", notes: "", price_includes_tax: false, bde_incentive: "", telecaller_incentive: "", referral_reward: "" });
   const [lines, setLines] = useState<Line[]>([]);
 
   const auth = () => ({ Authorization: `Bearer ${localStorage.getItem(`${domain}_access`)}` });
@@ -204,7 +204,7 @@ export default function ProjectsPage() {
 
   const openNew = () => {
     setCreating(true); setEditing(null);
-    setForm({ name: "", system_type: "", capacity: "", price_dcr: "", price_non_dcr: "", subsidy_amount: "", tax_percent: "", notes: "", price_includes_tax: false, bde_incentive: "", telecaller_incentive: "" });
+    setForm({ name: "", system_type: "", capacity: "", price_dcr: "", price_non_dcr: "", subsidy_amount: "", tax_percent: "", notes: "", price_includes_tax: false, bde_incentive: "", telecaller_incentive: "", referral_reward: "" });
     setLines([]);
   };
   const openEdit = (p: Project) => {
@@ -218,6 +218,7 @@ export default function ProjectsPage() {
       price_includes_tax: !!p.price_includes_tax,
       bde_incentive: Number(p.bde_incentive) ? String(Number(p.bde_incentive)) : "",
       telecaller_incentive: Number(p.telecaller_incentive) ? String(Number(p.telecaller_incentive)) : "",
+      referral_reward: Number(p.referral_reward) ? String(Number(p.referral_reward)) : "",
     });
     setLines((p.lines || []).map(l => ({ ...l })));
   };
@@ -239,6 +240,7 @@ export default function ProjectsPage() {
       tax_percent: form.tax_percent || 0,
       bde_incentive: form.bde_incentive || 0,
       telecaller_incentive: form.telecaller_incentive || 0,
+      referral_reward: form.referral_reward || 0,
       lines: lines.filter(l => l.item_name.trim()).map((l, i) => ({ ...l, position: i })),
     };
     const url = editing ? `${api}/api/projects/${editing.id}/` : `${api}/api/projects/`;
@@ -421,6 +423,12 @@ export default function ProjectsPage() {
                         Incentive · BDE ₹{money(p.bde_incentive)} · TC ₹{money(p.telecaller_incentive)}
                       </span>
                     )}
+                    {Number(p.referral_reward) > 0 && (
+                      <span className="block text-[10px] font-semibold text-purple-600 mt-0.5"
+                        title="Paid to the staff member who referred the customer, when they finish paying">
+                        Referral reward · ₹{money(p.referral_reward)}
+                      </span>
+                    )}
                   </td>
                   <td className="py-4 px-6 text-center text-slate-600">{p.line_count}</td>
                   <td className="py-4 px-6 text-center text-slate-400">{p.quoted_count || "—"}</td>
@@ -546,9 +554,10 @@ export default function ProjectsPage() {
 
               {/* ── What selling it pays the team ── */}
               <div className="border border-emerald-200 bg-emerald-50/40 rounded-xl px-4 py-4">
-                <p className="text-sm font-bold text-slate-800">Sales incentives</p>
+                <p className="text-sm font-bold text-slate-800">Sales incentives &amp; referral reward</p>
                 <p className="text-[11px] text-slate-500 mt-0.5">
-                  Paid on the Rewards page to the deal's BDE and tele caller, in the month the customer finishes paying.
+                  Paid on the Rewards page in the month the customer finishes paying: incentives to the deal's BDE and
+                  tele caller, the referral reward to the staff member who referred the customer.
                 </p>
                 <div className="mt-3 grid sm:grid-cols-2 gap-4">
                   <div>
@@ -564,6 +573,18 @@ export default function ProjectsPage() {
                       placeholder="500" className={inputCls} />
                     <p className="text-[10px] text-slate-400 mt-1">
                       Paid only when a tele caller worked the deal.
+                    </p>
+                  </div>
+                  {/* Not part of selling: anyone on the staff earns it by
+                      sending a customer our way (the lead's Referred By). */}
+                  <div>
+                    <label className={labelCls}>Referral reward (₹)</label>
+                    <input type="number" min="0" step="0.01" value={form.referral_reward}
+                      onChange={e => setForm({ ...form, referral_reward: e.target.value })}
+                      placeholder="1000" className={inputCls} />
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      For any member of staff: paid to whoever referred the customer
+                      (Source: Referral), when the customer finishes paying.
                     </p>
                   </div>
                 </div>

@@ -7310,6 +7310,294 @@ class EditAndRemoveMaintenanceTests(TestCase):
         self.assertTrue(self.PM.objects.filter(lead=self.lead).exists())
 
 
+class MaintenanceFromWarrantyTests(TestCase):
+    """A customer the CRM installed goes on periodic maintenance by themselves,
+    counted from the day their warranty certificate is generated."""
+
+    def setUp(self):
+        import shutil
+        import tempfile
+        from django.test import override_settings
+        media = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, media, ignore_errors=True)
+        overridden = override_settings(MEDIA_ROOT=media)
+        overridden.enable()
+        self.addCleanup(overridden.disable)
+
+        self.docstaff = mk('mw_doc', 'documentation_staff')
+        self.officer = mk('mw_officer', 'liasoning_officer')
+        self.lead = self.customer('Asha')
+        self.today = timezone.localdate()
+
+    @staticmethod
+    def customer(name, **flags):
+        """Installed, liasoning signed off, now at the warranty desk."""
+        state = dict(pushed_to_project=True, pushed_to_liasoning=True, pushed_to_warranty=True)
+        state.update(flags)
+        lead = Lead.objects.create(first_name=name, phone='9895000301', status='converted',
+                                   pushed_to_liasoning_at=timezone.now(), **state)
+        Warranty.objects.get_or_create(lead=lead)
+        return lead
+
+    def upload(self, name, lead=None):
+        return self.client.post(
+            f'/api/leads/{(lead or self.lead).id}/warranty/documents/',
+            data={'doc_type': 'warranty',
+                  'file': SimpleUploadedFile(name, b'%PDF-1.4 warranty', content_type='application/pdf')},
+            HTTP_AUTHORIZATION=token_for(self.docstaff))
+
+    def file_certificate(self, lead, on):
+        """A certificate already on file, generated at `on` (an aware datetime)."""
+        doc = WarrantyDocument.objects.create(
+            warranty=lead.warranty, doc_type='warranty',
+            file=SimpleUploadedFile(f'Warranty_Certificate_{lead.first_name}.pdf', b'%PDF-1.4 w'))
+        WarrantyDocument.objects.filter(pk=doc.pk).update(uploaded_at=on)
+        return doc
+
+    def plan(self, lead=None):
+        from .models import PeriodicMaintenance
+        return PeriodicMaintenance.objects.filter(lead=lead or self.lead).first()
+
+    def eligible(self):
+        r = self.client.get('/api/leads/periodic-maintenance/', HTTP_AUTHORIZATION=token_for(self.officer))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        return {row['first_name']: row for row in r.json()['eligible']}
+
+    def schedule(self, lead, **data):
+        return self.client.post(f'/api/leads/{lead.id}/schedule-maintenance/', data=data,
+                                content_type='application/json', HTTP_AUTHORIZATION=token_for(self.officer))
+
+    # ── Generating the certificate ──
+    def test_generating_the_certificate_schedules_maintenance_from_that_day(self):
+        from leads.views import LeadViewSet
+        r = self.upload('Warranty_Certificate_Asha.pdf')
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        self.assertEqual(r.json()['maintenance_scheduled_from'], self.today.isoformat())
+        plan = self.plan()
+        self.assertEqual(plan.start_date, self.today)
+        dues = list(plan.visits.order_by('sequence').values_list('due_date', flat=True))
+        self.assertEqual(len(dues), 10)
+        self.assertEqual(dues[0], LeadViewSet._add_months(self.today, 6))
+        self.assertEqual(dues[-1], LeadViewSet._add_months(self.today, 60))
+        self.assertEqual(plan.created_by, self.docstaff)
+        from .models import ActivityLog
+        self.assertTrue(ActivityLog.objects.filter(
+            lead=self.lead, description__contains='from the warranty date').exists())
+
+    def test_another_file_in_the_warranty_slot_does_not(self):
+        r = self.upload('panel_warranty_card.pdf')
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        self.assertIsNone(r.json()['maintenance_scheduled_from'])
+        self.assertIsNone(self.plan())
+
+    def test_a_customer_already_on_the_schedule_keeps_it(self):
+        from .models import PeriodicMaintenance
+        PeriodicMaintenance.objects.create(lead=self.lead, start_date=date(2026, 1, 1))
+        r = self.upload('Warranty_Certificate_Asha.pdf')
+        self.assertIsNone(r.json()['maintenance_scheduled_from'])
+        self.assertEqual(self.plan().start_date, date(2026, 1, 1))
+
+    def test_regenerating_after_a_reset_does_not_move_the_schedule(self):
+        first = self.upload('Warranty_Certificate_Asha.pdf').json()
+        self.client.delete(f'/api/leads/{self.lead.id}/warranty/documents/{first["id"]}/',
+                           HTTP_AUTHORIZATION=token_for(self.docstaff))
+        from .models import PeriodicMaintenance
+        PeriodicMaintenance.objects.filter(lead=self.lead).update(start_date=date(2026, 10, 1))
+        again = self.upload('Warranty_Certificate_Asha.pdf')
+        self.assertIsNone(again.json()['maintenance_scheduled_from'])
+        self.assertEqual(self.plan().start_date, date(2026, 10, 1))
+
+    def test_not_for_someone_who_is_not_a_maintenance_customer(self):
+        stray = self.customer('Stray', pushed_to_liasoning=False)
+        self.assertIsNone(self.upload('Warranty_Certificate_Stray.pdf', lead=stray).json()
+                          ['maintenance_scheduled_from'])
+        self.assertIsNone(self.plan(stray))
+
+    def test_the_certificate_and_its_schedule_land_together_or_not_at_all(self):
+        with patch('leads.views.LeadViewSet._build_maintenance_plan', side_effect=RuntimeError('db down')):
+            with self.assertRaises(RuntimeError):
+                self.upload('Warranty_Certificate_Asha.pdf')
+        self.assertFalse(WarrantyDocument.objects.filter(warranty__lead=self.lead).exists())
+
+    def test_the_day_is_the_companys_day(self):
+        from datetime import datetime, timezone as dt_timezone
+        # 8 pm UTC on the 20th is half past one on the 21st in India.
+        self.file_certificate(self.lead, datetime(2026, 10, 20, 20, 0, tzinfo=dt_timezone.utc))
+        self.assertEqual(Warranty.objects.get(lead=self.lead).certificate_generated_on, date(2026, 10, 21))
+
+    # ── Completing the warranty ──
+    def complete(self, lead=None):
+        return self.client.post(f'/api/leads/{(lead or self.lead).id}/complete-warranty/',
+                                HTTP_AUTHORIZATION=token_for(self.docstaff))
+
+    def test_completing_a_warranty_without_a_certificate_schedules_from_that_day(self):
+        """Completed, it is locked against a certificate ever being attached,
+        so completing is the last chance to start the schedule."""
+        r = self.complete()
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(r.json()['maintenance_scheduled_from'], self.today.isoformat())
+        self.assertEqual(self.plan().start_date, self.today)
+
+    def test_completing_after_the_certificate_changes_nothing(self):
+        self.upload('Warranty_Certificate_Asha.pdf')
+        from .models import PeriodicMaintenance
+        PeriodicMaintenance.objects.filter(lead=self.lead).update(start_date=date(2026, 10, 2))
+        r = self.complete()
+        self.assertIsNone(r.json()['maintenance_scheduled_from'])
+        self.assertEqual(self.plan().start_date, date(2026, 10, 2))
+
+    # ── The list and the way back ──
+    def test_the_list_says_what_each_unscheduled_customer_is_waiting_on(self):
+        from datetime import datetime, timezone as dt_timezone
+        self.customer('Liasoning', pushed_to_warranty=False)
+        on_file = self.customer('OnFile')
+        self.file_certificate(on_file, datetime(2026, 9, 1, 6, 0, tzinfo=dt_timezone.utc))
+        closed = self.customer('Closed')
+        Warranty.objects.filter(lead=closed).update(
+            is_complete=True, completed_at=datetime(2026, 9, 5, 6, 0, tzinfo=dt_timezone.utc))
+        Lead.objects.create(first_name='Past', phone='9895000302', status='converted',
+                            pushed_to_liasoning=True, pushed_to_liasoning_at=timezone.now())
+        # A past customer whose liasoning sign-off carried them on to warranty
+        # is still scheduled from their completion date.
+        self.customer('PastAtWarranty', pushed_to_project=False)
+        rows = self.eligible()
+        self.assertEqual({n: (r['awaiting'], r['warranty_date']) for n, r in rows.items()}, {
+            'Asha': ('certificate', None),
+            'Liasoning': ('liasoning', None),
+            'OnFile': (None, '2026-09-01'),
+            'Closed': (None, '2026-09-05'),
+            'Past': ('completion_date', None),
+            'PastAtWarranty': ('completion_date', None),
+        })
+
+    def test_putting_one_back_starts_from_the_warranty_date_not_a_chosen_one(self):
+        from datetime import datetime, timezone as dt_timezone
+        self.file_certificate(self.lead, datetime(2026, 9, 1, 6, 0, tzinfo=dt_timezone.utc))
+        r = self.schedule(self.lead, start_date='2020-01-01')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(self.plan().start_date, date(2026, 9, 1))
+        self.assertEqual((r.json()['starts_from'], r.json()['warranty_date']), ('warranty', '2026-09-01'))
+
+    def test_no_schedule_before_the_certificate_for_a_customer_the_crm_installed(self):
+        r = self.schedule(self.lead, start_date='2026-09-01')
+        self.assertEqual(r.status_code, 400, r.content[:300])
+        self.assertIn('warranty certificate', r.json()['error'])
+        self.assertIsNone(self.plan())
+
+    def test_a_past_customer_is_scheduled_from_the_day_their_project_was_completed(self):
+        past = Lead.objects.create(first_name='Past', phone='9895000303', status='converted',
+                                   pushed_to_liasoning=True, pushed_to_liasoning_at=timezone.now())
+        self.assertEqual(self.schedule(past).status_code, 400)
+        ahead = (self.today + timedelta(days=3)).isoformat()
+        self.assertEqual(self.schedule(past, start_date=ahead).status_code, 400)
+        r = self.schedule(past, start_date='2023-03-15')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(self.plan(past).start_date, date(2023, 3, 15))
+        self.assertEqual(r.json()['starts_from'], 'completion')
+
+    # ── Catching up the certificates generated before this ──
+    def test_the_migration_schedules_certificates_already_on_file(self):
+        import importlib
+        from datetime import datetime, timezone as dt_timezone
+        from django.apps import apps
+        from .models import PeriodicMaintenance
+        catch_up = importlib.import_module(
+            'leads.migrations.0081_schedule_maintenance_from_warranty').schedule_from_warranty
+
+        generated = self.customer('Generated')
+        self.file_certificate(generated, datetime(2026, 8, 10, 4, 0, tzinfo=dt_timezone.utc))
+        # A second, later certificate (made again after a reset) does not win,
+        # and nor does the completion that followed.
+        self.file_certificate(generated, datetime(2026, 8, 20, 4, 0, tzinfo=dt_timezone.utc))
+        Warranty.objects.filter(lead=generated).update(
+            is_complete=True, completed_at=datetime(2026, 8, 30, 4, 0, tzinfo=dt_timezone.utc))
+        closed = self.customer('Closed')         # completed with no certificate
+        Warranty.objects.filter(lead=closed).update(
+            is_complete=True, completed_at=datetime(2026, 8, 25, 4, 0, tzinfo=dt_timezone.utc))
+        scheduled = self.customer('Scheduled')
+        self.file_certificate(scheduled, datetime(2026, 8, 10, 4, 0, tzinfo=dt_timezone.utc))
+        PeriodicMaintenance.objects.create(lead=scheduled, start_date=date(2026, 1, 5))
+        binned = self.customer('Binned', is_trashed=True)
+        self.file_certificate(binned, datetime(2026, 8, 10, 4, 0, tzinfo=dt_timezone.utc))
+        WarrantyDocument.objects.create(          # Asha has only some other paper
+            warranty=self.lead.warranty, doc_type='warranty',
+            file=SimpleUploadedFile('scan.pdf', b'%PDF-1.4 w'))
+
+        catch_up(apps, None)
+
+        plan = self.plan(generated)
+        self.assertEqual(plan.start_date, date(2026, 8, 10))
+        self.assertEqual(plan.visits.count(), 10)
+        self.assertEqual(plan.visits.order_by('sequence').first().due_date, date(2027, 2, 10))
+        self.assertEqual(self.plan(closed).start_date, date(2026, 8, 25))
+        self.assertEqual(self.plan(scheduled).start_date, date(2026, 1, 5))
+        self.assertIsNone(self.plan(binned))
+        self.assertIsNone(self.plan())
+        catch_up(apps, None)                      # running it again changes nothing
+        self.assertEqual(PeriodicMaintenance.objects.count(), 3)
+
+
+class ReferredByTests(TestCase):
+    """A Referral lead names the member of staff who referred it."""
+
+    def setUp(self):
+        from users.models import Branch
+        self.caller = mk('rf_caller', 'tele_caller')
+        self.anu = mk('rf_anu', 'bde')
+        self.anu.first_name, self.anu.last_name = 'Anu', 'S'
+        self.anu.branch = Branch.objects.create(name='Kollam', code='KLM')
+        self.anu.save()
+
+    def post(self, **data):
+        return self.client.post('/api/leads/', data={'first_name': 'Ravi', 'phone': '9895901001', **data},
+                                content_type='application/json', HTTP_AUTHORIZATION=token_for(self.caller))
+
+    def patch(self, lead, **data):
+        return self.client.patch(f'/api/leads/{lead.id}/', data=data, content_type='application/json',
+                                 HTTP_AUTHORIZATION=token_for(self.caller))
+
+    def test_a_referral_lead_records_who_referred_it(self):
+        r = self.post(source='referral', referred_by=self.anu.id)
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        self.assertEqual((r.json()['referred_by'], r.json()['referred_by_name']), (self.anu.id, 'Anu S'))
+        self.assertEqual(Lead.objects.get(pk=r.json()['id']).referred_by, self.anu)
+
+    def test_the_referrer_is_optional(self):
+        r = self.post(source='referral')
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        self.assertIsNone(r.json()['referred_by'])
+
+    def test_another_source_carries_no_referrer(self):
+        r = self.post(source='website', referred_by=self.anu.id)
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        self.assertIsNone(Lead.objects.get(pk=r.json()['id']).referred_by)
+
+    def test_moving_off_referral_takes_the_name_off(self):
+        lead = Lead.objects.create(first_name='Ravi', source='referral', referred_by=self.anu,
+                                   assigned_to=self.caller)
+        self.assertEqual(self.patch(lead, status='follow_up').status_code, 200)
+        self.assertEqual(Lead.objects.get(pk=lead.pk).referred_by, self.anu, 'an unrelated edit keeps it')
+        r = self.patch(lead, source='manual')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertIsNone(Lead.objects.get(pk=lead.pk).referred_by)
+
+    def test_the_picker_lists_all_active_staff_to_anyone(self):
+        gone = mk('rf_gone', 'tele_caller')
+        gone.is_active = False
+        gone.save()
+        r = self.client.get('/api/users/referrers/', HTTP_AUTHORIZATION=token_for(self.caller))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        people = {p['id']: p for p in r.json()}
+        # Company-wide: the tele caller is in no team or branch with Anu.
+        self.assertEqual((people[self.anu.id]['name'], people[self.anu.id]['role_label']), ('Anu S', 'BDE'))
+        self.assertIn(self.caller.id, people)
+        self.assertNotIn(gone.id, people)
+        self.assertEqual(set(people[self.anu.id]), {'id', 'name', 'role_label'})
+
+    def test_the_picker_needs_a_login(self):
+        self.assertEqual(self.client.get('/api/users/referrers/').status_code, 401)
+
+
 class CompanyPerformanceTests(TestCase):
     """One report over the whole company, agreeing with every other screen.
 

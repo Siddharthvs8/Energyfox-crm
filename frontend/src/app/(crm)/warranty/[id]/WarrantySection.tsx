@@ -36,6 +36,14 @@ type OrgInfo = {
 
 const CERT_PREFIX = "Warranty_Certificate";
 
+// Issuing the warranty (generating the certificate, or completing it without
+// one) is what starts the customer's periodic maintenance. That happens in
+// another module, so the confirmation says so.
+const withSchedule = (message: string, from?: string | null) =>
+  from
+    ? `${message}\n\nPeriodic maintenance is scheduled from ${toDisplayDate(from)}: 10 visits, one every 6 months.`
+    : message;
+
 export default function WarrantySection({ leadId, canEdit, phone, email, customerName, onChanged }: {
   leadId: number | string; canEdit: boolean; phone?: string | null; email?: string | null; customerName?: string; onChanged?: () => void;
 }) {
@@ -182,7 +190,11 @@ export default function WarrantySection({ leadId, canEdit, phone, email, custome
       const latest = await saveScalars();
       if (!latest) return;
       const r = await fetch(completeUrl, { method: "POST", headers: authHeader() });
-      if (r.ok) { await refetch(); onChanged?.(); alert("Warranty marked complete."); }
+      if (r.ok) {
+        const d = await r.json().catch(() => ({}));
+        await refetch(); onChanged?.();
+        alert(withSchedule("Warranty marked complete.", d.maintenance_scheduled_from));
+      }
       else { const e = await r.json().catch(() => ({})); alert(e.error || "Could not complete."); }
     } catch { alert("Network error while completing."); }
     finally { setCompleting(false); }
@@ -342,8 +354,10 @@ export default function WarrantySection({ leadId, canEdit, phone, email, custome
         fd.append("file", new File([blob], filename, { type: "application/pdf" }));
         const r = await fetch(docsUrl, { method: "POST", headers: authHeader(), body: fd });
         if (r.ok) {
+          const d = await r.json().catch(() => ({}));
           await refetch();
-          alert("Warranty certificate generated and attached under Warranty Document.");
+          alert(withSchedule("Warranty certificate generated and attached under Warranty Document.",
+            d.maintenance_scheduled_from));
         } else {
           const e = await r.json().catch(() => ({}));
           alert(e.error || "Generated, but could not attach — downloading instead.");

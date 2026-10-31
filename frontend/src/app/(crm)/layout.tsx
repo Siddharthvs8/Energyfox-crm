@@ -174,6 +174,12 @@ const Nav = {
       <path d="M7.5 8a2.5 2.5 0 010-5C11 3 12 8 12 8s1-5 4.5-5a2.5 2.5 0 010 5" />
     </svg>
   ),
+  Referral: () => (
+    <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+      <path d="M15 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2" /><circle cx="8.5" cy="7" r="4" />
+      <path d="M20 8v6M23 11h-6" />
+    </svg>
+  ),
   Inventory: () => (
     <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
       <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z" />
@@ -349,7 +355,8 @@ export default function DashboardLayout({
   // in a notification) is sent to the only module the mode carries.
   useEffect(() => {
     if (bizMode !== "b2b") return;
-    const allowed = [`/inventory`, `/team`];
+    // Referral Rewards too: wholesale staff can refer a customer like anyone.
+    const allowed = [`/inventory`, `/team`, `/referral-rewards`];
     if (!allowed.some(p => pathname === p || pathname.startsWith(`${p}/`))) router.replace(`/inventory`);
   }, [bizMode, pathname, router]);
 
@@ -710,6 +717,8 @@ export default function DashboardLayout({
     { inventoryGroup: true },
     { href: `/leaderboard`,    label: "Leaderboard",     Icon: Nav.Leaderboard },
     { href: `/rewards`,       label: "Rewards",         Icon: Nav.Rewards, rewardsFeature: true },
+    // Anyone on the staff can refer a customer, so everyone gets this one.
+    { href: `/referral-rewards`, label: "Referral Rewards", Icon: Nav.Referral, everyoneFeature: true, inB2B: true },
     { href: `/my-performance`,label: "My Performance",  Icon: Nav.MyPerformance, hideForManager: true },
     { href: `/team-performance`,label: "Team Performance",Icon: Nav.Team, managerOnly: true },
     { href: `/company-performance`, label: "Company Performance", Icon: Nav.CompanyPerformance,
@@ -791,6 +800,13 @@ export default function DashboardLayout({
   const navItems = allNavItems.filter(item => {
     if (item.inventoryGroup) {
       return canSeeInventory;
+    }
+    // Personal, not a module: what the customers someone referred earned them.
+    // Every role sees their own — a custom user type and the focused desks
+    // included — so it is decided before any of the rules below. The server
+    // answers every signed-in user (rewards.views.ReferralRewardsView).
+    if (item.everyoneFeature) {
+      return true;
     }
     // Custom user types are decided purely by their permission list — none of
     // the role flags below apply to them.

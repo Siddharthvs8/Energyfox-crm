@@ -11,6 +11,7 @@ import { DetailSkeleton } from "@/components/Skeleton";
 import { getSourceLabel, formatCurrency } from "@/lib/mock-data";
 import SiteVisitSection from "./SiteVisitSection";
 import LeadQuotationsPanel from "@/components/LeadQuotationsPanel";
+import StaffPicker from "@/components/StaffPicker";
 
 export default function LeadDetailPage({
   params: paramsPromise,
@@ -90,6 +91,7 @@ export default function LeadDetailPage({
     district: "",
     installation_location: "",
     source: "manual",
+    referred_by: "",
     status: "new",
     value: "0",
     notes: "",
@@ -240,6 +242,7 @@ export default function LeadDetailPage({
       district: lead.district || "",
       installation_location: lead.installation_location || "",
       source: lead.source || "manual",
+      referred_by: lead.referred_by?.toString() || "",
       status: lead.status || "new",
       value: (lead.value || 0).toString(),
       notes: lead.notes || "",
@@ -379,6 +382,8 @@ export default function LeadDetailPage({
       district: form.district,
       installation_location: form.installation_location,
       source: form.source,
+      // Only a Referral lead names a referrer; the server clears it otherwise.
+      referred_by: form.source === "referral" && form.referred_by ? parseInt(form.referred_by) : null,
       status: form.status,
       notes: finalNotes,
       assigned_to: form.assigned_to ? parseInt(form.assigned_to) : null,
@@ -765,6 +770,7 @@ export default function LeadDetailPage({
                 </span>
                 <span className={`badge ${sourceColors[lead.source] || "bg-slate-100 text-slate-700"}`}>
                   {getSourceLabel(lead.source)}
+                  {lead.source === "referral" && lead.referred_by_name ? ` · by ${lead.referred_by_name}` : ""}
                 </span>
                 {lead.meta_integration_name && (
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold bg-blue-50 text-blue-700">
@@ -1514,6 +1520,16 @@ export default function LeadDetailPage({
                     </div>
                   </div>
                 </div>
+                {/* Full width, straight under Source, and only for a referral:
+                    the member of staff who sent the customer our way. */}
+                {form.source === "referral" && (
+                  <div className="col-span-2">
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Referred By</label>
+                    <StaffPicker value={form.referred_by} onChange={id => setForm({ ...form, referred_by: id })}
+                      currentName={lead.referred_by_name}
+                      inputClassName="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all" />
+                  </div>
+                )}
                 <div>
                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Status</label>
                   <div className="relative">

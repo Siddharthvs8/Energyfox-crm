@@ -3077,6 +3077,15 @@ class ProjectTests(TestCase):
         r = self.post('/api/projects/', {'name': 'Nope', 'system_type': 'off_grid'})
         self.assertEqual(r.status_code, 400)
 
+    def test_a_project_carries_a_referral_reward(self):
+        """Paid to whichever member of staff referred the customer; see
+        rewards.tests.ReferralRewardTests for when."""
+        p = self.post('/api/projects/', {'name': 'Referred', 'referral_reward': '1500'}).json()
+        self.assertEqual(p['referral_reward'], '1500.00')
+        changed = self.patch(f"/api/projects/{p['id']}/", {'referral_reward': '2000'}).json()
+        self.assertEqual(changed['referral_reward'], '2000.00')
+        self.assertEqual(self.post('/api/projects/', {'name': 'Plain'}).json()['referral_reward'], '0.00')
+
     def test_a_duplicate_keeps_the_system_type(self):
         """It is the same system, so the copy is the same arrangement."""
         p = self.post('/api/projects/', {'name': 'Dup', 'system_type': 'micro_inverter'}).json()

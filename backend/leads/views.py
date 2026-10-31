@@ -2,7 +2,7 @@ from rest_framework import viewsets, status, permissions, parsers
 from core.permissions import MetaIntegrationAccess, IsAdminOnly
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.http import HttpResponse
 import csv
 import io
@@ -4142,10 +4142,18 @@ class LeadViewSet(viewsets.ModelViewSet):
             return Response({'error': 'doc_type and file are required.'}, status=status.HTTP_400_BAD_REQUEST)
         if doc_type not in {k for k, _ in Warranty.DOC_SLOTS}:
             return Response({'error': 'Unknown document type.'}, status=status.HTTP_400_BAD_REQUEST)
-        doc = WarrantyDocument.objects.create(
-            warranty=rec, doc_type=doc_type, file=file,
-            uploaded_by=request.user if request.user.is_authenticated else None)
-        return Response(WarrantyDocumentSerializer(doc).data, status=status.HTTP_201_CREATED)
+        with transaction.atomic():
+            doc = WarrantyDocument.objects.create(
+                warranty=rec, doc_type=doc_type, file=file,
+                uploaded_by=request.user if request.user.is_authenticated else None)
+            # Generating the certificate is what puts the customer on periodic
+            # maintenance, counted from today. The two land together or not at
+            # all, so a certificate is never on file with its schedule missing.
+            started = (self._schedule_maintenance_from_warranty(lead, rec, request.user)
+                       if Warranty.is_certificate(doc) else None)
+        data = WarrantyDocumentSerializer(doc).data
+        data['maintenance_scheduled_from'] = started.isoformat() if started else None
+        return Response(data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['delete'], url_path='warranty/documents/(?P<doc_id>[0-9]+)')
     def warranty_delete_document(self, request, pk=None, doc_id=None):
@@ -4186,8 +4194,7 @@ class LeadViewSet(viewsets.ModelViewSet):
         # The generated certificate is the thing being sent; if staff attached
         # other files to the slot afterwards, prefer the certificate anyway.
         docs = list(rec.documents.filter(doc_type='warranty'))
-        doc = next((d for d in reversed(docs)
-                    if (d.file.name or '').split('/')[-1].startswith('Warranty_Certificate')),
+        doc = next((d for d in reversed(docs) if Warranty.is_certificate(d)),
                    docs[-1] if docs else None)
         if doc is None:
             return Response({'error': 'No warranty document to send. Generate the certificate first.'},
@@ -4273,16 +4280,23 @@ class LeadViewSet(viewsets.ModelViewSet):
         rec, _ = Warranty.objects.get_or_create(lead=lead)
         if rec.is_complete:
             return Response({'error': 'Warranty is already completed.'}, status=status.HTTP_400_BAD_REQUEST)
-        rec.is_complete = True
-        rec.completed_at = timezone.now()
-        rec.completed_by = request.user if request.user.is_authenticated else None
-        rec.save(update_fields=['is_complete', 'completed_at', 'completed_by', 'updated_at'])
-        ActivityLog.objects.create(
-            activity_type='note_added', description="Warranty completed.",
-            actor=request.user if request.user.is_authenticated else None,
-            lead=lead, extra={'auto_generated': True})
+        with transaction.atomic():
+            rec.is_complete = True
+            rec.completed_at = timezone.now()
+            rec.completed_by = request.user if request.user.is_authenticated else None
+            rec.save(update_fields=['is_complete', 'completed_at', 'completed_by', 'updated_at'])
+            ActivityLog.objects.create(
+                activity_type='note_added', description="Warranty completed.",
+                actor=request.user if request.user.is_authenticated else None,
+                lead=lead, extra={'auto_generated': True})
+            # Usually the certificate scheduled them already. One completed
+            # without a certificate is locked against attaching one now, so
+            # completing it is what starts their maintenance, from today.
+            started = self._schedule_maintenance_from_warranty(lead, rec, request.user)
         fire_automation('warranty_completed', lead)
-        return Response(self._warranty_payload(lead, request))
+        payload = self._warranty_payload(lead, request)
+        payload['maintenance_scheduled_from'] = started.isoformat() if started else None
+        return Response(payload)
 
     # ── Liasoning & Service (post-installation; handled by the liasoning officer) ──
     def _liasoning_payload(self, lead, request):
@@ -4520,6 +4534,7 @@ class LeadViewSet(viewsets.ModelViewSet):
     def _pm_detail(self, lead, request):
         from .access import can_access_liasoning
         plan = getattr(lead, 'periodic_maintenance', None)
+        warranty = getattr(lead, 'warranty', None)
 
         def name(u):
             return (f"{u.first_name} {u.last_name}".strip() or u.username) if u else None
@@ -4535,6 +4550,11 @@ class LeadViewSet(viewsets.ModelViewSet):
             'product_name': lead.product.name if lead.product else None,
             'bde_name': name(lead.bde),
             'plan': PeriodicMaintenanceSerializer(plan, context={'request': request}).data if plan else None,
+            # What the start date stands for: the warranty certificate for a
+            # customer the CRM installed, the project's completion for a past
+            # customer added by hand.
+            'starts_from': 'warranty' if lead.pushed_to_project else 'completion',
+            'warranty_date': warranty.issued_on if warranty else None,
             'can_edit': can_access_liasoning(request.user),
         }
 
@@ -4578,6 +4598,49 @@ class LeadViewSet(viewsets.ModelViewSet):
                              due_date=self._add_months(start, PeriodicMaintenance.GAP_MONTHS * i))
             for i in range(1, PeriodicMaintenance.VISIT_COUNT + 1)])
         return plan
+
+    def _start_maintenance(self, lead, start, user, from_warranty):
+        """Schedule a customer from `start`, and say so on their timeline."""
+        self._build_maintenance_plan(lead, start, user)
+        visits = (f"{PeriodicMaintenance.VISIT_COUNT} visits every "
+                  f"{PeriodicMaintenance.GAP_MONTHS} months")
+        ActivityLog.objects.create(
+            activity_type='note_added',
+            description=(f"Scheduled for periodic maintenance from the warranty date, "
+                         f"{start.strftime('%d/%m/%Y')}: {visits}."
+                         if from_warranty else
+                         f"Scheduled for periodic maintenance: {visits} from "
+                         f"{start.strftime('%d/%m/%Y')}."),
+            actor=user if getattr(user, 'is_authenticated', False) else None,
+            lead=lead, extra={'auto_generated': True})
+        # Once the schedule is committed: a rule may message the customer, and
+        # nobody should hear about a schedule that was rolled back. Outside a
+        # transaction this runs straight away.
+        transaction.on_commit(lambda: fire_automation(
+            'maintenance_scheduled', lead, {'start_date': start.isoformat()}))
+
+    def _schedule_maintenance_from_warranty(self, lead, rec, user):
+        """Put the customer on periodic maintenance from the day their warranty
+        was issued (Warranty.issued_on). Returns that day, or None if nothing
+        was scheduled.
+
+        Nothing is when they are already on the schedule (put there by hand
+        before this rule, or by a certificate since reset), when they are not a
+        maintenance customer, or when the warranty has not been issued.
+        """
+        if lead.is_trashed or not lead.pushed_to_liasoning:
+            return None
+        if PeriodicMaintenance.objects.filter(lead=lead).exists():
+            return None
+        start = rec.issued_on
+        if start is None:
+            return None
+        try:
+            with transaction.atomic():
+                self._start_maintenance(lead, start, user, from_warranty=True)
+        except IntegrityError:
+            return None             # scheduled a moment ago by another request
+        return start
 
     def _create_maintenance_customer(self, *, name, phone, completed_on, user):
         """A past customer, as a lead with a maintenance plan already running.
@@ -4794,8 +4857,8 @@ class LeadViewSet(viewsets.ModelViewSet):
         if not can_access_liasoning(request.user):
             return Response({'error': 'You do not have access to periodic maintenance.'}, status=status.HTTP_403_FORBIDDEN)
         qs = (maintenance_customers()
-              .select_related('periodic_maintenance')
-              .prefetch_related('periodic_maintenance__visits')
+              .select_related('periodic_maintenance', 'bde', 'warranty')
+              .prefetch_related('periodic_maintenance__visits', 'warranty__documents')
               .order_by('-pushed_to_liasoning_at'))
         today = timezone.localdate()
         # A visit starts calling for attention the day before it is due — the same
@@ -4842,7 +4905,23 @@ class LeadViewSet(viewsets.ModelViewSet):
                         'reschedule_reason': v.reschedule_reason,
                     })
             else:
-                eligible.append(base)
+                rec = getattr(lead, 'warranty', None)
+                issued = rec.issued_on if rec else None
+                eligible.append({
+                    **base,
+                    'warranty_date': issued,
+                    # What the schedule is waiting on. A customer the CRM
+                    # installed goes on it by themselves once their warranty
+                    # certificate is generated; one whose warranty is already
+                    # issued (their schedule was removed) can be put back from
+                    # that day. A past customer is scheduled from the day their
+                    # project was completed — even one whose liasoning sign-off
+                    # carried them on to the warranty desk.
+                    'awaiting': (None if issued
+                                 else 'completion_date' if not lead.pushed_to_project
+                                 else 'certificate' if lead.pushed_to_warranty
+                                 else 'liasoning'),
+                })
         # Soonest first — an overdue visit sorts above everything still ahead.
         upcoming.sort(key=lambda v: (v['due_date'], v['lead_id'], v['sequence']))
         return Response({'scheduled': scheduled, 'eligible': eligible, 'upcoming': upcoming})
@@ -4850,7 +4929,15 @@ class LeadViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='schedule-maintenance')
     def schedule_maintenance(self, request, pk=None):
         """Put a customer on the periodic maintenance schedule: 5 years of visits,
-        one every 6 months, starting from the given start date."""
+        one every 6 months.
+
+        Where it starts is not the caller's to pick for a customer the CRM
+        installed: it is the day their warranty certificate was generated, and
+        generating it schedules them by itself (warranty_add_document). This is
+        the way back for one whose schedule was later removed. A past customer,
+        added by hand, has no warranty here, so they are counted from the day
+        their project was completed, which the caller gives.
+        """
         from datetime import date as _date
         from .access import can_access_liasoning
         lead = self.get_object()
@@ -4860,25 +4947,28 @@ class LeadViewSet(viewsets.ModelViewSet):
             return Response({'error': 'This customer is not in liasoning & service yet.'}, status=status.HTTP_404_NOT_FOUND)
         if getattr(lead, 'periodic_maintenance', None):
             return Response({'error': 'This customer is already scheduled.'}, status=status.HTTP_400_BAD_REQUEST)
-        raw = (request.data.get('start_date') or '').strip()
-        try:
-            start = _date.fromisoformat(raw) if raw else timezone.localdate()
-        except ValueError:
-            return Response({'error': 'Enter a valid start date (YYYY-MM-DD).'}, status=status.HTTP_400_BAD_REQUEST)
-        plan = PeriodicMaintenance.objects.create(
-            lead=lead, start_date=start,
-            created_by=request.user if request.user.is_authenticated else None)
-        for i in range(1, PeriodicMaintenance.VISIT_COUNT + 1):
-            MaintenanceVisit.objects.create(
-                plan=plan, sequence=i,
-                due_date=self._add_months(start, PeriodicMaintenance.GAP_MONTHS * i))
-        ActivityLog.objects.create(
-            activity_type='note_added',
-            description=f"Scheduled for periodic maintenance: {PeriodicMaintenance.VISIT_COUNT} visits every "
-                        f"{PeriodicMaintenance.GAP_MONTHS} months from {start.strftime('%d/%m/%Y')}.",
-            actor=request.user if request.user.is_authenticated else None,
-            lead=lead, extra={'auto_generated': True})
-        fire_automation('maintenance_scheduled', lead, {'start_date': start.isoformat()})
+
+        rec = getattr(lead, 'warranty', None)
+        start = rec.issued_on if rec else None
+        from_warranty = start is not None
+        if not from_warranty and lead.pushed_to_project:
+            return Response({'error': "Maintenance starts from the day this customer's warranty "
+                                      "certificate is generated, and it has not been generated yet. "
+                                      "Generating it schedules them automatically."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if not from_warranty:
+            raw = str(request.data.get('start_date') or '').strip()
+            try:
+                start = _date.fromisoformat(raw) if raw else None
+            except ValueError:
+                start = None
+            if start is None:
+                return Response({'error': 'Enter the date the project was completed (YYYY-MM-DD).'},
+                                status=status.HTTP_400_BAD_REQUEST)
+            if start > timezone.localdate():
+                return Response({'error': 'The project cannot have been completed in the future.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+        self._start_maintenance(lead, start, request.user, from_warranty=from_warranty)
         return Response(self._pm_detail(lead, request))
 
     @action(detail=True, methods=['patch', 'delete'], url_path='maintenance-customer')
@@ -5164,8 +5254,10 @@ class LeadViewSet(viewsets.ModelViewSet):
         """Every lead this user is allowed to see, before any list filter."""
         user = self.request.user
         # site_visit is read for every row (the list's Site Visit button/indicator),
-        # so pull it in the same query instead of one per lead.
-        base = Lead.objects.select_related('assigned_to', 'tele_caller', 'bde', 'site_visit')
+        # so pull it in the same query instead of one per lead. So is the
+        # referrer, which the list names under a Referral source.
+        base = Lead.objects.select_related('assigned_to', 'tele_caller', 'bde', 'site_visit',
+                                           'referred_by')
         if user.sees_all_leads:
             # superadmin / admin / coo / sales & documentation managers / documentation staff
             queryset = base.all().order_by('-created_at')

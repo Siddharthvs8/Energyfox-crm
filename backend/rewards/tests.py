@@ -276,6 +276,170 @@ class IncentiveTests(GameTestCase):
                          {self.bde.id: Decimal('5000')})
 
 
+class ReferralCase(GameTestCase):
+    """A project with a referral reward, and referred deals on it."""
+
+    def setUp(self):
+        super().setUp()
+        from inventory.models import ProjectSpec
+        self.project = ProjectSpec.objects.create(
+            name='5 kW On-grid', bde_incentive=Decimal('2000'), telecaller_incentive=Decimal('500'),
+            referral_reward=Decimal('1000'))
+        self.clerk = mk('rw_clerk', 'accounts_staff', first_name='Devi', last_name='Accounts')
+        self.admin = mk('rw_ref_admin', 'admin')
+
+    def ordered(self, lead, project=None):
+        from inventory.models import Quotation
+        q = Quotation.objects.create(lead=lead, project=project or self.project, status='accepted')
+        Quotation.objects.filter(pk=q.pk).update(order_converted_at=timezone.now())
+
+    def referred(self, by, **flags):
+        lead = self.deal('100000', bde=self.bde, source='referral', referred_by=by, **flags)
+        self.ordered(lead)
+        return lead
+
+
+class ReferralRewardTests(ReferralCase):
+    """A Referral deal pays its project's referral reward to the member of
+    staff who referred it — whatever their role — when the customer finishes
+    paying."""
+    SEPT = (date(2026, 9, 1), date(2026, 9, 30))
+    OCT = (date(2026, 10, 1), date(2026, 10, 31))
+
+    def rewards(self, start, end):
+        return {uid: v['total'] for uid, v in engine.referral_rewards_between(start, end).items()}
+
+    def test_paid_to_the_referrer_whatever_their_role_once_the_customer_finishes_paying(self):
+        lead = self.referred(self.clerk)
+        self.paid(lead, '50000', date(2026, 9, 10))
+        self.instalment(lead, '50000', date(2026, 10, 5))
+        self.assertEqual(self.rewards(*self.SEPT), {})
+        self.assertEqual(self.rewards(*self.OCT), {self.clerk.id: Decimal('1000')})
+        deal = engine.referral_rewards_between(*self.OCT)[self.clerk.id]['deals'][0]
+        self.assertEqual((deal['lead'], deal['project'], deal['amount'], deal['as'], deal['paid_on']),
+                         (lead.id, '5 kW On-grid', '1000.00', 'referrer', '2026-10-05'))
+
+    def test_it_comes_on_top_of_the_sales_incentives(self):
+        lead = self.referred(self.caller, caller=self.caller)
+        self.paid(lead, '100000', date(2026, 9, 10))
+        self.assertEqual(self.rewards(*self.SEPT), {self.caller.id: Decimal('1000')})
+        self.assertEqual({u: v['total'] for u, v in engine.incentives_between(*self.SEPT).items()},
+                         {self.bde.id: Decimal('2000'), self.caller.id: Decimal('500')})
+
+    def test_nothing_without_a_referrer_a_reward_or_the_referral_source(self):
+        from inventory.models import ProjectSpec
+        nobody = self.referred(None)
+        other_source = self.deal('100000', bde=self.bde, source='website')
+        Lead.objects.filter(pk=other_source.pk).update(referred_by=self.clerk)
+        self.ordered(other_source)
+        unrewarded = self.deal('100000', bde=self.bde, source='referral', referred_by=self.clerk)
+        self.ordered(unrewarded, ProjectSpec.objects.create(name='3 kW'))
+        for lead in (nobody, other_source, unrewarded):
+            self.paid(lead, '100000', date(2026, 9, 10))
+        self.assertEqual(self.rewards(*self.SEPT), {})
+
+    def test_admins_see_every_referrer_this_month_and_last(self):
+        from datetime import timedelta
+        today = timezone.localdate()
+        self.paid(self.referred(self.clerk), '100000', today)
+        self.paid(self.referred(self.bde2), '100000', today.replace(day=1) - timedelta(days=1))
+        r = self.client.get('/api/rewards/', HTTP_AUTHORIZATION=token_for(self.admin)).json()['referrals']
+        now, before = r['this_month'], r['last_month']
+        self.assertEqual([(p['user'], p['name'], p['role'], p['total']) for p in now['people']],
+                         [(self.clerk.id, 'Devi Accounts', 'Accounts Staff', '1000.00')])
+        self.assertEqual(now['total'], '1000.00')
+        self.assertEqual([(p['user'], p['total']) for p in before['people']], [(self.bde2.id, '1000.00')])
+        self.assertEqual(before['key'], (today.replace(day=1) - timedelta(days=1)).strftime('%Y-%m'))
+
+    def test_a_player_sees_their_own_and_only_admins_see_the_list(self):
+        self.paid(self.referred(self.bde2), '100000', timezone.localdate())
+        mine = self.client.get('/api/rewards/', HTTP_AUTHORIZATION=token_for(self.bde2)).json()
+        self.assertEqual(mine['me']['referrals']['total'], '1000.00')
+        self.assertEqual(len(mine['me']['referrals']['deals']), 1)
+        self.assertIsNone(mine['referrals'])
+        theirs = self.client.get('/api/rewards/', HTTP_AUTHORIZATION=token_for(self.bde)).json()
+        self.assertEqual(theirs['me']['referrals'], {'total': '0.00', 'deals': []})
+
+    def test_the_table_shows_referral_money_only_where_it_shows_incentives(self):
+        self.paid(self.referred(self.bde2), '100000', timezone.localdate())
+        row = lambda board, who: next(r for r in board if r['user'] == who.id)  # noqa: E731
+        admin_board = self.client.get('/api/rewards/', HTTP_AUTHORIZATION=token_for(self.admin)).json()['board']
+        self.assertEqual(row(admin_board, self.bde2)['referrals'], '1000.00')
+        own = self.client.get('/api/rewards/', HTTP_AUTHORIZATION=token_for(self.bde2)).json()['board']
+        self.assertEqual(row(own, self.bde2)['referrals'], '1000.00')
+        other = self.client.get('/api/rewards/', HTTP_AUTHORIZATION=token_for(self.bde)).json()['board']
+        self.assertNotIn('referrals', row(other, self.bde2))
+
+
+class ReferralRewardsPageTests(ReferralCase):
+    """The Referral Rewards page: every member of staff sees what the customers
+    they referred earned them; the admins also see everyone's, by month."""
+    URL = '/api/rewards/referrals/'
+
+    def get(self, user, query=''):
+        return self.client.get(self.URL + query, HTTP_AUTHORIZATION=token_for(user))
+
+    def test_anyone_on_the_staff_sees_what_their_referrals_earned(self):
+        from datetime import timedelta
+        from inventory.models import ProjectSpec
+        today = timezone.localdate()
+        last_month_day = today.replace(day=1) - timedelta(days=1)
+        earned_now = self.referred(self.clerk)
+        self.paid(earned_now, '100000', today)
+        earned_before = self.referred(self.clerk)
+        self.paid(earned_before, '100000', last_month_day)
+        waiting = self.referred(self.clerk)
+        self.paid(waiting, '40000', today)
+        no_project = self.deal('100000', bde=self.bde, source='referral', referred_by=self.clerk)
+        lost = self.referred(self.clerk, is_lost=True)
+        no_reward = self.deal('100000', bde=self.bde, source='referral', referred_by=self.clerk)
+        self.ordered(no_reward, ProjectSpec.objects.create(name='3 kW'))
+        self.paid(self.referred(self.bde2), '100000', today)         # someone else's
+
+        r = self.get(self.clerk)
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        body = r.json()
+        me = body['me']
+        self.assertEqual((me['this_month']['total'], me['last_month']['total'],
+                          me['earned_total'], me['waiting_total']),
+                         ('1000.00', '1000.00', '2000.00', '1000.00'))
+        status = {row['lead']: row['status'] for row in me['referrals']}
+        self.assertEqual(status, {earned_now.id: 'earned', earned_before.id: 'earned',
+                                  waiting.id: 'waiting', no_project.id: 'no_project',
+                                  lost.id: 'lost', no_reward.id: 'no_reward'})
+        row = next(x for x in me['referrals'] if x['lead'] == earned_before.id)
+        self.assertEqual((row['earned_on'], row['reward'], row['project']),
+                         (last_month_day.isoformat(), '1000.00', '5 kW On-grid'))
+        self.assertIsNone(next(x for x in me['referrals'] if x['lead'] == no_project.id)['reward'])
+        self.assertEqual((body['is_admin'], body['month'], body['months']), (False, None, []))
+
+    def test_admins_also_see_everyone_by_month(self):
+        from datetime import timedelta
+        today = timezone.localdate()
+        last_month_day = today.replace(day=1) - timedelta(days=1)
+        self.paid(self.referred(self.clerk), '100000', today)
+        self.paid(self.referred(self.bde2), '100000', last_month_day)
+        body = self.get(self.admin).json()
+        self.assertTrue(body['is_admin'])
+        self.assertEqual(len(body['months']), 12)
+        self.assertEqual(body['months'][0]['key'], today.strftime('%Y-%m'))
+        self.assertEqual([(p['user'], p['role'], p['total']) for p in body['month']['people']],
+                         [(self.clerk.id, 'Accounts Staff', '1000.00')])
+        before = self.get(self.admin, f"?month={last_month_day.strftime('%Y-%m')}").json()['month']
+        self.assertEqual([(p['user'], p['total']) for p in before['people']], [(self.bde2.id, '1000.00')])
+
+    def test_a_month_that_makes_no_sense_is_refused(self):
+        from datetime import timedelta
+        ahead = (timezone.localdate().replace(day=28) + timedelta(days=5)).strftime('%Y-%m')
+        for month in ('2026-13', 'october', '2026-1', ahead):
+            self.assertEqual(self.get(self.admin, f'?month={month}').status_code, 400, month)
+        # Someone who is not an admin gets their own page, whatever they ask for.
+        self.assertEqual(self.get(self.clerk, '?month=nonsense').status_code, 200)
+
+    def test_it_needs_a_login(self):
+        self.assertEqual(self.client.get(self.URL).status_code, 401)
+
+
 class ContestTests(GameTestCase):
     def setUp(self):
         super().setUp()

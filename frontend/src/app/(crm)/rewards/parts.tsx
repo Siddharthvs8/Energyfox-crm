@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
-  BoardRow, Climb, Contest, Dashboard, IncentiveDeal, Me, MEDALS, Medal, PodiumRow, StatementLine, Tier,
+  BoardRow, Climb, Contest, Dashboard, IncentiveDeal, Me, MEDALS, Medal, PodiumRow, ReferralMonth, StatementLine, Tier,
   day, dayMonth, daysBetween, excludePayment, includePayment, inr, mediaSrc, num, pts, roleLabel, short, targetFor,
 } from "./lib";
 
@@ -157,10 +157,11 @@ export function Hero({ me, month, preview }: { me: Me; month: Dashboard["month"]
             )}
           </div>
         </div>
-        <div className="grid grid-cols-3 gap-2 sm:gap-3 lg:w-[400px]">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3 lg:w-[520px]">
           <HeroStat label="Rank" value={<>#{me.rank}</>} sub={`of ${me.of}`} />
           <HeroStat label="Coins" value={<span className="inline-flex items-center gap-1.5"><Coin size={20} />{me.coins}</span>} sub="this season" />
           <HeroStat label="Incentives" value={<CountUp value={num(me.incentives.total)} format={v => short(v)} />} sub="₹ this month" />
+          <HeroStat label="Referrals" value={<CountUp value={num(me.referrals?.total)} format={v => short(v)} />} sub="₹ this month" />
         </div>
       </div>
     </section>
@@ -299,6 +300,9 @@ export function Leaderboard({ rows, title, subtitle, onOpen, showMoney, limit }:
           {showMoney && r.incentives !== undefined && num(r.incentives) > 0 && (
             <p className="text-[10px] font-semibold text-emerald-600 tabular-nums">{inr(r.incentives)} inc.</p>
           )}
+          {showMoney && r.referrals !== undefined && num(r.referrals) > 0 && (
+            <p className="text-[10px] font-semibold text-purple-600 tabular-nums">{inr(r.referrals)} ref.</p>
+          )}
         </div>
       </div>
     );
@@ -386,6 +390,98 @@ export function IncentivesCard({ incentives, preview }: { incentives: { total: s
           ))}
         </ul>
       )}
+    </Card>
+  );
+}
+
+// ─── Referral rewards ────────────────────────────────────────────────────────
+/** A person's own referral rewards this month. Shown even when empty, so the
+ *  sales team knows referring a customer pays too. */
+export function MyReferralsCard({ referrals, preview }: { referrals: { total: string; deals: IncentiveDeal[] }; preview?: boolean }) {
+  return (
+    <Card className="p-5">
+      <CardHeader title="Referral rewards this month" subtitle="For customers you referred who finished paying." icon={<Icon.Gift />} />
+      <p className="mt-4 text-3xl font-black text-purple-600"><CountUp value={num(referrals.total)} format={v => inr(v)} /></p>
+      {referrals.deals.length === 0 ? (
+        <p className="mt-2 text-xs text-slate-500">{preview ? "No referral rewards earned yet this month." : "Refer a customer: when they buy and finish paying, the project's referral reward lands here."}</p>
+      ) : (
+        <ul className="mt-3 divide-y divide-slate-100">
+          {referrals.deals.map(d => (
+            <li key={d.lead} className="flex items-center justify-between gap-3 py-2.5">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-slate-800 truncate">{d.customer}</p>
+                <p className="text-[11px] text-slate-500 truncate">{d.project} · paid in full {day(d.paid_on)}</p>
+              </div>
+              <span className="text-sm font-bold text-purple-600 tabular-nums">{inr(d.amount)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {!preview && (
+        <Link href="/referral-rewards" className="mt-3 inline-block text-xs font-semibold text-purple-700 hover:text-purple-900">
+          See every customer you referred →
+        </Link>
+      )}
+    </Card>
+  );
+}
+
+/** One month's referral rewards, person by person, each with the deals that
+ *  earned them. Shared by the Rewards page and the Referral Rewards page. */
+export function ReferralPeople({ month }: { month: ReferralMonth }) {
+  if (month.people.length === 0) {
+    return <p className="mt-2 text-xs text-slate-500">No referral rewards earned in {month.label}.</p>;
+  }
+  return (
+    <ul className="mt-3 divide-y divide-slate-100">
+      {month.people.map(p => (
+        <li key={p.user} className="py-3">
+          <div className="flex items-center justify-between gap-3">
+            <p className="min-w-0 truncate text-sm font-semibold text-slate-800">
+              {p.name} <span className="ml-1 text-[11px] font-medium text-slate-400">{p.role}</span>
+            </p>
+            <span className="text-sm font-bold text-purple-600 tabular-nums">{inr(p.total)}</span>
+          </div>
+          <ul className="mt-1 space-y-0.5">
+            {p.deals.map(d => (
+              <li key={d.lead} className="flex items-center justify-between gap-3 text-[11px] text-slate-500">
+                <span className="min-w-0 truncate">{d.customer} · {d.project} · paid in full {day(d.paid_on)}</span>
+                <span className="tabular-nums">{inr(d.amount)}</span>
+              </li>
+            ))}
+          </ul>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Everyone owed a referral reward, whatever their role, for the admins who
+ *  pay them. Last month sits beside this one because rewards are paid after a
+ *  month ends — by then this month's list has started again from nothing. */
+export function ReferralRewardsCard({ months }: { months: { this_month: ReferralMonth; last_month: ReferralMonth } }) {
+  const [which, setWhich] = useState<"this_month" | "last_month">("this_month");
+  const month = months[which];
+  return (
+    <Card className="p-5">
+      <CardHeader title="Referral rewards"
+        subtitle="Owed to the staff member who referred each customer, once the customer finishes paying."
+        icon={<Icon.Gift />} />
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+        <p className="text-3xl font-black text-purple-600 tabular-nums">{inr(month.total)}</p>
+        <div className="inline-flex rounded-xl bg-slate-100 p-1" role="tablist" aria-label="Month">
+          {(["this_month", "last_month"] as const).map(key => (
+            <button key={key} type="button" role="tab" aria-selected={which === key} onClick={() => setWhich(key)}
+              className={`rounded-lg px-3 py-1 text-xs font-semibold transition ${which === key ? "bg-white text-purple-700 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>
+              {months[key].label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <ReferralPeople month={month} />
+      <Link href="/referral-rewards" className="mt-3 inline-block text-xs font-semibold text-purple-700 hover:text-purple-900">
+        Earlier months on the Referral Rewards page →
+      </Link>
     </Card>
   );
 }

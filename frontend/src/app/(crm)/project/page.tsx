@@ -28,6 +28,8 @@ type ProjectLead = DeadlineInfo & {
   product_name: string | null;
   value: number;
   project_manager_name: string | null;
+  // The project record itself; the list reads only when it was finished.
+  project?: { completed_at: string | null } | null;
 };
 
 export default function ProjectPage() {
@@ -96,6 +98,10 @@ export default function ProjectPage() {
   };
   const overdueCount = found.filter(l => !l.project_complete && l.project_overdue).length;
   const filtered = found.filter(l => inTab(l, tab));
+  // Finished jobs read in the order they were finished, latest first, rather
+  // than the order they arrived in. The pending queue keeps the server's order.
+  const completedAt = (l: ProjectLead) => (l.project?.completed_at ? Date.parse(l.project.completed_at) : 0);
+  if (tab === "completed") filtered.sort((a, b) => completedAt(b) - completedAt(a));
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-[1200px]">
@@ -184,6 +190,10 @@ export default function ProjectPage() {
                       Deadline {asDate(l.deadline_date)}
                       {l.extended_deadline ? " (extended)" : l.payment_started_on ? ` · paid ${asDate(l.payment_started_on)}` : ""}
                     </p>
+                  )}
+                  {/* What the completed list is ordered by, so the order reads. */}
+                  {l.project_complete && l.project?.completed_at && (
+                    <p className="text-[11px] text-slate-400 mt-0.5">Completed {asDate(l.project.completed_at)}</p>
                   )}
                 </div>
                 <div className="flex items-center gap-4 flex-shrink-0">

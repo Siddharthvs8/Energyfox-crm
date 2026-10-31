@@ -26,7 +26,7 @@ export type Climb = {
 export type BoardRow = {
   rank: number; user: number; name: string; initials: string; role: string;
   points: string; deals: number; tier: string | null; tiers_reached: number;
-  is_me: boolean; is_subject: boolean; incentives?: string;
+  is_me: boolean; is_subject: boolean; incentives?: string; referrals?: string;
 };
 
 export type PodiumRow = {
@@ -36,7 +36,13 @@ export type PodiumRow = {
 
 export type IncentiveDeal = {
   lead: number; customer: string; project: string; amount: string;
-  as: "bde" | "tele_caller"; paid_on: string;
+  as: "bde" | "tele_caller" | "referrer"; paid_on: string;
+};
+
+/** Referral rewards earned in a month, by person — anyone on the staff. */
+export type ReferralMonth = {
+  key: string; label: string; total: string;
+  people: { user: number; name: string; role: string; total: string; deals: IncentiveDeal[] }[];
 };
 
 export type HistoryRow = {
@@ -60,6 +66,7 @@ export type Me = {
   user: number; name: string; role: string; rank: number; of: number;
   points: string; deals: number; tier: Climb;
   incentives: { total: string; deals: IncentiveDeal[] };
+  referrals: { total: string; deals: IncentiveDeal[] };
   coins: number; rewards_total: number;
   history: HistoryRow[];
   contest_wins: { contest: string; rank: number | null; prize: string; coin_champion?: boolean }[];
@@ -101,6 +108,8 @@ export type Dashboard = {
   hall_of_fame: { key: string; label: string; podium: PodiumRow[] }[];
   contest: Contest | null;
   kpis: { players: number; scoring: number; points: string; tiers_unlocked: number; incentives: string } | null;
+  // Admins only: everyone owed a referral reward, this month and last.
+  referrals: { this_month: ReferralMonth; last_month: ReferralMonth } | null;
 };
 
 export type Settings = {
@@ -161,6 +170,33 @@ export async function loadDashboard(user?: number): Promise<{ data?: Dashboard; 
   const r = await call(user ? `?user=${user}` : "");
   const body = await r.json().catch(() => ({}));
   return r.ok ? { data: body, status: r.status } : { status: r.status, error: body.error || "Could not load rewards." };
+}
+
+/** One customer someone referred, and where the reward on it stands. */
+export type Referral = {
+  lead: number; customer: string; referred_on: string | null; stage: string;
+  project: string | null; reward: string | null;
+  status: "earned" | "waiting" | "no_project" | "no_reward" | "lost";
+  earned_on: string | null;
+};
+
+export type ReferralPage = {
+  is_admin: boolean;
+  me: {
+    this_month: { key: string; label: string; total: string };
+    last_month: { key: string; label: string; total: string };
+    earned_total: string; waiting_total: string;
+    referrals: Referral[];
+  };
+  // Admins only: the months they can pick, and everyone's rewards in one.
+  months: { key: string; label: string }[];
+  month: ReferralMonth | null;
+};
+
+export async function loadReferrals(month?: string): Promise<{ data?: ReferralPage; error?: string }> {
+  const r = await call(`referrals/${month ? `?month=${month}` : ""}`);
+  const body = await r.json().catch(() => ({}));
+  return r.ok ? { data: body } : { error: body.error || "Could not load referral rewards." };
 }
 
 export async function loadSettings(): Promise<Settings | null> {

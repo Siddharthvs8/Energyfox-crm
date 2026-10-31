@@ -49,6 +49,10 @@ type Detail = {
   location: string | null; installation_location: string | null;
   product_name: string | null; bde_name: string | null;
   plan: { start_date: string; visits: Visit[] } | null;
+  // The schedule runs from the warranty certificate for a customer the CRM
+  // installed, from the project's completion for a past customer.
+  starts_from: "warranty" | "completion";
+  warranty_date: string | null;
   can_edit: boolean;
 };
 
@@ -329,7 +333,9 @@ The customer stays on the books and can be scheduled again.`
             <div className="px-6 py-4 border-b border-slate-100">
               <h2 className="text-[15px] font-bold text-slate-900">Edit customer</h2>
               <p className="text-xs text-slate-400 mt-0.5">
-                Their details, and the date the project completed — the schedule is counted from it.
+                {data.starts_from === "warranty"
+                  ? "Their details, and the date the schedule is counted from."
+                  : "Their details, and the date the project completed — the schedule is counted from it."}
               </p>
             </div>
             <div className="p-6 space-y-4">
@@ -352,11 +358,16 @@ The customer stays on the books and can be scheduled again.`
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all" />
               </div>
               <div>
-                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Project completed date</label>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                  {data.starts_from === "warranty" ? "Schedule start date" : "Project completed date"}
+                </label>
                 <input type="date" value={editForm.completed_on} max={todayStr}
                   onChange={e => setEditForm({ ...editForm, completed_on: e.target.value })}
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all" />
                 <p className="mt-1 text-[11px] text-slate-400">
+                  {data.starts_from === "warranty" && (data.warranty_date
+                    ? `The warranty date is ${new Date(data.warranty_date).toLocaleDateString("en-IN")}; change this only to correct it. `
+                    : "Normally the warranty date: the day the certificate was generated. ")}
                   Changing this re-dates the visits still to come. Visits already filled in keep
                   their dates and their readings.
                 </p>
@@ -402,7 +413,9 @@ The customer stays on the books and can be scheduled again.`
 
       {data.plan && (
         <p className="mt-2 text-xs text-slate-400">
-          Schedule started {new Date(data.plan.start_date).toLocaleDateString("en-IN")} — one visit every 6 months for 5 years.
+          Schedule started {new Date(data.plan.start_date).toLocaleDateString("en-IN")}
+          {data.warranty_date === data.plan.start_date && ", the warranty date"}
+          {" "}— one visit every 6 months for 5 years.
         </p>
       )}
 

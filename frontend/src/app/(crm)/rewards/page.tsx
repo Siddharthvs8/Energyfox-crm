@@ -4,7 +4,8 @@
  *
  * BDEs and tele callers see their own card: points from money received this
  * month, the tier ladder and what each rung unlocks, where they rank, their
- * incentives and coins, last month's champions and the yearly contest.
+ * incentives, referral rewards and coins, last month's champions and the
+ * yearly contest.
  *
  * Admins and super admins see the whole team, can open anyone's card, and set
  * the rules under Configuration.
@@ -14,7 +15,7 @@ import Link from "next/link";
 import { Dashboard, inr, loadDashboard, pts } from "./lib";
 import {
   Cabinet, Card, CardHeader, Coin, ContestCard, HallOfFame, Hero, Icon, IncentivesCard,
-  Leaderboard, Moments, PointsStatement, Podium, RewardsSkeleton, TierLadder,
+  Leaderboard, Moments, MyReferralsCard, PointsStatement, Podium, ReferralRewardsCard, RewardsSkeleton, TierLadder,
 } from "./parts";
 import RewardSettingsForm from "./settings";
 
@@ -93,6 +94,7 @@ function PlayerView({ data }: { data: Dashboard }) {
         <div className="space-y-6">
           <Podium title="Last month's champions" label={data.last_month?.label} podium={data.last_month?.podium || []} />
           <IncentivesCard incentives={me.incentives} />
+          <MyReferralsCard referrals={me.referrals} />
           <Cabinet me={me} tiers={data.tiers} />
           <HowItWorks rules={data.rules} />
         </div>
@@ -113,6 +115,7 @@ function HowItWorks({ rules }: { rules: Dashboard["rules"] }) {
         <li className="flex gap-2"><span>🪜</span><span>Reach a tier to unlock its reward. Every tier opens again on the 1st.</span></li>
         <li className="flex gap-2"><span>🏆</span><span>The month's top three win prizes and <span className="inline-flex items-center gap-0.5 font-semibold text-amber-700"><Coin size={11} />{coins}</span> coins.</span></li>
         <li className="flex gap-2"><span>🎯</span><span>Incentives are paid per project when your customer finishes paying.</span></li>
+        <li className="flex gap-2"><span>🎁</span><span>Refer a customer and earn the project&apos;s <b className="text-slate-800">referral reward</b> when they finish paying.</span></li>
         <li className="flex gap-2"><span>🧾</span><span>Every payment behind your points is listed under <b className="text-slate-800">Where the points came from</b>.</span></li>
       </ul>
     </Card>
@@ -152,6 +155,7 @@ function AdminOverview({ data, onOpen, onConfigure }: { data: Dashboard; onOpen:
             onOpen={onOpen} showMoney />
         </div>
         <div className="space-y-6">
+          {data.referrals && <ReferralRewardsCard months={data.referrals} />}
           <Podium title="Last month's champions" label={data.last_month?.label} podium={data.last_month?.podium || []} />
           <HallOfFame months={data.hall_of_fame} narrow />
         </div>
@@ -211,6 +215,7 @@ function PlayerModal({ user, onClose, onChanged }: { user: number; onClose: () =
               admin onChanged={changed} />
             <div className="grid gap-4 lg:grid-cols-2">
               <IncentivesCard incentives={me.incentives} preview />
+              <MyReferralsCard referrals={me.referrals} preview />
               <Cabinet me={me} tiers={data.tiers} />
             </div>
           </>

@@ -8,7 +8,9 @@ points go to the deal's owners: all of it to a BDE who sold alone, and split
 a BDE closed it.
 
 Incentives are separate: rupees, not points, paid per project to the deal's
-BDE and tele caller in the month the customer finishes paying.
+BDE and tele caller in the month the customer finishes paying. A referral
+reward is paid the same way to whoever referred the customer, whatever their
+role.
 """
 from calendar import monthrange
 from collections import defaultdict
@@ -337,45 +339,120 @@ def _customer(lead):
     return ' '.join(p for p in (lead.first_name, lead.last_name) if p) or f'Lead #{lead.id}'
 
 
-def incentives_between(start, end):
-    """{user_id: {'total': Decimal, 'deals': [...]}} for deals whose customer
-    finished paying in the window.
-
-    Earned on the payment that clears the balance: a deal paid in three
-    instalments pays its incentives in the month of the third.
-    """
+def cleared_on(lead_ids):
+    """{lead_id: day} for those deals whose customer has paid in full, dated by
+    the payment that cleared the balance: a deal paid in three instalments
+    cleared on the day of the third."""
     from leads.models import PaymentVerification
-    touched = counting_deals(p.lead_id for p in ledger(start, end))
-    if not touched:
+    ids = list(lead_ids)
+    if not ids:
         return {}
     verified = {pv.lead_id: pv for pv in PaymentVerification.objects
-                .filter(lead_id__in=touched, is_complete=True).select_related('lead')}
+                .filter(lead_id__in=ids, is_complete=True).select_related('lead')}
     last_paid = {}
-    for p in ledger(lead_ids=list(touched)):
+    for p in ledger(lead_ids=ids):
         last_paid[p.lead_id] = max(last_paid.get(p.lead_id, p.on), p.on)
+    return {lead_id: last_paid[lead_id] for lead_id, pv in verified.items()
+            if pv.balance_amount <= 0 and lead_id in last_paid}
 
-    out = defaultdict(lambda: {'total': ZERO, 'deals': []})
+
+def paid_off_between(start, end):
+    """(lead, project, day) for each deal whose customer finished paying in the
+    window, with the project they bought and the day the balance cleared.
+
+    A deal with no project to its name has nothing to pay out on, and is left
+    out.
+    """
+    touched = counting_deals(p.lead_id for p in ledger(start, end))
+    if not touched:
+        return []
+    cleared = cleared_on(touched)
+    out = []
     for lead_id, lead in touched.items():
-        pv = verified.get(lead_id)
-        if pv is None or pv.balance_amount > 0:
-            continue
-        cleared = last_paid.get(lead_id)
-        if cleared is None or not (start <= cleared <= end):
+        day = cleared.get(lead_id)
+        if day is None or not (start <= day <= end):
             continue
         project = deal_project(lead)
-        if project is None:
-            continue
-        earners = [(lead.bde_id, project.bde_incentive, 'bde')]
-        if lead.tele_caller_id and lead.tele_caller_id != lead.bde_id:
-            earners.append((lead.tele_caller_id, project.telecaller_incentive, 'tele_caller'))
-        for user_id, amount, as_role in earners:
-            if user_id and amount and amount > 0:
-                out[user_id]['total'] += amount
-                out[user_id]['deals'].append({
-                    'lead': lead_id, 'customer': _customer(lead), 'project': project.name,
-                    'amount': str(amount), 'as': as_role, 'paid_on': cleared.isoformat(),
-                })
+        if project is not None:
+            out.append((lead, project, day))
     return out
+
+
+def _earn(out, user_id, amount, lead, project, cleared, as_role):
+    if user_id and amount and amount > 0:
+        out[user_id]['total'] += amount
+        out[user_id]['deals'].append({
+            'lead': lead.id, 'customer': _customer(lead), 'project': project.name,
+            'amount': str(amount), 'as': as_role, 'paid_on': cleared.isoformat(),
+        })
+
+
+def incentives_between(start, end):
+    """{user_id: {'total': Decimal, 'deals': [...]}}: the project's incentives,
+    to the BDE and tele caller of each deal paid off in the window."""
+    out = defaultdict(lambda: {'total': ZERO, 'deals': []})
+    for lead, project, cleared in paid_off_between(start, end):
+        _earn(out, lead.bde_id, project.bde_incentive, lead, project, cleared, 'bde')
+        if lead.tele_caller_id and lead.tele_caller_id != lead.bde_id:
+            _earn(out, lead.tele_caller_id, project.telecaller_incentive,
+                  lead, project, cleared, 'tele_caller')
+    return out
+
+
+def referral_rewards_between(start, end):
+    """{user_id: {'total': Decimal, 'deals': [...]}}: the project's referral
+    reward, to the member of staff who referred each Referral deal paid off in
+    the window — whatever their role, which is why it is kept apart from the
+    incentives the sales team plays for."""
+    out = defaultdict(lambda: {'total': ZERO, 'deals': []})
+    for lead, project, cleared in paid_off_between(start, end):
+        if lead.source == 'referral':
+            _earn(out, lead.referred_by_id, project.referral_reward, lead, project, cleared, 'referrer')
+    return out
+
+
+def referral_statement(user):
+    """Every customer this person referred, newest first, and where the reward
+    on each stands.
+
+    The same rule as referral_rewards_between, read the other way round —
+    from the referrer rather than from a month — so the two always agree on
+    what was earned and when:
+
+      * earned     — the customer paid in full; `earned_on` is the day.
+      * waiting    — they bought a project with a reward and are still paying.
+      * no_project — nothing bought yet, so there is no reward to name.
+      * no_reward  — the project they bought carries no referral reward.
+      * lost       — the deal fell through.
+    """
+    from leads.models import Lead
+    leads = list(Lead.objects.filter(referred_by=user, source='referral', is_trashed=False)
+                 .select_related('site_visit').order_by('-created_at'))
+    cleared = cleared_on(lead.id for lead in leads)
+    rows = []
+    for lead in leads:
+        project = deal_project(lead)
+        reward = project.referral_reward if project else ZERO
+        if lead.is_lost:
+            status = 'lost'
+        elif project is None:
+            status = 'no_project'
+        elif not reward or reward <= 0:
+            status = 'no_reward'
+        elif lead.id in cleared:
+            status = 'earned'
+        else:
+            status = 'waiting'
+        rows.append({
+            'lead': lead.id, 'customer': _customer(lead),
+            'referred_on': _day(lead.created_at),
+            'stage': Lead.PIPELINE_STAGE_LABELS.get(lead.pipeline_stage, lead.pipeline_stage),
+            'project': project.name if project else None,
+            'reward': reward if project else None,
+            'status': status,
+            'earned_on': cleared[lead.id] if status == 'earned' else None,
+        })
+    return rows
 
 
 # ─── The ladder ──────────────────────────────────────────────────────────────
@@ -422,10 +499,16 @@ def display_name(user):
     return f'{user.first_name} {user.last_name}'.strip() or user.username
 
 
-def standings(start, end, rules, rungs):
-    """The table for a window, best first: everyone who plays, points or not."""
+def standings(start, end, rules, rungs, referrals=None):
+    """The table for a window, best first: everyone who plays, points or not.
+
+    `referrals` is referral_rewards_between for the same window, for a caller
+    that already has it; it is worked out here otherwise.
+    """
     tally = points_between(start, end, rules)
     earned = incentives_between(start, end)
+    if referrals is None:
+        referrals = referral_rewards_between(start, end)
     rows = []
     for user in participants():
         mine = tally.get(user.id)
@@ -436,6 +519,7 @@ def standings(start, end, rules, rungs):
             'points': points, 'deals': len(mine['leads']) if mine else 0,
             'tier': climb(points, user.role, rungs),
             'incentives': paid['total'], 'incentive_deals': paid['deals'],
+            'referrals': (referrals.get(user.id) or {}).get('total', ZERO),
         })
     # More points first; level on points, more deals; then by name so the
     # order does not shuffle between two loads of the same page.

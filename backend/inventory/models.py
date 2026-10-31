@@ -652,6 +652,11 @@ class ProjectSpec(models.Model):
     # finishes paying (see rewards.engine.incentives_between).
     bde_incentive = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     telecaller_incentive = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    # What a referral that buys this package pays the member of staff who made
+    # it — anyone, whatever their role (leads.Lead.referred_by). Earned in the
+    # month the customer finishes paying, like the incentives above
+    # (rewards.engine.referral_rewards_between).
+    referral_reward = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     notes = models.TextField(blank=True, default='')
     # Retired rather than deleted: a proforma issued last year still names the
     # project it was built from, and that record should not go blank.

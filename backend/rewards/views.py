@@ -2,6 +2,8 @@
 
     GET /api/rewards/            the game as the viewer sees it. An admin may add
                                  ?user=<id> to open one player's card.
+    GET /api/rewards/referrals/  the Referral Rewards page — everyone on the
+                                 staff; admins may add ?month=YYYY-MM.
     GET /api/rewards/settings/   the rules — admins.
     PUT /api/rewards/settings/   change them — admins.
     POST   /api/rewards/exclusions/            take a payment out of the game — admins.
@@ -13,6 +15,7 @@ Everyone sees the table's points and ranks — that is the game — but a person
 incentives are money, and only they and the admins see theirs.
 """
 import os
+import re
 import uuid
 from datetime import date
 from decimal import Decimal
@@ -58,6 +61,34 @@ def month_label(year, month):
     return date(year, month, 1).strftime('%B %Y')
 
 
+def role_label(user):
+    if user.role == 'custom' and user.custom_role:
+        return user.custom_role.name
+    return user.get_role_display()
+
+
+def referral_month(first, earned=None):
+    """Referral rewards earned in the month beginning `first`, by person.
+
+    Anyone on the staff can refer a customer, so this lists everyone who earned
+    one, not only the players. `earned` is referral_rewards_between for the
+    month, for a caller that already has it.
+    """
+    if earned is None:
+        earned = engine.referral_rewards_between(*engine.month_bounds(first))
+    people = {u.id: u for u in get_user_model().objects
+              .filter(id__in=list(earned)).select_related('custom_role')}
+    rows = [{
+        'user': user_id, 'name': engine.display_name(people[user_id]),
+        'role': role_label(people[user_id]),
+        'total': money(mine['total']), 'deals': mine['deals'],
+    } for user_id, mine in earned.items() if user_id in people]
+    rows.sort(key=lambda r: (-Decimal(r['total']), r['name'].lower()))
+    return {'key': first.strftime('%Y-%m'), 'label': first.strftime('%B %Y'),
+            'total': money(sum((m['total'] for m in earned.values()), Decimal('0'))),
+            'people': rows}
+
+
 class RewardsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -84,7 +115,8 @@ class RewardsView(APIView):
         rungs = engine.ladder()
         first = today.replace(day=1)
         start, end = engine.month_bounds(first)
-        rows = engine.standings(start, end, rules, rungs)
+        referrals = engine.referral_rewards_between(start, end)
+        rows = engine.standings(start, end, rules, rungs, referrals)
         mine = next((r for r in rows if r['user'] == subject.id), None) if plays(subject) else None
 
         return Response({
@@ -100,11 +132,12 @@ class RewardsView(APIView):
             'tiers': [self._tier(t) for t in rungs],
             'board': [self._board_row(r, admin or r['user'] == viewer.id, viewer, subject)
                       for r in rows],
-            'me': self._me(subject, mine, rows, rules, start, end) if mine else None,
+            'me': self._me(subject, mine, rows, rules, start, end, referrals) if mine else None,
             'last_month': self._last_month(first),
             'hall_of_fame': self._hall_of_fame(),
             'contest': self._contest(rules, today, subject),
             'kpis': self._kpis(rows) if admin else None,
+            'referrals': self._referrals(first, referrals) if admin else None,
         })
 
     # ── Pieces ──
@@ -143,9 +176,18 @@ class RewardsView(APIView):
         }
         if show_money:
             out['incentives'] = money(row['incentives'])
+            out['referrals'] = money(row['referrals'])
         return out
 
-    def _me(self, subject, mine, rows, rules, start, end):
+    @staticmethod
+    def _referrals(first, this_month):
+        """Referral rewards earned, by person, this month and last. Last month
+        is here because rewards are paid after a month ends, and on the 1st
+        this month's list is empty."""
+        return {'this_month': referral_month(first, this_month),
+                'last_month': referral_month(engine.previous_month(first))}
+
+    def _me(self, subject, mine, rows, rules, start, end, referrals):
         past = list(RewardStanding.objects.filter(user=subject)
                     .select_related('reward_month')
                     .order_by('-reward_month__year', '-reward_month__month'))
@@ -178,6 +220,10 @@ class RewardsView(APIView):
             'points': money(mine['points']), 'deals': mine['deals'],
             'tier': mine['tier'],
             'incentives': {'total': money(mine['incentives']), 'deals': mine['incentive_deals']},
+            # Kept apart from the incentives: those come with selling, this
+            # comes with sending a customer our way, which anyone can do.
+            'referrals': {'total': money((referrals.get(subject.id) or {}).get('total')),
+                          'deals': (referrals.get(subject.id) or {}).get('deals', [])},
             'coins': coins,
             'rewards_total': won_before + len(mine['tier']['rewards']),
             'history': history,
@@ -263,6 +309,71 @@ class RewardsView(APIView):
             'tiers_unlocked': sum(r['tier']['reached'] for r in rows),
             'incentives': money(sum((r['incentives'] for r in rows), Decimal('0'))),
         }
+
+
+class ReferralRewardsView(APIView):
+    """The Referral Rewards page.
+
+    Anyone on the staff can refer a customer, so unlike the rest of the Rewards
+    API this is open to every role. Each person sees the customers they
+    referred and what those earned them; the admins who pay the rewards also
+    see everyone's, a month at a time (?month=YYYY-MM, this month by default).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    MONTHS_OFFERED = 12
+
+    def get(self, request):
+        user = request.user
+        admin = is_admin(user)
+        first = timezone.localdate().replace(day=1)
+
+        chosen = first
+        asked = (request.query_params.get('month') or '').strip()
+        if asked and admin:
+            m = re.fullmatch(r'(\d{4})-(\d{2})', asked)
+            try:
+                chosen = date(int(m.group(1)), int(m.group(2)), 1) if m else None
+            except ValueError:          # a month that does not exist, such as 13
+                chosen = None
+            if chosen is None:
+                return Response({'error': 'Ask for a month as YYYY-MM.'}, status=status.HTTP_400_BAD_REQUEST)
+            if chosen > first:
+                return Response({'error': 'That month has not happened yet.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+
+        rows = engine.referral_statement(user)
+
+        def earned_in(month_first):
+            start, end = engine.month_bounds(month_first)
+            return {'key': month_first.strftime('%Y-%m'), 'label': month_first.strftime('%B %Y'),
+                    'total': money(sum((r['reward'] for r in rows
+                                        if r['status'] == 'earned' and start <= r['earned_on'] <= end),
+                                       Decimal('0')))}
+
+        months, cursor = [], first
+        for _ in range(self.MONTHS_OFFERED):
+            months.append({'key': cursor.strftime('%Y-%m'), 'label': cursor.strftime('%B %Y')})
+            cursor = engine.previous_month(cursor)
+
+        return Response({
+            'is_admin': admin,
+            'me': {
+                'this_month': earned_in(first),
+                'last_month': earned_in(engine.previous_month(first)),
+                'earned_total': money(sum((r['reward'] for r in rows if r['status'] == 'earned'),
+                                          Decimal('0'))),
+                'waiting_total': money(sum((r['reward'] for r in rows if r['status'] == 'waiting'),
+                                           Decimal('0'))),
+                'referrals': [{
+                    **r,
+                    'referred_on': r['referred_on'].isoformat() if r['referred_on'] else None,
+                    'reward': money(r['reward']) if r['reward'] is not None else None,
+                    'earned_on': r['earned_on'].isoformat() if r['earned_on'] else None,
+                } for r in rows],
+            },
+            'months': months if admin else [],
+            'month': referral_month(chosen) if admin else None,
+        })
 
 
 class ExclusionsView(APIView):

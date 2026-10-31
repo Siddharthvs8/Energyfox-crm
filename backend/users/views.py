@@ -506,6 +506,24 @@ class UserViewSet(viewsets.ModelViewSet):
         """List active project managers (for the project-assign picker)."""
         return Response(self._role_picker('project_manager'))
 
+    @action(detail=False, methods=['get'], url_path='referrers')
+    def referrers(self, request):
+        """Every active member of staff, for the "Referred by" picker on a lead
+        whose source is Referral.
+
+        Company-wide, not scoped to the caller's team the way the directory is:
+        whoever logs the lead has to be able to name a colleague from another
+        branch. Only a name and a role go out, as with the other pickers.
+        """
+        qs = (User.objects.filter(is_active=True).select_related('custom_role')
+              .order_by('first_name', 'last_name', 'username'))
+        return Response([{
+            'id': u.id,
+            'name': f"{u.first_name} {u.last_name}".strip() or u.username,
+            'role_label': (u.custom_role.name if u.role == 'custom' and u.custom_role
+                           else u.get_role_display()),
+        } for u in qs])
+
     def _role_picker(self, role):
         qs = User.objects.filter(is_active=True, role=role).order_by('first_name', 'last_name')
         return [

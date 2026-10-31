@@ -103,6 +103,17 @@ class Lead(models.Model):
 
     # Meta Integration
     source = models.CharField(max_length=50, default='manual', db_index=True) # e.g. "meta_ads"
+    # The member of staff who referred the customer, for a lead whose source is
+    # Referral. Goes with that source and no other: LeadSerializer clears it
+    # when the source changes.
+    referred_by = models.ForeignKey(
+        'users.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='referred_leads',
+        help_text="Staff member who referred this lead",
+    )
     meta_lead_id = models.CharField(max_length=100, blank=True, null=True, db_index=True)
     meta_campaign_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, help_text="Meta Ads campaign ID")
     meta_campaign_name = models.CharField(max_length=255, blank=True, null=True, db_index=True, help_text="Meta Ads campaign name")
@@ -1383,6 +1394,50 @@ class Warranty(models.Model):
     DOC_SLOTS = [
         ('warranty', 'Warranty Document'),
     ]
+
+    # The certificate the CRM generates is told apart from anything else filed
+    # under the warranty slot by its name: the browser names it so
+    # (WarrantySection.tsx, CERT_PREFIX), and sending picks it out the same way.
+    CERTIFICATE_PREFIX = 'Warranty_Certificate'
+
+    @classmethod
+    def is_certificate(cls, doc):
+        return (doc.doc_type == 'warranty'
+                and (doc.file.name or '').rsplit('/', 1)[-1].startswith(cls.CERTIFICATE_PREFIX))
+
+    def certificates(self):
+        """The generated certificates on file, oldest first. Reads documents the
+        caller prefetched rather than going back to the database for them."""
+        return [d for d in self.documents.all() if self.is_certificate(d)]
+
+    @property
+    def certificate_generated_on(self):
+        """The day the warranty certificate was first generated, in the
+        company's time zone, or None while it has not been.
+
+        The schedule is made once, so a certificate reset and generated again
+        later does not move a schedule that is already running.
+        """
+        stamps = [d.uploaded_at for d in self.certificates()]
+        return timezone.localtime(min(stamps)).date() if stamps else None
+
+    @property
+    def issued_on(self):
+        """The day this warranty counts as issued, which periodic maintenance is
+        counted from: the day the certificate was generated, or for a warranty
+        completed without generating one here, the day it was completed. None
+        while neither has happened.
+
+        The fallback is not a nicety. A completed warranty is locked, so a
+        certificate can no longer be attached to it, and without the completion
+        date the customer could never be scheduled at all.
+        """
+        generated = self.certificate_generated_on
+        if generated:
+            return generated
+        if self.is_complete and self.completed_at:
+            return timezone.localtime(self.completed_at).date()
+        return None
 
     def __str__(self):
         return f"Warranty — {self.lead}"
