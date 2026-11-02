@@ -415,7 +415,8 @@ export default function LeadDetailPage({
       } else {
         const err = await res.json();
         const errMsgs = typeof err === 'object' ? Object.entries(err).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join(' | ') : null;
-        alert(err.invoice?.[0] || err.error || errMsgs || "Failed to save lead");
+        // A number already on another lead says so in full, without "phone:".
+        alert(err.phone?.[0] || err.invoice?.[0] || err.error || errMsgs || "Failed to save lead");
       }
     } catch (err) {
       console.error(err);

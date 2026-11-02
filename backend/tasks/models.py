@@ -37,7 +37,14 @@ class Task(models.Model):
     )
     
     tags = models.JSONField(default=list, blank=True)
-    
+
+    # When the assignee was reminded (tasks.reminders): once before the task
+    # falls due, and the last time while it is overdue. Cleared when the task
+    # is given a new due date or a new assignee, or is reopened, so the
+    # reminders start over for the task as it now stands.
+    reminded_at = models.DateTimeField(null=True, blank=True)
+    overdue_reminded_at = models.DateTimeField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -2,7 +2,8 @@
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { DragDropContext, Droppable, Draggable } from "@hello-pangea/dnd";
 import { Skeleton, SkeletonRegion, Spinner } from "@/components/Skeleton";
 import FilterBar, { FilterField } from "@/components/FilterBar";
@@ -188,7 +189,17 @@ const TIMELINE_OPTIONS = [
 ];
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
+// In a Suspense boundary because the board reads the query string
+// (useSearchParams), which a production build refuses to prerender without one.
 export default function TasksPage({ params: paramsPromise }: { params: Promise<{ domain: string }> }) {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <TasksPageContent paramsPromise={paramsPromise} />
+    </Suspense>
+  );
+}
+
+function TasksPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: string }> }) {
   const params = React.use(paramsPromise);
   const domain = APP_SLUG;
   const hasMounted = useHasMounted();
@@ -248,15 +259,14 @@ export default function TasksPage({ params: paramsPromise }: { params: Promise<{
 
   useEffect(() => { fetchTasks(); }, [domain, filterPriority, filterAssignee]);
 
-  // Deep-link: open a specific task when arriving via ?task=<id> (e.g. from a lead).
-  const autoOpenedRef = useRef(false);
+  // Deep-link: open a specific task when the address carries ?task=<id> — from
+  // a lead, or a reminder's "Open task". Read through useSearchParams so it also
+  // works when this page is already open and a reminder points at another task.
+  const deepTask = useSearchParams().get("task");
   useEffect(() => {
-    if (autoOpenedRef.current || loading || tasks.length === 0) return;
-    const targetId = new URLSearchParams(window.location.search).get("task");
-    if (!targetId) return;
-    const target = tasks.find((t) => String(t.id) === targetId);
+    if (!deepTask || loading || tasks.length === 0) return;
+    const target = tasks.find((t) => String(t.id) === deepTask);
     if (target) {
-      autoOpenedRef.current = true;
       openEdit(target);
       // strip the param so a refresh doesn't reopen the modal
       const url = new URL(window.location.href);
@@ -264,7 +274,7 @@ export default function TasksPage({ params: paramsPromise }: { params: Promise<{
       window.history.replaceState({}, "", url.toString());
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tasks, loading]);
+  }, [tasks, loading, deepTask]);
 
   const fetchTasks = async () => {
     const token = localStorage.getItem(`${domain}_access`);

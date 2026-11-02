@@ -1,3 +1,5 @@
+import logging
+
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action, api_view, permission_classes as perm_classes
 from rest_framework.response import Response
@@ -646,6 +648,15 @@ class PopupRemindersView(APIView):
         now = timezone.now()
         local_date = timezone.localdate(now)
 
+        # Task reminders are for anyone with a task, not only the agents with
+        # targets below. Worked out here because this is what every signed-in
+        # screen polls; a fault in them must not cost anyone their other popups.
+        try:
+            from tasks.reminders import send_due_reminders
+            send_due_reminders(user, now)
+        except Exception:
+            logging.getLogger(__name__).exception('Task reminders failed for user %s', user.pk)
+
         # Only process for agents
         if not user.is_staff and not user.is_general_manager and not user.is_manager:
             config = engine.get_or_create_config()
@@ -900,18 +911,25 @@ def _fmt_time(value):
 
 class AIMeetingConfigView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    # The longest a task reminder interval may be set to: thirty days.
+    TASK_MINUTES_MAX = 30 * 24 * 60
 
-    def get(self, request):
-        from .engine import get_or_create_config
-        config = get_or_create_config()
-        return Response({
+    @staticmethod
+    def _payload(config):
+        return {
             'morning_meeting_time': _fmt_time(config.morning_meeting_time),
             'evening_meeting_time': _fmt_time(config.evening_meeting_time),
             'meeting_enabled': config.meeting_enabled,
             'meeting_language': config.meeting_language,
             'monthly_popup_interval_hours': config.monthly_popup_interval_hours,
             'daily_popup_interval_hours': config.daily_popup_interval_hours,
-        })
+            'task_reminder_minutes': config.task_reminder_minutes,
+            'task_overdue_repeat_minutes': config.task_overdue_repeat_minutes,
+        }
+
+    def get(self, request):
+        from .engine import get_or_create_config
+        return Response(self._payload(get_or_create_config()))
 
     def patch(self, request):
         user = request.user
@@ -919,6 +937,19 @@ class AIMeetingConfigView(APIView):
             return Response({'error': 'Permission denied.'}, status=403)
         from .engine import get_or_create_config
         config = get_or_create_config()
+        # The task reminder intervals are checked before anything is saved, so
+        # a bad one leaves the whole configuration as it was.
+        for field, label in (('task_reminder_minutes', 'The reminder before a task is due'),
+                             ('task_overdue_repeat_minutes', 'The overdue reminder interval')):
+            if field not in request.data:
+                continue
+            try:
+                minutes = int(request.data[field])
+            except (TypeError, ValueError):
+                minutes = -1
+            if not 0 <= minutes <= self.TASK_MINUTES_MAX:
+                return Response({'error': f'{label} must be between 0 and 30 days.'}, status=400)
+            setattr(config, field, minutes)
         if 'morning_meeting_time' in request.data:
             config.morning_meeting_time = request.data['morning_meeting_time']
         if 'evening_meeting_time' in request.data:
@@ -934,14 +965,7 @@ class AIMeetingConfigView(APIView):
         config.save()
         # Re-fetch from DB to ensure we have proper Python objects (not raw strings)
         config.refresh_from_db()
-        return Response({
-            'morning_meeting_time': _fmt_time(config.morning_meeting_time),
-            'evening_meeting_time': _fmt_time(config.evening_meeting_time),
-            'meeting_enabled': config.meeting_enabled,
-            'meeting_language': config.meeting_language,
-            'monthly_popup_interval_hours': config.monthly_popup_interval_hours,
-            'daily_popup_interval_hours': config.daily_popup_interval_hours,
-        })
+        return Response(self._payload(config))
 
 
 class ForceAIMeetingView(APIView):

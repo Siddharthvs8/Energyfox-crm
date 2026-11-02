@@ -5561,6 +5561,18 @@ class LeadViewSet(viewsets.ModelViewSet):
                                                      bde_assigned_at=timezone.now())
             queryset.exclude(bde=target_user).update(bde=target_user)
 
+    def _routable_ids(self, ids):
+        """The ids among `ids` this user may route — the leads a bulk path
+        reassigns, stamps and records, all three the same set.
+
+        The stamps used to go to every id sent while the assignment moved only
+        the leads in the caller's book, so a lead outside it could be given a
+        BDE without being assigned to anyone. Taken as a list once, up front:
+        the stamps run after the assignment, which can move a lead out of the
+        caller's view.
+        """
+        return list(self.get_queryset().filter(id__in=ids).values_list('id', flat=True))
+
     @staticmethod
     def _filter_stage_reached(queryset, stage, after=None, before=None):
         """Leads that reached `stage`, optionally between two days (inclusive).
@@ -5692,6 +5704,28 @@ class LeadViewSet(viewsets.ModelViewSet):
             'group_count': len(groups),
             'lead_count': sum(len(g['leads']) for g in groups),
         })
+
+    @action(detail=False, methods=['get'], url_path='phone-check')
+    def phone_check(self, request):
+        """Whether a phone number already has a lead.
+
+        For the lead form, which warns while the number is being typed rather
+        than after everything else has been filled in. Saving is refused by
+        LeadSerializer.validate_phone either way; this only says so sooner.
+        `exclude` leaves out the lead being edited.
+        """
+        from .access import can_add_leads, can_edit_leads
+        from .duplicates import existing_duplicate_of, phone_holder, phone_taken_message
+        if not (can_add_leads(request.user) or can_edit_leads(request.user)):
+            return Response({'error': 'You cannot add or edit leads.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        exclude = str(request.query_params.get('exclude') or '')
+        taken = existing_duplicate_of(phone=request.query_params.get('phone', ''),
+                                      exclude_pk=int(exclude) if exclude.isdigit() else None)
+        if taken is None:
+            return Response({'duplicate': None})
+        holder = phone_holder(taken)
+        return Response({'duplicate': {**holder, 'message': phone_taken_message(holder)}})
 
     @action(detail=False, methods=['post'], url_path='merge-duplicates')
     def merge_duplicates(self, request):
@@ -6620,9 +6654,15 @@ class LeadViewSet(viewsets.ModelViewSet):
             return Response({'error': 'You can only assign leads to your team or another tele caller / BDE.'},
                             status=status.HTTP_403_FORBIDDEN)
 
-        queryset = self.get_queryset().filter(id__in=ids)
-        count = queryset.update(assigned_to=target_user)
-        self._stamp_owner_role(Lead.objects.filter(id__in=ids), target_user)
+        from audit.bulk import recording
+        ids = self._routable_ids(ids)
+        leads = Lead.objects.filter(id__in=ids)
+        # update() sends no signals, so this is what puts a bulk assignment on
+        # the record. Without it, handing a page of leads to a BDE left the BDE
+        # on every one of them and no trace of who had done it.
+        with recording(Lead, ids):
+            count = leads.update(assigned_to=target_user)
+            self._stamp_owner_role(leads, target_user)
 
         return Response({'message': f'Successfully assigned {count} leads to {target_user.username}.'})
 
@@ -6662,14 +6702,17 @@ class LeadViewSet(viewsets.ModelViewSet):
         if 'status' in valid_data:
             valid_data['status_changed_at'] = timezone.now()
 
-        queryset = self.get_queryset().filter(id__in=ids)
+        from audit.bulk import recording
+        ids = self._routable_ids(ids)
+        queryset = Lead.objects.filter(id__in=ids)
         count = 0
         if valid_data:
-            count = queryset.update(**valid_data)
-            if valid_data.get('assigned_to_id'):
-                from users.models import User as _U
-                self._stamp_owner_role(Lead.objects.filter(id__in=ids),
-                                       _U.objects.filter(pk=valid_data['assigned_to_id']).first())
+            with recording(Lead, ids):
+                count = queryset.update(**valid_data)
+                if valid_data.get('assigned_to_id'):
+                    from users.models import User as _U
+                    self._stamp_owner_role(queryset,
+                                           _U.objects.filter(pk=valid_data['assigned_to_id']).first())
         
         # Handle Campaign ManyToMany linkage
         if 'campaign_id' in update_data and update_data['campaign_id']:

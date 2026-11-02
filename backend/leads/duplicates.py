@@ -264,6 +264,30 @@ def merge_leads(keep, discard, actor=None):
             'fields_filled': sorted(set(filled)), 'records_moved': moved}
 
 
+def phone_holder(lead):
+    """The lead a phone number is already on, as the refusal to add another
+    names it: who the customer is, whose desk they are on, and whether they are
+    archived — out of the main list, where looking for them would come up empty.
+    """
+    lead = Lead.objects.select_related('assigned_to').get(pk=lead.pk)
+    owner = lead.assigned_to
+    return {
+        'id': lead.pk,
+        'name': _display(lead),
+        'owner': (f'{owner.first_name} {owner.last_name}'.strip() or owner.username) if owner else None,
+        'archived': lead.is_archived,
+    }
+
+
+def phone_taken_message(holder):
+    """The warning for a phone number that already has a lead."""
+    where = [f"assigned to {holder['owner']}" if holder['owner'] else 'unassigned']
+    if holder['archived']:
+        where.append('archived')
+    return (f"This phone number is already associated with another lead: "
+            f"{holder['name']} ({', '.join(where)}).")
+
+
 def existing_duplicate_of(phone='', email='', exclude_pk=None):
     """A live lead that already holds this phone or email, if there is one.
 

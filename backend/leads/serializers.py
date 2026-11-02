@@ -647,6 +647,27 @@ class LeadSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(f"'{value}' is not a valid lead status.")
         return value
 
+    def validate_phone(self, value):
+        """One lead per phone number.
+
+        The Meta and CSV imports already refused a customer whose number is on
+        the books; a lead added by hand did not, which is how one customer came
+        to be in the list twice. Matched the way the imports match — on the last
+        ten digits, the Trash aside — so a +91 or a space makes no difference.
+
+        An edit is checked only when the number changes, so leads that are
+        already duplicates can still be worked; another copy cannot be made.
+        """
+        from .duplicates import (existing_duplicate_of, normalise_phone, phone_holder,
+                                 phone_taken_message)
+        key = normalise_phone(value)
+        if not key or (self.instance is not None and key == normalise_phone(self.instance.phone)):
+            return value
+        taken = existing_duplicate_of(phone=value, exclude_pk=getattr(self.instance, 'pk', None))
+        if taken is not None:
+            raise serializers.ValidationError(phone_taken_message(phone_holder(taken)))
+        return value
+
     def get_recent_activity(self, obj):
         logs = obj.activity_logs.all()
         if logs:

@@ -91,16 +91,21 @@ export default function ReferralRewardsPage() {
         </Card>
       )}
 
-      {data.is_admin && <h2 className="text-sm font-bold text-slate-700 -mb-3">Your own referral rewards</h2>}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {tiles.map(t => (
-          <div key={t.label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{t.label}</p>
-            <p className={`mt-1 text-xl sm:text-2xl font-black tabular-nums ${num(t.value) > 0 ? "text-purple-600" : "text-slate-900"}`}>{inr(t.value)}</p>
-            <p className="text-[11px] text-slate-500">{t.hint}</p>
-          </div>
-        ))}
-      </div>
+      {/* The heading and its tiles keep their own spacing. A negative margin
+          here fought the page's space-y (Tailwind 4 spaces children from the
+          bottom) and slid the tiles up over the heading. */}
+      <section className="space-y-3">
+        {data.is_admin && <h2 className="text-sm font-bold text-slate-700">Your own referral rewards</h2>}
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          {tiles.map(t => (
+            <div key={t.label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{t.label}</p>
+              <p className={`mt-1 text-xl sm:text-2xl font-black tabular-nums ${num(t.value) > 0 ? "text-purple-600" : "text-slate-900"}`}>{inr(t.value)}</p>
+              <p className="text-[11px] text-slate-500">{t.hint}</p>
+            </div>
+          ))}
+        </div>
+      </section>
 
       <Card className="p-5">
         <CardHeader title="Your referrals" icon={<Icon.Gift />}

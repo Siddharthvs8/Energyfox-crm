@@ -8130,11 +8130,14 @@ class DuplicateLeadSubmissionTests(TestCase):
         self.assertEqual(again.status_code, 200)
         self.assertEqual(again.json()['id'], first['id'])
 
-    def test_a_different_person_on_the_same_phone_is_still_created(self):
-        """A shared family phone is not a duplicate."""
+    def test_a_different_name_on_the_same_phone_is_refused(self):
+        """One lead per phone number: a second name on it is not a second lead
+        (see test_manual_duplicates)."""
         self.post()
-        self.post(first_name='Anitha')
-        self.assertEqual(Lead.objects.count(), 2)
+        r = self.post(first_name='Anitha')
+        self.assertEqual(r.status_code, 400, r.content[:300])
+        self.assertIn('already associated with another lead', r.json()['phone'][0])
+        self.assertEqual(Lead.objects.count(), 1)
 
     def test_a_different_phone_is_still_created(self):
         self.post()
@@ -8147,12 +8150,13 @@ class DuplicateLeadSubmissionTests(TestCase):
         self.post(phone='')
         self.assertEqual(Lead.objects.count(), 2)
 
-    def test_the_same_customer_can_be_filed_again_later(self):
-        """A second enquiry weeks later is real business, not a stray click."""
+    def test_the_same_customer_is_not_filed_again_later(self):
+        """A second enquiry weeks later belongs on the lead they already have,
+        which carries every call made to them since."""
         self.post()
         Lead.objects.all().update(created_at=timezone.now() - timedelta(days=30))
-        self.post()
-        self.assertEqual(Lead.objects.count(), 2)
+        self.assertEqual(self.post().status_code, 400)
+        self.assertEqual(Lead.objects.count(), 1)
 
     def test_refiling_a_trashed_lead_creates_it_again(self):
         """It was deleted on purpose; adding it back is a real create."""

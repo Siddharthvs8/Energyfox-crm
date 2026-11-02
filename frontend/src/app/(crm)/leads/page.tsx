@@ -75,6 +75,26 @@ interface PendingTask {
   assignee_id: string; // team member id as string
 }
 
+// ─── Assignee picker entry (from /api/users/assignable/) ─────────────────────
+interface TeamMember {
+  id: number;
+  name: string;
+  role: string;
+  role_label: string;
+}
+
+// Tele callers and BDEs share the assignee lists, and picking a BDE hands the
+// lead over for a site visit — so the role is shown, not just the name.
+const memberLabel = (m: TeamMember) => (m.role_label ? `${m.name} · ${m.role_label}` : m.name);
+
+// A phone number as the server compares it (normalise_phone in
+// leads/duplicates.py): digits only, the last ten kept, so +91 and spacing
+// make no difference.
+const phoneKey = (raw: string) => {
+  const digits = (raw || "").replace(/\D+/g, "");
+  return digits.length >= 10 ? digits.slice(-10) : digits;
+};
+
 // ─── Status config (now dynamic — see useLeadStatuses hook) ──────────────────
 
 const SOURCE_META: Record<string, { bg: string; text: string }> = {
@@ -290,10 +310,13 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   const [archivedCount, setArchivedCount] = useState(0);
   const [showModal,      setShowModal]      = useState(false);
   const [savingLead,     setSavingLead]     = useState(false);
+  // What the server said about the phone number in the lead form — that it is
+  // already on another lead — and which number and lead that was about.
+  const [phoneError,     setPhoneError]     = useState<{ key: string; leadId: number | null; message: string } | null>(null);
   // Leads whose status change is still in flight — the row's dropdown dims.
   const [savingStatusIds, setSavingStatusIds] = useState<number[]>([]);
   const [editingLead,    setEditingLead]    = useState<any>(null);
-  const [teamMembers,    setTeamMembers]    = useState<{ id: number; name: string }[]>([]);
+  const [teamMembers,    setTeamMembers]    = useState<TeamMember[]>([]);
   const [selectedIds,    setSelectedIds]    = useState<number[]>([]);
   const [showBulkAssign, setShowBulkAssign] = useState(false);
   const [showBulkUpdate, setShowBulkUpdate] = useState(false);
@@ -403,6 +426,36 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
     sortField, sortOrder, showArchived
   ]);
 
+  // Warns while the number is typed that it already has a lead, rather than
+  // after the rest of the form is filled in. The server refuses the save either
+  // way (LeadSerializer.validate_phone); this only says so sooner. An edit is
+  // checked only when its number changes, as on the server.
+  useEffect(() => {
+    const key = phoneKey(form.phone);
+    const leadId: number | null = editingLead?.id ?? null;
+    if (!showModal || key.length < 10 || (editingLead && key === phoneKey(editingLead.phone))) return;
+    let stale = false;
+    const timer = setTimeout(async () => {
+      const token = localStorage.getItem(`${domain}_access`);
+      const q = new URLSearchParams({ phone: form.phone });
+      if (leadId) q.append("exclude", String(leadId));
+      try {
+        const r = await fetch(`${getApiBase(domain)}/api/leads/phone-check/?${q}`, { headers: { Authorization: `Bearer ${token}` } });
+        const d = r.ok ? await r.json() : null;
+        if (stale || !d) return;
+        setPhoneError(d.duplicate ? { key, leadId, message: d.duplicate.message } : null);
+      } catch {}
+    }, 400);
+    return () => { stale = true; clearTimeout(timer); };
+  }, [form.phone, showModal, editingLead, domain]);
+
+  // The warning, for as long as it is still about the number in the form.
+  const phoneWarning = showModal && phoneError
+    && phoneError.key === phoneKey(form.phone)
+    && phoneError.leadId === (editingLead?.id ?? null)
+    && !(editingLead && phoneError.key === phoneKey(editingLead.phone))
+    ? phoneError.message : null;
+
   const fetchTeam = async () => {
     const token = localStorage.getItem(`${domain}_access`);
     if (!token) return;
@@ -414,6 +467,8 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
       setTeamMembers((Array.isArray(d) ? d : d.results || []).map((u: any) => ({
         id: u.id,
         name: u.name || `${u.first_name || ""} ${u.last_name || ""}`.trim() || u.username,
+        role: u.role || "",
+        role_label: u.role_label || "",
       })));
     } catch {}
   };
@@ -658,6 +713,25 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
     setSelectedIds([]); fetchLeads();
   };
 
+  // Closing without saving clears the form too. It used to keep its picks, so
+  // an assignee chosen and abandoned went out with the next bulk update made
+  // for some other reason.
+  const closeBulkUpdate = () => {
+    setShowBulkUpdate(false);
+    setBulkUpdateStatus(""); setBulkUpdateSource("");
+    setBulkUpdateProduct(""); setBulkUpdateAssignee(""); setBulkUpdateCampaign("");
+  };
+
+  // Giving leads to a BDE is the site-visit hand-off, not a change of caller:
+  // they go onto that BDE's list and into the Site Visit stage. One click in
+  // the bulk list did that to a whole page of leads, so it asks first.
+  const confirmBdeHandOff = (userId?: number) => {
+    const member = teamMembers.find(m => m.id === userId);
+    if (member?.role !== "bde") return true;
+    const n = selectedIds.length;
+    return confirm(`${member.name} is a BDE. The ${n} selected lead${n === 1 ? "" : "s"} will be handed over for a site visit and move to the Site Visit stage.\n\nContinue?`);
+  };
+
   const bulkUpdate = async () => {
     if (!selectedIds.length) return;
     const token = localStorage.getItem(`${domain}_access`);
@@ -672,18 +746,19 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
       alert("Please select at least one field to update.");
       return;
     }
+    if (!confirmBdeHandOff(data.assigned_to_id)) return;
     
     await fetch(`${getApiBase(domain)}/api/leads/bulk_update/`, { 
       method: "POST", 
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, 
       body: JSON.stringify({ ids: selectedIds, data }) 
     });
-    setSelectedIds([]); setShowBulkUpdate(false); fetchLeads();
-    setBulkUpdateStatus(""); setBulkUpdateSource("");
-    setBulkUpdateProduct(""); setBulkUpdateAssignee(""); setBulkUpdateCampaign("");
+    setSelectedIds([]); fetchLeads();
+    closeBulkUpdate();
   };
 
   const bulkAssign = async (userId: number) => {
+    if (!confirmBdeHandOff(userId)) return;
     const token = localStorage.getItem(`${domain}_access`);
     await fetch(`${getApiBase(domain)}/api/leads/bulk_assign/`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ ids: selectedIds, user_id: userId }) });
     setSelectedIds([]); setShowBulkAssign(false); fetchLeads();
@@ -850,8 +925,9 @@ This cannot be undone.`)) return;
     // this guard an impatient second click on a slow connection files the whole
     // lead again, which is how the same customer ended up in the list five
     // times. The server refuses recent duplicates as well, for the retries and
-    // second tabs this cannot see.
-    if (savingLead) return;
+    // second tabs this cannot see. A number already on another lead is refused
+    // outright, so there is nothing to send.
+    if (savingLead || phoneWarning) return;
     setSavingLead(true);
     try {
       await saveLead();
@@ -915,6 +991,14 @@ This cannot be undone.`)) return;
         fetchLeads();
       } else {
         const err = await r.json();
+        // A refused phone number is said under the phone field, where the
+        // warning appears while typing — this is the same warning, from the
+        // server, for when the check did not get there first.
+        if (err.phone) {
+          setPhoneError({ key: phoneKey(form.phone), leadId: editingLead?.id ?? null,
+                          message: Array.isArray(err.phone) ? err.phone[0] : String(err.phone) });
+          return;
+        }
         const errMsgs = typeof err === 'object' ? Object.entries(err).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join(' | ') : null;
         alert(err.invoice?.[0] || err.error || errMsgs || "Failed to save lead");
       }
@@ -931,9 +1015,10 @@ This cannot be undone.`)) return;
   const removePendingTask = (key: string) =>
     setPendingTasks(prev => prev.filter(t => t._key !== key));
 
-  const openAdd  = () => { setEditingLead(null); setForm(blank); setPendingTasks([]); setNewEditNote(""); setShowModal(true); };
+  const openAdd  = () => { setEditingLead(null); setForm(blank); setPendingTasks([]); setNewEditNote(""); setPhoneError(null); setShowModal(true); };
   const openEdit = (lead: any) => {
     setEditingLead(lead);
+    setPhoneError(null);
     setForm({ first_name: lead.first_name || "", last_name: lead.last_name || "", email: lead.email || "", phone: lead.phone || "", company: lead.company || "", district: lead.district || "", installation_location: lead.installation_location || "", source: lead.source || "manual", referred_by: lead.referred_by?.toString() || "", status: lead.status || "new", value: (lead.value || 0).toString(), notes: lead.notes || "", assigned_to: lead.assigned_to?.toString() || "", product: lead.product?.toString() || "" });
     setPendingTasks([]);
     setNewEditNote("");
@@ -2174,7 +2259,13 @@ This cannot be undone.`)) return;
                 </div>
                 <div>
                   <label className={LABEL}>Phone</label>
-                  <input type="tel" value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} className={FIELD} placeholder="+91 98765 43210" />
+                  <input type="tel" value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} className={FIELD} placeholder="+91 98765 43210"
+                    aria-invalid={!!phoneWarning} aria-describedby={phoneWarning ? "lead-phone-warning" : undefined} />
+                  {phoneWarning && (
+                    <p id="lead-phone-warning" role="alert" className="mt-1.5 text-[11px] font-medium leading-snug text-red-600">
+                      {phoneWarning}
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label className={LABEL}>Location</label>
@@ -2242,7 +2333,7 @@ This cannot be undone.`)) return;
                   <div className="relative">
                     <select value={form.assigned_to} onChange={e => setForm({ ...form, assigned_to: e.target.value })} className={SELECT_FIELD}>
                       <option value="">Unassigned</option>
-                      {teamMembers.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                      {teamMembers.map(m => <option key={m.id} value={m.id}>{memberLabel(m)}</option>)}
                     </select>
                     <div className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"><I.ChevronDown /></div>
                   </div>
@@ -2365,7 +2456,7 @@ This cannot be undone.`)) return;
                 className="flex-1 py-2.5 border border-slate-200 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-100 transition-all bg-white">
                 Cancel
               </button>
-              <button onClick={handleSubmit as any} disabled={savingLead}
+              <button onClick={handleSubmit as any} disabled={savingLead || !!phoneWarning}
                 className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 transition-all shadow-sm shadow-indigo-200 disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2">
                 {savingLead && <Spinner />}{savingLead ? "Saving…" : editingLead ? "Save Changes" : "Create Lead"}
                 {!savingLead && pendingTasks.filter(t => t.title.trim()).length > 0 && (
@@ -2903,7 +2994,10 @@ This cannot be undone.`)) return;
                   <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-xs font-bold text-white flex-shrink-0">
                     {m.name.charAt(0).toUpperCase()}
                   </div>
-                  <span className="text-sm font-medium text-slate-700 group-hover:text-indigo-700 transition-colors">{m.name}</span>
+                  <div className="min-w-0 leading-tight">
+                    <p className="text-sm font-medium text-slate-700 group-hover:text-indigo-700 transition-colors">{m.name}</p>
+                    {m.role_label && <p className="text-[10px] uppercase tracking-wider text-slate-400">{m.role_label}</p>}
+                  </div>
                 </button>
               ))}
             </div>
@@ -2920,7 +3014,7 @@ This cannot be undone.`)) return;
       {/* ── Bulk Update Modal ─────────────────────────────────────────────────── */}
       {showBulkUpdate && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
-          onClick={() => setShowBulkUpdate(false)}>
+          onClick={closeBulkUpdate}>
           <div className="bg-white w-full max-w-sm mx-4 rounded-2xl shadow-2xl max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain"
             onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
@@ -2928,7 +3022,7 @@ This cannot be undone.`)) return;
                 <h2 className="text-[15px] font-bold text-slate-900">Bulk Update Leads</h2>
                 <p className="text-xs text-slate-400 mt-0.5">{selectedIds.length} lead{selectedIds.length !== 1 ? "s" : ""} selected</p>
               </div>
-              <button onClick={() => setShowBulkUpdate(false)}
+              <button onClick={closeBulkUpdate}
                 className="w-8 h-8 flex items-center justify-center rounded-xl bg-slate-100 text-slate-500 hover:bg-slate-200 transition-all">
                 <I.X />
               </button>
@@ -2967,7 +3061,7 @@ This cannot be undone.`)) return;
                 <label className="block text-xs font-semibold text-slate-600 mb-1.5">Assignee</label>
                 <select value={bulkUpdateAssignee} onChange={e => setBulkUpdateAssignee(e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-all text-slate-700">
                   <option value="">-- No Change --</option>
-                  {teamMembers.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  {teamMembers.map(m => <option key={m.id} value={m.id}>{memberLabel(m)}</option>)}
                 </select>
               </div>
               )}
@@ -2987,7 +3081,7 @@ This cannot be undone.`)) return;
               </div>
             </div>
             <div className="px-5 py-4 border-t border-slate-100 flex gap-3">
-              <button onClick={() => setShowBulkUpdate(false)}
+              <button onClick={closeBulkUpdate}
                 className="flex-1 py-2.5 border border-slate-200 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-all">
                 Cancel
               </button>

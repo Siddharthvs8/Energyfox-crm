@@ -480,10 +480,13 @@ export default function DashboardLayout({
     const tk = localStorage.getItem(`${domain}_access`);
     if (!tk) return;
     try {
-      const [countR, listR, popupsR] = await Promise.all([
+      // Popups first: asking for them is what creates the reminders that are
+      // due (task reminders, target nudges), so the count and the list asked
+      // for after them already include whatever just popped up.
+      const popupsR = await fetch(`${getApiBase(domain)}/api/ai-manager/popups/`, { headers: { Authorization: `Bearer ${tk}` } });
+      const [countR, listR] = await Promise.all([
         fetch(`${getApiBase(domain)}/api/ai-manager/notifications/unread_count/`, { headers: { Authorization: `Bearer ${tk}` } }),
         fetch(`${getApiBase(domain)}/api/ai-manager/notifications/?limit=10`, { headers: { Authorization: `Bearer ${tk}` } }),
-        fetch(`${getApiBase(domain)}/api/ai-manager/popups/`, { headers: { Authorization: `Bearer ${tk}` } })
       ]);
       if (countR.ok) {
         const d = await countR.json();
@@ -1383,13 +1386,21 @@ export default function DashboardLayout({
                       meeting: 'bg-blue-50 text-blue-600',
                       achievement: 'bg-amber-50 text-amber-600',
                       general: 'bg-slate-50 text-slate-600',
+                      task_due: 'bg-amber-50 text-amber-600',
+                      task_overdue: 'bg-rose-50 text-rose-600',
                     };
                     const typeIcons: Record<string, string> = {
                       daily_target: '📋', monthly_target: '📊',
                       meeting: '📅', achievement: '🏆', general: '💬',
+                      task_due: '⏰', task_overdue: '⚠️',
                     };
+                    // A task reminder opens the task it is about.
+                    const taskId = n.extra_data?.task_id;
+                    const openTask = taskId ? () => { setShowNotifDropdown(false); router.push(`/tasks?task=${taskId}`); } : undefined;
                     return (
-                      <div key={n.id} className={`notif-item ${!n.is_read ? 'unread' : ''}`}>
+                      <div key={n.id} className={`notif-item ${!n.is_read ? 'unread' : ''} ${openTask ? 'cursor-pointer' : ''}`}
+                        onClick={openTask} role={openTask ? "button" : undefined} tabIndex={openTask ? 0 : undefined}
+                        onKeyDown={openTask ? (e => { if (e.key === "Enter") openTask(); }) : undefined}>
                         <span className={`mt-0.5 w-8 h-8 rounded-xl flex items-center justify-center text-sm flex-shrink-0 ${typeColors[n.notification_type] || typeColors.general}`}>
                           {typeIcons[n.notification_type] || '💬'}
                         </span>
@@ -1555,7 +1566,7 @@ export default function DashboardLayout({
           {/* Modal Box */}
           <div className="popup-card max-w-2xl">
             {/* Header Gradient Container */}
-            <div className={`h-44 ${activePopup.notification_type === 'monthly_target' ? 'bg-gradient-to-br from-indigo-500 via-purple-500 to-fuchsia-600' : (activePopup.notification_type === 'daily_target' ? 'bg-gradient-to-br from-cyan-400 via-blue-500 to-indigo-600' : 'bg-gradient-to-br from-rose-500 via-red-500 to-orange-500')} w-full flex items-center justify-center text-white relative overflow-hidden`}>
+            <div className={`h-44 ${activePopup.notification_type === 'monthly_target' ? 'bg-gradient-to-br from-indigo-500 via-purple-500 to-fuchsia-600' : activePopup.notification_type === 'daily_target' ? 'bg-gradient-to-br from-cyan-400 via-blue-500 to-indigo-600' : activePopup.notification_type === 'task_due' ? 'bg-gradient-to-br from-amber-400 via-orange-500 to-amber-600' : 'bg-gradient-to-br from-rose-500 via-red-500 to-orange-500'} w-full flex items-center justify-center text-white relative overflow-hidden`}>
               {/* Decorative shapes */}
                <div className="absolute top-0 right-0 w-36 h-36 bg-white/10 rounded-bl-full" />
                <div className="absolute bottom-0 left-0 w-28 h-28 bg-black/10 rounded-tr-full" />
@@ -1566,6 +1577,8 @@ export default function DashboardLayout({
                     <Nav.MyPerformance />
                  ) : activePopup.notification_type === 'daily_target' ? (
                     <Nav.Leads />
+                 ) : activePopup.notification_type === 'task_due' || activePopup.notification_type === 'task_overdue' ? (
+                    <Nav.Tasks />
                  ) : (
                     <Nav.Alert />
                  )}
@@ -1591,8 +1604,23 @@ export default function DashboardLayout({
                  </div>
               )}
 
-              {/* Meeting type: show Join + Dismiss buttons */}
-              {activePopup.notification_type === 'meeting' ? (
+              {/* A task reminder: put it off, or go straight to the task. */}
+              {activePopup.extra_data?.task_id ? (
+                <div className="flex gap-3 w-full max-w-sm">
+                  <button
+                    onClick={dismissPopup}
+                    className="flex-1 py-4 bg-slate-100 text-slate-600 text-base font-bold rounded-2xl hover:bg-slate-200 transition-all active:scale-[0.98]"
+                  >
+                    Later
+                  </button>
+                  <button
+                    onClick={() => { const id = activePopup.extra_data.task_id; dismissPopup(); router.push(`/tasks?task=${id}`); }}
+                    className="flex-1 py-4 bg-slate-900 text-white text-base font-black rounded-2xl hover:bg-slate-800 transition-all hover:-translate-y-0.5 active:translate-y-0"
+                  >
+                    Open task
+                  </button>
+                </div>
+              ) : activePopup.notification_type === 'meeting' ? (
                 <div className="flex gap-3 w-full max-w-sm">
                   <button
                     onClick={dismissPopup}

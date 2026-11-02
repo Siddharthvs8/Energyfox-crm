@@ -95,7 +95,16 @@ class TaskViewSet(viewsets.ModelViewSet):
         from ai_manager.models import Notification
         old_status = serializer.instance.status
         old_assignee = serializer.instance.assignee
+        old_due = (serializer.instance.due_date, serializer.instance.due_time)
         instance = serializer.save()
+        # A new due date, a new assignee or a reopened task starts its reminders
+        # over (tasks.reminders) — they were about the task as it was.
+        if (instance.reminded_at or instance.overdue_reminded_at) and (
+                (instance.due_date, instance.due_time) != old_due
+                or instance.assignee_id != (old_assignee.id if old_assignee else None)
+                or (old_status == 'done' and instance.status != 'done')):
+            Task.objects.filter(pk=instance.pk).update(reminded_at=None, overdue_reminded_at=None)
+            instance.reminded_at = instance.overdue_reminded_at = None
         if 'status' in serializer.validated_data and old_status != instance.status:
             old_label = TASK_STATUS_LABELS.get(old_status, old_status)
             new_label = TASK_STATUS_LABELS.get(instance.status, instance.status)

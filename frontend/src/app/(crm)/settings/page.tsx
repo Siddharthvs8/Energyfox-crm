@@ -3,6 +3,7 @@ import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
 import { THEMES, applyTheme } from "@/lib/themes";
 import RolesSection from "./RolesSection";
+import MinutesInput from "./MinutesInput";
 import DistrictsSection from "./DistrictsSection";
 import InventoryDocumentsSection from "./InventoryDocumentsSection";
 import EmailSignatureEditor from "./EmailSignatureEditor";
@@ -12,10 +13,14 @@ import { useRouter } from "next/navigation";
 
 type SettingsTab = "general" | "integrations" | "automation" | "districts" | "documents" | "roles";
 
+// The longest a task reminder interval may be: thirty days. Mirrors
+// ai_manager.views.AIMeetingConfigView.TASK_MINUTES_MAX.
+const TASK_REMINDER_MAX_MINUTES = 30 * 24 * 60;
+
 const TABS: { key: SettingsTab; label: string; blurb: string }[] = [
   { key: "general", label: "General", blurb: "Company profile, branding and plan." },
   { key: "integrations", label: "Integrations", blurb: "Payments, telephony, WhatsApp and email." },
-  { key: "automation", label: "Automation", blurb: "Target reminders and your own lead statuses." },
+  { key: "automation", label: "Automation", blurb: "Target reminders, task reminders and your own lead statuses." },
   { key: "districts", label: "Districts", blurb: "The districts a lead can belong to, and what an import is matched against." },
   { key: "documents", label: "Documents", blurb: "Inventory document letterheads, invoices and the warranty certificate." },
   { key: "roles", label: "Roles & Permissions", blurb: "Build your own user types and choose what each one can reach." },
@@ -121,6 +126,10 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
   const [popupConfig, setPopupConfig] = useState({
     monthly_popup_interval_hours: 24,
     daily_popup_interval_hours: 3,
+    // Task reminders, in minutes. 0 is meaningful for both: no early reminder,
+    // and an overdue reminder sent only once.
+    task_reminder_minutes: 60,
+    task_overdue_repeat_minutes: 1440,
   });
 
   const COLOR_PALETTES = [
@@ -205,6 +214,8 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
           setPopupConfig({
             monthly_popup_interval_hours: popupData.monthly_popup_interval_hours || 24,
             daily_popup_interval_hours: popupData.daily_popup_interval_hours || 3,
+            task_reminder_minutes: popupData.task_reminder_minutes ?? 60,
+            task_overdue_repeat_minutes: popupData.task_overdue_repeat_minutes ?? 1440,
           });
         }
       } catch (popupErr) {
@@ -389,9 +400,9 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
         setSigFile(null);
         setSealFile(null);
 
-        // Save target popup config
+        // Save target popup config and the task reminder intervals
         try {
-          await fetch(`${getApiBase(domain)}/api/ai-manager/meeting-config/`, {
+          const popupRes = await fetch(`${getApiBase(domain)}/api/ai-manager/meeting-config/`, {
             method: "PATCH",
             headers: {
               Authorization: `Bearer ${token}`,
@@ -400,8 +411,17 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
             body: JSON.stringify({
               monthly_popup_interval_hours: popupConfig.monthly_popup_interval_hours,
               daily_popup_interval_hours: popupConfig.daily_popup_interval_hours,
+              task_reminder_minutes: popupConfig.task_reminder_minutes,
+              task_overdue_repeat_minutes: popupConfig.task_overdue_repeat_minutes,
             }),
           });
+          // Said out loud: a refused interval must not sit behind "updated
+          // successfully" while the old one carries on.
+          if (!popupRes.ok) {
+            const body = await popupRes.json().catch(() => ({}));
+            setSuccess("");
+            setError(body.error || "Could not save the reminder settings.");
+          }
         } catch (popupErr) {
           console.error("Failed to save target popup config:", popupErr);
         }
@@ -929,6 +949,38 @@ export default function TenantSettingsPage({ params: paramsPromise }: { params: 
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition" 
                   />
                   <p className="text-xs text-slate-400 mt-2">Interval in hours between popup warnings for daily targets.</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-6 border-t border-slate-100">
+              <h3 className="text-lg font-bold text-slate-900 mb-2">⏰ Task Reminders</h3>
+              <p className="text-sm text-slate-500 mb-6">
+                Whoever a pending task is assigned to gets a notification and a popup before it falls due, and again
+                while it is overdue. A task with only a date is reminded on the morning it is due.
+              </p>
+              <div className="grid sm:grid-cols-2 gap-6">
+                <div>
+                  <label htmlFor="task-reminder-before" className="block text-sm font-semibold text-slate-700 mb-2">Remind before it is due</label>
+                  <MinutesInput id="task-reminder-before" minutes={popupConfig.task_reminder_minutes}
+                    maxMinutes={TASK_REMINDER_MAX_MINUTES}
+                    onChange={m => setPopupConfig({ ...popupConfig, task_reminder_minutes: m })} />
+                  <p className="text-xs text-slate-400 mt-2">
+                    {popupConfig.task_reminder_minutes === 0
+                      ? "Off: nobody is reminded before a task falls due."
+                      : "How long before the due time the reminder goes out."}
+                  </p>
+                </div>
+                <div>
+                  <label htmlFor="task-reminder-overdue" className="block text-sm font-semibold text-slate-700 mb-2">Remind again while overdue, every</label>
+                  <MinutesInput id="task-reminder-overdue" minutes={popupConfig.task_overdue_repeat_minutes}
+                    maxMinutes={TASK_REMINDER_MAX_MINUTES}
+                    onChange={m => setPopupConfig({ ...popupConfig, task_overdue_repeat_minutes: m })} />
+                  <p className="text-xs text-slate-400 mt-2">
+                    {popupConfig.task_overdue_repeat_minutes === 0
+                      ? "Once: a single reminder when the task goes overdue."
+                      : "The first comes when the task goes overdue; it repeats until the task is done."}
+                  </p>
                 </div>
               </div>
             </div>

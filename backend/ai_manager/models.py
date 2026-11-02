@@ -64,6 +64,16 @@ class ManagerConfig(models.Model):
         default=3,
         help_text="Interval in hours for daily target popups"
     )
+    # Task reminders (tasks.reminders), set by the admins in Settings →
+    # Automation. Both in minutes.
+    task_reminder_minutes = models.PositiveIntegerField(
+        default=60,
+        help_text="How long before a task falls due its assignee is reminded; 0 turns this off"
+    )
+    task_overdue_repeat_minutes = models.PositiveIntegerField(
+        default=1440,
+        help_text="How often an overdue task reminds its assignee again; 0 reminds once"
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -200,6 +210,8 @@ class Notification(models.Model):
         ('meeting', 'Meeting Reminder'),
         ('achievement', 'Achievement'),
         ('general', 'General'),
+        ('task_due', 'Task Due Soon'),
+        ('task_overdue', 'Task Overdue'),
     ]
 
     user = models.ForeignKey(

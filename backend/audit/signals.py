@@ -98,33 +98,42 @@ def record_save(sender, instance, created, **kwargs):
         if before is None:
             return                       # nothing to compare; not an edit we can describe
 
-        changes = {}
-        for field in _tracked_fields(instance):
-            old, new = getattr(before, field.attname, None), getattr(instance, field.attname, None)
-            # Compared as they will be written, not as objects. A FileField
-            # hands back a fresh wrapper each time whose equality is identity,
-            # so two empty ones looked like an edit and every save logged one.
-            old_text, new_text = _display(old), _display(new)
-            if old == new or old_text == new_text:
-                continue
-            if field.name in REDACTED_FIELDS or field.attname in REDACTED_FIELDS:
-                # That it changed is worth recording; what it changed to is not.
-                changes[field.name] = {'from': '••••', 'to': '••••'}
-                continue
-            changes[field.name] = {'from': old_text, 'to': new_text}
-
-        if not changes:
-            return                       # a save that changed nothing is not an edit
-
-        named = ', '.join(list(changes)[:4])
-        if len(changes) > 4:
-            named += f' and {len(changes) - 4} more'
-        _write(instance, AuditEntry.UPDATED, changes=changes,
-               summary=f'Changed {named} on {model_name} "{_label(instance)}"')
+        _record_update(before, instance)
     except Exception:
         # The log must never be the reason a save fails. A missing line is a
         # gap in the record; a raised exception is lost work for the user.
         logger.exception('Could not record an audit entry for %s', sender)
+
+
+def _record_update(before, after):
+    """Write the entry for an edit: what `after` says that `before` did not.
+
+    Shared with audit.bulk, which compares rows around a queryset.update() the
+    way this compares them around a save().
+    """
+    changes = {}
+    for field in _tracked_fields(after):
+        old, new = getattr(before, field.attname, None), getattr(after, field.attname, None)
+        # Compared as they will be written, not as objects. A FileField
+        # hands back a fresh wrapper each time whose equality is identity,
+        # so two empty ones looked like an edit and every save logged one.
+        old_text, new_text = _display(old), _display(new)
+        if old == new or old_text == new_text:
+            continue
+        if field.name in REDACTED_FIELDS or field.attname in REDACTED_FIELDS:
+            # That it changed is worth recording; what it changed to is not.
+            changes[field.name] = {'from': '••••', 'to': '••••'}
+            continue
+        changes[field.name] = {'from': old_text, 'to': new_text}
+
+    if not changes:
+        return                           # a save that changed nothing is not an edit
+
+    named = ', '.join(list(changes)[:4])
+    if len(changes) > 4:
+        named += f' and {len(changes) - 4} more'
+    _write(after, AuditEntry.UPDATED, changes=changes,
+           summary=f'Changed {named} on {after._meta.verbose_name} "{_label(after)}"')
 
 
 @receiver(post_delete)
