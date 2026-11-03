@@ -259,6 +259,11 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   const [totalPages,     setTotalPages]     = useState(1);
   const [loading,        setLoading]        = useState(true);
   const [search,         setSearch]         = useState("");
+  // What the list is searched for: the box's text once typing pauses. Searching
+  // on every key cost six requests a key — the list and each dropdown's options
+  // — so a few names typed quickly ran into the server's rate limit, and the
+  // list then came back empty, as if nobody matched.
+  const [searchQuery,    setSearchQuery]    = useState("");
   const [statusFilter,   setStatusFilter]   = useState("all");
   const [sourceFilter,   setSourceFilter]   = useState("all");
   const [assigneeFilter, setAssigneeFilter] = useState("all");
@@ -415,8 +420,17 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   // the shortcut and its completed badge are hidden from them.
   const showSiteVisit = !currentUser || currentUser.role !== "tele_caller";
 
+  // A new search starts from the first page: the page you were on may not exist
+  // among its results, and asking for it came back "Invalid page" — shown as no
+  // leads at all.
+  useEffect(() => {
+    if (search === searchQuery) return;
+    const timer = setTimeout(() => { setSearchQuery(search); setPage(1); }, 300);
+    return () => clearTimeout(timer);
+  }, [search, searchQuery]);
+
   useEffect(() => { fetchLeads(); fetchTeam(); fetchCampaigns(); fetchProducts(); fetchIntegrations(); fetchDistricts(); }, [
-    domain, statusFilter, sourceFilter, assigneeFilter, campaignFilter, productFilter, metaIntegrationFilter, stageFilter, districtFilter, search,
+    domain, statusFilter, sourceFilter, assigneeFilter, campaignFilter, productFilter, metaIntegrationFilter, stageFilter, districtFilter, searchQuery,
     createdType, createdParam, createdFrom, createdTo,
     modType, modParam, modFrom, modTo,
     valueMin, valueMax, companyFilter,
@@ -597,7 +611,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
     if (metaIntegrationFilter !== "all") q.append("meta_integration", metaIntegrationFilter);
     if (stageFilter    !== "all") q.append("stage",       stageFilter);
     if (districtFilter !== "all") q.append("district",    districtFilter);
-    if (search)                   q.append("search", search);
+    if (searchQuery)              q.append("search", searchQuery);
     if (valueMin)                 q.append("value_min", valueMin);
     if (valueMax)                 q.append("value_max", valueMax);
     if (companyFilter)            q.append("company", companyFilter);
@@ -626,7 +640,13 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
     return q;
   };
 
+  // Only the latest fetch may fill the list. Every search and filter change
+  // starts one, and an earlier, broader search ("shaji") can come back after the
+  // later one ("shaji t") — it then put its results back under the newer text.
+  const leadsRequest = useRef(0);
+
   const fetchLeads = async () => {
+    const request = ++leadsRequest.current;
     setLoading(true);
     const token = localStorage.getItem(`${domain}_access`);
     if (!token) return;
@@ -635,11 +655,12 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
     try {
       const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
       const d = await r.json();
+      if (request !== leadsRequest.current) return;
       setLeads(Array.isArray(d) ? d : d.results || []);
       setTotalLeadsCount(d.count || (Array.isArray(d) ? d.length : 0));
       setTotalPages(d.count ? Math.ceil(d.count / 100) : 1);
       setSelectedIds([]);
-    } catch {} finally { setLoading(false); }
+    } catch {} finally { if (request === leadsRequest.current) setLoading(false); }
   };
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1194,7 +1215,7 @@ This cannot be undone.`)) return;
     setDistrictFilter("all"); setStageFilter("all"); setMetaIntegrationFilter("all");
     setCreatedType("all"); setCreatedParam("2"); setCreatedFrom(""); setCreatedTo("");
     setModType("all"); setModParam("2"); setModFrom(""); setModTo("");
-    setValueMin(""); setValueMax(""); setCompanyFilter(""); setSearch("");
+    setValueMin(""); setValueMax(""); setCompanyFilter(""); setSearch(""); setSearchQuery("");
     setStatusChangeFrom("all"); setStatusChangeTo("all"); setStatusChangeType("all");
     setStatusChangeParam("2"); setStatusChangeFromD(""); setStatusChangeToD("");
     setStageReached("all"); setStageReachedType("all"); setStageReachedParam("7");
@@ -1307,7 +1328,12 @@ This cannot be undone.`)) return;
                 placeholder="Search name, email or place…"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && fetchLeads()}
+                onKeyDown={e => {
+                  // Enter searches at once, without waiting for the pause.
+                  if (e.key !== "Enter") return;
+                  if (search === searchQuery) fetchLeads();
+                  else { setSearchQuery(search); setPage(1); }
+                }}
                 className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-4 py-2.5 text-sm text-slate-700 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all shadow-sm shadow-slate-50"
               />
             </div>

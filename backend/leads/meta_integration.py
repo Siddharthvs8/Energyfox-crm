@@ -316,12 +316,22 @@ def create_lead_from_meta_payload(
             "Meta lead %s is lead #%s again — not filed a second time.",
             meta_lead_id, existing.pk,
         )
-        ActivityLog.objects.create(
-            activity_type="meta_import",
-            description="Meta sent this customer again; the duplicate was not filed.",
-            actor=actor, lead=existing,
-            extra={"meta_lead_id": meta_lead_id, "duplicate_skipped": True},
-        )
+        # Noted on the lead once, not once per sync. Every sync reads each
+        # form's leads back from the start, so the same submission arrives at
+        # every sync — and was noted every time, an entry a day until the
+        # lead's history was nothing but this line. The first note already says
+        # the customer came back through Meta; later copies are still kept out
+        # of the lead book, just without another entry.
+        already_noted = ActivityLog.objects.filter(
+            lead=existing, activity_type="meta_import", extra__duplicate_skipped=True,
+        ).exists()
+        if not already_noted:
+            ActivityLog.objects.create(
+                activity_type="meta_import",
+                description="Meta sent this customer again; the duplicate was not filed.",
+                actor=actor, lead=existing,
+                extra={"meta_lead_id": meta_lead_id, "duplicate_skipped": True},
+            )
         return None, True
 
     with transaction.atomic():

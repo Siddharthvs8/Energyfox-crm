@@ -288,6 +288,44 @@ def reporting_scope(user):
     return live.filter(own_leads_q(user)).distinct()
 
 
+def search_leads(queryset, text):
+    """The leads the search box finds for what was typed.
+
+    The name is matched the way the list shows it, first and last together:
+    "shaji t" is how Shaji TA's name starts, but neither his first name nor his
+    last holds it on its own, and matching them one at a time found nobody.
+    Runs of spaces count as one, in what was typed and in the name, since names
+    arrive typed every way.
+
+    Then the email and the phone as typed, and the place, which the box has
+    always offered. A number is also matched on its digits, so 8590736910
+    finds +91 85907 36910 however it was written down; past ten digits only the
+    last ten count, which drops a +91 or a leading 0.
+    """
+    import re
+    from django.db.models import CharField, Func, Q, Value
+    from django.db.models.functions import Coalesce, Concat
+
+    text = ' '.join(text.split())
+    if not text:
+        return queryset
+
+    def regexp_replace(expression, pattern, replacement):
+        return Func(expression, Value(pattern), Value(replacement), Value('g'),
+                    function='REGEXP_REPLACE', output_field=CharField())
+
+    queryset = queryset.alias(_search_name=regexp_replace(
+        Concat('first_name', Value(' '), Coalesce('last_name', Value(''))), r'\s+', ' '))
+    match = (Q(_search_name__icontains=text) | Q(email__icontains=text)
+             | Q(phone__icontains=text) | Q(company__icontains=text))
+
+    digits = re.sub(r'\D', '', text)
+    if digits and re.fullmatch(r'[\d\s()+.-]+', text):
+        queryset = queryset.alias(_search_phone=regexp_replace('phone', r'\D', ''))
+        match |= Q(_search_phone__contains=digits[-10:])
+    return queryset.filter(match)
+
+
 class LeadViewSet(viewsets.ModelViewSet):
     queryset = Lead.objects.all()
     serializer_class = LeadSerializer
@@ -5400,12 +5438,21 @@ class LeadViewSet(viewsets.ModelViewSet):
                 queryset = queryset.filter(meta_integration__name__iexact=meta_integration)
 
         # Filter by assignee
+        # A person's leads are every lead they are an owner of — the current
+        # owner, the tele caller who worked it, or the BDE on it — the same
+        # people the list's Owner column shows. Matching `assigned_to` alone lost
+        # every lead a tele caller had handed to a BDE (and every lead a BDE
+        # took over from a tele caller) as soon as it had two owners.
         assigned_to = self.request.query_params.get('assigned_to')
         if assigned_to:
             if assigned_to == 'unassigned':
                 queryset = queryset.filter(assigned_to__isnull=True)
+            elif assigned_to.isdigit():
+                from django.db.models import Q
+                queryset = queryset.filter(Q(assigned_to_id=assigned_to) | Q(tele_caller_id=assigned_to)
+                                           | Q(bde_id=assigned_to))
             else:
-                queryset = queryset.filter(assigned_to_id=assigned_to)
+                queryset = queryset.none()
         
         # Filter by date range
         created_after = self.request.query_params.get('created_after')
@@ -5506,13 +5553,7 @@ class LeadViewSet(viewsets.ModelViewSet):
         # Search global
         search = self.request.query_params.get('search')
         if search:
-            from django.db.models import Q
-            queryset = queryset.filter(
-                Q(first_name__icontains=search) |
-                Q(last_name__icontains=search) |
-                Q(email__icontains=search) |
-                Q(phone__icontains=search)
-            )
+            queryset = search_leads(queryset, search)
 
         # Prefetch activity_logs and annotate latest_activity_date
         from django.db.models import Max, F

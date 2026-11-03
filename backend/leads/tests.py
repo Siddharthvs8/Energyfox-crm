@@ -7598,6 +7598,97 @@ class ReferredByTests(TestCase):
         self.assertEqual(self.client.get('/api/users/referrers/').status_code, 401)
 
 
+class AssigneeFilterTests(TestCase):
+    """Filtering the Leads list by a person finds every lead they are an owner
+    of — as the current owner, the tele caller or the BDE — not only the ones
+    they own alone."""
+
+    def setUp(self):
+        self.admin = mk('af_admin', 'admin')
+        self.caller = mk('af_caller', 'tele_caller')
+        self.bde = mk('af_bde', 'bde')
+        self.bde2 = mk('af_bde2', 'bde')
+        Lead.objects.create(first_name='Mine', assigned_to=self.caller)
+        # Handed to a BDE: the owner moved, the tele caller stayed on it.
+        Lead.objects.create(first_name='Handed', assigned_to=self.bde, tele_caller=self.caller, bde=self.bde)
+        # A BDE put on it for the site visit while the tele caller keeps it.
+        Lead.objects.create(first_name='Visited', assigned_to=self.caller, bde=self.bde2)
+        Lead.objects.create(first_name='Other', assigned_to=mk('af_caller2', 'tele_caller'))
+        Lead.objects.create(first_name='Nobody')
+
+    def names(self, assigned_to):
+        r = self.client.get(f'/api/leads/?assigned_to={assigned_to}&page_size=200',
+                            HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        d = r.json()
+        return {lead['first_name'] for lead in (d if isinstance(d, list) else d['results'])}
+
+    def test_a_tele_caller_finds_the_leads_they_share_with_a_bde(self):
+        self.assertEqual(self.names(self.caller.id), {'Mine', 'Handed', 'Visited'})
+
+    def test_a_bde_finds_the_leads_they_share_with_a_tele_caller(self):
+        self.assertEqual(self.names(self.bde.id), {'Handed'})
+        self.assertEqual(self.names(self.bde2.id), {'Visited'})
+
+    def test_unassigned_still_means_no_owner(self):
+        self.assertEqual(self.names('unassigned'), {'Nobody'})
+
+    def test_a_value_that_names_nobody_finds_nothing(self):
+        self.assertEqual(self.names('someone'), set())
+
+
+class LeadSearchTests(TestCase):
+    """The Leads search box finds a customer by their name as the list shows it,
+    their email, their place or their number, however it was written down."""
+
+    def setUp(self):
+        self.admin = mk('ls_admin', 'admin')
+        Lead.objects.create(first_name='Shaji', last_name='TA', phone='+91 85907 36910',
+                            company='Karunagappally')
+        Lead.objects.create(first_name='Shajiy', last_name='TA', phone='+918590736911')
+        Lead.objects.create(first_name='Shaji', last_name='Mathayi', phone='+17034630581',
+                            email='mathayi@example.com')
+        Lead.objects.create(first_name='Reshma', last_name='shaji', phone='9895700100')
+        # A Meta name split at its first space, from a form typed with two.
+        Lead.objects.create(first_name='Anil', last_name=' Kumar', phone='9895700101')
+        Lead.objects.create(first_name='Biju', last_name=None, phone='9895700102')
+
+    def found(self, search):
+        from urllib.parse import urlencode
+        r = self.client.get(f'/api/leads/?{urlencode({"search": search, "page_size": 200})}',
+                            HTTP_AUTHORIZATION=token_for(self.admin))
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        d = r.json()
+        return {' '.join(f"{lead['first_name']} {lead['last_name'] or ''}".split())
+                for lead in (d if isinstance(d, list) else d['results'])}
+
+    def test_the_first_and_last_name_are_searched_together(self):
+        """Shaji TA is Shaji + TA: neither name holds "shaji t" on its own."""
+        self.assertEqual(self.found('shaji t'), {'Shaji TA'})
+        self.assertEqual(self.found('SHAJI TA'), {'Shaji TA'})
+        self.assertEqual(self.found('  shaji   t '), {'Shaji TA'})
+
+    def test_a_name_stored_with_extra_spaces_is_still_found(self):
+        self.assertEqual(self.found('anil kumar'), {'Anil Kumar'})
+
+    def test_one_word_still_finds_every_name_holding_it(self):
+        self.assertEqual(self.found('shaji'),
+                         {'Shaji TA', 'Shajiy TA', 'Shaji Mathayi', 'Reshma shaji'})
+        self.assertEqual(self.found('mathayi'), {'Shaji Mathayi'})
+        self.assertEqual(self.found('biju'), {'Biju'})        # no last name at all
+
+    def test_the_place_the_box_offers(self):
+        self.assertEqual(self.found('karunagappally'), {'Shaji TA'})
+
+    def test_the_email(self):
+        self.assertEqual(self.found('mathayi@ex'), {'Shaji Mathayi'})
+
+    def test_a_number_however_it_was_written(self):
+        for typed in ('8590736910', '+91 8590736910', '08590736910', '85907 36910'):
+            self.assertEqual(self.found(typed), {'Shaji TA'}, typed)
+        self.assertEqual(self.found('703-463-0581'), {'Shaji Mathayi'})
+
+
 class CompanyPerformanceTests(TestCase):
     """One report over the whole company, agreeing with every other screen.
 
@@ -10288,6 +10379,82 @@ class MetaImportDeduplicationTests(TestCase):
             self.payload('7002', phone_number='9895700008'))
         self.assertFalse(dup)
         self.assertIsNotNone(lead)
+
+    # ── Noted once, however often Meta sends the customer ──
+    @staticmethod
+    def duplicate_notes(lead):
+        from .models import ActivityLog
+        return ActivityLog.objects.filter(lead=lead, extra__duplicate_skipped=True)
+
+    def test_the_skip_is_noted_once_however_often_meta_sends_it(self):
+        """Every sync reads the form back from the start, so the same submission
+        arrives at every one — and was noted every time, 66 entries on one lead."""
+        first, _ = create_lead_from_meta_payload(
+            self.payload('8001', phone_number='9895700009'))
+        for meta_id in ('8002', '8002', '8002', '8003'):     # three syncs, then a new form
+            lead, dup = create_lead_from_meta_payload(
+                self.payload(meta_id, phone_number='9895700009'))
+            self.assertIsNone(lead)
+            self.assertTrue(dup)
+        self.assertEqual(Lead.objects.filter(phone__contains='9895700009').count(), 1)
+        notes = self.duplicate_notes(first)
+        self.assertEqual(notes.count(), 1)
+        self.assertEqual(notes.get().extra['meta_lead_id'], '8002')     # the first time
+
+    def test_a_sync_that_reads_the_form_again_adds_no_note(self):
+        """The whole sync, as the schedule runs it, for a customer filed by hand
+        before Meta sent them."""
+        from .meta_integration import import_meta_leads
+        from .models import IntegrationSettings
+        kept = Lead.objects.create(first_name='Salim', phone='919495700010')
+        integration = IntegrationSettings.objects.create(
+            name='Kochi', meta_form_id='form-1', meta_access_token='token-a')
+        form = [self.payload('9001', phone_number='+919495700010')]
+        with patch('leads.meta_integration.MetaGraphClient.get_all_pages', return_value=form):
+            for _ in range(3):
+                result = import_meta_leads(integration)
+                self.assertEqual((result.imported, result.skipped, result.errors), (0, 1, []))
+        self.assertEqual(Lead.objects.filter(phone__contains='9495700010').count(), 1)
+        self.assertEqual(self.duplicate_notes(kept).count(), 1)
+
+    def test_the_migration_leaves_the_first_note_on_each_lead(self):
+        import importlib
+        from datetime import datetime, timezone as dt_timezone
+        from django.apps import apps
+        from .models import ActivityLog
+        keep_the_first_note = importlib.import_module(
+            'leads.migrations.0083_one_meta_duplicate_note_per_lead').keep_the_first_note
+        salim = Lead.objects.create(first_name='Salim', phone='9495700011')
+        anil = Lead.objects.create(first_name='Anil', phone='9495700012')
+
+        def note(lead, day):
+            log = ActivityLog.objects.create(
+                activity_type='meta_import', lead=lead,
+                description='Meta sent this customer again; the duplicate was not filed.',
+                extra={'meta_lead_id': '1', 'duplicate_skipped': True})
+            ActivityLog.objects.filter(pk=log.pk).update(
+                created_at=datetime(2026, 9, day, 3, 15, tzinfo=dt_timezone.utc))
+            return log
+
+        note(salim, 20)
+        first = note(salim, 2)          # written later, dated earlier: the date decides
+        note(salim, 21)
+        only = note(anil, 5)
+        orphan = note(None, 6)          # its lead was deleted; in nobody's history
+        others = [
+            ActivityLog.objects.create(activity_type='meta_import', lead=salim,
+                                       description='Imported Meta lead: Salim',
+                                       extra={'meta_lead_id': '0'}).pk,
+            ActivityLog.objects.create(activity_type='call_logged', lead=salim,
+                                       description='Called').pk,
+        ]
+
+        keep_the_first_note(apps, None)
+
+        self.assertEqual(
+            set(ActivityLog.objects.filter(extra__duplicate_skipped=True).values_list('id', flat=True)),
+            {first.id, only.id, orphan.id})
+        self.assertEqual(ActivityLog.objects.filter(pk__in=others).count(), 2)
 
 
 class DocumentationRemarkTests(TestCase):
