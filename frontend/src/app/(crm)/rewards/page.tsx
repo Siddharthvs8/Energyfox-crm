@@ -8,7 +8,8 @@
  * yearly contest.
  *
  * Admins and super admins see the whole team, can open anyone's card, and set
- * the rules under Configuration.
+ * the rules under Configuration. The sales manager sees the same whole-team
+ * view and cards, without Configuration or the buttons that change what counts.
  */
 import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
@@ -50,7 +51,7 @@ export default function RewardsPage() {
   }
   if (!data) return <RewardsSkeleton />;
 
-  if (!data.is_admin) return <PlayerView data={data} />;
+  if (!data.oversees) return <PlayerView data={data} />;
   return (
     <div className={PAGE}>
       <header className="flex flex-wrap items-end justify-between gap-4">
@@ -58,6 +59,7 @@ export default function RewardsPage() {
           <h1 className="text-2xl font-black text-slate-900">Rewards</h1>
           <p className="text-sm text-slate-500 mt-1">A monthly game for BDEs and tele callers — one point for every rupee received.</p>
         </div>
+        {data.is_admin && (
         <div className="inline-flex rounded-2xl bg-slate-100 p-1" role="tablist" aria-label="Rewards views">
           {([["overview", "Overview"], ["settings", "Configuration"]] as const).map(([key, label]) => (
             <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => setTab(key)}
@@ -66,11 +68,14 @@ export default function RewardsPage() {
             </button>
           ))}
         </div>
+        )}
       </header>
-      {tab === "overview"
-        ? <AdminOverview data={data} onOpen={setOpen} onConfigure={() => setTab("settings")} />
+      {tab === "overview" || !data.is_admin
+        ? <AdminOverview data={data} onOpen={setOpen} onConfigure={data.is_admin ? () => setTab("settings") : undefined} />
         : <RewardSettingsForm onSaved={load} />}
-      {open !== null && <PlayerModal user={open} onClose={() => setOpen(null)} onChanged={load} />}
+      {open !== null && (
+        <PlayerModal user={open} canChange={data.is_admin} onClose={() => setOpen(null)} onChanged={load} />
+      )}
     </div>
   );
 }
@@ -123,9 +128,11 @@ function HowItWorks({ rules }: { rules: Dashboard["rules"] }) {
 }
 
 // ─── The admin's view ────────────────────────────────────────────────────────
-function AdminOverview({ data, onOpen, onConfigure }: { data: Dashboard; onOpen: (user: number) => void; onConfigure: () => void }) {
+// Also the sales manager's view, who watches the game: without `onConfigure`
+// there is no setup nudge, since finishing the setup is not theirs to do.
+function AdminOverview({ data, onOpen, onConfigure }: { data: Dashboard; onOpen: (user: number) => void; onConfigure?: () => void }) {
   const k = data.kpis!;
-  const setup = [
+  const setup = !onConfigure ? [] : [
     data.tiers.length === 0 && "Set up the tier ladder — targets and the rewards they unlock.",
     !data.contest && "Date the yearly contest and choose its bumper prizes.",
     data.rules.prizes.every(p => !p.prize) && "Choose the monthly prizes for gold, silver and bronze.",
@@ -175,7 +182,7 @@ function Kpi({ label, value, hint, accent }: { label: string; value: string; hin
   );
 }
 
-function PlayerModal({ user, onClose, onChanged }: { user: number; onClose: () => void; onChanged: () => void }) {
+function PlayerModal({ user, canChange, onClose, onChanged }: { user: number; canChange: boolean; onClose: () => void; onChanged: () => void }) {
   const [data, setData] = useState<Dashboard | null>(null);
   const [error, setError] = useState("");
   const [version, setVersion] = useState(0);
@@ -211,8 +218,10 @@ function PlayerModal({ user, onClose, onChanged }: { user: number; onClose: () =
           <>
             <Hero me={me} month={data.month} preview />
             <TierLadder tiers={data.tiers} climb={me.tier} role={me.role} points={me.points} />
+            {/* Taking a payment out of the game, or putting it back, is the
+                admins' — the sales manager reads the same statement. */}
             <PointsStatement lines={me.statement} total={me.points} monthLabel={data.month.label}
-              admin onChanged={changed} />
+              admin={canChange} onChanged={changed} />
             <div className="grid gap-4 lg:grid-cols-2">
               <IncentivesCard incentives={me.incentives} preview />
               <MyReferralsCard referrals={me.referrals} preview />

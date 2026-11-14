@@ -1,7 +1,8 @@
 """Rewards API.
 
-    GET /api/rewards/            the game as the viewer sees it. An admin may add
-                                 ?user=<id> to open one player's card.
+    GET /api/rewards/            the game as the viewer sees it. An admin or the
+                                 sales manager may add ?user=<id> to open one
+                                 player's card.
     GET /api/rewards/referrals/  the Referral Rewards page — everyone on the
                                  staff; admins may add ?month=YYYY-MM.
     GET /api/rewards/settings/   the rules — admins.
@@ -10,9 +11,10 @@
     DELETE /api/rewards/exclusions/?key=<key>  put it back — admins.
     POST   /api/rewards/gift-images/           upload a gift's picture — admins.
 
-The sales team (BDEs and tele callers) play; admins and super admins run it.
-Everyone sees the table's points and ranks — that is the game — but a person's
-incentives are money, and only they and the admins see theirs.
+The sales team (BDEs and tele callers) play; admins and super admins run it, and
+the sales manager watches it as they do without changing it. Everyone sees the
+table's points and ranks — that is the game — but a person's incentives are
+money, and only they, the admins and the sales manager see theirs.
 """
 import os
 import re
@@ -41,6 +43,14 @@ CONTEST_BOARD_SIZE = 10
 
 def is_admin(user):
     return bool(user and user.is_authenticated and user.is_staff)
+
+
+def oversees(user):
+    """Watches the whole game without running it: the admins, and the sales
+    manager, whose team is the one playing. The rules, the gift pictures and
+    what counts stay with the admins (`is_admin`)."""
+    return is_admin(user) or bool(user and user.is_authenticated
+                                  and getattr(user, 'role', '') == 'sales_manager')
 
 
 def plays(user):
@@ -95,13 +105,14 @@ class RewardsView(APIView):
     def get(self, request):
         viewer = request.user
         admin = is_admin(viewer)
-        if not (admin or plays(viewer)):
+        watching = oversees(viewer)
+        if not (watching or plays(viewer)):
             return Response({'error': 'Rewards are for the sales team.'},
                             status=status.HTTP_403_FORBIDDEN)
 
         subject = viewer
         asked = request.query_params.get('user')
-        if asked and admin:
+        if asked and watching:
             subject = (get_user_model().objects
                        .filter(pk=asked if str(asked).isdigit() else None,
                                role__in=PARTICIPANT_ROLES).first())
@@ -121,6 +132,9 @@ class RewardsView(APIView):
 
         return Response({
             'is_admin': admin,
+            # The whole team's view. Wider than is_admin: the sales manager sees
+            # what an admin sees, and none of the controls that change the game.
+            'oversees': watching,
             'viewer': {'id': viewer.id, 'name': engine.display_name(viewer),
                        'role': getattr(viewer, 'role', '')},
             'month': {
@@ -130,14 +144,14 @@ class RewardsView(APIView):
             },
             'rules': self._rules(rules),
             'tiers': [self._tier(t) for t in rungs],
-            'board': [self._board_row(r, admin or r['user'] == viewer.id, viewer, subject)
+            'board': [self._board_row(r, watching or r['user'] == viewer.id, viewer, subject)
                       for r in rows],
             'me': self._me(subject, mine, rows, rules, start, end, referrals) if mine else None,
             'last_month': self._last_month(first),
             'hall_of_fame': self._hall_of_fame(),
             'contest': self._contest(rules, today, subject),
-            'kpis': self._kpis(rows) if admin else None,
-            'referrals': self._referrals(first, referrals) if admin else None,
+            'kpis': self._kpis(rows) if watching else None,
+            'referrals': self._referrals(first, referrals) if watching else None,
         })
 
     # ── Pieces ──

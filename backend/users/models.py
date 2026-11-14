@@ -131,6 +131,19 @@ ROLE_CHOICES = [
 # Roles that live entirely on the B2B side.
 B2B_ONLY_ROLES = (ROLE_STORE_MANAGER, ROLE_STORE_KEEPER, ROLE_ACCOUNTS_B2B)
 
+# The modules a sales manager opens: the sales side of the house, and none of
+# the desks behind it (documentation, accounts, purchase, project, liasoning) or
+# the admin screens. Keys are permission_catalog's module keys. The role keeps
+# the general-manager flag for what happens *inside* these — every lead, every
+# call, the whole team's numbers — but which modules it may open is answered
+# from this list, the way a custom role's is from its own (see User.can).
+# Tasks and Referral Rewards are everyone's; Rewards and Manager have no key and
+# are granted at their own doors. Mirrored by SALES_MANAGER_HREFS in the layout.
+SALES_MANAGER_MODULES = frozenset({
+    'dashboard', 'leads', 'converted', 'closed-deals', 'calls', 'inventory',
+    'leaderboard', 'company-performance', 'team', 'branches',
+})
+
 # role -> (is_staff, is_superuser, is_general_manager, is_manager)
 ROLE_BOOL_MAP = {
     ROLE_SUPERADMIN:     (True,  True,  False, False),
@@ -298,11 +311,39 @@ class User(AbstractUser):
 
     def can(self, key):
         """Tri-state: True/False for a custom role, ``None`` to fall through to
-        the built-in role rules. Callers must distinguish None from False."""
+        the built-in role rules. Callers must distinguish None from False.
+
+        The sales manager answers too, for modules only: its own list decides
+        which ones it opens (SALES_MANAGER_MODULES), and it hands out no work
+        inside the desks it has no module for. What it may do with leads falls
+        through to the general-manager rules it has always had.
+        """
         keys = self.granted
-        if keys is None:
-            return None
-        return key in keys
+        if keys is not None:
+            return key in keys
+        if self.role == ROLE_SALES_MANAGER:
+            from .permission_catalog import MODULE_KEYS
+            if key in MODULE_KEYS:
+                return not self.kept_out_of(key)
+            if key == 'queue.assign':
+                return False
+        return None
+
+    def kept_out_of(self, module):
+        """True when `module` (a permission_catalog key) is not one of this
+        account's role's modules.
+
+        Only the sales manager has a fixed list among the built-in roles; for
+        everyone else this is False and the rules at each door decide. Asked at
+        the doors that do not consult `can`, so the list holds there too.
+        """
+        return self.role == ROLE_SALES_MANAGER and module not in SALES_MANAGER_MODULES
+
+    @property
+    def team_read_only(self):
+        """The sales manager reads the Team module and changes nothing in it —
+        no account and no team. Their own profile is still theirs to edit."""
+        return self.role == ROLE_SALES_MANAGER
 
     @property
     def is_b2b_only(self):
@@ -333,6 +374,8 @@ class User(AbstractUser):
             return False
         if self.pk == other.pk:
             return True
+        if self.team_read_only:
+            return False
         return self.rank > role_rank(other.role)
 
     def can_assign_role(self, role):

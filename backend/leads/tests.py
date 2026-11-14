@@ -7736,7 +7736,7 @@ class CompanyPerformanceTests(TestCase):
 
     # -- Who may look --
     def test_the_top_of_the_house_may_look(self):
-        for role in ('superadmin', 'admin', 'coo'):
+        for role in ('superadmin', 'admin', 'coo', 'sales_manager'):
             user = mk(f'cp_ok_{role}', role)
             self.assertEqual(self.get(user).status_code, 200, role)
 
@@ -7744,8 +7744,8 @@ class CompanyPerformanceTests(TestCase):
         self.assertEqual(self.get(mk('cp_spec', 'spectator')).status_code, 200)
 
     def test_a_manager_may_not(self):
-        """They run a function; the Manager module reports their own people."""
-        for role in ('sales_manager', 'branch_manager', 'leads_manager'):
+        """They run a branch or a desk; the Manager module reports their own people."""
+        for role in ('branch_manager', 'leads_manager', 'documentation_manager'):
             user = mk(f'cp_no_{role}', role)
             self.assertEqual(self.get(user).status_code, 403, role)
 

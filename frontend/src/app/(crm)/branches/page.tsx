@@ -80,7 +80,10 @@ export default function BranchesPage() {
     fetch(`${getApiBase(domain)}/api/users/me/`, { headers: { Authorization: `Bearer ${t}` } })
       .then(r => r.json())
       .then(d => {
-        const ok = isSpectator(d) || !!d.is_staff || !!d.is_superuser;
+        // Admins and the sales manager, plus the spectator. Mirrors
+        // core.permissions.BranchesAccess — leaving the sales manager out here
+        // bounced them to the dashboard from a module their sidebar offers.
+        const ok = isSpectator(d) || !!d.is_staff || !!d.is_superuser || d.role === "sales_manager";
         setAllowed(ok); setAuthChecked(true);
         if (!ok) router.replace("/");
       })

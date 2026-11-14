@@ -91,10 +91,10 @@ def _rate(part, whole):
 class CompanyPerformanceView(APIView):
     """One report over the whole company, for the people who answer for it.
 
-    The top of the house only — super admin, admin, COO and the read-only
-    spectator (`can_access_company_performance`). A manager runs a function or a
-    branch and has the Manager module reporting their own people to them; this
-    is the view above that.
+    The top of the house — super admin, admin, COO, the sales manager and the
+    read-only spectator (`can_access_company_performance`). A manager of a
+    branch has the Manager module reporting their own people to them; this is
+    the view above that.
     """
     permission_classes = [permissions.IsAuthenticated]
     # More than a dozen rows of either is a table, not a ranking.
@@ -102,7 +102,8 @@ class CompanyPerformanceView(APIView):
 
     def get(self, request):
         if not can_access_company_performance(request.user):
-            return Response({'error': 'Company performance is for super admins, admins and the COO.'},
+            return Response({'error': 'Company performance is for super admins, admins, the COO '
+                                      'and the sales manager.'},
                             status=status.HTTP_403_FORBIDDEN)
 
         start, end, period_key, period_label = resolve_period(request)

@@ -933,7 +933,9 @@ class AIMeetingConfigView(APIView):
 
     def patch(self, request):
         user = request.user
-        if not (user.is_staff or user.is_general_manager):
+        # These are set from Settings, which is not among the sales manager's
+        # modules (User.kept_out_of), general-manager flag or not.
+        if not (user.is_staff or user.is_general_manager) or user.kept_out_of('settings'):
             return Response({'error': 'Permission denied.'}, status=403)
         from .engine import get_or_create_config
         config = get_or_create_config()

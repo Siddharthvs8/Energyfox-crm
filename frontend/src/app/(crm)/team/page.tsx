@@ -297,6 +297,10 @@ function TeamPageInner() {
   );
 
   const isAdminOrGM = currentUser?.is_staff || currentUser?.is_general_manager;
+  // The sales manager reads Team and changes nothing in it — no member, no team,
+  // not even their own team or branch; the rest of their own profile is still
+  // theirs. Mirrors User.team_read_only on the server.
+  const canManageTeam = isAdminOrGM && currentUser?.role !== "sales_manager";
 
   // Agent / manager view: surface the current user's team manager.
   const myTeam = workspaceTeams.find((t) => t.id === currentUser?.team);
@@ -326,7 +330,7 @@ function TeamPageInner() {
               </div>
               )}
             </div>
-            {(currentUser?.is_staff || currentUser?.is_general_manager) && (
+            {canManageTeam && (
               <button
                 onClick={() => activeTab === "members"
                   ? (currentUser?.is_staff
@@ -437,13 +441,14 @@ function TeamPageInner() {
               const mgr = team.find(u => u.id === wt.manager);
               const members = wt.members_detail || [];
               return (
-                <div key={wt.id} onClick={() => openEditTeamModal(wt)} className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm hover:shadow-md hover:border-indigo-200 transition-all cursor-pointer group">
+                <div key={wt.id} onClick={canManageTeam ? () => openEditTeamModal(wt) : undefined}
+                  className={`bg-white border border-slate-100 rounded-2xl p-5 shadow-sm transition-all group ${canManageTeam ? "hover:shadow-md hover:border-indigo-200 cursor-pointer" : ""}`}>
                   <div className="flex items-start justify-between mb-4">
                     <div>
                       <h3 className="text-sm font-bold text-slate-900 group-hover:text-indigo-600 transition-colors">{wt.name}</h3>
                       <p className="text-[10px] text-slate-400 mt-0.5">{members.length} members</p>
                     </div>
-                    {(currentUser?.is_staff || currentUser?.is_general_manager) && (
+                    {canManageTeam && (
                       <button onClick={e => { e.stopPropagation(); deleteTeam(wt.id); }} className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all">
                         <I.Trash />
                       </button>
@@ -542,7 +547,7 @@ function TeamPageInner() {
             <div>
               <label className="block text-xs font-semibold text-slate-600 mb-1.5">Role</label>
               <div className="relative">
-                <select disabled={!currentUser?.is_staff && !currentUser?.is_general_manager} value={form.role} onChange={e => setForm({...form, role: e.target.value})} className="w-full appearance-none bg-slate-50 border border-slate-200 rounded-xl pl-4 pr-8 py-2.5 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer disabled:opacity-60 transition-all">
+                <select disabled={!canManageTeam} value={form.role} onChange={e => setForm({...form, role: e.target.value})} className="w-full appearance-none bg-slate-50 border border-slate-200 rounded-xl pl-4 pr-8 py-2.5 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer disabled:opacity-60 transition-all">
                   {/* Only roles below the current user's own — appointing an
                       admin is a Super Admin's job. */}
                   {ROLES.filter(r => assignableRoles === null || assignableRoles.includes(r.value) || r.value === form.role)
@@ -573,7 +578,7 @@ function TeamPageInner() {
             <div>
               <label className="block text-xs font-semibold text-slate-600 mb-1.5">Assign Team</label>
               <div className="relative">
-                <select disabled={!currentUser?.is_staff && !currentUser?.is_general_manager} value={form.team} onChange={e => setForm({...form, team: e.target.value})} className="w-full appearance-none bg-slate-50 border border-slate-200 rounded-xl pl-4 pr-8 py-2.5 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer disabled:opacity-60 transition-all">
+                <select disabled={!canManageTeam} value={form.team} onChange={e => setForm({...form, team: e.target.value})} className="w-full appearance-none bg-slate-50 border border-slate-200 rounded-xl pl-4 pr-8 py-2.5 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer disabled:opacity-60 transition-all">
                   <option value="">No Team</option>{workspaceTeams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                 </select>
                 <div className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"><I.ChevronDown /></div>
@@ -587,7 +592,7 @@ function TeamPageInner() {
                 )}
               </div>
               <div className="relative">
-                <select disabled={!currentUser?.is_staff && !currentUser?.is_general_manager} value={form.branch} onChange={e => setForm({...form, branch: e.target.value})} className="w-full appearance-none bg-slate-50 border border-slate-200 rounded-xl pl-4 pr-8 py-2.5 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer disabled:opacity-60 transition-all">
+                <select disabled={!canManageTeam} value={form.branch} onChange={e => setForm({...form, branch: e.target.value})} className="w-full appearance-none bg-slate-50 border border-slate-200 rounded-xl pl-4 pr-8 py-2.5 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer disabled:opacity-60 transition-all">
                   <option value="">No Branch</option>{branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
                 </select>
                 <div className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"><I.ChevronDown /></div>

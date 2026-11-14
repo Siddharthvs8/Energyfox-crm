@@ -291,12 +291,12 @@ def can_access_closed_deals(user):
 
 
 # Who may open Company Performance. It reports the whole company — every
-# branch's revenue, every team's, every person's — so it is the top of the house
-# only: the super admin, the admin and the COO, plus the read-only spectator.
-# Deliberately not the general-manager tier at large: a sales or documentation
-# manager runs a function, and the Manager module already reports their people
-# to them. Narrower than User.sees_everything for that reason.
-COMPANY_PERFORMANCE_ROLES = {'superadmin', 'admin', 'coo', 'spectator'}
+# branch's revenue, every team's, every person's — so it is the top of the house:
+# the super admin, the admin and the COO, plus the read-only spectator, and the
+# sales manager, whose people bring all of that revenue in. Deliberately not the
+# general-manager tier at large: the documentation manager runs a desk behind
+# the sale. Narrower than User.sees_everything for that reason.
+COMPANY_PERFORMANCE_ROLES = {'superadmin', 'admin', 'coo', 'sales_manager', 'spectator'}
 
 
 def can_access_company_performance(user):

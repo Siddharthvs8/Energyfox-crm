@@ -2,7 +2,7 @@ from rest_framework import viewsets, permissions, parsers, status
 from rest_framework.decorators import action
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from core.permissions import IsAdminOnly
+from core.permissions import BranchesAccess
 from organization.utils import get_org_settings
 from .models import User, WorkspaceTeam, Branch, CustomRole
 from .serializers import UserSerializer, CustomRoleSerializer, WorkspaceTeamSerializer, BranchSerializer
@@ -29,7 +29,7 @@ def _looks_masked(value, current):
 
 
 class BranchViewSet(viewsets.ModelViewSet):
-    """Manage branches (the admin Branches module). Admin/superadmin only."""
+    """Manage branches (the Branches module). Admins and the sales manager."""
     serializer_class = BranchSerializer
     queryset = (Branch.objects.all()
                 .select_related('manager')
@@ -38,10 +38,11 @@ class BranchViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         # Anyone authenticated can list branches (needed by the user form);
-        # only admins can create/edit/delete.
+        # the module's own work — the performance report and the changes —
+        # belongs to admins and the sales manager.
         if self.action in ['list', 'retrieve']:
             return [permissions.IsAuthenticated()]
-        return [IsAdminOnly()]
+        return [BranchesAccess()]
 
     def destroy(self, request, *args, **kwargs):
         """Refuse to delete a branch that still has staff — their branch would be
@@ -172,6 +173,8 @@ class WorkspaceTeamViewSet(viewsets.ModelViewSet):
     def check_permissions(self, request):
         super().check_permissions(request)
         if self.action in ['create', 'update', 'partial_update', 'destroy']:
+            if request.user.team_read_only:
+                self.permission_denied(request, message='Teams are read-only for your role.')
             if not (request.user.is_staff or request.user.is_general_manager):
                 self.permission_denied(request, message='Only admins and general managers can manage teams.')
 
@@ -354,6 +357,9 @@ class UserViewSet(viewsets.ModelViewSet):
             # admin editing a peer or a super admin is refused — otherwise they
             # could reset that account's password and take it over.
             own = obj.id == actor.id
+            if not own and actor.team_read_only:
+                self.permission_denied(
+                    request, message="Team is read-only for your role — you can edit only your own profile.")
             if not own and not actor.can_manage(obj):
                 self.permission_denied(
                     request,
@@ -411,9 +417,19 @@ class UserViewSet(viewsets.ModelViewSet):
         self._guard_role(serializer)
         serializer.save()
 
+    def _guard_team_fields(self, serializer):
+        """Which team and branch someone is in is the Team module's business,
+        and that is read-only to the sales manager — on their own profile too.
+        Dropped rather than refused, like the role above: the form always posts
+        them back."""
+        if self.request.user.team_read_only:
+            serializer.validated_data.pop('team', None)
+            serializer.validated_data.pop('branch', None)
+
     def perform_update(self, serializer):
         self._guard_role(serializer)
         self._guard_username(serializer)
+        self._guard_team_fields(serializer)
         serializer.save()
 
     @action(detail=False, methods=['get'], url_path='assignable-roles')

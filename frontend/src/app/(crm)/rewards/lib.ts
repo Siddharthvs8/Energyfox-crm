@@ -94,6 +94,9 @@ export type Contest = {
 
 export type Dashboard = {
   is_admin: boolean;
+  // The whole team's view: admins, and the sales manager, who watches the game
+  // without the controls that change it (those stay with `is_admin`).
+  oversees: boolean;
   viewer: { id: number; name: string; role: string };
   month: { key: string; label: string; start: string; end: string; days_left: number };
   rules: {

@@ -20,6 +20,21 @@ class IsAdminOnly(permissions.BasePermission):
         )
 
 
+class BranchesAccess(permissions.BasePermission):
+    """The Branches module: admins and the sales manager — plus the spectator,
+    who reads it. Mirrored by the Branches page's own check.
+
+    Its own class rather than widening IsAdminOnly, which also guards the
+    district list.
+    """
+    def has_permission(self, request, view):
+        u = request.user
+        return bool(
+            u and u.is_authenticated and
+            (u.is_staff or getattr(u, 'role', '') == 'sales_manager' or watches_everything(u))
+        )
+
+
 class IsAdminOrGeneralManager(permissions.BasePermission):
     """Only allow admin (is_staff) or general managers."""
     def has_permission(self, request, view):
@@ -53,7 +68,8 @@ def runs_the_leads_desk(user):
 
 
 class CampaignAccess(permissions.BasePermission):
-    """Campaigns: admins and managers as before, plus the leads manager.
+    """Campaigns: admins and managers as before, plus the leads manager — but
+    not the sales manager, whose modules do not include it (User.kept_out_of).
 
     Its own class rather than widening IsAdminOrManager, which also guards the
     AI manager — the leads desk has no business there.
@@ -61,7 +77,7 @@ class CampaignAccess(permissions.BasePermission):
     def has_permission(self, request, view):
         u = request.user
         return bool(
-            u and u.is_authenticated and
+            u and u.is_authenticated and not u.kept_out_of('campaigns') and
             (u.is_staff or u.is_general_manager or u.is_manager or runs_the_leads_desk(u)
              or watches_everything(u))
         )

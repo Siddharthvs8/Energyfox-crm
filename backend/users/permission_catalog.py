@@ -67,6 +67,7 @@ CAPABILITY_PERMISSIONS = [
 
 ALL_PERMISSIONS = MODULE_PERMISSIONS + CAPABILITY_PERMISSIONS
 ALL_PERMISSION_KEYS = {key for key, _label, _group in ALL_PERMISSIONS}
+MODULE_KEYS = frozenset(key for key, _label, _group in MODULE_PERMISSIONS)
 
 
 def catalog():

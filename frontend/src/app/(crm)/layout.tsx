@@ -252,10 +252,22 @@ const B2B_ONLY_ROLES = ["store_manager", "store_keeper", "accounts_b2b"];
 // Who gets the Closed Deals board: the sales side of the house — the people who
 // win the business and the people who manage them. The read-only spectator is
 // added separately. Mirrors leads.access.CLOSED_DEALS_ROLES.
-// Who may open Company Performance. The top of the house only — it reports
-// every branch's and every person's revenue. Mirrors
-// leads.access.COMPANY_PERFORMANCE_ROLES; the spectator is added separately.
-const COMPANY_PERFORMANCE_ROLES = ["superadmin", "admin", "coo"];
+// Who may open Company Performance. The top of the house — it reports every
+// branch's and every person's revenue — and the sales manager, whose people
+// bring that revenue in. Mirrors leads.access.COMPANY_PERFORMANCE_ROLES; the
+// spectator is added separately.
+const COMPANY_PERFORMANCE_ROLES = ["superadmin", "admin", "coo", "sales_manager"];
+
+// The sales manager's modules: the sales side of the house, and none of the
+// desks behind it or the admin screens. Mirrors users.models.SALES_MANAGER_MODULES,
+// plus the four that have no permission key there — Tasks and Referral Rewards,
+// which are everyone's, and Rewards and Manager, granted at their own doors.
+// Inventory is the group: its quotations are theirs to change, the rest to read
+// (RetailInventoryAccess on the server). Team is read-only to them as well.
+const SALES_MANAGER_HREFS = [
+  "/", "/leads", "/converted", "/closed-deals", "/calls", "/tasks", "/leaderboard",
+  "/rewards", "/referral-rewards", "/company-performance", "/manager", "/team", "/branches",
+];
 
 const CLOSED_DEALS_ROLES = [
   "superadmin", "admin", "coo", "sales_manager", "leads_manager",
@@ -774,6 +786,8 @@ export default function DashboardLayout({
   const isLiasoningOnly = currentUser?.role === "liasoning_officer";
   // Leads manager runs the lead book: Leads, Campaigns and where leads come from.
   const isLeadsDeskOnly = currentUser?.role === "leads_manager";
+  // Sales manager runs the sales side: exactly the modules in SALES_MANAGER_HREFS.
+  const isSalesManager = currentUser?.role === "sales_manager";
 
   // A custom user type reaches exactly the modules ticked on its role in
   // Settings → Roles & Permissions. `permissions` holds those keys, which are
@@ -821,6 +835,12 @@ export default function DashboardLayout({
     }
     if (bizMode === "b2b") {
       return !!item.inB2B;   // wholesale side is Inventory (the group, above) + Team
+    }
+    // The role keeps the general-manager flag, which every rule below reads as
+    // "sees everything" — so its list is decided here, ahead of them. The order
+    // stays the sidebar's own, which is already the order they were asked for in.
+    if (isSalesManager) {
+      return SALES_MANAGER_HREFS.includes(item.href);
     }
     // Ahead of the focused views below, each of which would otherwise drop it.
     if (item.worksFeature) {
@@ -904,9 +924,9 @@ export default function DashboardLayout({
       return true;   // read-only documentation tracker — everyone except the doc team
     }
     if (item.rewardsFeature) {
-      // The sales team plays; admins and super admins run it. Mirrors the
-      // server's rule in rewards/views.py.
-      return ["bde", "tele_caller", "admin", "superadmin"].includes(currentUser?.role);
+      // The sales team plays; admins and super admins run it; the sales manager
+      // watches it. Mirrors the server's rule in rewards/views.py.
+      return ["bde", "tele_caller", "admin", "superadmin", "sales_manager"].includes(currentUser?.role);
     }
     if (item.feasibilityFeature) {
       // BDE's KSEB feasibility task list — BDEs plus their managers / admins.

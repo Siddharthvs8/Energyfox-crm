@@ -53,6 +53,12 @@ def can_access_retail_inventory(user):
 # not the stock lists.
 QUOTING_ROLES = ('bde', 'tele_caller')
 
+# The sales manager has the whole retail module and changes only its quotations:
+# projects, products, templates and the order lists are read-only to it. Where a
+# quotation is written is taken from the views themselves — the endpoints a
+# quoting role may write — so the two rules cannot drift apart.
+QUOTATIONS_ONLY_ROLES = ('sales_manager',)
+
 
 class RetailInventoryAccess(permissions.BasePermission):
     """Gate for the retail inventory endpoints.
@@ -66,7 +72,8 @@ class RetailInventoryAccess(permissions.BasePermission):
     different questions: the admin tier gets everything, while the roles that
     quote reach only the endpoints a quotation needs. A viewset opts into the
     second by setting ``open_to_quoting_roles``, and makes it read-only for
-    them with ``quoting_roles_read_only``.
+    them with ``quoting_roles_read_only``. The sales manager reads like the
+    admin tier and writes like a quoting role: quotations, and nothing else.
 
     The spectator keeps its bargain: it reads everything and writes nothing.
     """
@@ -76,6 +83,12 @@ class RetailInventoryAccess(permissions.BasePermission):
         if not (user and user.is_authenticated):
             return False
         if request.method not in permissions.SAFE_METHODS and is_view_only(user):
+            return False
+        writes_quotations = (getattr(view, 'open_to_quoting_roles', False)
+                             and not getattr(view, 'quoting_roles_read_only', False))
+        if (request.method not in permissions.SAFE_METHODS
+                and user.role in QUOTATIONS_ONLY_ROLES and not writes_quotations):
+            self.message = 'This is read-only for sales managers — only quotations can be changed.'
             return False
         if can_access_retail_inventory(user):
             return True

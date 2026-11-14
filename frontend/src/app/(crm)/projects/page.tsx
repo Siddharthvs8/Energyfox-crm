@@ -176,10 +176,12 @@ export default function ProjectsPage() {
   const [preview, setPreview] = useState<Project | null>(null);
   // BDEs and tele callers browse the catalogue they quote from; changing it is
   // the admins' job. The server refuses them the same (ProjectViewSet's
-  // `quoting_roles_read_only`). Read-only until the role is known, so the
-  // editing controls never flash up for someone who cannot use them.
+  // `quoting_roles_read_only`). So does the sales manager, who changes only
+  // quotations in Inventory (RetailInventoryAccess, QUOTATIONS_ONLY_ROLES).
+  // Read-only until the role is known, so the editing controls never flash up
+  // for someone who cannot use them.
   const [role, setRole] = useState<string | null>(null);
-  const readOnly = role === null || ["bde", "tele_caller"].includes(role);
+  const readOnly = role === null || ["bde", "tele_caller", "sales_manager"].includes(role);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ name: "", system_type: "", capacity: "", price_dcr: "", price_non_dcr: "", subsidy_amount: "", tax_percent: "", notes: "", price_includes_tax: false, bde_incentive: "", telecaller_incentive: "", referral_reward: "" });
   const [lines, setLines] = useState<Line[]>([]);

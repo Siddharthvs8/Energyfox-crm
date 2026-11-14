@@ -621,6 +621,9 @@ class LeadViewSet(viewsets.ModelViewSet):
         user = request.user
         if not user or not user.is_authenticated:
             return Response({'error': 'Authentication required.'}, status=status.HTTP_401_UNAUTHORIZED)
+        if user.kept_out_of('feasibility'):
+            return Response({'error': 'You do not have access to KSEB feasibility.'},
+                            status=status.HTTP_403_FORBIDDEN)
         # A lead joins the feasibility queue the moment its PO is signed; leads
         # already pushed to documentation stay on it as before.
         qs = (Lead.objects.filter(Q(pushed_to_documentation=True)
@@ -1255,6 +1258,9 @@ class LeadViewSet(viewsets.ModelViewSet):
         if getattr(user, 'role', '') in ('documentation_staff', 'documentation_manager'):
             return Response({'error': 'The documentation work queue is your view.'},
                             status=status.HTTP_403_FORBIDDEN)
+        if user.kept_out_of('documentation-status'):
+            return Response({'error': 'You do not have access to the documentation tracker.'},
+                            status=status.HTTP_403_FORBIDDEN)
 
         base = (Lead.objects.filter(pushed_to_documentation=True)
                 .select_related('product', 'bde', 'documentation_staff', 'documentation_stage1')
@@ -1312,6 +1318,9 @@ class LeadViewSet(viewsets.ModelViewSet):
         user = request.user
         if getattr(user, 'role', '') in ('documentation_staff', 'documentation_manager'):
             return Response({'error': 'The documentation work queue is your view.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        if user.kept_out_of('documentation-status'):
+            return Response({'error': 'You do not have access to the documentation tracker.'},
                             status=status.HTTP_403_FORBIDDEN)
         lead = self.get_object()  # 404 if not in this user's scoped queryset
         if not lead.pushed_to_documentation:
