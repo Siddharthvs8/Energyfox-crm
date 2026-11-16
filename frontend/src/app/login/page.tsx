@@ -31,7 +31,12 @@ export default function LoginPage() {
         localStorage.setItem(`${domain}_username`, username);
         router.push(`/`);
       } else {
-        setError("Invalid username or password. Please try again.");
+        // A suspended account is told so — the server says it only once the
+        // password is right. Anything else gets the one generic answer.
+        const data = await response.json().catch(() => ({}));
+        setError(data.code === "account_suspended" && data.detail
+          ? data.detail
+          : "Invalid username or password. Please try again.");
       }
     } catch {
       setError("Unable to reach the server. Check your connection.");

@@ -71,6 +71,17 @@ class UserSerializer(serializers.ModelSerializer):
     # leaving the client to match on the role string, so the "View only" banner
     # and the hidden write controls key off the same thing the server enforces.
     read_only = serializers.BooleanField(source='is_spectator', read_only=True)
+    # Kept, signed out and unable to sign in. Only the super admin's Team page
+    # ever lists such an account; see User.is_suspended.
+    suspended = serializers.BooleanField(source='is_suspended', read_only=True)
+    # Whether the caller may suspend this account — or reactivate it, once it
+    # is — so the Team page offers the button exactly when the API would agree.
+    can_suspend = serializers.SerializerMethodField()
+
+    def get_can_suspend(self, obj):
+        request = self.context.get('request')
+        actor = getattr(request, 'user', None)
+        return bool(actor is not None and actor.is_authenticated and actor.can_suspend(obj))
 
     def get_permissions(self, obj):
         # Same order as the role itself reports (catalogue order), so the two
@@ -123,6 +134,7 @@ class UserSerializer(serializers.ModelSerializer):
                   'role', 'role_label', 'branch', 'branch_name', 'can_manage',
                   'avatar', 'avatar_url', 'custom_role', 'custom_role_name', 'permissions',
                   'is_staff', 'is_manager', 'is_general_manager', 'read_only',
+                  'suspended', 'can_suspend',
                   'team', 'phone', 'voxbay_extension', 'b2b_access']
         extra_kwargs = {
             'password': {'write_only': True},

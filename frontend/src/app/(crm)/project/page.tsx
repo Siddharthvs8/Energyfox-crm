@@ -32,6 +32,63 @@ type ProjectLead = DeadlineInfo & {
   project?: { completed_at: string | null } | null;
 };
 
+// Which finished jobs the Completed tab shows, by the day they were finished.
+// All time by default: a job finished last month should not go missing behind
+// a filter nobody set.
+type Period = "all" | "today" | "this_week" | "this_month" | "custom";
+const PERIODS: { key: Period; label: string }[] = [
+  { key: "all", label: "All time" },
+  { key: "today", label: "Today" },
+  { key: "this_week", label: "This week" },
+  { key: "this_month", label: "This month" },
+  { key: "custom", label: "Custom" },
+];
+
+const DATE_INPUT = "bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all";
+
+/** A day as yyyy-mm-dd in the viewer's own calendar — the one the row's
+ * "Completed" date is printed in, so the filter and the row always agree. */
+const isoDay = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+/** "09 Nov 2026" for a yyyy-mm-dd day, read as local midnight rather than UTC. */
+const dayLabel = (iso: string) => asDate(`${iso}T00:00:00`);
+
+/** The first and last day a period covers (inclusive; "" leaves that end open),
+ * or null when it doesn't narrow the list at all. Weeks run Monday to Sunday,
+ * as they do on the Leads filters. */
+function periodRange(period: Period, from: string, to: string, now = new Date()): { start: string; end: string } | null {
+  const y = now.getFullYear(), m = now.getMonth(), d = now.getDate();
+  switch (period) {
+    case "today":
+      return { start: isoDay(now), end: isoDay(now) };
+    case "this_week": {
+      const monday = d - ((now.getDay() + 6) % 7);
+      return { start: isoDay(new Date(y, m, monday)), end: isoDay(new Date(y, m, monday + 6)) };
+    }
+    case "this_month":
+      return { start: isoDay(new Date(y, m, 1)), end: isoDay(new Date(y, m + 1, 0)) };
+    case "custom":
+      if (!from && !to) return null;
+      // Picked the wrong way round, a range still means what was meant.
+      return from && to && from > to ? { start: to, end: from } : { start: from, end: to };
+    default:
+      return null;
+  }
+}
+
+/** How a period reads after "completed": "this week", "since 01 Nov 2026". */
+function periodPhrase(period: Period, range: { start: string; end: string }) {
+  if (period === "today") return "today";
+  if (period === "this_week") return "this week";
+  if (period === "this_month") return "this month";
+  if (range.start && range.end) {
+    return range.start === range.end ? `on ${dayLabel(range.start)}`
+      : `between ${dayLabel(range.start)} and ${dayLabel(range.end)}`;
+  }
+  return range.start ? `since ${dayLabel(range.start)}` : `up to ${dayLabel(range.end)}`;
+}
+
 export default function ProjectPage() {
   const domain = APP_SLUG;
   const router = useRouter();
@@ -44,6 +101,9 @@ export default function ProjectPage() {
   // The ones that blew their deadline are not here at all — they move to the
   // Overdue Projects module, where a super admin can release them.
   const [tab, setTab] = useState<"pending" | "completed">("pending");
+  const [period, setPeriod] = useState<Period>("all");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
 
   const token = () => localStorage.getItem(`${domain}_access`);
 
@@ -85,13 +145,24 @@ export default function ProjectPage() {
       || (l.location || "").toLowerCase().includes(q));
   };
 
-  // Counts are of the search results, so the tabs show where the matches went
-  // rather than a total that disagrees with the list underneath.
+  // The Completed tab's dates. A finished job with no date on it can't be
+  // placed in a range, so it shows only under All time.
+  const range = periodRange(period, from, to);
+  const completedOn = (l: ProjectLead) => (l.project?.completed_at ? isoDay(new Date(l.project.completed_at)) : null);
+  const inPeriod = (l: ProjectLead) => {
+    if (!range) return true;
+    const on = completedOn(l);
+    return !!on && (!range.start || on >= range.start) && (!range.end || on <= range.end);
+  };
+
+  // Counts are of what each tab would show — the search, and on Completed the
+  // dates too — so the tabs show where the matches went rather than a total
+  // that disagrees with the list underneath.
   // An overdue project leaves this module entirely for Overdue Projects — that is
   // the point of the escalation.
   const found = leads.filter(matchesSearch);
   const inTab = (l: ProjectLead, key: typeof tab) =>
-    key === "completed" ? l.project_complete : (!l.project_complete && !l.project_overdue);
+    key === "completed" ? (l.project_complete && inPeriod(l)) : (!l.project_complete && !l.project_overdue);
   const counts = {
     pending: found.filter(l => inTab(l, "pending")).length,
     completed: found.filter(l => inTab(l, "completed")).length,
@@ -134,6 +205,47 @@ export default function ProjectPage() {
         </div>
       </div>
 
+      {/* When the finished jobs were finished — the date printed on each row.
+          The same control Closed Deals carries for its periods. */}
+      {tab === "completed" && (
+        <div className="mb-5 -mt-1 bg-white border border-slate-200 rounded-2xl p-3 flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap gap-1">
+            {PERIODS.map(p => (
+              <button key={p.key} type="button" onClick={() => setPeriod(p.key)} aria-pressed={period === p.key}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                  period === p.key ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+                {p.label}
+              </button>
+            ))}
+          </div>
+          {/* On a phone the two pickers share the row rather than running off the card. */}
+          {period === "custom" && (
+            <div className="flex w-full sm:w-auto items-center gap-2">
+              <input type="date" value={from} max={to || undefined} aria-label="Completed from"
+                onChange={e => setFrom(e.target.value)} className={`${DATE_INPUT} min-w-0 flex-1 sm:flex-none`} />
+              <span className="text-xs text-slate-400">to</span>
+              <input type="date" value={to} min={from || undefined} aria-label="Completed to"
+                onChange={e => setTo(e.target.value)} className={`${DATE_INPUT} min-w-0 flex-1 sm:flex-none`} />
+            </div>
+          )}
+          <span className="ml-auto text-[11px] text-slate-400">
+            {range ? (
+              <>
+                <b className="text-slate-600">{counts.completed}</b> completed {periodPhrase(period, range)}
+                {/* The presets say which days they mean; a custom range already has. */}
+                {period !== "custom" && (
+                  <> · {range.start === range.end ? dayLabel(range.start) : `${dayLabel(range.start)} – ${dayLabel(range.end)}`}</>
+                )}
+              </>
+            ) : period === "custom" ? (
+              "Pick a from date, a to date, or both"
+            ) : (
+              <><b className="text-slate-600">{counts.completed}</b> completed · latest first</>
+            )}
+          </span>
+        </div>
+      )}
+
       {/* Where the missing rows went, so the queue does not just look short. */}
       {overdueCount > 0 && (
         <Link href="/project-overdue"
@@ -156,7 +268,9 @@ export default function ProjectPage() {
             : found.length === 0
               ? "No projects match your search."
               : tab === "completed"
-                ? "No completed projects yet."
+                ? (range
+                  ? `No projects${search.trim() ? " matching your search" : ""} completed ${periodPhrase(period, range)}.`
+                  : "No completed projects yet.")
                 : "No pending projects — everything here is done."}
         </div>
       ) : (

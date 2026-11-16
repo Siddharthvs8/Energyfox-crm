@@ -423,11 +423,15 @@ def _action_assign_lead(params, obj, context) -> str:
         from users.models import User
         try:
             user = User.objects.get(id=user_id)
-            obj.assigned_to = user
-            obj.save(update_fields=['assigned_to'])
-            return f"Assigned to {user.first_name} {user.last_name} (id={user.id})"
         except User.DoesNotExist:
             raise ValueError(f"User id={user_id} not found")
+        # A rule naming someone since suspended would strand every lead it
+        # routes; the lead stays where it is and the log says why.
+        if user.is_suspended:
+            raise ValueError(f"{user.username}'s account is suspended")
+        obj.assigned_to = user
+        obj.save(update_fields=['assigned_to'])
+        return f"Assigned to {user.first_name} {user.last_name} (id={user.id})"
     else:
         raise ValueError("assign_lead requires user_id or round_robin+team_id")
 
@@ -538,7 +542,9 @@ def _action_create_task(params, obj, context) -> str:
     if assignee_id:
         from users.models import User
         try:
-            task_data['assignee'] = User.objects.get(id=assignee_id)
+            # Never handed to a suspended account; the task is made unassigned,
+            # as it is when the named person no longer exists.
+            task_data['assignee'] = User.objects.get(id=assignee_id, is_active=True)
         except User.DoesNotExist:
             pass
     elif isinstance(obj, Lead) and obj.assigned_to:
@@ -737,6 +743,9 @@ def _action_reassign_employee_leads(params, obj, context) -> str:
     elif to_user_id:
         try:
             target_user = User.objects.get(id=to_user_id)
+            # Moving the leads onto a suspended account would strand them all.
+            if target_user.is_suspended:
+                raise ValueError(f"{target_user.username}'s account is suspended")
             for lead in leads:
                 lead.assigned_to = target_user
                 if new_status:

@@ -286,7 +286,8 @@ class UserViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         from .models import B2B_ONLY_ROLES
-        qs = User.objects.filter(is_active=True).order_by('first_name', 'last_name')
+        qs = User.objects.all() if self._shows_suspended() else User.objects.filter(is_active=True)
+        qs = qs.order_by('first_name', 'last_name')
         user = self.request.user
 
         # The wholesale side keeps its own roster. B2B staff see that roster and
@@ -314,6 +315,50 @@ class UserViewSet(viewsets.ModelViewSet):
             else:
                 qs = qs.filter(id=user.id)  # at least see themselves
         return qs
+
+    def _shows_suspended(self):
+        """Whether suspended accounts are in play for this request.
+
+        Only for the super admin, the one person who can act on them. On the
+        directory only when asked — the Team page asks — so every other list and
+        picker built on it stays the active staff; on an account's own routes
+        always, so a suspended account can still be opened, edited, removed or
+        let back in.
+        """
+        if not getattr(self.request.user, 'can_suspend_accounts', False):
+            return False
+        if self.action == 'list':
+            return self.request.query_params.get('include_suspended') in ('1', 'true')
+        return True
+
+    @action(detail=True, methods=['post'])
+    def suspend(self, request, pk=None):
+        """Suspend an account: signed out at once, and unable to sign in until it
+        is reactivated. Nothing it did is touched — its leads, tasks and history
+        stay where they are — and no new work reaches it. Who may: see
+        User.can_suspend. The Activity Log records who did it, and when."""
+        return self._set_suspended(request, True)
+
+    @action(detail=True, methods=['post'])
+    def reactivate(self, request, pk=None):
+        """Let a suspended account back in, just as it was."""
+        return self._set_suspended(request, False)
+
+    def _set_suspended(self, request, suspended):
+        target = self.get_object()
+        actor = request.user
+        if not actor.can_suspend(target):
+            if not actor.can_suspend_accounts:
+                message = 'Only a Super Admin can suspend or reactivate accounts.'
+            elif target.pk == actor.pk:
+                message = 'You cannot suspend your own account.'
+            else:
+                message = f'{target.get_role_display()} accounts cannot be suspended.'
+            self.permission_denied(request, message=message)
+        if target.is_suspended != suspended:
+            target.is_active = not suspended
+            target.save(update_fields=['is_active'])
+        return Response(self.get_serializer(target).data)
 
     @action(detail=False, methods=['get'])
     def assignable(self, request):

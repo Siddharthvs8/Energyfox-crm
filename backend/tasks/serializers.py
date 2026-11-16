@@ -20,3 +20,12 @@ class TaskSerializer(serializers.ModelSerializer):
         model = Task
         fields = '__all__'
         read_only_fields = ['created_at', 'updated_at', 'reminded_at', 'overdue_reminded_at']
+
+    def validate_assignee(self, person):
+        """A suspended account takes on no new work. Refused only as a change, so
+        a task still with someone suspended can be edited until it is handed on."""
+        if (person is not None and person.is_suspended
+                and getattr(self.instance, 'assignee_id', None) != person.pk):
+            name = f"{person.first_name} {person.last_name}".strip() or person.username
+            raise serializers.ValidationError(f"{name}'s account is suspended — pick someone else.")
+        return person

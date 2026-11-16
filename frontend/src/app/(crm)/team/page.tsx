@@ -12,6 +12,7 @@ const I = {
   Plus:  () => <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>,
   Edit:  () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>,
   Trash: () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>,
+  Ban:   () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></svg>,
   X:     () => <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>,
   Users: () => <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>,
   Team:  () => <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>,
@@ -118,6 +119,9 @@ function TeamPageInner() {
   // sidebar switch is on.
   const [segment, setSegment] = useState<"b2c" | "b2b">("b2c");
   const [avatarBusy, setAvatarBusy] = useState(false);
+  // The account whose suspension is being changed, so its button can't be
+  // pressed twice while the request is out.
+  const [suspendBusy, setSuspendBusy] = useState<number | null>(null);
   const avatarInput = React.useRef<HTMLInputElement>(null);
   const isB2B = segment === "b2b";
 
@@ -148,7 +152,9 @@ function TeamPageInner() {
     const q = `?segment=${seg}`;
     try {
       const [tRes, wtRes, meRes, subRes, brRes, arRes, crRes] = await Promise.all([
-        fetch(`${getApiBase(domain)}/api/users/${q}`, { headers: { Authorization: `Bearer ${token}` } }),
+        // Suspended accounts too: the server sends them to the super admin
+        // alone, and ignores the ask from anyone else.
+        fetch(`${getApiBase(domain)}/api/users/${q}&include_suspended=1`, { headers: { Authorization: `Bearer ${token}` } }),
         fetch(`${getApiBase(domain)}/api/teams/`, { headers: { Authorization: `Bearer ${token}` } }),
         fetch(`${getApiBase(domain)}/api/users/me/`, { headers: { Authorization: `Bearer ${token}` } }),
         fetch(`${getApiBase(domain)}/api/subscription/`, { headers: { Authorization: `Bearer ${token}` } }),
@@ -258,6 +264,28 @@ function TeamPageInner() {
     fetchTeam();
   };
 
+  // The super admin's: suspend an account, or let a suspended one back in. Each
+  // card's can_suspend says whether the API will agree.
+  const setSuspended = async (member: any, suspend: boolean) => {
+    const name = `${member.first_name || ""} ${member.last_name || ""}`.trim() || member.username;
+    const ask = suspend
+      ? `Suspend ${name}?\n\nThey'll be signed out straight away and can't sign in until you reactivate the account. Their leads, tasks and history stay as they are, but no new work will be assigned to them.`
+      : `Reactivate ${name}?\n\nThey'll be able to sign in again, with everything as it was.`;
+    if (!confirm(ask)) return;
+    setSuspendBusy(member.id);
+    const token = localStorage.getItem(`${domain}_access`);
+    try {
+      const r = await fetch(`${getApiBase(domain)}/api/users/${member.id}/${suspend ? "suspend" : "reactivate"}/`, {
+        method: "POST", headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        alert(e.detail || (suspend ? "Could not suspend this account." : "Could not reactivate this account."));
+      }
+    } catch { alert("Network error. Please try again."); }
+    finally { setSuspendBusy(null); fetchTeam(); }
+  };
+
   const handleTeamSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const token = localStorage.getItem(`${domain}_access`);
@@ -307,6 +335,73 @@ function TeamPageInner() {
   const myManager = myTeam?.manager_detail;
   const showManagerCard = !isAdminOrGM && myManager && myManager.id !== currentUser?.id;
 
+  // Suspended accounts reach this page only for the super admin, and sit in
+  // their own section below the people at work.
+  const activeMembers = team.filter(u => !u.suspended);
+  const suspendedMembers = team.filter(u => u.suspended);
+
+  // One person's card. A suspended account reads greyed out, says so, and
+  // offers the super admin the way back in.
+  const renderMember = (member: any) => {
+    const role = roleBadge(member);
+    const teamName = workspaceTeams.find(t => t.id === member.team)?.name;
+    const name = `${member.first_name || ""} ${member.last_name || ""}`.trim() || member.username;
+    const busy = suspendBusy === member.id;
+    return (
+      <div key={member.id} className={`bg-white border rounded-2xl p-5 shadow-sm transition-all group ${
+        member.suspended ? "border-dashed border-slate-200" : "border-slate-100 hover:shadow-md"}`}>
+        <div className="flex items-start justify-between mb-4 gap-2">
+          {/* min-w-0: without it this row keeps the full width of the
+              longest email and pushes the card off a phone screen. */}
+          <div className={`flex items-center gap-3 min-w-0 ${member.suspended ? "opacity-60 grayscale" : ""}`}>
+            <Avatar name={member.first_name || member.username} url={member.avatar_url}
+              size={44} className="shadow-sm" textClass="text-sm" />
+            <div className="min-w-0">
+              <h3 className="text-sm font-bold text-slate-900 truncate">{member.first_name} {member.last_name || member.username}</h3>
+              <p className="text-xs text-slate-400 truncate">{member.email || `@${member.username}`}</p>
+              {(member.phone || (telephonyProvider === "voxbay" && member.voxbay_extension)) && (
+                <p className="text-[10px] text-indigo-500 mt-1 font-mono">
+                  {member.phone && `📞 ${member.phone}`}
+                  {member.phone && telephonyProvider === "voxbay" && member.voxbay_extension && " | "}
+                  {telephonyProvider === "voxbay" && member.voxbay_extension && `Ext: ${member.voxbay_extension}`}
+                </p>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-1">
+            {/* can_manage comes from the API: your own profile, or an
+                account below you in the hierarchy. */}
+            {member.can_manage && (
+              <button onClick={() => openEditModal(member)} className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-all"><I.Edit /></button>
+            )}
+            {/* can_suspend too: the super admin's, for accounts below them. */}
+            {member.can_suspend && !member.suspended && (
+              <button type="button" disabled={busy} onClick={() => setSuspended(member, true)}
+                title="Suspend account" aria-label={`Suspend ${name}`}
+                className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-amber-600 hover:bg-amber-50 disabled:opacity-50 transition-all"><I.Ban /></button>
+            )}
+            {currentUser?.is_staff && member.can_manage && member.id !== currentUser?.id && (
+              <button onClick={() => deleteUser(member.id)} className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all"><I.Trash /></button>
+            )}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2 pt-4 border-t border-slate-50">
+          {member.suspended && <span className="inline-flex text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full bg-rose-50 text-rose-700">Suspended</span>}
+          <span className={`inline-flex text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full ${role.bg} ${role.text}`}>{role.label}</span>
+          {member.branch_name && <span className="inline-flex text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full bg-amber-50 text-amber-700">{member.branch_name}</span>}
+          {teamName && <span className="inline-flex text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-600">{teamName}</span>}
+          <span className="ml-auto text-[10px] text-slate-400 font-mono">@{member.username}</span>
+        </div>
+        {member.suspended && member.can_suspend && (
+          <button type="button" disabled={busy} onClick={() => setSuspended(member, false)}
+            className="mt-4 w-full py-2 rounded-xl bg-emerald-50 text-emerald-700 text-xs font-semibold hover:bg-emerald-100 disabled:opacity-50 transition-all">
+            {busy ? "Reactivating…" : "Reactivate account"}
+          </button>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-[#f5f7fb]">
       {/* ── Header ── */}
@@ -316,7 +411,9 @@ function TeamPageInner() {
             <div className="flex items-center gap-3 sm:gap-6 min-w-0">
               <div className="flex-shrink-0">
                 <h1 className="text-lg font-bold text-slate-900">{isB2B ? "B2B Team" : isAdminOrGM ? "Team" : "My Team"}</h1>
-                <p className="text-[11px] text-slate-400 mt-0.5 whitespace-nowrap">{team.length} members</p>
+                <p className="text-[11px] text-slate-400 mt-0.5 whitespace-nowrap">
+                  {activeMembers.length} members{suspendedMembers.length > 0 ? ` · ${suspendedMembers.length} suspended` : ""}
+                </p>
               </div>
               {/* Tabs - only show for admin/GM. Workspace teams are a sales-side
                   concept, so the wholesale roster is a flat member list. */}
@@ -380,51 +477,26 @@ function TeamPageInner() {
 
         {/* ── Members Grid ── */}
         {activeTab === "members" && (
-          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {team.map((member, i) => {
-              const role = roleBadge(member);
-              const teamName = workspaceTeams.find(t => t.id === member.team)?.name;
-              return (
-                <div key={member.id} className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all group">
-                  <div className="flex items-start justify-between mb-4 gap-2">
-                    {/* min-w-0: without it this row keeps the full width of the
-                        longest email and pushes the card off a phone screen. */}
-                    <div className="flex items-center gap-3 min-w-0">
-                      <Avatar name={member.first_name || member.username} url={member.avatar_url}
-                        size={44} className="shadow-sm" textClass="text-sm" />
-                      <div className="min-w-0">
-                        <h3 className="text-sm font-bold text-slate-900 truncate">{member.first_name} {member.last_name || member.username}</h3>
-                        <p className="text-xs text-slate-400 truncate">{member.email || `@${member.username}`}</p>
-                        {(member.phone || (telephonyProvider === "voxbay" && member.voxbay_extension)) && (
-                          <p className="text-[10px] text-indigo-500 mt-1 font-mono">
-                            {member.phone && `📞 ${member.phone}`}
-                            {member.phone && telephonyProvider === "voxbay" && member.voxbay_extension && " | "}
-                            {telephonyProvider === "voxbay" && member.voxbay_extension && `Ext: ${member.voxbay_extension}`}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      {/* can_manage comes from the API: your own profile, or an
-                          account below you in the hierarchy. */}
-                      {member.can_manage && (
-                        <button onClick={() => openEditModal(member)} className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-all"><I.Edit /></button>
-                      )}
-                      {currentUser?.is_staff && member.can_manage && member.id !== currentUser?.id && (
-                        <button onClick={() => deleteUser(member.id)} className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all"><I.Trash /></button>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap gap-2 pt-4 border-t border-slate-50">
-                    <span className={`inline-flex text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full ${role.bg} ${role.text}`}>{role.label}</span>
-                    {member.branch_name && <span className="inline-flex text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full bg-amber-50 text-amber-700">{member.branch_name}</span>}
-                    {teamName && <span className="inline-flex text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-600">{teamName}</span>}
-                    <span className="ml-auto text-[10px] text-slate-400 font-mono">@{member.username}</span>
-                  </div>
+          <>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {activeMembers.map(renderMember)}
+            </div>
+            {suspendedMembers.length > 0 && (
+              <section className="mt-10" aria-labelledby="suspended-heading">
+                <div className="flex items-baseline gap-2">
+                  <h2 id="suspended-heading" className="text-sm font-bold text-slate-700">Suspended accounts</h2>
+                  <span className="text-xs font-semibold text-slate-400">{suspendedMembers.length}</span>
                 </div>
-              );
-            })}
-          </div>
+                <p className="text-xs text-slate-500 mt-1 mb-4">
+                  Signed out and unable to sign in until reactivated. Their leads, tasks and history are
+                  kept as they were, and no new work reaches them.
+                </p>
+                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {suspendedMembers.map(renderMember)}
+                </div>
+              </section>
+            )}
+          </>
         )}
 
         {/* ── Teams Grid ── */}
@@ -617,7 +689,10 @@ function TeamPageInner() {
             <label className="block text-xs font-semibold text-slate-600 mb-1.5">Manager</label>
             <div className="relative">
               <select required value={teamForm.manager} onChange={e => setTeamForm({...teamForm, manager: e.target.value})} className="w-full appearance-none bg-slate-50 border border-slate-200 rounded-xl pl-4 pr-8 py-2.5 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer transition-all">
-                <option value="">Select manager...</option>{team.filter(u => u.is_manager || u.is_staff || u.is_general_manager).map(u => <option key={u.id} value={u.id}>{u.first_name} {u.last_name} (@{u.username})</option>)}
+                {/* Not a suspended account — unless it already leads this team. */}
+                <option value="">Select manager...</option>{team.filter(u => (u.is_manager || u.is_staff || u.is_general_manager)
+                    && (!u.suspended || String(u.id) === String(teamForm.manager)))
+                  .map(u => <option key={u.id} value={u.id}>{u.first_name} {u.last_name} (@{u.username}){u.suspended ? " — suspended" : ""}</option>)}
               </select>
               <div className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"><I.ChevronDown /></div>
             </div>
@@ -626,7 +701,9 @@ function TeamPageInner() {
           <div>
             <label className="block text-xs font-semibold text-slate-600 mb-1.5">Members</label>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-[200px] overflow-y-auto bg-slate-50 border border-slate-200 rounded-xl p-2">
-              {team.map(u => {
+              {/* No new member from among the suspended; one already in the team
+                  stays listed, so they can be taken out of it. */}
+              {team.filter(u => !u.suspended || teamForm.member_ids.includes(u.id)).map(u => {
                 const checked = teamForm.member_ids.includes(u.id);
                 return (
                   <label key={u.id} className={`flex items-center gap-2 p-2.5 rounded-lg cursor-pointer transition-all ${checked ? "bg-indigo-50 border border-indigo-100" : "bg-white border border-slate-100 hover:border-slate-200"}`}>
@@ -636,7 +713,7 @@ function TeamPageInner() {
                     <input type="checkbox" className="sr-only" checked={checked} onChange={e => { const ids = e.target.checked ? [...teamForm.member_ids, u.id] : teamForm.member_ids.filter(id => id !== u.id); setTeamForm({...teamForm, member_ids: ids}); }} disabled={!currentUser?.is_staff && !currentUser?.is_general_manager} />
                     <div className="min-w-0">
                       <p className="text-xs font-semibold text-slate-700 truncate">{u.first_name} {u.last_name}</p>
-                      <p className="text-[10px] text-slate-400">@{u.username}</p>
+                      <p className="text-[10px] text-slate-400">@{u.username}{u.suspended ? " · suspended" : ""}</p>
                     </div>
                   </label>
                 );

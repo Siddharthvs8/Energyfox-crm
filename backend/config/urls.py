@@ -4,10 +4,8 @@ from django.conf.urls.static import static
 from django.contrib import admin
 from django.http import JsonResponse
 from rest_framework.routers import DefaultRouter
-from rest_framework_simplejwt.views import (
-    TokenObtainPairView,
-    TokenRefreshView,
-)
+from rest_framework_simplejwt.views import TokenRefreshView
+from users.login import LoginView
 from leads.views import LeadViewSet
 from leads.performance import CompanyPerformanceView
 from leads.tracking import TrackingLinkView
@@ -62,7 +60,8 @@ urlpatterns = [
     path('api/health/', lambda request: JsonResponse({"status": "ok"}), name='health-check'),
     # Django admin behind a hard-to-guess path.
     path('sys-admin/', admin.site.urls),
-    path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
+    # The stock sign-in, telling a suspended account why it can't get in.
+    path('api/token/', LoginView.as_view(), name='token_obtain_pair'),
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('api/subscription/', SubscriptionStatusView.as_view(), name='subscription-status'),
     path('api/org-settings/', TenantSettingsView.as_view(), name='org-settings'),

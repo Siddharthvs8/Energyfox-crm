@@ -732,7 +732,22 @@ class LeadSerializer(serializers.ModelSerializer):
         if source != 'referral' and (data.get('referred_by')
                                      or getattr(self.instance, 'referred_by_id', None)):
             data['referred_by'] = None
+        # A suspended account takes on no new work. Refused only as a change, so
+        # a lead still with someone suspended goes on saving until it is
+        # reassigned — the edit forms post every field back as they found it.
+        for field in self.WORK_FIELDS:
+            person = data.get(field)
+            if (person is not None and person.is_suspended
+                    and getattr(self.instance, f'{field}_id', None) != person.pk):
+                name = f"{person.first_name} {person.last_name}".strip() or person.username
+                raise serializers.ValidationError(
+                    {field: f"{name}'s account is suspended — pick someone else."})
         return data
+
+    # The people a lead is handed to for work, as opposed to the ones it only
+    # names (who referred it, who lost or trashed it).
+    WORK_FIELDS = ('assigned_to', 'tele_caller', 'bde', 'documentation_staff', 'accounts_staff',
+                   'purchase_staff', 'project_manager', 'doc_stage2_staff')
 
 class MetaSyncScheduleSerializer(serializers.ModelSerializer):
     """When the Meta sync runs. One schedule, governing every integration."""

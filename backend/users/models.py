@@ -391,6 +391,34 @@ class User(AbstractUser):
         """Roles this user is allowed to grant, for the Team form's picker."""
         return [r for r, _ in ROLE_CHOICES if self.rank > role_rank(r)]
 
+    # ── Suspension ──
+    @property
+    def is_suspended(self):
+        """A suspended account is kept, with everything it did, but signed out
+        and unable to sign back in until it is reactivated.
+
+        It is Django's `is_active` switched off, which is what makes it hold:
+        sign-in, the token check on every request and the token refresh all
+        refuse an inactive account already, and every picker and round-robin
+        that hands out work asks for active staff, so none reaches it.
+        """
+        return not self.is_active
+
+    @property
+    def can_suspend_accounts(self):
+        """Suspending accounts is the super admin's power alone."""
+        return self.role == ROLE_SUPERADMIN
+
+    def can_suspend(self, other):
+        """Whether this user may suspend `other`'s account, or reactivate it.
+
+        Only accounts below them — never their own, which would leave nobody to
+        let them back in, and never another super admin's, so one super admin
+        cannot shut the others out.
+        """
+        return (self.can_suspend_accounts and other is not None
+                and self.pk != other.pk and self.rank > role_rank(other.role))
+
     def managed_user_ids(self):
         """Ids of the people this manager oversees — members of the teams they
         head, everyone in their branch (branch managers), and themselves.

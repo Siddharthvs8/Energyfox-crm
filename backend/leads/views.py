@@ -118,6 +118,16 @@ def build_process_overview(lead, completed_by=None):
     return f"Documentation Stage 1 completed by {actor}. Process overview: {overview}."
 
 
+def active_staff(pk):
+    """The person picked to take on work, by id — never a suspended account,
+    which takes on no new work (see User.is_suspended). A suspended one is not
+    found here, so each caller's own "not found" answers for it too; the
+    pickers never offer one, so this only meets a page opened before the
+    suspension."""
+    from users.models import User
+    return User.objects.get(pk=pk, is_active=True)
+
+
 def _least_recently_assigned_doc(candidates):
     """Round-robin pick: the handler assigned a documentation lead least recently.
 
@@ -1119,7 +1129,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             lead.bde = None
         else:
             try:
-                lead.bde = User.objects.get(pk=bde_id)
+                lead.bde = active_staff(bde_id)
             except User.DoesNotExist:
                 return Response({'error': 'BDE not found.'}, status=status.HTTP_404_NOT_FOUND)
         lead.save(update_fields=['bde'])
@@ -1177,7 +1187,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             lead.documentation_staff = None
         else:
             try:
-                lead.documentation_staff = User.objects.get(pk=staff_id)
+                lead.documentation_staff = active_staff(staff_id)
             except User.DoesNotExist:
                 return Response({'error': 'Staff not found.'}, status=status.HTTP_404_NOT_FOUND)
         lead.save(update_fields=['documentation_staff'])
@@ -2228,7 +2238,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             lead.accounts_staff = None
         else:
             try:
-                lead.accounts_staff = User.objects.get(pk=staff_id)
+                lead.accounts_staff = active_staff(staff_id)
             except User.DoesNotExist:
                 return Response({'error': 'Accounts staff not found.'}, status=status.HTTP_404_NOT_FOUND)
         lead.save(update_fields=['accounts_staff'])
@@ -3251,7 +3261,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             lead.purchase_staff = None
         else:
             try:
-                lead.purchase_staff = User.objects.get(pk=staff_id)
+                lead.purchase_staff = active_staff(staff_id)
             except User.DoesNotExist:
                 return Response({'error': 'Purchase staff not found.'}, status=status.HTTP_404_NOT_FOUND)
         lead.save(update_fields=['purchase_staff'])
@@ -3574,7 +3584,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             lead.project_manager = None
         else:
             try:
-                lead.project_manager = User.objects.get(pk=pm_id)
+                lead.project_manager = active_staff(pm_id)
             except User.DoesNotExist:
                 return Response({'error': 'Project manager not found.'}, status=status.HTTP_404_NOT_FOUND)
         lead.save(update_fields=['project_manager'])
@@ -3659,7 +3669,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             lead.doc_stage2_staff = None
         else:
             try:
-                lead.doc_stage2_staff = User.objects.get(pk=staff_id)
+                lead.doc_stage2_staff = active_staff(staff_id)
             except User.DoesNotExist:
                 return Response({'error': 'Staff not found.'}, status=status.HTTP_404_NOT_FOUND)
         lead.save(update_fields=['doc_stage2_staff'])
@@ -6695,7 +6705,7 @@ class LeadViewSet(viewsets.ModelViewSet):
 
         try:
             from users.models import User
-            target_user = User.objects.get(id=user_id)
+            target_user = active_staff(user_id)
         except User.DoesNotExist:
             return Response({'error': 'Target user not found'}, status=status.HTTP_404_NOT_FOUND)
 
