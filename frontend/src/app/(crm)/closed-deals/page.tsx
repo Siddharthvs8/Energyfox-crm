@@ -18,6 +18,7 @@ import { getApiBase, formatCurrency, getSourceLabel } from "@/lib/mock-data";
 import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import FilterBar, { FilterField } from "@/components/FilterBar";
+import { useFilterMemory, useRemembered } from "@/hooks/useRememberedFilters";
 
 type Deal = {
   id: number;
@@ -98,21 +99,26 @@ export default function ClosedDealsPage() {
   const [loading, setLoading] = useState(true);
   const [denied, setDenied] = useState(false);
 
-  const [payment, setPayment] = useState("");
-  const [teleCaller, setTeleCaller] = useState("");
-  const [bde, setBde] = useState("");
-  const [search, setSearch] = useState("");
+  // The filters are remembered for this user until changed or cleared, so a
+  // reload shows the same board — see useRememberedFilters.
+  const memory = useFilterMemory("closed-deals");
+  const [payment, setPayment] = useRemembered(memory, "payment", "");
+  const [teleCaller, setTeleCaller] = useRemembered(memory, "teleCaller", "");
+  const [bde, setBde] = useRemembered(memory, "bde", "");
+  const [search, setSearch] = useRemembered(memory, "search", "");
   // All time by default: this is a working list, and a deal closed last year
   // should not go missing behind a filter nobody set. The server agrees.
-  const [period, setPeriod] = useState("all");
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  const [period, setPeriod] = useRemembered(memory, "period", "all");
+  const [from, setFrom] = useRemembered(memory, "from", "");
+  const [to, setTo] = useRemembered(memory, "to", "");
   // Typing shouldn't fire a request per keystroke; the rest apply immediately.
-  const [debounced, setDebounced] = useState("");
+  // Remembered with the box, so a reload does not first load the board without
+  // the search and then again with it.
+  const [debounced, setDebounced] = useRemembered(memory, "debounced", "");
   useEffect(() => {
     const t = setTimeout(() => setDebounced(search), 300);
     return () => clearTimeout(t);
-  }, [search]);
+  }, [search, setDebounced]);
 
   const load = useCallback(async () => {
     const token = localStorage.getItem(`${domain}_access`);
@@ -139,17 +145,21 @@ export default function ClosedDealsPage() {
     finally { setLoading(false); }
   }, [api, domain, payment, teleCaller, bde, debounced, period, from, to]);
 
-  useEffect(() => { load(); }, [load]);
+  // Not before the remembered filters are in, or the unfiltered board is
+  // asked for too and may come back last.
+  useEffect(() => { if (memory.ready) load(); }, [load, memory.ready]);
 
   // The pickers come from the whole board, so they stay put while filtering;
-  // hold on to them so they don't blink between requests.
+  // hold on to them so they don't blink between requests. Every reply carries
+  // all of them — the server lists the people before it applies the filters —
+  // so they are taken from whichever reply comes. Waiting for an unfiltered one
+  // left them empty after a reload, where remembered filters mean the board is
+  // never asked for unfiltered.
   const [pickers, setPickers] = useState<{ tele_callers: Person[]; bdes: Person[] }>(
     { tele_callers: [], bdes: [] });
   useEffect(() => {
-    if (board && !payment && !teleCaller && !bde && !debounced.trim()) {
-      setPickers({ tele_callers: board.tele_callers, bdes: board.bdes });
-    }
-  }, [board, payment, teleCaller, bde, debounced]);
+    if (board) setPickers({ tele_callers: board.tele_callers, bdes: board.bdes });
+  }, [board]);
 
   const activeFilters = [payment, teleCaller, bde, search.trim(),
                          period === "all" ? "" : period].filter(Boolean).length;

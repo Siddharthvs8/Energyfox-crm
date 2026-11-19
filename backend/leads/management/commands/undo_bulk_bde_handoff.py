@@ -114,10 +114,13 @@ class Command(BaseCommand):
         owned_by_bde = [lead.id for lead in undo if lead.assigned_to_id == lead.bde_id]
         # update() rather than save(), as the hand-off was: save() would stamp
         # an owner who is a BDE straight back on as the BDE. `recording` puts
-        # the undo on the record the way the hand-off now is.
+        # the undo on the record the way the hand-off now is. Undone, not
+        # re-assigned: the tele caller gets the lead back with the date they
+        # had it from, rather than as one newly handed to them.
         with recording(Lead, ids):
-            Lead.objects.filter(id__in=owned_by_bde).update(assigned_to=F('tele_caller'))
-            Lead.objects.filter(id__in=ids).update(bde=None, bde_assigned_at=None)
+            Lead.objects.filter(id__in=owned_by_bde).update(
+                assigned_to=F('tele_caller'), owner_since=F('tele_caller_since'))
+            Lead.objects.filter(id__in=ids).update(bde=None, bde_assigned_at=None, bde_since=None)
         self.stdout.write(self.style.SUCCESS(
             f'\nUndid the hand-off for {len(ids)} lead(s): they are back with their tele '
             f'callers, at the Tele Caller stage.{f" {kept} kept." if kept else ""}'))

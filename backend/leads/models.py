@@ -156,6 +156,14 @@ class Lead(models.Model):
     # stage did not change, only who is working it. Set in save() and in the
     # bulk assignment path (LeadViewSet._stamp_owner_role), which skips save().
     bde_assigned_at = models.DateTimeField(null=True, blank=True)
+    # When each of the three people on the lead got it — what "Assigned to me"
+    # on the lead list is sorted by. Unlike bde_assigned_at these follow the
+    # person, not the stage: a lead passed from one BDE to another is new to the
+    # second BDE the day it reaches them. Stamped wherever bde_assigned_at is
+    # (save() and LeadViewSet._stamp_owner_role), and emptied with the person.
+    owner_since = models.DateTimeField(null=True, blank=True)
+    tele_caller_since = models.DateTimeField(null=True, blank=True)
+    bde_since = models.DateTimeField(null=True, blank=True)
     # ── Documentation handoff ──
     pushed_to_documentation = models.BooleanField(default=False, db_index=True)
     pushed_to_documentation_at = models.DateTimeField(null=True, blank=True)
@@ -339,6 +347,8 @@ class Lead(models.Model):
     # And the BDE, so save() can tell a lead getting its first BDE (it reaches
     # the site visit stage) from one passed between BDEs.
     _loaded_bde_id = _UNREAD
+    # And the tele caller, so save() can date the moment one takes the lead.
+    _loaded_tele_caller_id = _UNREAD
 
     @classmethod
     def from_db(cls, db, field_names, values):
@@ -355,6 +365,7 @@ class Lead(models.Model):
         obj._loaded_assigned_to_id = loaded.get('assigned_to_id', cls._UNREAD)
         obj._loaded_district = loaded.get('district', cls._UNREAD)
         obj._loaded_bde_id = loaded.get('bde_id', cls._UNREAD)
+        obj._loaded_tele_caller_id = loaded.get('tele_caller_id', cls._UNREAD)
         return obj
 
     def save(self, *args, **kwargs):
@@ -421,6 +432,7 @@ class Lead(models.Model):
         if self.bde_id and had_bde is False:
             self.bde_assigned_at = timezone.now()
             stamped.append('bde_assigned_at')
+        self._stamp_holders(kwargs.get('update_fields'), stamped)
         if stamped:
             update_fields = kwargs.get('update_fields')
             if update_fields is not None:
@@ -429,6 +441,42 @@ class Lead(models.Model):
         self._loaded_assigned_to_id = self.assigned_to_id
         self._loaded_district = self.district
         self._loaded_bde_id = self.bde_id
+        self._loaded_tele_caller_id = self.tele_caller_id
+
+    # Each person on a lead, the field naming them, and the one dating their
+    # arrival — see owner_since.
+    HOLDERS = (('assigned_to', 'owner_since', '_loaded_assigned_to_id'),
+               ('tele_caller', 'tele_caller_since', '_loaded_tele_caller_id'),
+               ('bde', 'bde_since', '_loaded_bde_id'))
+
+    def _stamp_holders(self, update_fields, stamped):
+        """Date each person who has just been put on the lead; clear the date of
+        one taken off it. Someone who stays keeps their date, however often the
+        lead is saved.
+
+        A field this save is not writing has not changed as far as the database
+        is concerned, so it is left alone — unless save() stamped it a line
+        earlier (the owner's role names the tele caller or the BDE), in which
+        case it is being written. A new lead created with a date already set
+        keeps it: whoever built it knows when the assignment happened.
+        """
+        now = timezone.now()
+        for field, since, loaded_attr in self.HOLDERS:
+            if (update_fields is not None and field not in stamped
+                    and not {field, f'{field}_id'} & set(update_fields)):
+                continue
+            holder = getattr(self, f'{field}_id')
+            if self._state.adding:
+                if holder and getattr(self, since) is None:
+                    setattr(self, since, now)
+                continue
+            loaded = getattr(self, loaded_attr)
+            # Unread: the row came back without the column, so there is nothing
+            # to compare against.
+            if loaded is self._UNREAD or loaded == holder:
+                continue
+            setattr(self, since, now if holder else None)
+            stamped.append(since)
 
     def __str__(self):
         # `last_name` is nullable, so a customer with only a first name used to
@@ -789,6 +837,9 @@ class ActivityLog(models.Model):
         ('meta_import', 'Meta Import'),
         ('user_joined', 'User Joined'),
         ('call_logged', 'Call Logged'),
+        # Raised or changed from the quotation form — see inventory/quotation_timeline.py.
+        ('quotation_created', 'Quotation Created'),
+        ('quotation_edited', 'Quotation Edited'),
     ]
 
     activity_type = models.CharField(max_length=50, choices=ACTIVITY_TYPES, db_index=True)

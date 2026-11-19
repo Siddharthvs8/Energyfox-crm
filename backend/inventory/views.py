@@ -10,7 +10,7 @@ from rest_framework import viewsets, permissions, status, parsers
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from . import b2b_access
+from . import b2b_access, quotation_timeline
 from .models import (Vendor, PurchaseOrder, Quote, SalesOrder, SalesOrderItem,
                      ProjectSpec, ProjectSpecLine, Quotation, QuoteItem,
                      QuoteSpecLine, QuotationTemplate, PRICE_VARIANTS, split_tax,
@@ -281,6 +281,20 @@ class QuotationViewSet(viewsets.ModelViewSet):
                            | Q(lead__last_name__icontains=search)
                            | Q(project__name__icontains=search))
         return qs
+
+    # Raising and editing a quotation go on the customer's Activity Timeline —
+    # see quotation_timeline. In one transaction with the save, so a quotation
+    # that was saved always has its entry.
+    def perform_create(self, serializer):
+        with transaction.atomic():
+            quotation = serializer.save()
+            quotation_timeline.record_created(quotation, self.request.user)
+
+    def perform_update(self, serializer):
+        with transaction.atomic():
+            before = quotation_timeline.snapshot(serializer.instance)
+            quotation = serializer.save()
+            quotation_timeline.record_edited(before, quotation, self.request.user)
 
     def quotation_party(self, quotation):
         """Who the quotation is addressed to — the lead behind it."""

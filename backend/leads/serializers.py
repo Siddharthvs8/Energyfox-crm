@@ -506,6 +506,9 @@ class LeadSerializer(serializers.ModelSerializer):
     # When the lead reached the stage the list was filtered by ("stage reached"
     # filter) — present only on rows from that filter, so a row can say when.
     stage_reached_at = serializers.SerializerMethodField()
+    # When the lead reached the viewer — present on rows from the "Assigned to
+    # me" list, which is ordered by it (LeadViewSet.get_queryset).
+    assigned_to_me_at = serializers.SerializerMethodField()
     status = serializers.CharField(required=False)
 
     class Meta:
@@ -514,10 +517,16 @@ class LeadSerializer(serializers.ModelSerializer):
         # Trash is driven only by the dedicated trash/restore actions, never a plain PATCH.
         # bde_assigned_at is the record of when the site visit stage was
         # reached, so it is written by the hand-over itself, never by an edit.
-        read_only_fields = ['is_trashed', 'trashed_at', 'trashed_by', 'bde_assigned_at']
+        # The same goes for the dates each person got the lead (owner_since).
+        read_only_fields = ['is_trashed', 'trashed_at', 'trashed_by', 'bde_assigned_at',
+                            'owner_since', 'tele_caller_since', 'bde_since']
 
     def get_stage_reached_at(self, obj):
         when = getattr(obj, 'stage_reached_at', None)
+        return when.isoformat() if when else None
+
+    def get_assigned_to_me_at(self, obj):
+        when = getattr(obj, 'assigned_to_me_at', None)
         return when.isoformat() if when else None
 
     def get_pipeline_stage_label(self, obj):

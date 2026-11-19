@@ -38,6 +38,8 @@ const TYPE_LABELS: Record<string, string> = {
   meta_import: "Imported from Meta",
   call_logged: "Call logged",
   user_joined: "User joined",
+  quotation_created: "Quotation created",
+  quotation_edited: "Quotation edited",
 };
 
 /** Dot colour by kind, so a status change reads differently from a note. */
@@ -47,6 +49,8 @@ const TYPE_TONE: Record<string, string> = {
   note_added: "bg-amber-500",
   task_completed: "bg-emerald-500",
   call_logged: "bg-sky-500",
+  quotation_created: "bg-violet-500",
+  quotation_edited: "bg-violet-400",
 };
 
 const fmt = (iso: string) => {

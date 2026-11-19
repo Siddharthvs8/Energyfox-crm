@@ -271,8 +271,8 @@ def auto_assign_project(lead):
     return assignee
 
 
-from .scopes import (live_leads, own_leads_q, closed_deals, closed_deal_q,  # noqa: E402
-                     received_value, CLOSED_DEAL_FILTER,
+from .scopes import (live_leads, own_leads_q, assigned_to_me_at, closed_deals,  # noqa: E402
+                     closed_deal_q, received_value, CLOSED_DEAL_FILTER,
                      maintenance_customers, maintenance_visits_due)
 
 
@@ -5354,10 +5354,16 @@ class LeadViewSet(viewsets.ModelViewSet):
             elif archived_param != 'all':
                 queryset = queryset.filter(is_archived=False)
 
-        # Filter by "Assigned to Me"
-        assigned_to_me = self.request.query_params.get('assigned_to_me')
-        if assigned_to_me == 'true' or assigned_to_me == '1':
-            queryset = queryset.filter(assigned_to=self.request.user)
+        # Filter by "Assigned to Me": every lead this user is on — its owner, the
+        # tele caller who worked it or its BDE, the people the Owner column
+        # names. Matching the owner alone left a BDE with next to nothing, since
+        # a lead handed to a BDE stays owned by its tele caller. Each row is
+        # dated by when it reached them, for the list to sort and show.
+        assigned_to_me = self.request.query_params.get('assigned_to_me') in ('true', '1')
+        if assigned_to_me:
+            queryset = queryset.filter(own_leads_q(self.request.user))
+        if assigned_to_me or self.request.query_params.get('ordering') in ('assigned', '-assigned'):
+            queryset = queryset.annotate(assigned_to_me_at=assigned_to_me_at(self.request.user))
 
         # Filter by status
         status_param = self.request.query_params.get('status')
@@ -5592,6 +5598,14 @@ class LeadViewSet(viewsets.ModelViewSet):
                 queryset = queryset.order_by('-first_name', '-last_name')
             elif ordering in ['value', '-value']:
                 queryset = queryset.order_by(ordering)
+            elif ordering in ('assigned', '-assigned'):
+                # The order leads reached this user, not the order they were
+                # created in. Undated ones go last either way, and the id keeps
+                # rows dated alike in one order from page to page.
+                when = F('assigned_to_me_at')
+                queryset = queryset.order_by(
+                    when.asc(nulls_last=True) if ordering == 'assigned' else when.desc(nulls_last=True),
+                    '-id')
             else:
                 queryset = queryset.order_by('-created_at')
         else:
@@ -5609,17 +5623,31 @@ class LeadViewSet(viewsets.ModelViewSet):
 
         The tele caller stamp is sticky; the BDE stamp is replaced, so moving a
         lead between BDEs takes it out of the previous one's list.
+
+        Whoever is newly stamped is dated now (Lead.tele_caller_since /
+        bde_since); one who already held the role keeps their date.
         """
         role = getattr(target_user, 'role', '') if target_user else ''
+        now = timezone.now()
         if role == 'tele_caller':
-            queryset.filter(tele_caller__isnull=True).update(tele_caller=target_user)
+            queryset.filter(tele_caller__isnull=True).update(tele_caller=target_user,
+                                                             tele_caller_since=now)
         elif role == 'bde':
             # A lead getting its first BDE reaches the site visit stage now; one
             # moving over from another BDE keeps the day it first reached it.
             # Same rule as Lead.save().
-            queryset.filter(bde__isnull=True).update(bde=target_user,
-                                                     bde_assigned_at=timezone.now())
-            queryset.exclude(bde=target_user).update(bde=target_user)
+            queryset.filter(bde__isnull=True).update(bde=target_user, bde_assigned_at=now,
+                                                     bde_since=now)
+            queryset.exclude(bde=target_user).update(bde=target_user, bde_since=now)
+
+    @staticmethod
+    def _stamp_owner_since(queryset, owner_id):
+        """Date the hand-over on the leads whose owner is about to become
+        `owner_id` (None: unassigned, and undated). Run before the update, while
+        the old owner can still be told from the new; a lead that is already
+        theirs keeps its date. The bulk paths' half of Lead.save()."""
+        queryset.exclude(assigned_to_id=owner_id).update(
+            owner_since=timezone.now() if owner_id else None)
 
     def _routable_ids(self, ids):
         """The ids among `ids` this user may route — the leads a bulk path
@@ -6721,6 +6749,7 @@ class LeadViewSet(viewsets.ModelViewSet):
         # the record. Without it, handing a page of leads to a BDE left the BDE
         # on every one of them and no trace of who had done it.
         with recording(Lead, ids):
+            self._stamp_owner_since(leads, target_user.id)
             count = leads.update(assigned_to=target_user)
             self._stamp_owner_role(leads, target_user)
 
@@ -6768,6 +6797,8 @@ class LeadViewSet(viewsets.ModelViewSet):
         count = 0
         if valid_data:
             with recording(Lead, ids):
+                if 'assigned_to_id' in valid_data:
+                    self._stamp_owner_since(queryset, valid_data['assigned_to_id'])
                 count = queryset.update(**valid_data)
                 if valid_data.get('assigned_to_id'):
                     from users.models import User as _U
@@ -6899,39 +6930,26 @@ class DashboardStatsView(APIView):
                 # Managers can see all teams for comparison as requested
                 teams_to_check = WorkspaceTeam.objects.all()
             
-            # Member Stats using ORM Annotation
-            users_with_stats = users_to_check.annotate(
-                calc_leads_count=Count('assigned_leads'),
-                calc_pipeline_value=Sum('assigned_leads__value'),
-                calc_won_count=Count('assigned_leads', filter=closed_deal_q('assigned_leads__')),
-                calc_won_value=Sum(received_value('assigned_leads__'), filter=closed_deal_q('assigned_leads__'))
-            )
-            for u in users_with_stats:
+            # The leads each person and each team *works* — as owner, BDE or
+            # tele caller — the same set the performance popup each row opens
+            # reports on. Counting owners alone showed a team of tele callers
+            # one deal on its card and a crore and a half in its own popup,
+            # because a lead handed to a BDE is credited through `bde`.
+            from .scopes import work_figures, worked_by_q
+            for u in users_to_check:
                 performance_stats.append({
                     "id": u.id,
                     "name": f"{u.first_name} {u.last_name}".strip() or u.username,
                     "role": "Admin" if u.is_staff else ("General Manager" if u.is_general_manager else ("Manager" if u.is_manager else "Agent")),
-                    "leads_count": u.calc_leads_count or 0,
-                    "pipeline_value": float(u.calc_pipeline_value or 0),
-                    "won_count": u.calc_won_count or 0,
-                    "won_value": float(u.calc_won_value or 0)
+                    **work_figures(Lead.objects.filter(own_leads_q(u)).distinct()),
                 })
-            
-            # Team Stats using ORM Annotation
-            teams_with_stats = teams_to_check.annotate(
-                calc_leads_count=Count('members__assigned_leads'),
-                calc_pipeline_value=Sum('members__assigned_leads__value'),
-                calc_won_count=Count('members__assigned_leads', filter=closed_deal_q('members__assigned_leads__')),
-                calc_won_value=Sum(received_value('members__assigned_leads__'), filter=closed_deal_q('members__assigned_leads__'))
-            )
-            for t in teams_with_stats:
+
+            for t in teams_to_check:
+                members = t.members.filter(is_active=True)
                 team_stats.append({
                     "id": t.id,
                     "name": t.name,
-                    "leads_count": t.calc_leads_count or 0,
-                    "pipeline_value": float(t.calc_pipeline_value or 0),
-                    "won_count": t.calc_won_count or 0,
-                    "won_value": float(t.calc_won_value or 0)
+                    **work_figures(Lead.objects.filter(worked_by_q(members)).distinct()),
                 })
 
         # Recent Activities from ActivityLog (last 25)

@@ -186,13 +186,12 @@ class WorkspaceTeamViewSet(viewsets.ModelViewSet):
         
         team = self.get_object()
         members = team.members.filter(is_active=True)
-        from leads.scopes import closed_deals, own_leads_q, received_value
+        from leads.scopes import closed_deals, own_leads_q, received_value, worked_by_q
         # A member's BDE work is theirs too: handing a lead over moves nothing —
         # `assigned_to` stays with the tele caller — so scoping on the owner
-        # alone reports a BDE as having closed nothing at all.
-        team_leads = Lead.objects.filter(
-            Q(assigned_to__in=members) | Q(bde__in=members) | Q(tele_caller__in=members)
-        ).distinct()
+        # alone reports a BDE as having closed nothing at all. The dashboard's
+        # team card reads the same set (leads.scopes.work_figures).
+        team_leads = Lead.objects.filter(worked_by_q(members)).distinct()
         # Won means closed: in accounts with money received. See
         # leads.scopes.CLOSED_DEAL_FILTER — one definition for every figure.
         won_leads = closed_deals(team_leads)

@@ -743,6 +743,8 @@ export default function LeadDetailPage({
     task_completed:     { label: "Task Completed",     icon: "✅", bg: "bg-emerald-50", text: "text-emerald-600"},
     meta_import:        { label: "Meta Import",        icon: "📥", bg: "bg-violet-50",  text: "text-violet-600" },
     call_logged:        { label: "Call",               icon: "📞", bg: "bg-emerald-50", text: "text-emerald-600"},
+    quotation_created:  { label: "Quotation Created",  icon: "🧾", bg: "bg-violet-50",  text: "text-violet-600" },
+    quotation_edited:   { label: "Quotation Edited",   icon: "✏️", bg: "bg-violet-50",  text: "text-violet-600" },
   };
 
   return (
@@ -1195,7 +1197,8 @@ export default function LeadDetailPage({
           </div>
 
           {/* Quotations — raised here, listed in the Quotation module too. */}
-          <LeadQuotationsPanel leadId={params.id} customerEmail={lead?.email} />
+          <LeadQuotationsPanel leadId={params.id} customerEmail={lead?.email}
+            onChange={fetchHistory} />
 
           {/* Attachments UI Card */}
           <div className="bg-white rounded-2xl border border-slate-100 p-4 sm:p-6 animate-fade-in-up delay-[150ms]">

@@ -6,6 +6,7 @@ import React, { useState, useEffect } from "react";
 import { use } from "react";
 import Link from "next/link";
 import FilterBar, { FilterField } from "@/components/FilterBar";
+import { useFilterMemory, useRemembered } from "@/hooks/useRememberedFilters";
 import { Skeleton, SkeletonRegion } from "@/components/Skeleton";
 
 const I = {
@@ -39,13 +40,16 @@ export default function CallsPage({ params: paramsPromise }: { params: Promise<{
   const [calls, setCalls] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [currentUser, setCurrentUser] = useState<any>(null);
-  const [selectedUserId, setSelectedUserId] = useState<string>("");
-  const [selectedOutcome, setSelectedOutcome] = useState<string>("");
-  const [selectedDirection, setSelectedDirection] = useState<string>("");
-  const [dateFrom, setDateFrom] = useState<string>("");
-  const [dateTo, setDateTo] = useState<string>("");
+  // The search and the filters are remembered for this user until changed or
+  // cleared, so a reload shows the same calls — see useRememberedFilters.
+  const memory = useFilterMemory("calls");
+  const [selectedUserId, setSelectedUserId] = useRemembered<string>(memory, "selectedUserId", "");
+  const [selectedOutcome, setSelectedOutcome] = useRemembered<string>(memory, "selectedOutcome", "");
+  const [selectedDirection, setSelectedDirection] = useRemembered<string>(memory, "selectedDirection", "");
+  const [dateFrom, setDateFrom] = useRemembered<string>(memory, "dateFrom", "");
+  const [dateTo, setDateTo] = useRemembered<string>(memory, "dateTo", "");
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useRemembered(memory, "search", "");
 
   const canFilterByUser = currentUser && (currentUser.is_staff || currentUser.is_general_manager || currentUser.is_manager);
 
@@ -107,9 +111,12 @@ export default function CallsPage({ params: paramsPromise }: { params: Promise<{
     fetchUsers();
   }, []);
 
+  // Not before the remembered filters are in, or every call is asked for too
+  // and that reply may come back last.
   useEffect(() => {
+    if (!memory.ready) return;
     fetchCalls();
-  }, [selectedUserId, selectedOutcome, selectedDirection, dateFrom, dateTo]);
+  }, [memory.ready, selectedUserId, selectedOutcome, selectedDirection, dateFrom, dateTo]);
 
   const formatDuration = (sec: number) => {
     const m = Math.floor(sec / 60);

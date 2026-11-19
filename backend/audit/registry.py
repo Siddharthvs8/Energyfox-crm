@@ -85,6 +85,9 @@ IGNORED_FIELDS = {
     'updated_at', 'created_at', 'last_login', 'modified_at',
     # Counters that move on their own, not edits anybody made.
     'view_count', 'last_viewed_at',
+    # When each person got a lead. They follow the assignment, which is itself
+    # recorded, and would otherwise put three timestamps beside every one.
+    'owner_since', 'tele_caller_since', 'bde_since',
 }
 
 

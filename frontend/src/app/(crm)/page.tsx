@@ -505,7 +505,7 @@ export default function DashboardPage({ params: paramsPromise }: { params: Promi
                                   <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-md ${statusCls}`}>{statusLabel}</span>
                                 </td>
                                 <td className="px-4 py-3 text-xs text-slate-400">{l.date}</td>
-                                <td className="px-4 py-3 text-right text-sm font-bold text-slate-700">₹{l.value.toLocaleString()}</td>
+                                <td className="px-4 py-3 text-right text-sm font-bold text-slate-700">₹{l.value.toLocaleString("en-IN")}</td>
                               </tr>
                             );
                           })}
@@ -585,8 +585,8 @@ export default function DashboardPage({ params: paramsPromise }: { params: Promi
                                   </div>
                                 </td>
                                 <td className="px-4 py-3 text-right text-sm font-semibold text-slate-700">{m.won_count}</td>
-                                <td className="px-4 py-3 text-right text-sm font-bold text-emerald-600">₹{m.won_value.toLocaleString()}</td>
-                                <td className="px-4 py-3 text-right text-sm text-slate-400">₹{m.pipeline_value.toLocaleString()}</td>
+                                <td className="px-4 py-3 text-right text-sm font-bold text-emerald-600">₹{m.won_value.toLocaleString("en-IN")}</td>
+                                <td className="px-4 py-3 text-right text-sm text-slate-400">₹{m.pipeline_value.toLocaleString("en-IN")}</td>
                               </tr>
                             ))}
                           </tbody>
@@ -642,7 +642,7 @@ export default function DashboardPage({ params: paramsPromise }: { params: Promi
                                     <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-md ${statusCls}`}>{statusLabel}</span>
                                   </td>
                                   <td className="px-4 py-3 text-xs text-slate-400">{l.agent}</td>
-                                  <td className="px-4 py-3 text-right text-sm font-bold text-slate-700">₹{l.value.toLocaleString()}</td>
+                                  <td className="px-4 py-3 text-right text-sm font-bold text-slate-700">₹{l.value.toLocaleString("en-IN")}</td>
                                 </tr>
                               );
                             })}

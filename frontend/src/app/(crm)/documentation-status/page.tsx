@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 import DeletedLeadCleanup, { DeletedLeadBadge } from "@/components/DeletedLeadCleanup";
 import { PageSkeleton } from "@/components/Skeleton";
 import FilterBar, { FilterField } from "@/components/FilterBar";
+import { useFilterMemory, useRemembered } from "@/hooks/useRememberedFilters";
 type Row = {
   id: number;
   // Set when the lead behind this row has been deleted; the row is then
@@ -48,9 +49,12 @@ export default function DocumentationStatusPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const [q, setQ] = useState("");
-  const [stage1Filter, setStage1Filter] = useState("all");
-  const [staffFilter, setStaffFilter] = useState("all");
+  // The search and the filters are remembered for this user until changed or
+  // cleared, so a reload shows the same list — see useRememberedFilters.
+  const memory = useFilterMemory("documentation-status");
+  const [q, setQ] = useRemembered(memory, "q", "");
+  const [stage1Filter, setStage1Filter] = useRemembered(memory, "stage1Filter", "all");
+  const [staffFilter, setStaffFilter] = useRemembered(memory, "staffFilter", "all");
 
   const token = () => localStorage.getItem(`${domain}_access`);
 

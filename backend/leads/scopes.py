@@ -11,8 +11,9 @@ Both rules live here so a figure can never disagree with the rows behind it.
 """
 from decimal import Decimal
 
-from django.db.models import DecimalField, ExpressionWrapper, F, Q, Sum, Value
-from django.db.models.functions import Coalesce
+from django.db.models import (Case, DateTimeField, DecimalField, ExpressionWrapper, F, Q,
+                              Sum, Value, When)
+from django.db.models.functions import Coalesce, Greatest
 
 from datetime import timedelta
 
@@ -30,6 +31,48 @@ def own_leads_q(user):
     BDE — so scoping on the owner alone loses a BDE's entire book.
     """
     return Q(assigned_to=user) | Q(bde=user) | Q(tele_caller=user)
+
+
+def assigned_to_me_at(user):
+    """When each lead reached `user`, for ordering "Assigned to me".
+
+    The date that goes with whichever of the three own_leads_q roles they hold
+    (see Lead.owner_since). Someone in two roles at once — a tele caller who
+    owns the lead they worked — is dated by the later of the two, the last time
+    the lead was put in their hands. A lead they are not on comes out empty.
+
+    PostgreSQL's GREATEST skips NULLs, which is what lets the roles a user does
+    not hold drop out of the comparison.
+    """
+    return Greatest(
+        Case(When(assigned_to=user, then=F('owner_since'))),
+        Case(When(tele_caller=user, then=F('tele_caller_since'))),
+        Case(When(bde=user, then=F('bde_since'))),
+        output_field=DateTimeField(),
+    )
+
+
+def worked_by_q(people):
+    """The leads a group of people work — own_leads_q for a team. A lead two of
+    them share (a tele caller's lead with a BDE on it) is one lead, so callers
+    take .distinct()."""
+    return Q(assigned_to__in=people) | Q(bde__in=people) | Q(tele_caller__in=people)
+
+
+def work_figures(leads):
+    """The figures a person or a team is shown by: how many leads, what they are
+    worth, and the closed deals among them with the money received on them.
+
+    The dashboard's rows and the performance popup they open both read these,
+    so a card cannot show one number and its own popup another.
+    """
+    won = closed_deals(leads)
+    return {
+        'leads_count': leads.count(),
+        'pipeline_value': float(leads.aggregate(t=Sum('value'))['t'] or 0),
+        'won_count': won.count(),
+        'won_value': float(won.aggregate(t=Sum(received_value()))['t'] or 0),
+    }
 
 
 def live_leads():

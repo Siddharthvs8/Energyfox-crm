@@ -5,6 +5,7 @@ import { useLeadStatuses } from "@/hooks/useLeadStatuses";
 import { FALLBACK_STATUS_META } from "@/lib/lead-statuses";
 import { StageTag } from "@/lib/pipeline-stages";
 import FilterBar, { FilterField } from "@/components/FilterBar";
+import { useFilterMemory, useRemembered } from "@/hooks/useRememberedFilters";
 
 import React, { useState, useEffect, use, useRef } from "react";
 import { formatCurrency, getSourceLabel } from "@/lib/mock-data";
@@ -68,6 +69,8 @@ const typeConfig: Record<string, { label: string; bg: string; accent: string; ic
   task_completed:     { label:"Task Completed",     bg:"bg-emerald-100", accent:"text-emerald-600", icon:<svg width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M9 11l3 3 8-8"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg> },
   meta_import:        { label:"Meta Import",        bg:"bg-blue-100",    accent:"text-blue-600",    icon:<svg width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2"/></svg> },
   user_joined:        { label:"User Joined",        bg:"bg-rose-100",    accent:"text-rose-600",    icon:<svg width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg> },
+  quotation_created:  { label:"Quotation Created",  bg:"bg-violet-100",  accent:"text-violet-600",  icon:<svg width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/></svg> },
+  quotation_edited:   { label:"Quotation Edited",   bg:"bg-violet-100",  accent:"text-violet-600",  icon:<svg width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg> },
 };
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
@@ -91,13 +94,16 @@ export default function ConvertedLeadsPage({ params: paramsPromise }: { params: 
   const [loading,   setLoading]   = useState(true);
   const [metrics,   setMetrics]   = useState<any>(null);
   const [leads,     setLeads]     = useState<any[]>([]);
-  const [search,    setSearch]    = useState("");
+  // The search and the filters are remembered for this user until changed or
+  // cleared, so a reload shows the same list — see useRememberedFilters.
+  const memory = useFilterMemory("converted");
+  const [search,    setSearch]    = useRemembered(memory, "search", "");
   const [currentUser, setCurrentUser] = useState<any>(null);
   // ── Filters (combinable)
-  const [stageFilter,      setStageFilter]      = useState("");  // '', 'converted', 'closed_deal', 'partially_paid', 'fully_paid'
-  const [telecallerFilter, setTelecallerFilter] = useState("");  // a tele caller's user id
+  const [stageFilter,      setStageFilter]      = useRemembered(memory, "stageFilter", "");  // '', 'converted', 'closed_deal', 'partially_paid', 'fully_paid'
+  const [telecallerFilter, setTelecallerFilter] = useRemembered(memory, "telecallerFilter", "");  // a tele caller's user id
   const [telecallers, setTelecallers] = useState<{ id: number; name: string }[]>([]);
-  const [bdeFilter,        setBdeFilter]        = useState("");  // bde id
+  const [bdeFilter,        setBdeFilter]        = useRemembered(memory, "bdeFilter", "");  // bde id
 
   // ── Drawer state
   const [selected,         setSelected]         = useState<any>(null);

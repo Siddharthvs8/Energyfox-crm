@@ -18,6 +18,7 @@ import QuotationFormModal, { VARIANTS, money, type Quotation }
   from "@/components/QuotationFormModal";
 import QuotationPreviewModal from "@/components/QuotationPreviewModal";
 import FilterBar, { FilterField } from "@/components/FilterBar";
+import { useFilterMemory, useRemembered } from "@/hooks/useRememberedFilters";
 
 const STATUS_STYLE: Record<string, string> = {
   draft: "bg-slate-100 text-slate-600",
@@ -65,11 +66,15 @@ export default function QuotationsPage({ scope = "open" }: { scope?: "open" | "o
   const [editing, setEditing] = useState<Quotation | null>(null);
   const [preview, setPreview] = useState<Quotation | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
+  // The search and the filters are remembered for this user until changed or
+  // cleared, so a reload shows the same list — see useRememberedFilters. Each
+  // side has its own: a status picked on Quotations is not one on Orders.
+  const memory = useFilterMemory(isOrders ? "converted-orders" : "quotations");
+  const [search, setSearch] = useRemembered(memory, "search", "");
+  const [statusFilter, setStatusFilter] = useRemembered(memory, "statusFilter", "all");
   // Raised between these two dates. Either alone is a valid question.
-  const [createdFrom, setCreatedFrom] = useState("");
-  const [createdTo, setCreatedTo] = useState("");
+  const [createdFrom, setCreatedFrom] = useRemembered(memory, "createdFrom", "");
+  const [createdTo, setCreatedTo] = useRemembered(memory, "createdTo", "");
 
   const load = useCallback(async () => {
     try {
@@ -86,7 +91,9 @@ export default function QuotationsPage({ scope = "open" }: { scope?: "open" | "o
     finally { setLoading(false); }
   }, [api, headers, scope, statusFilter, createdFrom, createdTo]);
 
-  useEffect(() => { load(); }, [load]);
+  // Not before the remembered filters are in, or the unfiltered list is asked
+  // for too and may come back last.
+  useEffect(() => { if (memory.ready) load(); }, [load, memory.ready]);
 
   const openNew = () => { setEditing(null); setOpen(true); };
   const openEdit = (q: Quotation) => { setEditing(q); setOpen(true); };

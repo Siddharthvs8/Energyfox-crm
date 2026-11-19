@@ -14,6 +14,7 @@ import { useRouter } from "next/navigation";
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
 import FilterBar, { FilterField } from "@/components/FilterBar";
+import { useFilterMemory, useRemembered } from "@/hooks/useRememberedFilters";
 
 type Change = { from: string | null; to: string | null };
 type Entry = {
@@ -62,11 +63,16 @@ export default function ActivityLogPage() {
   const [next, setNext] = useState<string | null>(null);
   const [opts, setOpts] = useState<{ categories: string[]; actions: any[]; actors: any[] }>(
     { categories: [], actions: [], actors: [] });
-  const [category, setCategory] = useState("all");
-  const [act, setAct] = useState("all");
-  const [actor, setActor] = useState("");
-  const [search, setSearch] = useState("");
-  const [query, setQuery] = useState("");
+  // The search and the filters are remembered for this user until changed or
+  // cleared, so a reload shows the same entries — see useRememberedFilters.
+  const memory = useFilterMemory("activity-log");
+  const [category, setCategory] = useRemembered(memory, "category", "all");
+  const [act, setAct] = useRemembered(memory, "act", "all");
+  const [actor, setActor] = useRemembered(memory, "actor", "");
+  const [search, setSearch] = useRemembered(memory, "search", "");
+  // What is searched for once typing pauses. Remembered with the box, so a
+  // reload does not first load the log without the search and then with it.
+  const [query, setQuery] = useRemembered(memory, "query", "");
   const [expanded, setExpanded] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [denied, setDenied] = useState(false);
@@ -75,7 +81,7 @@ export default function ActivityLogPage() {
   useEffect(() => {
     const t = setTimeout(() => setQuery(search.trim()), 350);
     return () => clearTimeout(t);
-  }, [search]);
+  }, [search, setQuery]);
 
   const url = useMemo(() => {
     const q = new URLSearchParams();
@@ -100,7 +106,9 @@ export default function ActivityLogPage() {
     finally { setLoading(false); }
   }, [url, headers]);
 
-  useEffect(() => { load(); }, [load]);
+  // Not before the remembered filters are in, or the whole log is asked for
+  // too and may come back last.
+  useEffect(() => { if (memory.ready) load(); }, [load, memory.ready]);
 
   useEffect(() => {
     (async () => {

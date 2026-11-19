@@ -7,6 +7,7 @@ import { useSearchParams } from "next/navigation";
 import { DragDropContext, Droppable, Draggable } from "@hello-pangea/dnd";
 import { Skeleton, SkeletonRegion, Spinner } from "@/components/Skeleton";
 import FilterBar, { FilterField } from "@/components/FilterBar";
+import { useFilterMemory, useRemembered } from "@/hooks/useRememberedFilters";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Task {
@@ -219,12 +220,15 @@ function TasksPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   }, []);
   const [showModal, setShowModal] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
-  const [filterPriority, setFilterPriority] = useState("all");
-  const [filterAssignee, setFilterAssignee] = useState("all");
-  const [filterTimeline, setFilterTimeline] = useState<string[]>([]);
-  const [filterDateFrom, setFilterDateFrom] = useState("");
-  const [filterDateTo, setFilterDateTo] = useState("");
-  const [search, setSearch] = useState("");
+  // The search and the filters are remembered for this user until changed or
+  // cleared, so a reload shows the same tasks — see useRememberedFilters.
+  const memory = useFilterMemory("tasks");
+  const [filterPriority, setFilterPriority] = useRemembered(memory, "filterPriority", "all");
+  const [filterAssignee, setFilterAssignee] = useRemembered(memory, "filterAssignee", "all");
+  const [filterTimeline, setFilterTimeline] = useRemembered<string[]>(memory, "filterTimeline", []);
+  const [filterDateFrom, setFilterDateFrom] = useRemembered(memory, "filterDateFrom", "");
+  const [filterDateTo, setFilterDateTo] = useRemembered(memory, "filterDateTo", "");
+  const [search, setSearch] = useRemembered(memory, "search", "");
   const [teamMembers, setTeamMembers] = useState<{ id: number; name: string }[]>([]);
   const [leadsList, setLeadsList] = useState<{ id: number; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
@@ -257,7 +261,9 @@ function TasksPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
       }).catch(() => {});
   }, [domain]);
 
-  useEffect(() => { fetchTasks(); }, [domain, filterPriority, filterAssignee]);
+  // Not before the remembered filters are in, or every task is asked for too
+  // and that reply may come back last.
+  useEffect(() => { if (memory.ready) fetchTasks(); }, [memory.ready, domain, filterPriority, filterAssignee]);
 
   // Deep-link: open a specific task when the address carries ?task=<id> — from
   // a lead, or a reminder's "Open task". Read through useSearchParams so it also

@@ -33,9 +33,13 @@ const STATUS_STYLE: Record<string, string> = {
    unable to tell an invoiced offer from a paid order on the same list. */
 const STATUS_LABEL: Record<string, string> = { converted: "Invoiced" };
 
-export default function LeadQuotationsPanel({ leadId, customerEmail }: {
+export default function LeadQuotationsPanel({ leadId, customerEmail, onChange }: {
   leadId: number | string;
   customerEmail?: string | null;
+  /** Called after saving or sending a quotation. Both write to the customer's
+   *  Activity Timeline, so a timeline on the same page can show the entry
+   *  without a reload. */
+  onChange?: () => void;
 }) {
   const api = getApiBase(APP_SLUG);
   const token = () => localStorage.getItem(`${APP_SLUG}_access`);
@@ -93,6 +97,7 @@ export default function LeadQuotationsPanel({ leadId, customerEmail }: {
         ? { ok: true, text: `${q.number} sent to ${d.sent_to || customerEmail || "the customer"}.` }
         : { ok: false, text: d.error || (d.failures || []).join(" ") || "Could not send it." });
       await load();
+      onChange?.();
     } catch (e: any) {
       setNote({ ok: false, text: e?.message || "Could not send this quotation." });
     } finally { setBusy(null); }
@@ -168,13 +173,13 @@ export default function LeadQuotationsPanel({ leadId, customerEmail }: {
       )}
 
       <QuotationPreviewModal quotation={preview}
-        onClose={() => setPreview(null)} onSent={load} />
+        onClose={() => setPreview(null)} onSent={() => { load(); onChange?.(); }} />
 
       {/* The module's own form, with this customer fixed — see the header note. */}
       <QuotationFormModal
         open={open} editing={editing} lockedLeadId={leadId}
         onClose={() => { setOpen(false); setEditing(null); }}
-        onSaved={() => { setNote({ ok: true, text: "Quotation saved." }); load(); }} />
+        onSaved={() => { setNote({ ok: true, text: "Quotation saved." }); load(); onChange?.(); }} />
     </div>
   );
 }

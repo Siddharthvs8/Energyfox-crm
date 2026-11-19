@@ -13,6 +13,7 @@ import { getSourceLabel, formatCurrency } from "@/lib/mock-data";
 import FilterBar, { FilterField } from "@/components/FilterBar";
 import { Skeleton, SkeletonRegion, Spinner } from "@/components/Skeleton";
 import StaffPicker from "@/components/StaffPicker";
+import { useFilterMemory, useRemembered } from "@/hooks/useRememberedFilters";
 
 function formatRelativeTime(dateStr: string) {
   if (!dateStr) return "";
@@ -41,6 +42,21 @@ function formatRelativeTime(dateStr: string) {
   }
 }
 
+/** When the lead reached the viewer — on the "Assigned to me" list, which is
+ *  ordered by it, so each row says why it sits where it does. */
+function AssignedTag({ at }: { at?: string | null }) {
+  if (!at) return null;
+  const exact = new Date(at).toLocaleString("en-IN", {
+    day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+  return (
+    <span title={`Assigned to you on ${exact}`}
+      className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 text-indigo-700 whitespace-nowrap">
+      Assigned · {formatRelativeTime(at)}
+    </span>
+  );
+}
+
 // ─── SVG Icons ────────────────────────────────────────────────────────────────
 const I = {
   Plus:        () => <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>,
@@ -50,6 +66,7 @@ const I = {
   Edit:        () => <svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>,
   Trash:       () => <svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" /><path d="M10 11v6M14 11v6" /><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2" /></svg>,
   Users:       () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 00-3-3.87" /><path d="M16 3.13a4 4 0 010 7.75" /></svg>,
+  User:        () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>,
   X:           ({ className }: { className?: string }) => <svg className={className} width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" /></svg>,
   ChevronDown: ({ className }: { className?: string }) => <svg className={className} width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9" /></svg>,
   Filter:      () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><line x1="4" y1="6" x2="20" y2="6" /><line x1="8" y1="12" x2="16" y2="12" /><line x1="11" y1="18" x2="13" y2="18" /></svg>,
@@ -258,58 +275,68 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
   const [page,           setPage]           = useState(1);
   const [totalPages,     setTotalPages]     = useState(1);
   const [loading,        setLoading]        = useState(true);
-  const [search,         setSearch]         = useState("");
+  // The search, the filters and the sort are remembered for this user until
+  // they are changed or cleared, so a reload brings the same list back — see
+  // useRememberedFilters. The page number and the Archived view are not: a
+  // reload starts at the first page of the active leads.
+  const memory = useFilterMemory("leads");
+  const [search,         setSearch]         = useRemembered(memory, "search", "");
   // What the list is searched for: the box's text once typing pauses. Searching
   // on every key cost six requests a key — the list and each dropdown's options
   // — so a few names typed quickly ran into the server's rate limit, and the
   // list then came back empty, as if nobody matched.
-  const [searchQuery,    setSearchQuery]    = useState("");
-  const [statusFilter,   setStatusFilter]   = useState("all");
-  const [sourceFilter,   setSourceFilter]   = useState("all");
-  const [assigneeFilter, setAssigneeFilter] = useState("all");
-  const [campaignFilter, setCampaignFilter] = useState("all");
+  const [searchQuery,    setSearchQuery]    = useRemembered(memory, "searchQuery", "");
+  const [statusFilter,   setStatusFilter]   = useRemembered(memory, "statusFilter", "all");
+  const [sourceFilter,   setSourceFilter]   = useRemembered(memory, "sourceFilter", "all");
+  const [assigneeFilter, setAssigneeFilter] = useRemembered(memory, "assigneeFilter", "all");
+  const [campaignFilter, setCampaignFilter] = useRemembered(memory, "campaignFilter", "all");
   const [campaignsList, setCampaignsList]   = useState<{id: number, name: string}[]>([]);
   const [productsList, setProductsList]     = useState<{id: number, name: string, default_price: string}[]>([]);
-  const [productFilter, setProductFilter]   = useState("all");
+  const [productFilter, setProductFilter]   = useRemembered(memory, "productFilter", "all");
   // Which Meta Lead Ads account (one per branch) the lead arrived from.
-  const [metaIntegrationFilter, setMetaIntegrationFilter] = useState("all");
+  const [metaIntegrationFilter, setMetaIntegrationFilter] = useRemembered(memory, "metaIntegrationFilter", "all");
   const [integrationsList, setIntegrationsList] = useState<{id: number, name: string}[]>([]);
-  const [stageFilter,   setStageFilter]     = useState("all");
+  const [stageFilter,   setStageFilter]     = useRemembered(memory, "stageFilter", "all");
   // District the lead sits in. Options are the districts actually on the leads,
   // not a fixed list — the field is free text and arrives from CSV and Meta.
-  const [districtFilter, setDistrictFilter]  = useState("all");
+  const [districtFilter, setDistrictFilter]  = useRemembered(memory, "districtFilter", "all");
   const [districtsList,  setDistrictsList]   = useState<string[]>([]);
-  const [createdType,    setCreatedType]    = useState("all");
-  const [createdParam,   setCreatedParam]   = useState("2");
-  const [createdFrom,    setCreatedFrom]    = useState("");
-  const [createdTo,      setCreatedTo]      = useState("");
-  const [valueMin,       setValueMin]       = useState("");
-  const [valueMax,       setValueMax]       = useState("");
-  const [companyFilter,  setCompanyFilter]  = useState("");
-  const [showAdvanced,   setShowAdvanced]   = useState(false);
-  const [modType,        setModType]        = useState("all");
-  const [modParam,       setModParam]       = useState("2");
-  const [modFrom,        setModFrom]        = useState("");
-  const [modTo,          setModTo]          = useState("");
-  const [statusChangeFrom,  setStatusChangeFrom]  = useState("all");
-  const [statusChangeTo,    setStatusChangeTo]    = useState("all");
-  const [statusChangeType,  setStatusChangeType]  = useState("all");
-  const [statusChangeParam, setStatusChangeParam] = useState("2");
-  const [statusChangeFromD, setStatusChangeFromD] = useState("");
-  const [statusChangeToD,   setStatusChangeToD]   = useState("");
+  const [createdType,    setCreatedType]    = useRemembered(memory, "createdType", "all");
+  const [createdParam,   setCreatedParam]   = useRemembered(memory, "createdParam", "2");
+  const [createdFrom,    setCreatedFrom]    = useRemembered(memory, "createdFrom", "");
+  const [createdTo,      setCreatedTo]      = useRemembered(memory, "createdTo", "");
+  const [valueMin,       setValueMin]       = useRemembered(memory, "valueMin", "");
+  const [valueMax,       setValueMax]       = useRemembered(memory, "valueMax", "");
+  const [companyFilter,  setCompanyFilter]  = useRemembered(memory, "companyFilter", "");
+  // Kept with the filters it holds, so advanced filters set before a reload
+  // are on view after it rather than only counted in the Clear button.
+  const [showAdvanced,   setShowAdvanced]   = useRemembered(memory, "showAdvanced", false);
+  const [modType,        setModType]        = useRemembered(memory, "modType", "all");
+  const [modParam,       setModParam]       = useRemembered(memory, "modParam", "2");
+  const [modFrom,        setModFrom]        = useRemembered(memory, "modFrom", "");
+  const [modTo,          setModTo]          = useRemembered(memory, "modTo", "");
+  const [statusChangeFrom,  setStatusChangeFrom]  = useRemembered(memory, "statusChangeFrom", "all");
+  const [statusChangeTo,    setStatusChangeTo]    = useRemembered(memory, "statusChangeTo", "all");
+  const [statusChangeType,  setStatusChangeType]  = useRemembered(memory, "statusChangeType", "all");
+  const [statusChangeParam, setStatusChangeParam] = useRemembered(memory, "statusChangeParam", "2");
+  const [statusChangeFromD, setStatusChangeFromD] = useRemembered(memory, "statusChangeFromD", "");
+  const [statusChangeToD,   setStatusChangeToD]   = useRemembered(memory, "statusChangeToD", "");
   // Stage reached, and when — who got to a stage in a period, whether or not
   // they have moved on since ("PO Signed, this week"). `stageFilter` above is
   // where a lead is now.
-  const [stageReached,      setStageReached]      = useState("all");
-  const [stageReachedType,  setStageReachedType]  = useState("all");
-  const [stageReachedParam, setStageReachedParam] = useState("7");
-  const [stageReachedFrom,  setStageReachedFrom]  = useState("");
-  const [stageReachedTo,    setStageReachedTo]    = useState("");
-  const [activityType,      setActivityType]      = useState("all");
-  const [hasActivityDays,   setHasActivityDays]   = useState("");
-  const [noActivityDays,    setNoActivityDays]    = useState("");
-  const [sortField,         setSortField]         = useState("created_at");
-  const [sortOrder,         setSortOrder]         = useState<"asc" | "desc">("desc");
+  const [stageReached,      setStageReached]      = useRemembered(memory, "stageReached", "all");
+  const [stageReachedType,  setStageReachedType]  = useRemembered(memory, "stageReachedType", "all");
+  const [stageReachedParam, setStageReachedParam] = useRemembered(memory, "stageReachedParam", "7");
+  const [stageReachedFrom,  setStageReachedFrom]  = useRemembered(memory, "stageReachedFrom", "");
+  const [stageReachedTo,    setStageReachedTo]    = useRemembered(memory, "stageReachedTo", "");
+  const [activityType,      setActivityType]      = useRemembered(memory, "activityType", "all");
+  const [hasActivityDays,   setHasActivityDays]   = useRemembered(memory, "hasActivityDays", "");
+  const [noActivityDays,    setNoActivityDays]    = useRemembered(memory, "noActivityDays", "");
+  const [sortField,         setSortField]         = useRemembered(memory, "sortField", "created_at");
+  const [sortOrder,         setSortOrder]         = useRemembered<"asc" | "desc">(memory, "sortOrder", "desc");
+  // "Assigned to me": only the leads this user is on, in the order they were
+  // handed to them — see toggleAssignedToMe.
+  const [assignedToMe,      setAssignedToMe]      = useRemembered(memory, "assignedToMe", false);
   // Archived (old, terminal) leads live out of the active list; toggle to view.
   const [showArchived, setShowArchived] = useState(false);
   const [archivedCount, setArchivedCount] = useState(0);
@@ -427,17 +454,22 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
     if (search === searchQuery) return;
     const timer = setTimeout(() => { setSearchQuery(search); setPage(1); }, 300);
     return () => clearTimeout(timer);
-  }, [search, searchQuery]);
+  }, [search, searchQuery, setSearchQuery]);
 
-  useEffect(() => { fetchLeads(); fetchTeam(); fetchCampaigns(); fetchProducts(); fetchIntegrations(); fetchDistricts(); }, [
-    domain, statusFilter, sourceFilter, assigneeFilter, campaignFilter, productFilter, metaIntegrationFilter, stageFilter, districtFilter, searchQuery,
+  // Not before the remembered filters are in: the unfiltered list would be
+  // asked for as well, and could come back last.
+  useEffect(() => {
+    if (!memory.ready) return;
+    fetchLeads(); fetchTeam(); fetchCampaigns(); fetchProducts(); fetchIntegrations(); fetchDistricts();
+  }, [
+    memory.ready, domain, statusFilter, sourceFilter, assigneeFilter, campaignFilter, productFilter, metaIntegrationFilter, stageFilter, districtFilter, searchQuery,
     createdType, createdParam, createdFrom, createdTo,
     modType, modParam, modFrom, modTo,
     valueMin, valueMax, companyFilter,
     statusChangeFrom, statusChangeTo, statusChangeType, statusChangeParam, statusChangeFromD, statusChangeToD,
     stageReached, stageReachedType, stageReachedParam, stageReachedFrom, stageReachedTo,
     activityType, hasActivityDays, noActivityDays, page,
-    sortField, sortOrder, showArchived
+    sortField, sortOrder, showArchived, assignedToMe
   ]);
 
   // Warns while the number is typed that it already has a lead, rather than
@@ -583,6 +615,18 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
     setPage(1);
   };
 
+  // "Assigned to me" lists the leads this user is on — as owner, tele caller or
+  // BDE — newest hand-over first: the order the leads reached them, not the
+  // order they were created in. The button beside it flips the order, and a
+  // column header still sorts within the list as usual.
+  const toggleAssignedToMe = () => {
+    const on = !assignedToMe;
+    setAssignedToMe(on);
+    if (on) { setSortField("assigned"); setSortOrder("desc"); }
+    else if (sortField === "assigned") { setSortField("created_at"); setSortOrder("desc"); }
+    setPage(1);
+  };
+
   // Header button styling — active sort column reads indigo, others stay muted.
   const sortBtnClass = (field: string, extra = "") =>
     `group inline-flex items-center gap-1 font-bold uppercase tracking-widest focus:outline-none transition-colors ${
@@ -603,6 +647,7 @@ function LeadsPageContent({ paramsPromise }: { paramsPromise: Promise<{ domain: 
 
   const buildLeadQuery = () => {
     const q = new URLSearchParams();
+    if (assignedToMe)             q.append("assigned_to_me", "true");
     if (statusFilter   !== "all") q.append("status",      statusFilter);
     if (sourceFilter   !== "all") q.append("source",      sourceFilter);
     if (assigneeFilter !== "all") q.append("assigned_to", assigneeFilter);
@@ -1202,7 +1247,7 @@ This cannot be undone.`)) return;
   const toggleOne = (id: number) => setSelectedIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
 
   const activeFilters = [
-    statusFilter !== "all", sourceFilter !== "all", assigneeFilter !== "all", campaignFilter !== "all",
+    assignedToMe, statusFilter !== "all", sourceFilter !== "all", assigneeFilter !== "all", campaignFilter !== "all",
     districtFilter !== "all", productFilter !== "all", stageFilter !== "all", metaIntegrationFilter !== "all",
     createdType !== "all", modType !== "all", !!valueMin, !!valueMax, !!companyFilter,
     statusChangeFrom !== "all", statusChangeTo !== "all", statusChangeType !== "all",
@@ -1221,6 +1266,8 @@ This cannot be undone.`)) return;
     setStageReached("all"); setStageReachedType("all"); setStageReachedParam("7");
     setStageReachedFrom(""); setStageReachedTo("");
     setActivityType("all"); setHasActivityDays(""); setNoActivityDays("");
+    setAssignedToMe(false);
+    if (sortField === "assigned") { setSortField("created_at"); setSortOrder("desc"); }
     setPage(1);
   };
 
@@ -1339,6 +1386,26 @@ This cannot be undone.`)) return;
             </div>
           }
         >
+          {/* Assigned to me — this user's leads in the order they reached them,
+              the order flippable beside it. */}
+          <FilterField label="Assigned to me">
+            <div className="flex-shrink-0 flex items-center gap-2">
+              <button type="button" onClick={toggleAssignedToMe} aria-pressed={assignedToMe}
+                title="Only the leads assigned to you, newest assignment first"
+                className={`flex items-center justify-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold rounded-xl transition-all duration-200 border ${assignedToMe ? "bg-indigo-600 border-indigo-600 text-white shadow-sm shadow-indigo-200" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300 shadow-sm shadow-slate-50"}`}>
+                <I.User /> Assigned to me
+              </button>
+              {assignedToMe && (
+                <button type="button" onClick={() => handleSort("assigned")}
+                  title="Order by when each lead was assigned to you"
+                  className={`flex items-center gap-1 px-3 py-2.5 text-xs font-semibold rounded-xl transition-all duration-200 border ${sortField === "assigned" ? "bg-indigo-50 border-indigo-200 text-indigo-700" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300"}`}>
+                  {sortField !== "assigned" ? "By date assigned" : sortOrder === "desc" ? "Newest first" : "Oldest first"}
+                  {renderSortArrow("assigned")}
+                </button>
+              )}
+            </div>
+          </FilterField>
+
           {/* Status filter */}
           <FilterField label="Status">
             <div className="relative flex-shrink-0 w-[172px] sm:w-[180px]">
@@ -1816,6 +1883,7 @@ This cannot be undone.`)) return;
                     <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
                       <StageTag stage={lead.pipeline_stage} />
                       {stageReached !== "all" && <StageReachedTag stage={stageReached} at={lead.stage_reached_at} />}
+                      {assignedToMe && <AssignedTag at={lead.assigned_to_me_at} />}
                       <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-semibold ${src.bg} ${src.text}`}>
                         {getSourceLabel(lead.source)}
                         {lead.source === "referral" && lead.referred_by_name ? ` · ${lead.referred_by_name}` : ""}
@@ -1957,6 +2025,7 @@ This cannot be undone.`)) return;
                               <div className="mt-1 flex flex-wrap items-center gap-1">
                                 <StageTag stage={lead.pipeline_stage} />
                                 {stageReached !== "all" && <StageReachedTag stage={stageReached} at={lead.stage_reached_at} />}
+                                {assignedToMe && <AssignedTag at={lead.assigned_to_me_at} />}
                               </div>
                               {lead.next_task && <TaskTag task={lead.next_task} />}
                             </div>
@@ -2944,6 +3013,8 @@ This cannot be undone.`)) return;
                           task_stage_change:   { label: "Task Stage Changed", bg: "bg-sky-100",    accent: "text-sky-600",    icon: <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" /></svg> },
                           task_completed:      { label: "Task Completed",     bg: "bg-emerald-100",accent: "text-emerald-600",icon: <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M9 11l3 3 8-8" /><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" /></svg> },
                           meta_import:         { label: "Meta Import",        bg: "bg-violet-100", accent: "text-violet-600",  icon: <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2" /></svg> },
+                          quotation_created:   { label: "Quotation Created",  bg: "bg-violet-100", accent: "text-violet-600",  icon: <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><path d="M14 2v6h6" /><path d="M16 13H8" /><path d="M16 17H8" /></svg> },
+                          quotation_edited:    { label: "Quotation Edited",   bg: "bg-violet-100", accent: "text-violet-600",  icon: <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z" /></svg> },
                         };
                         const cfg = typeConfig[log.type] || { label: log.type, bg: "bg-slate-100", accent: "text-slate-500", icon: <I.Clock /> };
                         const ts = new Date(log.timestamp);
