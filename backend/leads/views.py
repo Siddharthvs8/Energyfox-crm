@@ -395,9 +395,11 @@ class LeadViewSet(viewsets.ModelViewSet):
                             status=status.HTTP_403_FORBIDDEN)
         had_po_date = bool(sv.po_signed_date)
         was_complete = sv.site_visit_complete
+        pinned_before = (sv.site_latitude, sv.site_longitude)
         serializer = SiteVisitSerializer(sv, data=request.data, partial=(request.method == 'PATCH'))
         serializer.is_valid(raise_exception=True)
         sv = serializer.save()
+        self._stamp_site_location(request, lead, sv, pinned_before)
 
         # Signing off again closes the door the super admin held open: the field
         # team's extra access lasts exactly as long as the correction does.
@@ -448,6 +450,45 @@ class LeadViewSet(viewsets.ModelViewSet):
         # Tells the site-visit screen to send the BDE on to KSEB Feasibility.
         data['po_just_signed'] = po_just_signed
         return Response(data)
+
+    @staticmethod
+    def _stamp_site_location(request, lead, sv, pinned_before):
+        """Who pinned the site and when, and a line on the lead's timeline.
+
+        Only a request that carries the location does anything here: the form's
+        own Save posts every other field and leaves the pin alone. Pinning again
+        on the same spot is still a fresh fix, so it is stamped like a new one.
+        """
+        if 'site_latitude' not in request.data and 'site_longitude' not in request.data:
+            return
+        pinned = (sv.site_latitude, sv.site_longitude)
+        if pinned == pinned_before == (None, None):
+            return
+        actor = request.user if request.user.is_authenticated else None
+        if sv.site_latitude is None:
+            sv.site_location_accuracy = None
+            sv.site_location_source = ''
+            sv.site_location_captured_at = None
+            sv.site_location_captured_by = None
+            description = "Site location removed."
+            extra = {}
+        else:
+            sv.site_location_captured_at = timezone.now()
+            sv.site_location_captured_by = actor
+            how = (f"from the device's location (±{sv.site_location_accuracy} m)"
+                   if sv.site_location_source == 'gps' and sv.site_location_accuracy is not None
+                   else "from the device's location" if sv.site_location_source == 'gps'
+                   else "by hand")
+            verb = "updated" if pinned_before != (None, None) else "pinned"
+            description = (f"Site location {verb} {how}: "
+                           f"{sv.site_latitude}, {sv.site_longitude}.")
+            extra = {'latitude': str(sv.site_latitude), 'longitude': str(sv.site_longitude),
+                     'accuracy': sv.site_location_accuracy, 'source': sv.site_location_source}
+        sv.save(update_fields=['site_location_accuracy', 'site_location_source',
+                               'site_location_captured_at', 'site_location_captured_by',
+                               'updated_at'])
+        ActivityLog.objects.create(activity_type='note_added', description=description,
+                                   actor=actor, lead=lead, extra=extra)
 
     @staticmethod
     def _sync_site_visit_downstream(lead, sv):
@@ -541,9 +582,9 @@ class LeadViewSet(viewsets.ModelViewSet):
 
     def _site_visit_for_reading(self, lead, request):
         """The site visit as the BDE left it — fields, photos and documents —
-        for the stages after it that only read it (purchase, project). None
-        when there was no visit: read here, never created as the BDE's own
-        screen does on opening."""
+        for the stages after it that only read it (documentation stage 1,
+        purchase, project). None when there was no visit: read here, never
+        created as the BDE's own screen does on opening."""
         sv = getattr(lead, 'site_visit', None)
         if sv is None:
             return None
@@ -1246,7 +1287,9 @@ class LeadViewSet(viewsets.ModelViewSet):
             'documentation_staff': lead.documentation_staff_id,
             'documentation_staff_name': f"{lead.documentation_staff.first_name} {lead.documentation_staff.last_name}".strip() if lead.documentation_staff else None,
             'pushed_at': lead.pushed_to_documentation_at,
-            'site_visit': SiteVisitSerializer(sv, context={'request': request}).data if sv else None,
+            # The whole visit as purchase and project read it — the deal value
+            # and product included — for the read-only copy on Stage 1.
+            'site_visit': self._site_visit_for_reading(lead, request),
             'documentation_stage1': DocumentationStage1Serializer(stage1, context={'request': request}).data if stage1 else None,
             'stage1_complete': bool(stage1 and stage1.is_complete),
             'can_edit_stage1': can_edit_documentation_stage1(request.user, lead),
@@ -1424,7 +1467,9 @@ class LeadViewSet(viewsets.ModelViewSet):
             'stage1_completed_at': s1.completed_at if s1 else None,
             'stage1_completed_by': name(s1.completed_by) if s1 else None,
             'stage2_status': 'pending',
-            'site_visit': SiteVisitSerializer(sv, context={'request': request}).data if sv else None,
+            # The same visit the documentation team reads on Stage 1, pin and
+            # deal included.
+            'site_visit': self._site_visit_for_reading(lead, request),
             'stage1': stage1_data,
             'attachments': attachments,
             'history': history,
@@ -1439,7 +1484,10 @@ class LeadViewSet(viewsets.ModelViewSet):
             return Response({'error': 'You do not have access to documentation.'},
                             status=status.HTTP_403_FORBIDDEN)
         qs = (Lead.objects.filter(pushed_to_documentation=True)
-              .select_related('product', 'bde', 'documentation_staff', 'site_visit', 'documentation_stage1')
+              # The site visit's "pinned by" name goes out with every row, so
+              # its user comes in the same query rather than one per row.
+              .select_related('product', 'bde', 'documentation_staff', 'site_visit',
+                              'site_visit__site_location_captured_by', 'documentation_stage1')
               .prefetch_related('site_visit__documents', 'shared_documents',
                                 self._remarks_prefetch('stage1'))
               .order_by('-pushed_to_documentation_at'))
@@ -3064,6 +3112,9 @@ class LeadViewSet(viewsets.ModelViewSet):
             'email': lead.email,
             'location': lead.company,
             'installation_location': lead.installation_location,
+            # With the place above, the address "Copy customer details" falls
+            # back to when no installation location was written down.
+            'district': lead.district,
             'product_name': lead.product.name if lead.product else None,
             'value': lead.value,
             'status': lead.status,
@@ -3289,6 +3340,9 @@ class LeadViewSet(viewsets.ModelViewSet):
             'email': lead.email,
             'location': lead.company,
             'installation_location': lead.installation_location,
+            # With the place above, the address "Copy customer details" falls
+            # back to when no installation location was written down.
+            'district': lead.district,
             'product_name': lead.product.name if lead.product else None,
             'value': lead.value,
             'status': lead.status,

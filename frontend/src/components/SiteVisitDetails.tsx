@@ -1,7 +1,8 @@
 "use client";
 /**
  * "View site visit details" — the BDE's site visit, read-only, for the stages
- * after it (purchase & logistics, project).
+ * after it (purchase & logistics, project). Documentation Stage 1 shows the
+ * same content on the page itself (SiteVisitCard).
  *
  * The page passes in the site visit it loaded with its own data, so whoever
  * can open the page can read it and nobody else. Sections, labels and the
@@ -11,6 +12,9 @@
 import React, { useEffect, useState } from "react";
 import { APP_SLUG } from "@/lib/config";
 import { getApiBase, formatCurrency } from "@/lib/mock-data";
+import {
+  coordsLabel, isLowAccuracy, pinNote, pinOf, SiteLocationLinks, SiteMap, type SiteLocationData,
+} from "@/components/SiteLocation";
 
 export type SiteVisitData = Record<string, any> | null;
 type Doc = { id: number; doc_type: string; file: string | null };
@@ -56,11 +60,18 @@ const date = (v: unknown) => (filled(v)
 /** A field the form no longer asks for: listed only on older visits that have it. */
 const legacy = (label: string, v: unknown): Row[] => (filled(v) ? [[label, String(v)]] : []);
 
+/** A field the form asks for only in some cases: listed when it is asked for,
+ *  and whenever it holds a value. What the BDE put down stays readable even
+ *  after a later choice — the roof switched to sheet — stopped the form asking
+ *  for it; documentation reads every field that was taken. */
+const when = (asked: boolean, label: string, value: string | null): Row[] => (asked || value ? [[label, value]] : []);
+
 /** The form's sections, with its rules for what is asked when. */
 function sections(sv: Record<string, any>, productName?: string | null): { title: string; rows: Row[] }[] {
   const sheet = sv.roof_type === "sheet";
   const price = Number(sv.product_price) || 0;
   const discount = Number(sv.discount) || 0;
+  const rcc = (sv.rcc_roof_types || []).map((v: string) => CHOICES.rcc[v] || v).join(", ") || null;
   return [
     { title: "Deal", rows: [
       ["Product", text(sv.product_name || productName)],
@@ -70,9 +81,7 @@ function sections(sv: Record<string, any>, productName?: string | null): { title
     ] },
     { title: "Roof", rows: [
       ["Roof Type", pick("roof_type", sv.roof_type)],
-      ...(sv.roof_type === "rcc"
-        ? [["RCC Roof Type", (sv.rcc_roof_types || []).map((v: string) => CHOICES.rcc[v] || v).join(", ") || null] as Row]
-        : []),
+      ...when(sv.roof_type === "rcc", "RCC Roof Type", rcc),
     ] },
     { title: "Electrical & Supply", rows: [
       ["Connection Type", pick("connection_type", sv.connection_type)],
@@ -90,15 +99,13 @@ function sections(sv: Record<string, any>, productName?: string | null): { title
       ["Neutral Link", pick("yes_no", sv.neutral_link)],
     ] },
     // A sheet roof has no parapet and always takes a custom structure, so the
-    // form asks only for its height.
-    { title: "Roof Access & Structure", rows: sheet ? [
-      ["Custom Structure Height", text(sv.custom_structure_height)],
-    ] : [
-      ["Access to the Roof", text(sv.roof_access)],
-      ["Parapet Height", text(sv.parapet_height)],
-      ["Structure Type", pick("structure_type", sv.structure_type)],
-      ...(sv.structure_type === "custom" ? [["Custom Structure Height", text(sv.custom_structure_height)] as Row] : []),
-      ["Anchoring in Roof Allowed?", pick("yes_no", sv.anchoring_allowed)],
+    // form asks only for its height — the rest still shows if it was filled.
+    { title: "Roof Access & Structure", rows: [
+      ...when(!sheet, "Access to the Roof", text(sv.roof_access)),
+      ...when(!sheet, "Parapet Height", text(sv.parapet_height)),
+      ...when(!sheet, "Structure Type", pick("structure_type", sv.structure_type)),
+      ...when(sheet || sv.structure_type === "custom", "Custom Structure Height", text(sv.custom_structure_height)),
+      ...when(!sheet, "Anchoring in Roof Allowed?", pick("yes_no", sv.anchoring_allowed)),
     ] },
     { title: "Cabling Requirements (meters)", rows: [
       ["Panel to DC DB", text(sv.cable_panel_to_dc_db)],
@@ -114,10 +121,8 @@ function sections(sv: Record<string, any>, productName?: string | null): { title
       ["Name Change", pick("yes_no", sv.name_change)],
       ["Loan", pick("yes_no", sv.loan)],
       ["Load Enhancement", pick("yes_no", sv.load_enhancement)],
-      ...(sv.loan === "yes" ? [
-        ["Required Loan Amount", looseMoney(sv.loan_amount)] as Row,
-        ["Email linked to Passbook", text(sv.email_linked_to_itr)] as Row,
-      ] : []),
+      ...when(sv.loan === "yes", "Required Loan Amount", looseMoney(sv.loan_amount)),
+      ...when(sv.loan === "yes", "Email linked to Passbook", text(sv.email_linked_to_itr)),
     ] },
     { title: "Purchase Order & KSEB Feasibility", rows: [
       ["PO Signed Date", date(sv.po_signed_date)],
@@ -141,10 +146,6 @@ export default function SiteVisitDetails({ siteVisit, customer, phone, productNa
   }, [open]);
 
   const sv = siteVisit;
-  const docs: Doc[] = Array.isArray(sv?.documents) ? sv!.documents.filter((d: Doc) => d.file) : [];
-  const known = new Set([...PHOTO_SLOTS, ...DOCUMENT_SLOTS].map(([k]) => k));
-  // Anything uploaded under a slot this list doesn't name still belongs to the visit.
-  const other = docs.filter(d => !known.has(d.doc_type));
 
   return (
     <>
@@ -165,12 +166,7 @@ export default function SiteVisitDetails({ siteVisit, customer, phone, productNa
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <h2 className="text-base font-bold text-slate-900">Site Visit Details</h2>
-                  {sv && (
-                    <span className={`text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${
-                      sv.site_visit_complete ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
-                      {sv.site_visit_complete ? "Signed off" : "Not signed off"}
-                    </span>
-                  )}
+                  {sv && <SignOff complete={!!sv.site_visit_complete} />}
                 </div>
                 <p className="text-[11px] text-slate-400 mt-0.5">
                   {[customer, phone, bdeName ? `filled by ${bdeName}` : null].filter(Boolean).join(" · ")}
@@ -183,31 +179,7 @@ export default function SiteVisitDetails({ siteVisit, customer, phone, productNa
             </div>
 
             <div className="overflow-y-auto flex-1 px-5 sm:px-6 py-5 space-y-6">
-              {!sv ? (
-                <p className="py-14 text-center text-sm text-slate-400">No site visit was recorded for this customer.</p>
-              ) : (
-                <>
-                  {sections(sv, productName).map(s => (
-                    <section key={s.title}>
-                      <h3 className="text-xs font-bold text-indigo-600 uppercase tracking-wide mb-3">{s.title}</h3>
-                      <dl className="grid grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-3">
-                        {s.rows.map(([label, value]) => (
-                          <div key={label} className="min-w-0">
-                            <dt className="text-[10px] text-slate-400 uppercase tracking-wide">{label}</dt>
-                            <dd className={`text-sm font-medium break-words ${value ? "text-slate-700" : "text-slate-300"}`}>{value || "—"}</dd>
-                          </div>
-                        ))}
-                      </dl>
-                    </section>
-                  ))}
-                  <Files title="Site Visit Photos" slots={PHOTO_SLOTS} docs={docs} empty="No photos were uploaded." />
-                  <Files title="Customer Documents" slots={DOCUMENT_SLOTS} docs={docs} empty="No documents were uploaded." />
-                  {other.length > 0 && (
-                    <Files title="Other Files" docs={other} empty=""
-                      slots={Array.from(new Set(other.map(d => d.doc_type))).map(t => [t, t.replace(/_/g, " ")] as [string, string])} />
-                  )}
-                </>
-              )}
+              <SiteVisitContent siteVisit={sv} productName={productName} />
             </div>
 
             <div className="px-5 sm:px-6 py-3 border-t border-slate-100 text-[11px] text-slate-400 flex-shrink-0">
@@ -217,6 +189,132 @@ export default function SiteVisitDetails({ siteVisit, customer, phone, productNa
         </div>
       )}
     </>
+  );
+}
+
+function SignOff({ complete }: { complete: boolean }) {
+  return (
+    <span className={`text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${
+      complete ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+      {complete ? "Signed off" : "Not signed off"}
+    </span>
+  );
+}
+
+/** Everything the BDE recorded, read-only: the pin, the form's sections, the
+ *  photos and the documents. The popup above and SiteVisitCard below both show
+ *  exactly this, so no stage reads a shorter survey than another. */
+export function SiteVisitContent({ siteVisit, productName, withFiles = true }: {
+  siteVisit: SiteVisitData; productName?: string | null;
+  /** False on a page that already lists the visit's files in its own gallery. */
+  withFiles?: boolean;
+}) {
+  const sv = siteVisit;
+  if (!sv) {
+    return <p className="py-14 text-center text-sm text-slate-400">No site visit was recorded for this customer.</p>;
+  }
+  const docs: Doc[] = Array.isArray(sv.documents) ? sv.documents.filter((d: Doc) => d.file) : [];
+  const known = new Set([...PHOTO_SLOTS, ...DOCUMENT_SLOTS].map(([k]) => k));
+  // Anything uploaded under a slot this list doesn't name still belongs to the visit.
+  const other = docs.filter(d => !known.has(d.doc_type));
+  return (
+    <>
+      <SitePin sv={sv} />
+      {sections(sv, productName).map(s => (
+        <section key={s.title}>
+          <h3 className="text-xs font-bold text-indigo-600 uppercase tracking-wide mb-3">{s.title}</h3>
+          <dl className="grid grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-3">
+            {s.rows.map(([label, value]) => (
+              <div key={label} className="min-w-0">
+                <dt className="text-[10px] text-slate-400 uppercase tracking-wide">{label}</dt>
+                <dd className={`text-sm font-medium break-words ${value ? "text-slate-700" : "text-slate-300"}`}>{value || "—"}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      ))}
+      {withFiles && (
+        <>
+          <Files title="Site Visit Photos" slots={PHOTO_SLOTS} docs={docs} empty="No photos were uploaded." />
+          <Files title="Customer Documents" slots={DOCUMENT_SLOTS} docs={docs} empty="No documents were uploaded." />
+          {other.length > 0 && (
+            <Files title="Other Files" docs={other} empty=""
+              slots={Array.from(new Set(other.map(d => d.doc_type))).map(t => [t, t.replace(/_/g, " ")] as [string, string])} />
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
+/**
+ * The whole site visit laid out on the page rather than behind a button — for
+ * Documentation Stage 1, whose team works from the survey while filling their
+ * own stage and needs it in view beside the form, not in a dialog over it.
+ * Read-only: there is nothing in it to change.
+ */
+export function SiteVisitCard({ siteVisit, productName, bdeName, withFiles = true, className = "" }: {
+  siteVisit: SiteVisitData; productName?: string | null; bdeName?: string | null;
+  withFiles?: boolean; className?: string;
+}) {
+  const [open, setOpen] = useState(true);
+  const sv = siteVisit;
+  return (
+    <section className={`bg-white border border-slate-200 rounded-2xl shadow-sm ${className}`}
+      aria-label="Site visit details">
+      <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-slate-100">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-sm font-bold text-slate-900">Site Visit Details</h2>
+            {sv && <SignOff complete={!!sv.site_visit_complete} />}
+            <span className="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">
+              Read-only
+            </span>
+          </div>
+          <p className="text-[11px] text-slate-400 mt-0.5">
+            {bdeName ? `Filled by ${bdeName} on the site visit. ` : "Filled by the BDE on the site visit. "}
+            Changed only on the lead itself.
+          </p>
+        </div>
+        <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
+          className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 transition">
+          {open ? "Hide" : "Show"}
+        </button>
+      </div>
+      {open && (
+        <div className="px-5 py-5 space-y-6">
+          <SiteVisitContent siteVisit={sv} productName={productName} withFiles={withFiles} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** Where the site is, as the BDE pinned it — first, since it is what a crew
+ *  heading out needs before anything else on the survey. */
+function SitePin({ sv }: { sv: SiteLocationData }) {
+  const pin = pinOf(sv);
+  return (
+    <section>
+      <h3 className="text-xs font-bold text-indigo-600 uppercase tracking-wide mb-3">Site Location (Google Maps)</h3>
+      {pin ? (
+        <div className="grid sm:grid-cols-2 gap-4 items-start">
+          <SiteMap pin={pin} className="h-44" />
+          <div className="space-y-2 min-w-0">
+            <p className="font-mono text-sm font-semibold text-slate-800">{coordsLabel(pin)}</p>
+            <p className="text-[11px] text-slate-500">{pinNote(sv)}</p>
+            {isLowAccuracy(sv) && (
+              <p className="text-[11px] font-semibold text-amber-700">
+                Low accuracy — the pin may be off by up to {sv.site_location_accuracy} m.
+              </p>
+            )}
+            <SiteLocationLinks pin={pin} />
+          </div>
+        </div>
+      ) : (
+        <p className="text-sm text-slate-400">The BDE did not pin the site&apos;s location.</p>
+      )}
+    </section>
   );
 }
 

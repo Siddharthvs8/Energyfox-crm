@@ -9,6 +9,8 @@ import PurchaseLogisticsSection from "./PurchaseLogisticsSection";
 
 import ActivityTimeline from "@/components/ActivityTimeline";
 import SiteVisitDetails, { type SiteVisitData } from "@/components/SiteVisitDetails";
+import { SiteLocationCell } from "@/components/SiteLocation";
+import CopyCustomerDetails from "@/components/CopyCustomerDetails";
 import { DetailSkeleton } from "@/components/Skeleton";
 type PaymentVerification = {
   deal_value: string | number | null;
@@ -26,7 +28,7 @@ type PurchaseDetail = {
   id: number;
   first_name: string; last_name: string | null;
   phone: string | null; email: string | null;
-  location: string | null; installation_location: string | null;
+  location: string | null; installation_location: string | null; district: string | null;
   product_name: string | null; value: number; status: string;
   bde_name: string | null;
   accounts_staff_name: string | null;
@@ -110,6 +112,9 @@ export default function PurchaseDetailPage({ params: paramsPromise }: { params: 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <Link href="/purchase" className="text-sm text-indigo-600 hover:underline">← Back to Purchase &amp; Logistics</Link>
         <div className="flex flex-wrap items-center gap-2">
+          <CopyCustomerDetails name={`${data.first_name} ${data.last_name || ""}`.trim()} phone={data.phone}
+            installation_location={data.installation_location} location={data.location}
+            district={data.district} siteVisit={data.site_visit} />
           <SiteVisitDetails siteVisit={data.site_visit} customer={`${data.first_name} ${data.last_name || ""}`.trim()}
             phone={data.phone} productName={data.product_name} bdeName={data.bde_name} />
           <ActivityTimeline leadId={params.id} />
@@ -158,6 +163,8 @@ export default function PurchaseDetailPage({ params: paramsPromise }: { params: 
           <Detail label="BDE" value={data.bde_name} />
           <Detail label="Accounts Staff" value={data.accounts_staff_name} />
           <Detail label="Moved to Purchase" value={data.pushed_at ? new Date(data.pushed_at).toLocaleString("en-IN") : null} />
+          {/* Where the material goes — pinned by the BDE on the site visit. */}
+          <SiteLocationCell loc={data.site_visit} />
         </div>
       </div>
 

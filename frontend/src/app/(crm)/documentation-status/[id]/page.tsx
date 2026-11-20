@@ -6,6 +6,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { DetailSkeleton } from "@/components/Skeleton";
+import { SiteVisitCard } from "@/components/SiteVisitDetails";
 
 type HistoryItem = { id: number; type: string; description: string; actor: string | null; auto_generated?: boolean; timestamp: string };
 type Detail = {
@@ -26,38 +27,6 @@ type Detail = {
   history: HistoryItem[];
 };
 
-// Site-visit text/choice fields worth showing (files are listed under Attachments).
-const SV_LABELS: { key: string; label: string }[] = [
-  { key: "roof_type", label: "Roof Type" },
-  { key: "rcc_roof_types", label: "RCC Roof Type" },
-  { key: "connection_type", label: "Connection Type" },
-  { key: "connected_load", label: "Connected Load" },
-  { key: "consumer_number", label: "Consumer Number" },
-  { key: "current_bill", label: "Current Bill" },
-  { key: "phase", label: "Phase" },
-  { key: "building_height", label: "Building Height" },
-  { key: "panel_to_inverter_distance", label: "Panel→Inverter Distance" },
-  { key: "kseb_section", label: "KSEB Section" },
-  { key: "feasible_capacity", label: "Feasible Capacity" },
-  { key: "plant_capacity", label: "Plant Capacity" },
-  { key: "transformer_feasibility", label: "Transformer Feasibility" },
-  { key: "neutral_link", label: "Neutral Link" },
-  { key: "roof_access", label: "Access to Roof" },
-  { key: "parapet_height", label: "Parapet Height" },
-  { key: "structure_type", label: "Structure Type" },
-  { key: "custom_structure_height", label: "Custom Structure Height" },
-  { key: "cable_panel_to_dc_db", label: "Cable: Panel→DC DB" },
-  { key: "cable_inverter_to_ac_db", label: "Cable: Inverter→AC DB" },
-  { key: "earthing_cable_length", label: "Earthing Cable Length" },
-  { key: "lightning_conductor_length", label: "Lightning Conductor Length" },
-  { key: "earthing_surface", label: "Earthing Surface" },
-  { key: "anchoring_allowed", label: "Anchoring Allowed" },
-  { key: "name_change", label: "Name Change" },
-  { key: "loan", label: "Loan" },
-  { key: "loan_amount", label: "Required Loan Amount" },
-  { key: "load_enhancement", label: "Load Enhancement" },
-  { key: "email_linked_to_itr", label: "Email linked to ITR" },
-];
 const yesNo = (v: any) => (v === true ? "Yes" : v === false ? "No" : null);
 
 const STAGE_STYLES: Record<string, { label: string; cls: string }> = {
@@ -118,15 +87,6 @@ export default function DocumentationStatusDetail({ params: paramsPromise }: { p
     </div>
   );
 
-  const sv = data.site_visit;
-  // Show every site-visit field's heading; empty ones render as "—" (see Detail).
-  const svRows = sv
-    ? SV_LABELS.map(f => ({
-        label: f.label,
-        value: f.key === "rcc_roof_types" ? (Array.isArray(sv[f.key]) ? sv[f.key].join(", ") : "") : sv[f.key],
-      }))
-    : [];
-
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-[1000px]">
       <Link href="/documentation-status" className="text-sm text-indigo-600 hover:underline">← Back to Documentation</Link>
@@ -169,14 +129,13 @@ export default function DocumentationStatusDetail({ params: paramsPromise }: { p
         </div>
       </div>
 
-      {/* Site Visit details (BDE) */}
-      {svRows.length > 0 && (
-        <div className="mt-5 bg-white border border-slate-200 rounded-2xl shadow-sm p-5">
-          <h2 className="text-sm font-bold text-slate-900 mb-4">Site Visit Details</h2>
-          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-3">
-            {svRows.map(r => <Detail key={r.label} label={r.label} value={r.value} />)}
-          </div>
-        </div>
+      {/* Site Visit details (BDE) — the same read-only card the documentation
+          team reads on Stage 1: the site's map pin and every field, with its
+          choices spelled out ("3 Phase", not "3ph"). The visit's files are in
+          the Attachments gallery below, so the card leaves them out. */}
+      {data.site_visit && (
+        <SiteVisitCard className="mt-5" siteVisit={data.site_visit}
+          productName={data.product_name} bdeName={data.bde_name} withFiles={false} />
       )}
 
       {/* Documentation Stage 1 data */}

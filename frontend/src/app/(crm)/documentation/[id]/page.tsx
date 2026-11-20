@@ -9,6 +9,7 @@ import DocumentationStage1Section from "./DocumentationStage1Section";
 
 import ActivityTimeline from "@/components/ActivityTimeline";
 import DocumentationRemarks from "@/components/DocumentationRemarks";
+import { SiteVisitCard } from "@/components/SiteVisitDetails";
 import { DetailSkeleton } from "@/components/Skeleton";
 type Attachment = { label: string; url: string; is_image: boolean };
 type DocDetail = {
@@ -27,39 +28,6 @@ type DocDetail = {
   can_reopen_stage1: boolean;
   attachments: Attachment[];
 };
-
-// Site-visit text/choice fields worth showing (files are listed under Attachments).
-const SV_LABELS: { key: string; label: string }[] = [
-  { key: "roof_type", label: "Roof Type" },
-  { key: "rcc_roof_types", label: "RCC Roof Type" },
-  { key: "connection_type", label: "Connection Type" },
-  { key: "connected_load", label: "Connected Load" },
-  { key: "consumer_number", label: "Consumer Number" },
-  { key: "current_bill", label: "Current Bill" },
-  { key: "phase", label: "Phase" },
-  { key: "building_height", label: "Building Height" },
-  { key: "panel_to_inverter_distance", label: "Panel→Inverter Distance" },
-  { key: "kseb_section", label: "KSEB Section" },
-  { key: "feasible_capacity", label: "Feasible Capacity" },
-  { key: "plant_capacity", label: "Plant Capacity" },
-  { key: "transformer_feasibility", label: "Transformer Feasibility" },
-  { key: "neutral_link", label: "Neutral Link" },
-  { key: "roof_access", label: "Access to Roof" },
-  { key: "parapet_height", label: "Parapet Height" },
-  { key: "structure_type", label: "Structure Type" },
-  { key: "custom_structure_height", label: "Custom Structure Height" },
-  { key: "cable_panel_to_dc_db", label: "Cable: Panel→DC DB" },
-  { key: "cable_inverter_to_ac_db", label: "Cable: Inverter→AC DB" },
-  { key: "earthing_cable_length", label: "Earthing Cable Length" },
-  { key: "lightning_conductor_length", label: "Lightning Conductor Length" },
-  { key: "earthing_surface", label: "Earthing Surface" },
-  { key: "anchoring_allowed", label: "Anchoring Allowed" },
-  { key: "name_change", label: "Name Change" },
-  { key: "loan", label: "Loan" },
-  { key: "loan_amount", label: "Required Loan Amount" },
-  { key: "load_enhancement", label: "Load Enhancement" },
-  { key: "email_linked_to_itr", label: "Email linked to ITR" },
-];
 
 export default function DocumentationDetailPage({ params: paramsPromise }: { params: Promise<{ id: string }> }) {
   const params = React.use(paramsPromise);
@@ -120,11 +88,6 @@ export default function DocumentationDetailPage({ params: paramsPromise }: { par
     </div>
   );
 
-  const sv = data.site_visit;
-  const svRows = sv ? SV_LABELS
-    .map(f => ({ label: f.label, value: f.key === "rcc_roof_types" ? (Array.isArray(sv[f.key]) ? sv[f.key].join(", ") : "") : sv[f.key] }))
-    .filter(r => r.value !== null && r.value !== undefined && r.value !== "") : [];
-
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-[1100px]">
       <div className="flex items-center justify-between gap-3">
@@ -181,15 +144,12 @@ export default function DocumentationDetailPage({ params: paramsPromise }: { par
         </div>
       </div>
 
-      {/* Site visit details */}
-      {svRows.length > 0 && (
-        <div className="mt-5 bg-white border border-slate-200 rounded-2xl shadow-sm p-5">
-          <h2 className="text-sm font-bold text-slate-900 mb-4">Site Visit Details</h2>
-          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-3">
-            {svRows.map(r => <Detail key={r.label} label={r.label} value={r.value} />)}
-          </div>
-        </div>
-      )}
+      {/* Everything the BDE took on the site visit — every field, the site's
+          map pin, the photos and the documents — read-only, for the
+          documentation staff and manager alike. It was a short list of raw
+          values before, with the photos shown to managers only. */}
+      <SiteVisitCard className="mt-5" siteVisit={data.site_visit}
+        productName={data.product_name} bdeName={data.bde_name} />
 
       {/* Attachments preview — managers/admins only. Documentation staff work with
           these files directly in the Stage 1 slots below, so it's hidden for them

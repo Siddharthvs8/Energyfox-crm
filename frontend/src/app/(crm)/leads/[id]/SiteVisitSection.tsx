@@ -3,6 +3,10 @@ import { APP_SLUG } from "@/lib/config";
 import { getApiBase } from "@/lib/mock-data";
 import { kindForSlot } from "@/lib/docKinds";
 import PdfDropField from "@/components/PdfDropField";
+import {
+  coordsLabel, isLowAccuracy, LOW_ACCURACY_METRES, parsePin, pinNote, pinOf, SiteLocationLinks, SiteMap,
+  type SiteLocationData,
+} from "@/components/SiteLocation";
 import Link from "next/link";
 import React, { useEffect, useState, createContext, useContext } from "react";
 
@@ -212,6 +216,13 @@ export default function SiteVisitSection({
   const [saved, setSaved] = useState(false);
   // Set once the PO date has just been saved — sends the BDE to KSEB Feasibility.
   const [poPrompt, setPoPrompt] = useState(false);
+  // The site's Google Maps pin. Saved the moment it is taken, apart from the
+  // form's Save, so a BDE who pins the site and drives off has not lost it.
+  const [loc, setLoc] = useState<SiteLocationData>({});
+  const [locating, setLocating] = useState(false);
+  const [locError, setLocError] = useState("");
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualText, setManualText] = useState("");
 
   // Worked out here as well as on the server so the figure moves as it is typed
   // rather than only after a save. The server is still the one that decides it.
@@ -239,7 +250,15 @@ export default function SiteVisitSection({
     setDiscount(money(d.discount));
     setProductName(d.product_name || null);
     setDocuments(Array.isArray(d.documents) ? d.documents : []);
+    setLoc(locationOf(d));
   };
+
+  const locationOf = (d: SiteLocationData): SiteLocationData => ({
+    site_latitude: d.site_latitude, site_longitude: d.site_longitude,
+    site_location_accuracy: d.site_location_accuracy, site_location_source: d.site_location_source,
+    site_location_captured_at: d.site_location_captured_at,
+    site_location_captured_by_name: d.site_location_captured_by_name,
+  });
 
   useEffect(() => {
     if (!localStorage.getItem(`${APP_SLUG}_access`)) { setLoading(false); return; }
@@ -392,6 +411,93 @@ ${field}: ${Array.isArray(msg) ? msg[0] : msg}`;
     finally { setSaving(false); }
   };
 
+  /** Saves only the location — not the rest of the form, which may hold edits
+   *  that are not ready — and takes back only the location from the reply. */
+  const saveLocation = async (body: Record<string, unknown>) => {
+    setLocating(true);
+    setLocError("");
+    try {
+      const res = await fetch(url, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...authHeader() },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        // The server's own words ("The latitude has to be between -90 and 90."),
+        // without the field name in front of them.
+        const e = await res.json().catch(() => ({}));
+        const first = Object.values(e || {})[0];
+        const why = Array.isArray(first) ? String(first[0]) : typeof first === "string" ? first : "";
+        setLocError(`Could not save the location.${why ? ` ${why}` : ""}`);
+        return false;
+      }
+      setLoc(locationOf(await res.json()));
+      onSaved?.();
+      return true;
+    } catch { setLocError("Network error while saving the location."); return false; }
+    finally { setLocating(false); }
+  };
+
+  /** One tap at the site: the device's own position, as precise as it can give. */
+  const captureLocation = () => {
+    setLocError("");
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setLocError("This browser cannot share its location. Enter the coordinates by hand instead.");
+      return;
+    }
+    // Browsers only hand out a position to a secure (https) page.
+    if (!window.isSecureContext) {
+      setLocError("Location only works on the secure (https) address of the CRM.");
+      return;
+    }
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        void saveLocation({
+          site_latitude: Number(pos.coords.latitude.toFixed(6)),
+          site_longitude: Number(pos.coords.longitude.toFixed(6)),
+          site_location_accuracy: Math.round(pos.coords.accuracy),
+          site_location_source: "gps",
+        });
+      },
+      err => {
+        setLocating(false);
+        setLocError(err.code === err.PERMISSION_DENIED
+          ? "Location is blocked for this site. Allow location for the CRM in the browser's site settings (the icon beside the address), then try again."
+          : err.code === err.TIMEOUT
+            ? "Getting the location took too long. Step outside, away from the roof slab, and try again."
+            : "The device could not work out where it is. Turn on location (GPS) and try again.");
+      },
+      // A phone's first GPS fix of the day can take a while; a fresh one is
+      // wanted all the same, not one remembered from the road on the way.
+      { enableHighAccuracy: true, timeout: 30000, maximumAge: 0 },
+    );
+  };
+
+  const saveManual = async () => {
+    const typed = parsePin(manualText);
+    if (typed === "short-link") {
+      setLocError("A short maps.app.goo.gl link cannot be read here. Open it, then copy the coordinates (press and hold the pin) or the full link from the address bar.");
+      return;
+    }
+    if (!typed) {
+      setLocError("Enter the coordinates as latitude, longitude — e.g. 10.016789, 76.345679 — or paste a Google Maps link.");
+      return;
+    }
+    const ok = await saveLocation({
+      site_latitude: Number(typed.lat.toFixed(6)), site_longitude: Number(typed.lng.toFixed(6)),
+      site_location_accuracy: null, site_location_source: "manual",
+    });
+    if (ok) { setManualOpen(false); setManualText(""); }
+  };
+
+  const removeLocation = async () => {
+    if (!window.confirm("Remove the site location? The purchase and project teams will no longer see it.")) return;
+    await saveLocation({ site_latitude: null, site_longitude: null });
+  };
+
+  const pin = pinOf(loc);
+
   // Field state shared with the module-level renderers via context (see SVCtx above).
   const ctx: SVCtx = { form, set, canEdit, documents, addDocs, deleteDoc, uploadingType, apiBase };
 
@@ -412,6 +518,87 @@ ${field}: ${Array.isArray(msg) ? msg[0] : msg}`;
         <>
         <SiteVisitCtx.Provider value={ctx}>
         <div className="p-6 grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {/* Site location — first, because it is taken on arrival: standing at
+              the site, one tap pins it from the device. Saved on the spot and
+              read by purchase & logistics and the project team. */}
+          <SectionTitle>Site Location (Google Maps)</SectionTitle>
+          <div className="sm:col-span-2 lg:col-span-3">
+            {pin ? (
+              <div className="grid lg:grid-cols-2 gap-4 items-start">
+                <SiteMap pin={pin} className="h-52" />
+                <div className="space-y-2 min-w-0">
+                  <p className="font-mono text-sm font-semibold text-slate-800">{coordsLabel(pin)}</p>
+                  <p className="text-[11px] text-slate-500">{pinNote(loc)}</p>
+                  {isLowAccuracy(loc) && (
+                    <p className="text-[11px] font-semibold text-amber-700">
+                      Low accuracy (±{loc.site_location_accuracy} m) — this may not be the site. Pin it
+                      again on a phone, outdoors at the site, for a fix within {LOW_ACCURACY_METRES} m.
+                    </p>
+                  )}
+                  <SiteLocationLinks pin={pin} />
+                  {canEdit && (
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      <button type="button" onClick={captureLocation} disabled={locating}
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 transition disabled:opacity-50">
+                        {locating ? "Getting location…" : "Update to my current location"}
+                      </button>
+                      <button type="button" onClick={() => { setManualOpen(true); setLocError(""); }} disabled={locating}
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 transition disabled:opacity-50">
+                        Enter by hand
+                      </button>
+                      <button type="button" onClick={removeLocation} disabled={locating}
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold text-rose-600 hover:bg-rose-50 transition disabled:opacity-50">
+                        Remove
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : canEdit ? (
+              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+                <p className="text-sm text-slate-600 flex-1">
+                  Not pinned yet. Standing at the site, tap the button — this device&apos;s location is saved
+                  at once, and the purchase and project teams get it on Google Maps.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={captureLocation} disabled={locating}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 transition disabled:opacity-50">
+                    <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z" /><circle cx="12" cy="9.5" r="2.5" />
+                    </svg>
+                    {locating ? "Getting location…" : "Use my current location"}
+                  </button>
+                  <button type="button" onClick={() => { setManualOpen(true); setLocError(""); }} disabled={locating}
+                    className="px-3 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 transition disabled:opacity-50">
+                    Enter by hand
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-slate-400">Not pinned on this site visit.</p>
+            )}
+            {manualOpen && canEdit && (
+              <div className="mt-3 flex flex-col sm:flex-row gap-2">
+                <input value={manualText} onChange={e => setManualText(e.target.value)} autoFocus
+                  onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); void saveManual(); } }}
+                  placeholder="10.016789, 76.345679 — or paste a Google Maps link"
+                  aria-label="Site coordinates or Google Maps link"
+                  className={inputCls} />
+                <div className="flex gap-2 flex-shrink-0">
+                  <button type="button" onClick={() => void saveManual()} disabled={locating}
+                    className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 transition disabled:opacity-50">
+                    Save location
+                  </button>
+                  <button type="button" onClick={() => { setManualOpen(false); setManualText(""); setLocError(""); }}
+                    className="px-3 py-2 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-100 transition">
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+            {locError && <p role="alert" className="mt-2 text-[11px] font-semibold text-rose-600">{locError}</p>}
+          </div>
+
           {/* Deal — settled by the BDE (no longer by the tele caller). The value
               is derived from the two figures above it rather than typed, so it
               can always be explained by the price and the discount. */}

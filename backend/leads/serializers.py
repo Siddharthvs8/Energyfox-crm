@@ -90,11 +90,16 @@ class SiteVisitDocumentSerializer(serializers.ModelSerializer):
 class SiteVisitSerializer(serializers.ModelSerializer):
     documents = serializers.SerializerMethodField()
     kseb_feasibility_due_date = serializers.SerializerMethodField()
+    site_location_captured_by_name = serializers.SerializerMethodField()
 
     class Meta:
         model = SiteVisit
         fields = '__all__'
-        read_only_fields = ['lead', 'created_at', 'updated_at']
+        read_only_fields = ['lead', 'created_at', 'updated_at',
+                            # Who pinned the site and when are stamped by the
+                            # server (LeadViewSet._stamp_site_location), never
+                            # taken from the client.
+                            'site_location_captured_at', 'site_location_captured_by']
 
     def get_documents(self, obj):
         return _merge_documents(obj, SITE_VISIT_SHARED_SLOTS)
@@ -103,6 +108,12 @@ class SiteVisitSerializer(serializers.ModelSerializer):
         d = obj.kseb_feasibility_due_date
         return d.isoformat() if d else None
 
+    def get_site_location_captured_by_name(self, obj):
+        user = obj.site_location_captured_by
+        if user is None:
+            return None
+        return f"{user.first_name} {user.last_name}".strip() or user.username
+
     # The site-visit form posts every scalar it holds, and a cleared date arrives
     # as "". That's fine for the CharFields but a DateField rejects it outright,
     # which would fail the whole save over a field the user never touched.
@@ -110,6 +121,26 @@ class SiteVisitSerializer(serializers.ModelSerializer):
     # Same story for the money fields: an emptied price box means nothing owed,
     # not a validation error.
     MONEY_FIELDS = ('product_price', 'discount')
+    # A device reports its position to more places than the columns keep
+    # (10.0167891234) and its accuracy as a fraction of a metre. Rounded here
+    # rather than refused: a GPS fix is not something the BDE can retype.
+    LOCATION_FIELDS = ('site_latitude', 'site_longitude', 'site_location_accuracy')
+
+    @staticmethod
+    def _rounded_location(field, value):
+        import math
+        if value in ('', None):
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return value  # the field's own validation says what is wrong with it
+        if not math.isfinite(number):
+            return value
+        if field == 'site_location_accuracy':
+            return max(0, round(number))
+        # Six places is about 11 cm — finer than any phone can place itself.
+        return round(number, 6)
 
     def to_internal_value(self, data):
         if hasattr(data, 'get'):
@@ -119,12 +150,16 @@ class SiteVisitSerializer(serializers.ModelSerializer):
             # would quietly wipe the price and discount off the deal.
             zeros = [f for f in self.MONEY_FIELDS
                      if f in data and data.get(f) in ('', None)]
-            if blanks or zeros:
+            located = {f: self._rounded_location(f, data.get(f))
+                       for f in self.LOCATION_FIELDS if f in data}
+            if blanks or zeros or located:
                 data = data.copy()
                 for f in blanks:
                     data[f] = None
                 for f in zeros:
                     data[f] = 0
+                for f, value in located.items():
+                    data[f] = value
         return super().to_internal_value(data)
 
     def validate(self, attrs):
@@ -142,9 +177,30 @@ class SiteVisitSerializer(serializers.ModelSerializer):
             errors['discount'] = 'The discount cannot be negative.'
         if not errors and discount > price:
             errors['discount'] = 'The discount cannot be more than the product price.'
+        errors.update(self._location_errors(attrs))
         if errors:
             raise serializers.ValidationError(errors)
         return attrs
+
+    def _location_errors(self, attrs):
+        """A pin is a pair, on the globe — and not the 0, 0 a device can hand
+        back when it has no fix at all, which is a point in the Atlantic."""
+        if 'site_latitude' not in attrs and 'site_longitude' not in attrs:
+            return {}
+        lat = attrs.get('site_latitude', getattr(self.instance, 'site_latitude', None))
+        lng = attrs.get('site_longitude', getattr(self.instance, 'site_longitude', None))
+        if (lat is None) != (lng is None):
+            return {'site_latitude': 'A location needs both a latitude and a longitude.'}
+        if lat is None:
+            return {}
+        if not -90 <= lat <= 90:
+            return {'site_latitude': 'The latitude has to be between -90 and 90.'}
+        if not -180 <= lng <= 180:
+            return {'site_longitude': 'The longitude has to be between -180 and 180.'}
+        if lat == 0 and lng == 0:
+            return {'site_latitude': 'That is not the site — 0, 0 is what a device reports '
+                                     'when it has no location. Try again.'}
+        return {}
 
     def validate_rcc_roof_types(self, value):
         allowed = {'flat', 'slope', 'tiled', 'non_linear'}

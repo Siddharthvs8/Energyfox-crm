@@ -501,6 +501,25 @@ class SiteVisit(models.Model):
     product_price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     discount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
 
+    # ── Site location (Google Maps) ──
+    # Where the site is, pinned by the BDE standing on it: one tap on the form
+    # takes the phone's own position. The stages that go out to the roof —
+    # purchase & logistics, the project team — open it in Google Maps for
+    # directions rather than ringing the customer for the way.
+    LOCATION_SOURCES = [('gps', "Device location"), ('manual', 'Entered by hand')]
+    site_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    site_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    # The device's own accuracy radius, in metres. A fix taken indoors, or on a
+    # laptop that places itself by Wi-Fi, can be hundreds of metres out, and
+    # whoever drives there should know how far to trust the pin.
+    site_location_accuracy = models.PositiveIntegerField(null=True, blank=True)
+    site_location_source = models.CharField(max_length=10, choices=LOCATION_SOURCES,
+                                            blank=True, default='')
+    site_location_captured_at = models.DateTimeField(null=True, blank=True)
+    site_location_captured_by = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='pinned_site_locations')
+
     # ── Roof ──
     ROOF_TYPES = [('rcc', 'RCC'), ('sheet', 'Sheet'), ('mixed', 'Mixed')]
     roof_type = models.CharField(max_length=10, choices=ROOF_TYPES, blank=True, default='')

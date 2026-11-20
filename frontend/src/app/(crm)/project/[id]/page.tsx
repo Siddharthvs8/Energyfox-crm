@@ -9,6 +9,8 @@ import ProjectSection from "./ProjectSection";
 
 import ActivityTimeline from "@/components/ActivityTimeline";
 import SiteVisitDetails, { type SiteVisitData } from "@/components/SiteVisitDetails";
+import { SiteLocationCell } from "@/components/SiteLocation";
+import CopyCustomerDetails from "@/components/CopyCustomerDetails";
 import { DeadlineBanner, type DeadlineInfo } from "@/components/ProjectDeadline";
 import { DetailSkeleton } from "@/components/Skeleton";
 
@@ -17,7 +19,7 @@ type ProjectDetail = DeadlineInfo & {
   id: number;
   first_name: string; last_name: string | null;
   phone: string | null; email: string | null;
-  location: string | null; installation_location: string | null;
+  location: string | null; installation_location: string | null; district: string | null;
   product_name: string | null; value: number; status: string;
   bde_name: string | null;
   project_manager: number | null;
@@ -93,6 +95,9 @@ export default function ProjectDetailPage({ params: paramsPromise }: { params: P
       <div className="flex flex-wrap items-center justify-between gap-3">
         <Link href="/project" className="text-sm text-indigo-600 hover:underline">← Back to Project</Link>
         <div className="flex flex-wrap items-center gap-2">
+          <CopyCustomerDetails name={`${data.first_name} ${data.last_name || ""}`.trim()} phone={data.phone}
+            installation_location={data.installation_location} location={data.location}
+            district={data.district} siteVisit={data.site_visit} />
           <SiteVisitDetails siteVisit={data.site_visit} customer={`${data.first_name} ${data.last_name || ""}`.trim()}
             phone={data.phone} productName={data.product_name} bdeName={data.bde_name} />
           <ActivityTimeline leadId={params.id} />
@@ -146,6 +151,9 @@ export default function ProjectDetailPage({ params: paramsPromise }: { params: P
           <Detail label="BDE" value={data.bde_name} />
           <Detail label="Status" value={data.status} />
           <Detail label="Moved to Project" value={data.pushed_at ? new Date(data.pushed_at).toLocaleString("en-IN") : null} />
+          {/* Where the installation crew is going — pinned by the BDE on the
+              site visit; on a phone the links open the Maps app. */}
+          <SiteLocationCell loc={data.site_visit} />
         </div>
       </div>
 
